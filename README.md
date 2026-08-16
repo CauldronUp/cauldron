@@ -60,8 +60,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Recipe runtime — routing, state, auth, pagination | Working |
 | Webhooks — lifecycle events, signing, delivery | Working |
 | Fault injection, clock control, request log | Working |
-| `cauldron serve` | Working |
-| `cauldron up` — container orchestration | Not built; prints the plan and says so |
+| `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
+| `cauldron up` — container orchestration | **Not built.** `up` boots the emulated providers and says what it skipped |
+| `snapshot` save/restore | Not built |
+| Conformance suites — measured fidelity | Not built |
 | Recipes shipped | Stripe only |
 
 ## Try it
@@ -115,6 +117,27 @@ curl http://127.0.0.1:4600/_cauldron/stripe/requests
 ```
 
 Webhook deliveries are recorded even when nothing is subscribed, so "this event would have fired" is assertable without standing up a listener.
+
+Or drive it from the CLI:
+
+```bash
+cauldron status                                   # what is running
+cauldron seed stripe --fixture small-shop         # load seed data
+cauldron fault stripe --error rate_limit --count 2 # break the next two calls
+cauldron clock advance 30d                        # age everything a month
+cauldron emit stripe payment_intent.payment_failed # fire a webhook
+cauldron requests stripe                          # what your code actually sent
+cauldron reset                                    # back to a clean sandbox
+```
+
+```
+#  METHOD  PATH           STATUS  NOTE
+1  GET     /v1/customers  429     fault: rate_limit
+2  GET     /v1/customers  429     fault: rate_limit
+3  GET     /v1/customers  200     list
+```
+
+Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
 
 ## Recipes
 

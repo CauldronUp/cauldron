@@ -51,13 +51,13 @@ func runUp(ctx *context, args []string) int {
 
 	writePlan(ctx.stdout, project)
 
-	// The orchestration layer is not built yet. Saying so plainly beats
-	// printing a convincing boot log that didn't happen.
-	fmt.Fprint(ctx.stdout, "\nThis is the plan Cauldron would run.\n")
-	fmt.Fprint(ctx.stdout, "Container orchestration and the recipe runtime are still in progress —\n")
-	fmt.Fprint(ctx.stdout, "follow along at https://github.com/CauldronUp/cauldron\n")
+	// Container orchestration is not built. Rather than print a convincing
+	// boot log for work that didn't happen, `up` starts the half that does
+	// exist — the emulated providers — and says plainly what it skipped.
+	fmt.Fprint(ctx.stdout, "Container orchestration is not built yet, so runtimes and services\n")
+	fmt.Fprint(ctx.stdout, "above are not started. Booting the emulated providers only.\n\n")
 
-	return 0
+	return runServe(ctx, []string{"-dir", dir})
 }
 
 // writePlan renders a detected project as the boot plan.

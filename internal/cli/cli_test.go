@@ -138,14 +138,25 @@ func TestDetectFailsOutsideAProject(t *testing.T) {
 	}
 }
 
-func TestUpIsHonestThatOrchestrationIsUnfinished(t *testing.T) {
-	stdout, _, code := run(t, "up", laravelProject(t))
+// `up` boots the half of the environment that exists — the emulated providers
+// — and must say plainly that it did not start runtimes or services, rather
+// than implying a full environment came up.
+func TestUpIsHonestAboutWhatItDidNotStart(t *testing.T) {
+	// A project with no recipes: up prints the plan, admits orchestration is
+	// missing, and exits without pretending to have booted anything.
+	dir := projectWith(t, `{"require":{"php":"^8.5","predis/predis":"^2.2"}}`)
 
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0", code)
+	stdout, _, code := run(t, "up", dir)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 — there is nothing it can serve", code)
 	}
 
-	if !strings.Contains(stdout, "still in progress") {
-		t.Errorf("up must not imply it booted anything\n%s", stdout)
+	if !strings.Contains(stdout, "not built yet") {
+		t.Errorf("up must not imply it started runtimes or services\n%s", stdout)
+	}
+
+	if !strings.Contains(stdout, "redis") {
+		t.Errorf("up should still show the detected plan\n%s", stdout)
 	}
 }
