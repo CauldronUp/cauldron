@@ -57,6 +57,48 @@ func commands() map[string]command {
 			usage:   "cauldron recipe list | cauldron recipe info <name>",
 			run:     runRecipe,
 		},
+		"status": {
+			name:    "status",
+			summary: "Show what a running Cauldron is doing",
+			usage:   "cauldron status [--url]",
+			run:     runStatus,
+		},
+		"requests": {
+			name:    "requests",
+			summary: "Show what your code actually sent",
+			usage:   "cauldron requests <recipe>",
+			run:     runRequests,
+		},
+		"seed": {
+			name:    "seed",
+			summary: "Load a fixture into a running recipe",
+			usage:   "cauldron seed <recipe> --fixture <name>",
+			run:     runSeed,
+		},
+		"reset": {
+			name:    "reset",
+			summary: "Return a recipe, or everything, to its seeded state",
+			usage:   "cauldron reset [recipe]",
+			run:     runReset,
+		},
+		"fault": {
+			name:    "fault",
+			summary: "Make a provider fail on purpose",
+			usage:   "cauldron fault <recipe> --error <name>",
+			run:     runFault,
+		},
+		"emit": {
+			name:    "emit",
+			summary: "Fire a webhook at your application",
+			usage:   "cauldron emit <recipe> <event>",
+			run:     runEmit,
+		},
+		"clock": {
+			name:    "clock",
+			summary: "Move sandbox time forward",
+			usage:   "cauldron clock advance <duration>",
+			run:     runClock,
+		},
 		"version": {
 			name:    "version",
 			summary: "Print the Cauldron version",
@@ -121,6 +163,8 @@ func printHelp(w io.Writer) {
 	for _, name := range names {
 		fmt.Fprintf(w, "  %s%s  %s\n", name, strings.Repeat(" ", width-len(name)), all[name].summary)
 	}
+
+	writeControlHelp(w)
 
 	fmt.Fprint(w, "\nRun 'cauldron <command> --help' for details.\n")
 }
