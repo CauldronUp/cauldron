@@ -138,25 +138,26 @@ func TestDetectFailsOutsideAProject(t *testing.T) {
 	}
 }
 
-// `up` boots the half of the environment that exists — the emulated providers
-// — and must say plainly that it did not start runtimes or services, rather
-// than implying a full environment came up.
-func TestUpIsHonestAboutWhatItDidNotStart(t *testing.T) {
-	// A project with no recipes: up prints the plan, admits orchestration is
-	// missing, and exits without pretending to have booted anything.
+// `up` prints the plan before it acts, so a developer can see what Cauldron
+// believes the project needs even when the run then fails.
+//
+// --no-services is mandatory here. No test may start a container: it would be
+// slow, it would leave state on the developer's machine, and it would make the
+// suite depend on a running Docker daemon.
+func TestUpShowsThePlanBeforeActing(t *testing.T) {
 	dir := projectWith(t, `{"require":{"php":"^8.5","predis/predis":"^2.2"}}`)
 
-	stdout, _, code := run(t, "up", dir)
+	stdout, _, code := run(t, "up", "--no-services", dir)
 
 	if code != 1 {
-		t.Fatalf("exit code = %d, want 1 — there is nothing it can serve", code)
-	}
-
-	if !strings.Contains(stdout, "not built yet") {
-		t.Errorf("up must not imply it started runtimes or services\n%s", stdout)
+		t.Fatalf("exit code = %d, want 1 because there is nothing to serve", code)
 	}
 
 	if !strings.Contains(stdout, "redis") {
-		t.Errorf("up should still show the detected plan\n%s", stdout)
+		t.Errorf("up should show the detected plan\n%s", stdout)
+	}
+
+	if strings.Contains(stdout, "Starting services") {
+		t.Errorf("--no-services must not touch Docker\n%s", stdout)
 	}
 }

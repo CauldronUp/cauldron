@@ -45,6 +45,12 @@ func commands() map[string]command {
 			usage:   "cauldron up [path]",
 			run:     runUp,
 		},
+		"down": {
+			name:    "down",
+			summary: "Stop this project's services",
+			usage:   "cauldron down [--keep-data]",
+			run:     runDown,
+		},
 		"serve": {
 			name:    "serve",
 			summary: "Serve the fake APIs this project depends on",

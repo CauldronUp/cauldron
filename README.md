@@ -61,10 +61,11 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Webhooks (lifecycle events, signing, delivery) | Working |
 | Fault injection, clock control, request log | Working |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
-| `cauldron up` (container orchestration) | **Not built.** `up` boots the emulated providers and says what it skipped |
+| `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Not built |
 | Conformance suites (measured fidelity) | Not built |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
+| Application runtimes in containers | Not built. Run your app as you normally do |
 | Recipes shipped | Stripe, GitHub, Shopify, Twilio |
 
 ## Try it
@@ -72,9 +73,31 @@ That last section is deliberate. Falling back to the real network *silently* is 
 ```bash
 go build -o cauldron ./cmd/cauldron
 
-./cauldron detect /path/to/your/project
-./cauldron serve --fixture small-shop stripe
+cd /path/to/your/project
+./cauldron up --fixture small-shop
 ```
+
+```
+Detected a Laravel project.
+
+Services
+  +  meilisearch  (laravel/scout)
+
+Recipes
+  +  stripe 17.0  (stripe/stripe-php)
+
+Starting services (the first run pulls images, which can take a minute)
+  +  meilisearch  http://127.0.0.1:7700 (key: cauldron)
+  +  mailpit      smtp 127.0.0.1:1025 · inbox http://127.0.0.1:8025
+
+Cauldron is listening on http://127.0.0.1:4600
+
+  stripe       http://127.0.0.1:4600/stripe
+```
+
+Containers are labelled and scoped to the project directory, so two checkouts
+side by side get separate environments. `cauldron down` removes them, and
+`--keep-data` preserves the volumes.
 
 Then point an SDK at `http://127.0.0.1:4600/stripe` and use it as you would the real thing:
 

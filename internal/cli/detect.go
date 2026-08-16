@@ -31,35 +31,6 @@ func runDetect(ctx *context, args []string) int {
 	return 0
 }
 
-func runUp(ctx *context, args []string) int {
-	dir := ctx.dir
-	if len(args) > 0 && args[0] != "" {
-		dir = args[0]
-	}
-
-	project, err := detect.Detect(dir)
-	if err != nil {
-		if errors.Is(err, detect.ErrNoProject) {
-			fmt.Fprintf(ctx.stderr, "cauldron: no composer.json, package.json or go.mod in %s\n", dir)
-			return 1
-		}
-
-		fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
-
-		return 1
-	}
-
-	writePlan(ctx.stdout, project)
-
-	// Container orchestration is not built. Rather than print a convincing
-	// boot log for work that didn't happen, `up` starts the half that does
-	// exist — the emulated providers — and says plainly what it skipped.
-	fmt.Fprint(ctx.stdout, "Container orchestration is not built yet, so runtimes and services\n")
-	fmt.Fprint(ctx.stdout, "above are not started. Booting the emulated providers only.\n\n")
-
-	return runServe(ctx, []string{"-dir", dir})
-}
-
 // writePlan renders a detected project as the boot plan.
 func writePlan(w io.Writer, p *detect.Project) {
 	if p.Framework != "" {
