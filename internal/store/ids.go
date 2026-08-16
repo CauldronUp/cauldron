@@ -2,6 +2,7 @@ package store
 
 import (
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -13,8 +14,13 @@ const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 // shape describes how one resource's identifiers look.
 type shape struct {
-	prefix string
-	length int
+	// numeric mints sequential integers (GitHub issue numbers), rather than
+	// prefixed strings (Stripe object ids). Providers genuinely differ, and
+	// applications parse both, so the emulator has to match.
+	numeric bool
+	prefix  string
+	length  int
+	seq     int
 }
 
 // Generator mints identifiers that look like the provider's own but are fully
@@ -41,6 +47,11 @@ func NewGenerator(seed int64) *Generator {
 
 // Declare registers the identifier shape for a resource.
 func (g *Generator) Declare(resource, prefix string, length int) {
+	g.DeclareStyle(resource, "prefixed", prefix, length)
+}
+
+// DeclareStyle registers the identifier shape, including its style.
+func (g *Generator) DeclareStyle(resource, style, prefix string, length int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -48,7 +59,7 @@ func (g *Generator) Declare(resource, prefix string, length int) {
 		length = 14
 	}
 
-	g.shapes[resource] = shape{prefix: prefix, length: length}
+	g.shapes[resource] = shape{numeric: style == "numeric", prefix: prefix, length: length}
 }
 
 // Next mints the next identifier for a resource.
@@ -59,6 +70,13 @@ func (g *Generator) Next(resource string) string {
 	s, ok := g.shapes[resource]
 	if !ok {
 		s = shape{prefix: resource + "_", length: 14}
+	}
+
+	if s.numeric {
+		s.seq++
+		g.shapes[resource] = s
+
+		return strconv.Itoa(s.seq)
 	}
 
 	var b strings.Builder
@@ -79,4 +97,9 @@ func (g *Generator) Reset() {
 	defer g.mu.Unlock()
 
 	g.rng = rand.New(rand.NewSource(g.seed))
+
+	for resource, s := range g.shapes {
+		s.seq = 0
+		g.shapes[resource] = s
+	}
 }

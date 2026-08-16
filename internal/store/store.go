@@ -64,6 +64,11 @@ func New(seed int64) *Store {
 // Declare registers a resource type and how its identifiers are shaped. It must
 // be called before records of that type can be created.
 func (s *Store) Declare(resource, prefix string, length int) {
+	s.DeclareStyle(resource, "prefixed", prefix, length)
+}
+
+// DeclareStyle registers a resource type with an explicit identifier style.
+func (s *Store) DeclareStyle(resource, style, prefix string, length int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,7 +76,7 @@ func (s *Store) Declare(resource, prefix string, length int) {
 		s.collections[resource] = &collection{records: map[string]Record{}}
 	}
 
-	s.ids.Declare(resource, prefix, length)
+	s.ids.DeclareStyle(resource, style, prefix, length)
 }
 
 // Declared reports whether a resource type is known.

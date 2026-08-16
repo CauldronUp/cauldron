@@ -70,7 +70,7 @@ func New(r *recipe.Recipe, opts Options) (*Sandbox, error) {
 	}
 
 	for name, resource := range r.Resources {
-		s.store.Declare(name, resource.ID.Prefix, resource.ID.Length)
+		s.store.DeclareStyle(name, resource.ID.Style, resource.ID.Prefix, resource.ID.Length)
 	}
 
 	return s, nil

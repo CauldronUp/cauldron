@@ -8,13 +8,11 @@ import (
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
-// listEnvelope is the shape list responses take.
+// listEnvelope is the Stripe-style list shape.
 //
-// This currently mirrors Stripe's ({object, data, has_more}). Providers differ
-// here — Shopify nests under a resource key, GitHub returns a bare array — so
-// the envelope will need to move into the Recipe format before a second
-// provider can be modelled faithfully. Recorded as a known limitation rather
-// than left to be discovered.
+// Providers genuinely disagree about this: Stripe wraps in {object, data,
+// has_more}, GitHub returns a bare array, Shopify nests under a resource key.
+// The Recipe declares which, and the handler honours it — see listBody.
 type listEnvelope struct {
 	Object  string         `json:"object"`
 	Data    []store.Record `json:"data"`
@@ -182,14 +180,30 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route) in
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
-	writeJSON(w, http.StatusOK, listEnvelope{
-		Object:  "list",
-		Data:    page.Records,
-		HasMore: page.HasMore,
-		Next:    page.NextCursor,
-	})
+	writeJSON(w, http.StatusOK, s.listBody(page))
 
 	return http.StatusOK
+}
+
+// listBody shapes a page according to the Recipe's declared list style.
+func (s *Sandbox) listBody(page store.Page) any {
+	spec := s.recipe.Responses.List
+
+	switch spec.Style {
+	case "bare":
+		// GitHub and friends return the array itself, with paging in headers.
+		// A caller doing json.Unmarshal into a slice must not receive an object.
+		return page.Records
+	case "wrapped":
+		return map[string]any{spec.Key: page.Records}
+	default:
+		return listEnvelope{
+			Object:  "list",
+			Data:    page.Records,
+			HasMore: page.HasMore,
+			Next:    page.NextCursor,
+		}
+	}
 }
 
 func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string) int {

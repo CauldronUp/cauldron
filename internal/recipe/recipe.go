@@ -26,6 +26,7 @@ type Recipe struct {
 	Resources map[string]Resource `yaml:"resources"`
 	Routes    []Route             `yaml:"routes"`
 	Webhooks  Webhooks            `yaml:"webhooks"`
+	Responses Responses           `yaml:"responses"`
 	Errors    map[string]Error    `yaml:"errors"`
 	Fixtures  map[string]Fixture  `yaml:"fixtures"`
 }
@@ -50,6 +51,25 @@ type Auth struct {
 	Keys []string `yaml:"keys"`
 }
 
+// Responses describes the envelopes a provider wraps its payloads in.
+//
+// This exists because providers genuinely disagree: Stripe returns
+// {object, data, has_more}, GitHub returns a bare array, Shopify nests under a
+// resource key. Hardcoding one of them would make every other provider a
+// second-class citizen.
+type Responses struct {
+	List ListResponse `yaml:"list"`
+}
+
+// ListResponse describes how a collection is returned.
+type ListResponse struct {
+	// Style is one of: envelope (Stripe), bare (GitHub), wrapped (Shopify).
+	// Empty means envelope, which keeps existing Recipes working.
+	Style string `yaml:"style"`
+	// Key is the wrapping property name, required when style is wrapped.
+	Key string `yaml:"key"`
+}
+
 // Resource is an object type the provider exposes.
 type Resource struct {
 	ID     ID               `yaml:"id"`
@@ -59,6 +79,9 @@ type Resource struct {
 // ID describes how the provider mints identifiers. Getting this right matters
 // more than it looks: applications routinely parse or prefix-match IDs.
 type ID struct {
+	// Style is one of: prefixed (cus_abc123) or numeric (1, 2, 3).
+	// Empty means prefixed.
+	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
 	Length int    `yaml:"length"`
 }
@@ -120,6 +143,8 @@ var (
 	validOperations = []string{"create", "get", "list", "update", "delete"}
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
+	validListStyles = []string{"", "envelope", "bare", "wrapped"}
+	validIDStyles   = []string{"", "prefixed", "numeric"}
 )
 
 // Load reads and validates a Recipe from a YAML file.
@@ -199,7 +224,11 @@ func (r *Recipe) Validate() error {
 	for _, name := range sortedKeys(r.Resources) {
 		resource := r.Resources[name]
 
-		if resource.ID.Prefix == "" {
+		if !contains(validIDStyles, resource.ID.Style) {
+			add("resource %q has id.style %q, which must be prefixed or numeric", name, resource.ID.Style)
+		}
+
+		if resource.ID.Style != "numeric" && resource.ID.Prefix == "" {
 			add("resource %q must declare an id.prefix — applications routinely prefix-match identifiers", name)
 		}
 
@@ -248,6 +277,14 @@ func (r *Recipe) Validate() error {
 		if !contains(validPagination, route.Pagination.Style) {
 			add("%s: pagination.style %q is not supported", where, route.Pagination.Style)
 		}
+	}
+
+	if !contains(validListStyles, r.Responses.List.Style) {
+		add("responses.list.style %q must be one of %s", r.Responses.List.Style, strings.Join(validListStyles[1:], ", "))
+	}
+
+	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key == "" {
+		add("responses.list.key is required when the list style is wrapped")
 	}
 
 	if !contains(validSigning, r.Webhooks.Signing.Scheme) {
