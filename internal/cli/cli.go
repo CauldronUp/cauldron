@@ -45,6 +45,12 @@ func commands() map[string]command {
 			usage:   "cauldron up [path]",
 			run:     runUp,
 		},
+		"recipe": {
+			name:    "recipe",
+			summary: "Inspect the Recipes Cauldron can emulate",
+			usage:   "cauldron recipe list | cauldron recipe info <name>",
+			run:     runRecipe,
+		},
 		"version": {
 			name:    "version",
 			summary: "Print the Cauldron version",
