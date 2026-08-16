@@ -207,13 +207,13 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
-	writeJSON(w, http.StatusOK, s.listBody(page))
+	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource))
 
 	return http.StatusOK
 }
 
 // listBody shapes a page according to the Recipe's declared list style.
-func (s *Sandbox) listBody(page store.Page) any {
+func (s *Sandbox) listBody(page store.Page, resource string) any {
 	spec := s.recipe.Responses.List
 
 	switch spec.Style {
@@ -222,7 +222,7 @@ func (s *Sandbox) listBody(page store.Page) any {
 		// A caller doing json.Unmarshal into a slice must not receive an object.
 		return page.Records
 	case "wrapped":
-		return map[string]any{spec.Key: page.Records}
+		return map[string]any{s.collectionName(resource, spec.Key): page.Records}
 	default:
 		return listEnvelope{
 			Object:  "list",
@@ -246,6 +246,21 @@ func scopeVars(matched route, vars map[string]string) map[string]any {
 	}
 
 	return out
+}
+
+// collectionName resolves the key a wrapped list is nested under: the
+// resource's declared collection, then a recipe-wide override, then the
+// resource name itself.
+func (s *Sandbox) collectionName(resource, override string) string {
+	if spec, ok := s.recipe.Resources[resource]; ok && spec.Collection != "" {
+		return spec.Collection
+	}
+
+	if override != "" {
+		return override
+	}
+
+	return resource
 }
 
 func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string) int {

@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `snapshot` save/restore | Not built |
 | Conformance suites (measured fidelity) | Not built |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
-| Recipes shipped | Stripe, GitHub |
+| Recipes shipped | Stripe, GitHub, Shopify, Twilio |
 
 ## Try it
 

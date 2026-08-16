@@ -72,8 +72,13 @@ type ListResponse struct {
 
 // Resource is an object type the provider exposes.
 type Resource struct {
-	ID     ID               `yaml:"id"`
-	Fields map[string]Field `yaml:"fields"`
+	// Collection is the plural name the provider wraps lists in, e.g. "orders"
+	// for an order. Declared rather than derived: guessing English plurals is
+	// exactly the kind of cleverness that produces a fake which is subtly
+	// wrong for "person", "category" or "status".
+	Collection string           `yaml:"collection"`
+	ID         ID               `yaml:"id"`
+	Fields     map[string]Field `yaml:"fields"`
 }
 
 // ID describes how the provider mints identifiers. Getting this right matters
@@ -309,7 +314,11 @@ func (r *Recipe) Validate() error {
 	}
 
 	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key == "" {
-		add("responses.list.key is required when the list style is wrapped")
+		for _, name := range sortedKeys(r.Resources) {
+			if r.Resources[name].Collection == "" {
+				add("resource %q needs a collection name, or responses.list.key must be set, because the list style is wrapped", name)
+			}
+		}
 	}
 
 	if !contains(validSigning, r.Webhooks.Signing.Scheme) {
