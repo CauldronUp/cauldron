@@ -63,7 +63,8 @@ func TestCreateStampsTheScopeFromThePath(t *testing.T) {
 
 	rec := ghCall(t, s, http.MethodPost, "/repos/acme/widgets/issues", `{"title":"Scoped on create"}`)
 
-	if rec.Code != http.StatusOK {
+	// GitHub answers a create with 201, which the Recipe declares.
+	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)
 	}
 

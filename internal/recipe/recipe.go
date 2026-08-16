@@ -29,6 +29,61 @@ type Recipe struct {
 	Responses Responses           `yaml:"responses"`
 	Errors    map[string]Error    `yaml:"errors"`
 	Fixtures  map[string]Fixture  `yaml:"fixtures"`
+	// Conformance is the evidence that this Recipe resembles the real provider.
+	Conformance []Case `yaml:"conformance"`
+}
+
+// Case is one checkable claim about the provider's behaviour.
+//
+// The point of a conformance case is not that the emulator passes it. Any fake
+// passes its own tests. The point is provenance: every case cites where the
+// expectation came from, and records whether it was observed against the real
+// API or only read in the documentation. A developer deciding whether to trust
+// this emulator can then read the evidence rather than the marketing.
+type Case struct {
+	Name string `yaml:"name"`
+	// Source cites the provider documentation or transcript the expectation
+	// came from. Required: an uncited claim about someone else's API is a
+	// guess wearing a test's clothing.
+	Source string `yaml:"source"`
+	// Verified is the date this case was last checked against the real API,
+	// as YYYY-MM-DD. Empty means the expectation was read, not observed, and
+	// the report says so rather than quietly counting it as proof.
+	Verified string `yaml:"verified"`
+	// Fixture is seeded before the case runs. Empty leaves the sandbox as it is,
+	// which lets a group of cases build on each other in order.
+	Fixture string      `yaml:"fixture"`
+	Request Request     `yaml:"request"`
+	Expect  Expectation `yaml:"expect"`
+}
+
+// Request is the call a conformance case makes.
+type Request struct {
+	Method  string            `yaml:"method"`
+	Path    string            `yaml:"path"`
+	Query   map[string]string `yaml:"query"`
+	Headers map[string]string `yaml:"headers"`
+	// Form sends application/x-www-form-urlencoded, which is what Stripe's own
+	// SDKs send. JSON sends a JSON body. A case may set at most one.
+	Form map[string]string `yaml:"form"`
+	JSON map[string]any    `yaml:"json"`
+}
+
+// Expectation is what the provider is claimed to answer.
+//
+// Body matching is a subset: a case asserts the fields it is making a claim
+// about and ignores the rest, so a Recipe can grow a field without invalidating
+// every case ever written about it.
+type Expectation struct {
+	Status  int               `yaml:"status"`
+	Headers map[string]string `yaml:"headers"`
+	Body    map[string]any    `yaml:"body"`
+	// Matches holds dotted field paths to regular expressions, for values that
+	// are correct in shape rather than exact, such as generated identifiers.
+	Matches map[string]string `yaml:"matches"`
+	// Absent lists fields that must not appear. Providers are as specific about
+	// what they omit as what they send.
+	Absent []string `yaml:"absent"`
 }
 
 // Upstream records which real API version this Recipe targets. Without it, a
@@ -58,7 +113,43 @@ type Auth struct {
 // resource key. Hardcoding one of them would make every other provider a
 // second-class citizen.
 type Responses struct {
-	List ListResponse `yaml:"list"`
+	List     ListResponse     `yaml:"list"`
+	Error    ErrorResponse    `yaml:"error"`
+	Resource ResourceResponse `yaml:"resource"`
+}
+
+// ResourceResponse describes how a single object comes back.
+//
+// Shopify wraps it under the singular resource name, so a client reads
+// body.order.id. Stripe and GitHub return the object itself. Getting this
+// wrong is not a cosmetic difference: every field access is one level out.
+type ResourceResponse struct {
+	// Style is bare (the default) or wrapped.
+	Style string `yaml:"style"`
+}
+
+// ErrorResponse describes the envelope a provider puts failures in.
+//
+// Stripe nests under "error" with a type and a code; GitHub sends a flat object
+// with a message and a documentation link. Code that unwraps one and receives
+// the other does not report a helpful failure, it panics.
+type ErrorResponse struct {
+	// Style is nested (Stripe, the default) or flat (GitHub).
+	Style string `yaml:"style"`
+	// MessageField names the property carrying the human-readable message when
+	// the style is flat. Empty means "message".
+	MessageField string `yaml:"message_field"`
+	// CodeField names the property carrying the error code in a flat envelope.
+	// Twilio sends one and its clients switch on it; GitHub does not send one
+	// at all, so this stays empty unless a Recipe claims otherwise. A code that
+	// is entirely digits is sent as a number, because Twilio's is.
+	CodeField string `yaml:"code_field"`
+	// StatusField names a property echoing the HTTP status inside the body,
+	// which Twilio does.
+	StatusField string `yaml:"status_field"`
+	// Fields are constants the provider adds to every error, such as GitHub's
+	// documentation_url.
+	Fields map[string]any `yaml:"fields"`
 }
 
 // ListResponse describes how a collection is returned.
@@ -68,6 +159,13 @@ type ListResponse struct {
 	Style string `yaml:"style"`
 	// Key is the wrapping property name, required when style is wrapped.
 	Key string `yaml:"key"`
+	// URL asks the envelope to echo the request path, which Stripe does.
+	URL bool `yaml:"url"`
+	// CursorField names a property carrying the next cursor. Most providers do
+	// not send one: Stripe expects the caller to pass the last id back as
+	// starting_after. Leaving it empty is therefore the faithful default, and
+	// setting it is a deliberate claim that the provider really sends it.
+	CursorField string `yaml:"cursor_field"`
 }
 
 // Resource is an object type the provider exposes.
@@ -79,6 +177,11 @@ type Resource struct {
 	Collection string           `yaml:"collection"`
 	ID         ID               `yaml:"id"`
 	Fields     map[string]Field `yaml:"fields"`
+	// Constants are fields the provider always sends with a fixed value, such
+	// as Stripe's object discriminator and livemode flag. Unlike a default they
+	// cannot be overridden by the caller, because the provider does not let you
+	// override them either. Applications really do branch on these.
+	Constants map[string]any `yaml:"constants"`
 }
 
 // ID describes how the provider mints identifiers. Getting this right matters
@@ -89,6 +192,10 @@ type ID struct {
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
 	Length int    `yaml:"length"`
+	// Field is the property the provider returns the identifier in. Empty means
+	// "id". Twilio calls it "sid" everywhere, and code that reads response.id
+	// against Twilio gets nothing at all.
+	Field string `yaml:"field"`
 }
 
 // Field is a single attribute on a resource.
@@ -112,7 +219,11 @@ type Route struct {
 	// Path parameters left out of scope are ignored, which is how an API
 	// version segment like /admin/api/{version}/orders stays a path parameter
 	// without becoming a filter.
-	Scope      []string   `yaml:"scope"`
+	Scope []string `yaml:"scope"`
+	// Status is the success status this route returns. Empty means 200. GitHub
+	// answers a create with 201, Stripe with 200, and a client checking for one
+	// exact code is not being unreasonable.
+	Status     int        `yaml:"status"`
 	Pagination Pagination `yaml:"pagination"`
 }
 
@@ -139,8 +250,13 @@ type Signing struct {
 
 // Error is a named failure mode that `cauldron fault` can inject.
 type Error struct {
-	Status  int               `yaml:"status"`
-	Code    string            `yaml:"code"`
+	Status int    `yaml:"status"`
+	Code   string `yaml:"code"`
+	// Type is the provider's error category, which is often a much smaller set
+	// than the codes. Stripe has four types and dozens of codes, and client
+	// libraries switch on the type. Empty falls back to the code, which is
+	// wrong often enough that every Recipe should set it.
+	Type    string            `yaml:"type"`
 	Message string            `yaml:"message"`
 	Headers map[string]string `yaml:"headers"`
 }
@@ -151,6 +267,7 @@ type Fixture map[string][]map[string]any
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 	validSchemes    = []string{"bearer", "basic", "header", "none"}
 	validOperations = []string{"create", "get", "list", "update", "delete"}
@@ -351,11 +468,78 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	for i, c := range r.Conformance {
+		where := fmt.Sprintf("conformance case %d", i+1)
+		if c.Name != "" {
+			where = fmt.Sprintf("conformance case %q", c.Name)
+		} else {
+			add("%s: name is required", where)
+		}
+
+		if c.Source == "" {
+			add("%s: source is required, so a reader can check the claim against the provider", where)
+		}
+
+		if c.Verified != "" && !datePattern.MatchString(c.Verified) {
+			add("%s: verified %q must be a date like 2026-08-15", where, c.Verified)
+		}
+
+		if c.Request.Method == "" {
+			add("%s: request.method is required", where)
+		} else if c.Request.Method != strings.ToUpper(c.Request.Method) {
+			add("%s: request.method must be upper case", where)
+		}
+
+		if !strings.HasPrefix(c.Request.Path, "/") {
+			add("%s: request.path must start with /", where)
+		}
+
+		if len(c.Request.Form) > 0 && len(c.Request.JSON) > 0 {
+			add("%s: a request sends form or json, not both", where)
+		}
+
+		if c.Fixture != "" {
+			if _, ok := r.Fixtures[c.Fixture]; !ok {
+				add("%s: unknown fixture %q", where, c.Fixture)
+			}
+		}
+
+		if c.Expect.Status == 0 {
+			add("%s: expect.status is required", where)
+		}
+
+		for field, pattern := range c.Expect.Matches {
+			if _, err := regexp.Compile(pattern); err != nil {
+				add("%s: expect.matches[%s] is not a valid regular expression: %v", where, field, err)
+			}
+		}
+
+		if c.Expect.Status < 400 && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 && len(c.Expect.Headers) == 0 {
+			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
+		}
+	}
+
 	if len(problems) > 0 {
 		return &ValidationError{Problems: problems}
 	}
 
 	return nil
+}
+
+// Verified reports how many conformance cases were observed against the real
+// API, and how many rest on documentation alone. The distinction is the whole
+// value of the suite, so it is reported rather than averaged away.
+func (r *Recipe) Verified() (observed, documented int) {
+	for _, c := range r.Conformance {
+		if c.Verified != "" {
+			observed++
+			continue
+		}
+
+		documented++
+	}
+
+	return observed, documented
 }
 
 // Events returns the webhook event names this Recipe can emit.

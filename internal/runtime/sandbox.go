@@ -206,12 +206,20 @@ func (s *Sandbox) Errors() []string {
 func (s *Sandbox) Exchanges(limit int) []Exchange { return s.log.Entries(limit) }
 
 // applyDefaults fills unset fields declared with a default, and stamps created
-// timestamps from the sandbox clock rather than the wall clock.
+// timestamps from the sandbox clock rather than the wall clock. Declared
+// constants are stamped last and overwrite whatever was supplied, because the
+// provider does not let a caller choose them either.
 func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 	spec, ok := s.recipe.Resources[resource]
 	if !ok {
 		return
 	}
+
+	defer func() {
+		for name, value := range spec.Constants {
+			record[name] = value
+		}
+	}()
 
 	names := make([]string, 0, len(spec.Fields))
 	for name := range spec.Fields {

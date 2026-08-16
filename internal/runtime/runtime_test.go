@@ -202,9 +202,18 @@ func TestListPaginates(t *testing.T) {
 		t.Errorf("has_more = %v, want true", first["has_more"])
 	}
 
-	cursor, _ := first["next_cursor"].(string)
+	if _, present := first["next_cursor"]; present {
+		t.Error("Stripe does not send a next_cursor, and neither should the emulator")
+	}
+
+	if first["url"] != "/v1/customers" {
+		t.Errorf("url = %v, want the request path", first["url"])
+	}
+
+	// Page the way a Stripe client does: hand the last id back as starting_after.
+	cursor, _ := data[len(data)-1].(map[string]any)["id"].(string)
 	if cursor == "" {
-		t.Fatal("expected a next_cursor")
+		t.Fatal("records should carry an id to page from")
 	}
 
 	second := decode(t, call(t, s, http.MethodGet, "/v1/customers?limit=2&starting_after="+cursor, ""))

@@ -62,3 +62,24 @@ func TestBundledRecipesAreValid(t *testing.T) {
 		t.Fatal("no bundled recipes found — this test would pass vacuously")
 	}
 }
+
+// A Recipe without conformance cases is a claim without evidence. This is the
+// gate that stops a new Recipe shipping on assertion alone.
+func TestEveryBundledRecipeCarriesConformanceCases(t *testing.T) {
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+
+		if len(r.Conformance) == 0 {
+			t.Errorf("%s ships no conformance cases", name)
+		}
+
+		for _, c := range r.Conformance {
+			if c.Source == "" {
+				t.Errorf("%s: case %q cites no source", name, c.Name)
+			}
+		}
+	}
+}

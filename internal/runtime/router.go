@@ -6,10 +6,14 @@ import (
 	"github.com/CauldronUp/cauldron/internal/recipe"
 )
 
-// segment is one part of a route path. A parameter segment captures its value.
+// segment is one part of a route path. A parameter segment captures its value,
+// and may sit between literal text: Shopify and Twilio both write
+// /orders/{id}.json, so a parameter is not always a whole segment.
 type segment struct {
 	literal string
 	param   string
+	prefix  string
+	suffix  string
 }
 
 // route is a compiled recipe.Route ready to match against a request.
@@ -48,9 +52,18 @@ func compilePath(path string) []segment {
 			continue
 		}
 
-		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
-			out = append(out, segment{param: strings.Trim(part, "{}")})
-			continue
+		if open := strings.Index(part, "{"); open >= 0 {
+			if close := strings.Index(part[open:], "}"); close >= 0 {
+				close += open
+
+				out = append(out, segment{
+					param:  part[open+1 : close],
+					prefix: part[:open],
+					suffix: part[close+1:],
+				})
+
+				continue
+			}
 		}
 
 		out = append(out, segment{literal: part})
@@ -122,7 +135,25 @@ func (rt route) matches(parts []string) (map[string]string, int, bool) {
 
 	for i, seg := range rt.segments {
 		if seg.param != "" {
-			vars[seg.param] = parts[i]
+			value := parts[i]
+
+			if !strings.HasPrefix(value, seg.prefix) || !strings.HasSuffix(value, seg.suffix) {
+				return nil, 0, false
+			}
+
+			value = value[len(seg.prefix) : len(value)-len(seg.suffix)]
+			if value == "" {
+				return nil, 0, false
+			}
+
+			vars[seg.param] = value
+
+			// Literal text around a parameter is still evidence of a more
+			// specific route, so /orders/{id}.json beats /orders/{id}.
+			if seg.prefix != "" || seg.suffix != "" {
+				score++
+			}
+
 			continue
 		}
 

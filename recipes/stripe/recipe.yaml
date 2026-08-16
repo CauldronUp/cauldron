@@ -22,8 +22,18 @@ auth:
   keys:
     - sk_test_cauldron
 
+responses:
+  list:
+    style: envelope
+    url: true
+
 resources:
   customer:
+    # Stripe stamps every object with its type and livemode. Client libraries
+    # and webhook handlers switch on them, so a fake without them is not one.
+    constants:
+      object: customer
+      livemode: false
     id:
       prefix: cus_
       length: 14
@@ -42,6 +52,9 @@ resources:
         type: timestamp
 
   payment_intent:
+    constants:
+      object: payment_intent
+      livemode: false
     id:
       prefix: pi_
       length: 24
@@ -132,6 +145,7 @@ errors:
   rate_limit:
     status: 429
     code: rate_limit
+    type: invalid_request_error
     message: Too many requests hit the API too quickly.
     headers:
       Retry-After: "1"
@@ -139,17 +153,36 @@ errors:
   card_declined:
     status: 402
     code: card_declined
+    type: card_error
     message: Your card was declined.
 
   authentication_error:
     status: 401
     code: authentication_required
+    type: invalid_request_error
     message: Invalid API key provided.
 
   api_error:
     status: 500
     code: api_error
+    type: api_error
     message: An error occurred with our API.
+
+  # Declared so the emulator reports Stripe's real categories rather than
+  # inventing one type per code. Stripe has four types and dozens of codes.
+  # {detail} is the request-specific part: Stripe names the object it could
+  # not find, and the parameter it was not given.
+  resource_missing:
+    status: 404
+    code: resource_missing
+    type: invalid_request_error
+    message: "No such {detail}."
+
+  parameter_missing:
+    status: 400
+    code: parameter_missing
+    type: invalid_request_error
+    message: "Missing required param: {detail}."
 
 fixtures:
   empty: {}
@@ -171,3 +204,154 @@ fixtures:
         customer: cus_00000000000001
         status: succeeded
         description: Annual subscription
+
+# Conformance cases: checkable claims about Stripe, each with a citation.
+#
+# None of these carry a `verified` date yet, which the report states plainly.
+# They were read from Stripe's published API reference, not observed against a
+# live account, and until someone runs them against the real API that is a
+# weaker kind of evidence. Saying so is the point.
+conformance:
+  - name: a created customer is stamped with its object type
+    source: https://docs.stripe.com/api/customers/object
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/customers
+      headers:
+        Authorization: Bearer sk_test_cauldron
+      form:
+        email: ada@example.com
+        name: Ada Lovelace
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        object: customer
+        email: ada@example.com
+        name: Ada Lovelace
+        livemode: false
+      matches:
+        id: '^cus_[A-Za-z0-9]{14}$'
+        created: '^[0-9]{10}$'
+
+  - name: an unknown customer is a 404 in the invalid_request_error category
+    source: https://docs.stripe.com/error-handling
+    request:
+      method: GET
+      path: /v1/customers/cus_nonexistent
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 404
+      body:
+        error:
+          type: invalid_request_error
+          code: resource_missing
+
+  - name: a request without a key is rejected before it reaches a resource
+    source: https://docs.stripe.com/api/authentication
+    request:
+      method: GET
+      path: /v1/customers
+    expect:
+      status: 401
+      body:
+        error:
+          type: invalid_request_error
+
+  - name: creating a payment intent without an amount names the parameter
+    source: https://docs.stripe.com/api/payment_intents/create
+    request:
+      method: POST
+      path: /v1/payment_intents
+      headers:
+        Authorization: Bearer sk_test_cauldron
+      form:
+        currency: usd
+    expect:
+      status: 400
+      body:
+        error:
+          type: invalid_request_error
+          code: parameter_missing
+      matches:
+        error.message: '^Missing required param: amount\.$'
+
+  - name: a list is an object with data, has_more and its own url
+    source: https://docs.stripe.com/api/pagination
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v1/customers
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        object: list
+        url: /v1/customers
+        has_more: false
+      matches:
+        data[0].id: '^cus_'
+        data[0].object: '^customer$'
+      absent:
+        - next_cursor
+
+  - name: limit caps a page and reports that more remain
+    source: https://docs.stripe.com/api/pagination
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v1/customers
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        has_more: true
+      matches:
+        data[0].id: '^cus_00000000000001$'
+      # Stripe sends no cursor even when more pages remain: the caller passes
+      # the last id back as starting_after. A convenience field here would let
+      # code work locally and break in production.
+      absent:
+        - next_cursor
+
+  - name: a payment intent keeps the lifecycle status it was given
+    source: https://docs.stripe.com/api/payment_intents/object
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v1/payment_intents/pi_000000000000000000000001
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        object: payment_intent
+        status: succeeded
+        amount: 2500
+        currency: gbp
+
+  - name: a new payment intent starts at requires_payment_method
+    source: https://docs.stripe.com/payments/paymentintents/lifecycle
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/payment_intents
+      headers:
+        Authorization: Bearer sk_test_cauldron
+      form:
+        amount: "2500"
+        currency: usd
+    expect:
+      status: 200
+      body:
+        object: payment_intent
+        status: requires_payment_method
+      matches:
+        id: '^pi_[A-Za-z0-9]{24}$'

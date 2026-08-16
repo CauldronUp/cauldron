@@ -3,22 +3,16 @@ package runtime
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
-// listEnvelope is the Stripe-style list shape.
-//
-// Providers genuinely disagree about this: Stripe wraps in {object, data,
-// has_more}, GitHub returns a bare array, Shopify nests under a resource key.
-// The Recipe declares which, and the handler honours it — see listBody.
-type listEnvelope struct {
-	Object  string         `json:"object"`
-	Data    []store.Record `json:"data"`
-	HasMore bool           `json:"has_more"`
-	Next    string         `json:"next_cursor,omitempty"`
-}
+// Providers genuinely disagree about list shapes: Stripe wraps in
+// {object, data, has_more, url}, GitHub returns a bare array, Shopify nests
+// under a resource key. The Recipe declares which, and the handler honours it.
+// See listBody.
 
 // ServeHTTP makes a Sandbox an http.Handler.
 func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +91,7 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.writeRecipeError(
 			w, "parameter_missing", 400, "parameter_missing",
 			"Missing required parameter: "+strings.Join(missing, ", ")+".",
+			strings.Join(missing, ", "),
 		)
 	}
 
@@ -107,9 +102,14 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "created", created)
 
-	writeJSON(w, http.StatusOK, created)
+	status := matched.spec.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
 
-	return http.StatusOK
+	writeJSON(w, status, s.resourceBody(matched.spec.Resource, created))
+
+	return status
 }
 
 func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]string) int {
@@ -123,10 +123,11 @@ func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]stri
 	// not want to teach an application to rely on.
 	if !store.Matches(record, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".")
+			"No such "+matched.spec.Resource+": "+vars["id"]+".",
+			matched.spec.Resource+": "+vars["id"])
 	}
 
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, record))
 
 	return http.StatusOK
 }
@@ -144,7 +145,8 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 
 	if !store.Matches(existing, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".")
+			"No such "+matched.spec.Resource+": "+vars["id"]+".",
+			matched.spec.Resource+": "+vars["id"])
 	}
 
 	updated, err := s.store.Update(matched.spec.Resource, vars["id"], changes)
@@ -154,7 +156,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "updated", updated)
 
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, updated))
 
 	return http.StatusOK
 }
@@ -167,7 +169,8 @@ func (s *Sandbox) delete(w http.ResponseWriter, matched route, vars map[string]s
 
 	if !store.Matches(record, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".")
+			"No such "+matched.spec.Resource+": "+vars["id"]+".",
+			matched.spec.Resource+": "+vars["id"])
 	}
 
 	if err := s.store.Delete(matched.spec.Resource, vars["id"]); err != nil {
@@ -176,11 +179,11 @@ func (s *Sandbox) delete(w http.ResponseWriter, matched route, vars map[string]s
 
 	s.emitFor(matched.spec.Resource, "deleted", record)
 
-	writeJSON(w, http.StatusOK, store.Record{
+	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, store.Record{
 		"id":      vars["id"],
 		"object":  matched.spec.Resource,
 		"deleted": true,
-	})
+	}))
 
 	return http.StatusOK
 }
@@ -207,14 +210,66 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
-	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource))
+	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource, r.URL.Path))
 
 	return http.StatusOK
 }
 
+// present renames the identifier to the property the provider actually uses.
+// The store keeps every record keyed by "id" so fixtures and internal lookups
+// stay uniform; only the wire shape changes, which is where it matters.
+func (s *Sandbox) present(resource string, record store.Record) store.Record {
+	spec, ok := s.recipe.Resources[resource]
+	if !ok || spec.ID.Field == "" || spec.ID.Field == "id" {
+		return record
+	}
+
+	out := make(store.Record, len(record))
+
+	for key, value := range record {
+		if key == "id" {
+			key = spec.ID.Field
+		}
+
+		out[key] = value
+	}
+
+	return out
+}
+
+// presentAll renames identifiers across a page.
+func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Record {
+	spec, ok := s.recipe.Resources[resource]
+	if !ok || spec.ID.Field == "" || spec.ID.Field == "id" {
+		return records
+	}
+
+	out := make([]store.Record, 0, len(records))
+
+	for _, record := range records {
+		out = append(out, s.present(resource, record))
+	}
+
+	return out
+}
+
+// resourceBody shapes a single object according to the Recipe's declared style.
+// Shopify nests it under the singular resource name; most providers return the
+// object itself, and a client written for one shape breaks on the other.
+func (s *Sandbox) resourceBody(resource string, record store.Record) any {
+	record = s.present(resource, record)
+
+	if s.recipe.Responses.Resource.Style != "wrapped" {
+		return record
+	}
+
+	return map[string]any{resource: record}
+}
+
 // listBody shapes a page according to the Recipe's declared list style.
-func (s *Sandbox) listBody(page store.Page, resource string) any {
+func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 	spec := s.recipe.Responses.List
+	page.Records = s.presentAll(resource, page.Records)
 
 	switch spec.Style {
 	case "bare":
@@ -224,12 +279,25 @@ func (s *Sandbox) listBody(page store.Page, resource string) any {
 	case "wrapped":
 		return map[string]any{s.collectionName(resource, spec.Key): page.Records}
 	default:
-		return listEnvelope{
-			Object:  "list",
-			Data:    page.Records,
-			HasMore: page.HasMore,
-			Next:    page.NextCursor,
+		body := map[string]any{
+			"object":   "list",
+			"data":     page.Records,
+			"has_more": page.HasMore,
 		}
+
+		if spec.URL {
+			body["url"] = path
+		}
+
+		// A cursor field is opt in because sending one the provider does not
+		// send is the more dangerous mistake: code written against it works
+		// locally and fails in production, which is the exact failure this
+		// project exists to prevent.
+		if spec.CursorField != "" && page.NextCursor != "" {
+			body[spec.CursorField] = page.NextCursor
+		}
+
+		return body
 	}
 }
 
@@ -270,7 +338,7 @@ func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string
 
 	return s.writeRecipeError(
 		w, "resource_missing", 404, "resource_missing",
-		"No such "+resource+": "+id+".",
+		"No such "+resource+": "+id+".", resource+": "+id,
 	)
 }
 
@@ -342,16 +410,30 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 // writeRecipeError writes an error, preferring the Recipe's own definition so
 // that status codes, codes and headers match what the real provider sends.
 // Fallbacks apply only when the Recipe does not define the situation.
+//
+// A fourth argument is the request-specific detail, such as the parameter that
+// was missing. A Recipe reaches it through {detail} in its message.
 func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback ...any) int {
 	status := http.StatusInternalServerError
 	code := name
 	message := "An error occurred."
 
-	if len(fallback) == 3 {
+	if len(fallback) >= 3 {
 		status, _ = fallback[0].(int)
 		code, _ = fallback[1].(string)
 		message, _ = fallback[2].(string)
 	}
+
+	var detail string
+
+	if len(fallback) >= 4 {
+		detail, _ = fallback[3].(string)
+	}
+
+	// Providers categorise errors more coarsely than they code them, and client
+	// libraries switch on the category. Using the name as the type made every
+	// error its own category, which no real provider does.
+	category := name
 
 	if defined, ok := s.recipe.Errors[name]; ok {
 		status = defined.Status
@@ -360,8 +442,17 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 			code = defined.Code
 		}
 
+		if defined.Type != "" {
+			category = defined.Type
+		}
+
+		// The Recipe's wording wins. Providers differ here in ways that matter:
+		// Stripe names the offending parameter, GitHub says "Not Found" and
+		// nothing else. A Recipe that wants the request-specific detail asks
+		// for it with {detail}, so the choice is the Recipe author's rather
+		// than a hardcoded guess in the handler.
 		if defined.Message != "" {
-			message = defined.Message
+			message = strings.ReplaceAll(defined.Message, "{detail}", detail)
 		}
 
 		for key, value := range defined.Headers {
@@ -369,13 +460,53 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		}
 	}
 
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"type":    name,
-			"code":    code,
-			"message": message,
-		},
-	})
+	writeJSON(w, status, s.errorBody(category, code, message, status))
 
 	return status
+}
+
+// errorBody shapes a failure according to the Recipe's declared error style.
+func (s *Sandbox) errorBody(category, code, message string, status int) map[string]any {
+	spec := s.recipe.Responses.Error
+
+	if spec.Style != "flat" {
+		return map[string]any{
+			"error": map[string]any{
+				"type":    category,
+				"code":    code,
+				"message": message,
+			},
+		}
+	}
+
+	field := spec.MessageField
+	if field == "" {
+		field = "message"
+	}
+
+	body := map[string]any{field: message}
+
+	if spec.CodeField != "" && code != "" {
+		body[spec.CodeField] = numberOrString(code)
+	}
+
+	if spec.StatusField != "" {
+		body[spec.StatusField] = status
+	}
+
+	for name, value := range spec.Fields {
+		body[name] = value
+	}
+
+	return body
+}
+
+// numberOrString keeps an all-digit code a number, because Twilio's error codes
+// are integers and a client comparing against 20404 must not be handed "20404".
+func numberOrString(value string) any {
+	if n, err := strconv.Atoi(value); err == nil {
+		return n
+	}
+
+	return value
 }

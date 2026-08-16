@@ -63,7 +63,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (measured fidelity) | Not built |
+| Conformance suites (`cauldron verify`) | Working. 26 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
 | Recipes shipped | Stripe, GitHub, Shopify, Twilio |
@@ -162,6 +162,43 @@ cauldron reset                                    # back to a clean sandbox
 ```
 
 Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
+
+### How faithful is it, really
+
+Every fake eventually has to answer "how do you know it behaves like the real
+thing?", and for most of them the honest answer is "you don't". Cauldron's
+answer is a conformance suite: each Recipe carries checkable claims about the
+provider, every claim cites where it came from, and the report separates what
+was observed against the real API from what was only read in the documentation.
+
+```bash
+cauldron verify            # every bundled Recipe
+cauldron verify stripe -v  # one Recipe, listing each case
+```
+
+```
+stripe 0.1.0
+  8 of 8 cases passed
+  8 from documentation only, none checked against the real API
+```
+
+That second line is the honest one, and today it reads the same for all four
+Recipes: 26 cases, none yet run against a live account. Documentation-derived
+cases are worth having, and they are not the same as watching the provider do
+it. Adding a `verified:` date to a case is a claim that someone did.
+
+Cases run in process and need no credentials, so CI runs them on every push and
+a Recipe edit that drifts from the provider fails there rather than in an
+application months later.
+
+Writing them found real bugs rather than confirming what the code already did:
+routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
+single-object route on Shopify and Twilio answered 404; errors came back in
+Stripe's nested shape for providers that send a flat one; Twilio's identifier
+is `sid`, not `id`; creates answered 200 where the provider answers 201; and
+the list envelope carried a `next_cursor` field that Stripe does not send,
+which is the worst kind of infidelity because code written against it works
+locally and breaks in production.
 
 ### Snapshots
 
