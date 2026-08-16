@@ -77,7 +77,9 @@ Then point an SDK at `http://127.0.0.1:4600/stripe` and use it as you would the 
 
 ```bash
 # Create a customer — form encoding, exactly as Stripe's own SDKs send it
-curl -X POST http://127.0.0.1:4600/stripe/v1/customers   -H "Authorization: Bearer sk_test_cauldron"   -d "email=ada@example.com&name=Ada+Lovelace&metadata[plan]=pro"
+curl -X POST http://127.0.0.1:4600/stripe/v1/customers \
+  -H "Authorization: Bearer sk_test_cauldron" \
+  -d "email=ada@example.com&name=Ada+Lovelace&metadata[plan]=pro"
 ```
 
 ```json
@@ -97,13 +99,16 @@ That identifier is not random. The same seed and fixture produce it on every mac
 
 ```bash
 # Rate limit the next request, with the provider's real Retry-After header
-curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault   -d '{"error":"rate_limit","count":1}'
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault \
+  -d '{"error":"rate_limit","count":1}'
 
 # Age everything by a month, so a subscription falls into dunning
-curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance   -d '{"duration":"30d"}'
+curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance \
+  -d '{"duration":"30d"}'
 
 # Fire a signed webhook at your application
-curl -X POST http://127.0.0.1:4600/_cauldron/stripe/emit   -d '{"event":"payment_intent.payment_failed","data":{"amount":2500}}'
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/emit \
+  -d '{"event":"payment_intent.payment_failed","data":{"amount":2500}}'
 
 # See what your code actually sent
 curl http://127.0.0.1:4600/_cauldron/stripe/requests
@@ -132,7 +137,7 @@ These are the decisions the project intends to be held to.
 
 **Detection never guesses.** Package-to-Recipe mapping is an explicit table. A wrong guess is worse than no guess — booting the wrong fake sends someone chasing a bug that doesn't exist. Anything unrecognised is reported, never silently faked.
 
-**Determinism is enforced at the boundary, not requested politely.** Recipes get a seeded `ctx.now()` and `ctx.random()`. No ambient clock, no ambient randomness, no network. The same fixture and seed produce the same IDs on every machine.
+**Determinism is enforced at the boundary, not requested politely.** Time comes from a movable sandbox clock and identifiers from a seeded generator — a Recipe has no access to the wall clock or to unseeded randomness. The same fixture and seed produce the same IDs on every machine, and a reset sandbox is indistinguishable from a fresh one.
 
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
