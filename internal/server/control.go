@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/clock"
@@ -36,6 +38,12 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		return
 	case "reset":
 		s.resetAll(w)
+		return
+	case "snapshot":
+		writeJSON(w, http.StatusOK, s.Snapshot())
+		return
+	case "restore":
+		s.restore(w, r)
 		return
 	}
 
@@ -136,6 +144,30 @@ func (s *Server) reset(w http.ResponseWriter, sandbox *runtime.Sandbox) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"recipe": sandbox.Name(), "reset": true})
+}
+
+// restore applies a snapshot posted as the request body.
+func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	var snapshot Snapshot
+
+	if err := json.NewDecoder(r.Body).Decode(&snapshot); err != nil {
+		s.writeError(w, http.StatusBadRequest, "That is not a Cauldron snapshot.")
+		return
+	}
+
+	if err := s.Restore(snapshot); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	restored := make([]string, 0, len(snapshot.Recipes))
+	for name := range snapshot.Recipes {
+		restored = append(restored, name)
+	}
+
+	sort.Strings(restored)
+
+	writeJSON(w, http.StatusOK, map[string]any{"restored": restored, "now": s.clock.Now().Format("2006-01-02T15:04:05Z")})
 }
 
 func (s *Server) resetAll(w http.ResponseWriter) {

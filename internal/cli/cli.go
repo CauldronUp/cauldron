@@ -63,6 +63,12 @@ func commands() map[string]command {
 			usage:   "cauldron recipe list | cauldron recipe info <name>",
 			run:     runRecipe,
 		},
+		"snapshot": {
+			name:    "snapshot",
+			summary: "Capture or restore the exact state of a sandbox",
+			usage:   "cauldron snapshot save|load|list [name]",
+			run:     runSnapshot,
+		},
 		"status": {
 			name:    "status",
 			summary: "Show what a running Cauldron is doing",

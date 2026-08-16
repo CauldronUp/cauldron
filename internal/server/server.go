@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CauldronUp/cauldron/internal/clock"
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -217,4 +218,94 @@ func recordFrom(r *http.Request) (store.Record, error) {
 	}
 
 	return out, nil
+}
+
+// Snapshot is the state of every sandbox on this server, plus the shared
+// clock.
+//
+// It is taken across all recipes rather than one, because a bug worth
+// capturing usually spans providers: the payment succeeded, the order did not
+// ship, and the state that proves it lives in two sandboxes at once.
+type Snapshot struct {
+	Version int                         `json:"version"`
+	Clock   time.Time                   `json:"clock"`
+	Recipes map[string]runtime.Snapshot `json:"recipes"`
+}
+
+// Snapshot captures every mounted sandbox.
+func (s *Server) Snapshot() Snapshot {
+	out := Snapshot{
+		Version: runtime.SnapshotVersion,
+		Clock:   s.clock.Now(),
+		Recipes: map[string]runtime.Snapshot{},
+	}
+
+	for _, name := range s.Names() {
+		if sandbox, ok := s.Sandbox(name); ok {
+			out.Recipes[name] = sandbox.Snapshot()
+		}
+	}
+
+	return out
+}
+
+// Restore applies a snapshot to every recipe it names.
+//
+// Recipes in the snapshot that are not mounted are reported rather than
+// ignored, because a partially restored sandbox that claims success is worse
+// than a refusal.
+func (s *Server) Restore(snapshot Snapshot) error {
+	var missing []string
+
+	for name := range snapshot.Recipes {
+		if _, ok := s.Sandbox(name); !ok {
+			missing = append(missing, name)
+		}
+	}
+
+	if len(missing) > 0 {
+		sort.Strings(missing)
+
+		return fmt.Errorf("this snapshot needs recipes that are not running: %s", strings.Join(missing, ", "))
+	}
+
+	for name, state := range snapshot.Recipes {
+		sandbox, _ := s.Sandbox(name)
+
+		if err := sandbox.Restore(state); err != nil {
+			return fmt.Errorf("restoring %s: %w", name, err)
+		}
+	}
+
+	if !snapshot.Clock.IsZero() {
+		s.clock.Set(snapshot.Clock)
+	}
+
+	return nil
+}
+
+// HasFixture reports whether a mounted recipe ships a fixture.
+func (s *Server) HasFixture(recipe, fixture string) bool {
+	sandbox, ok := s.Sandbox(recipe)
+	if !ok {
+		return false
+	}
+
+	for _, candidate := range sandbox.Fixtures() {
+		if candidate == fixture {
+			return true
+		}
+	}
+
+	return false
+}
+
+// SeedRecipe loads a fixture into one mounted recipe.
+func (s *Server) SeedRecipe(recipe, fixture string) error {
+	sandbox, ok := s.Sandbox(recipe)
+	if !ok {
+		return fmt.Errorf("no recipe %q is running", recipe)
+	}
+
+	return sandbox.Seed(fixture)
 }

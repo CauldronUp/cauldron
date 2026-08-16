@@ -313,3 +313,48 @@ func TestControlPathIsNotConfusedForARecipe(t *testing.T) {
 		t.Errorf("status = %d", rec.Code)
 	}
 }
+
+func TestHasFixtureAnswersPerRecipe(t *testing.T) {
+	s := New()
+
+	for _, name := range []string{"stripe", "github"} {
+		if err := s.Mount(name, 1, ""); err != nil {
+			t.Fatalf("Mount %s: %v", name, err)
+		}
+	}
+
+	// The same word is a real fixture for one provider and meaningless for the
+	// other. That asymmetry is why a single --fixture cannot be applied blindly.
+	if !s.HasFixture("stripe", "small-shop") {
+		t.Error("stripe should ship small-shop")
+	}
+
+	if s.HasFixture("github", "small-shop") {
+		t.Error("github should not claim a fixture it does not ship")
+	}
+
+	if s.HasFixture("shopify", "small-shop") {
+		t.Error("an unmounted recipe cannot have fixtures")
+	}
+}
+
+func TestSeedRecipeNamesWhatWentWrong(t *testing.T) {
+	s := mounted(t)
+
+	if err := s.SeedRecipe("stripe", "small-shop"); err != nil {
+		t.Fatalf("SeedRecipe: %v", err)
+	}
+
+	err := s.SeedRecipe("stripe", "enormous")
+	if err == nil {
+		t.Fatal("seeding a fixture that does not exist should fail")
+	}
+
+	if !strings.Contains(err.Error(), "small-shop") {
+		t.Errorf("the error should list what is available; got %q", err)
+	}
+
+	if err := s.SeedRecipe("shopify", "small-shop"); err == nil {
+		t.Error("seeding an unmounted recipe should fail")
+	}
+}

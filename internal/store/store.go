@@ -328,3 +328,89 @@ func (s *Store) Reset() {
 
 	s.ids.Reset()
 }
+
+// Export is a serialisable copy of a store's state.
+//
+// Records are kept as an ordered list per resource rather than a map, because
+// providers return lists in a stable order and a restored sandbox that pages
+// differently from the original is not the same sandbox.
+type Export struct {
+	Resources map[string][]Record `json:"resources"`
+	Order     map[string][]string `json:"order"`
+	// Drawn counts identifiers minted per resource. The random source cannot
+	// be serialised, so restoring replays that many draws to put the generator
+	// back where it was. Without this, a restored sandbox would re-mint
+	// identifiers it has already used.
+	Drawn map[string]int `json:"drawn"`
+}
+
+// Export captures the store's state.
+func (s *Store) Export() Export {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := Export{
+		Resources: map[string][]Record{},
+		Order:     map[string][]string{},
+		Drawn:     s.ids.Drawn(),
+	}
+
+	for name, c := range s.collections {
+		records := make([]Record, 0, len(c.order))
+
+		for _, id := range c.order {
+			records = append(records, c.records[id].Clone())
+		}
+
+		out.Resources[name] = records
+		out.Order[name] = append([]string(nil), c.order...)
+	}
+
+	return out
+}
+
+// Import replaces the store's state.
+//
+// Resource types that the Recipe never declared are refused: a snapshot taken
+// against a different Recipe would otherwise restore into a sandbox that
+// cannot serve it.
+func (s *Store) Import(in Export) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for name := range in.Resources {
+		if _, ok := s.collections[name]; !ok {
+			return fmt.Errorf("%w: snapshot contains %s", ErrUnknownResource, name)
+		}
+	}
+
+	for name, c := range s.collections {
+		c.order = nil
+		c.records = map[string]Record{}
+
+		records, ok := in.Resources[name]
+		if !ok {
+			continue
+		}
+
+		for _, record := range records {
+			id, _ := record["id"].(string)
+			if id == "" {
+				continue
+			}
+
+			c.records[id] = record.Clone()
+			c.order = append(c.order, id)
+		}
+
+		// Prefer the recorded order when present: it is authoritative, and JSON
+		// round-trips of the record list could otherwise drift.
+		if order, ok := in.Order[name]; ok && len(order) == len(c.order) {
+			c.order = append([]string(nil), order...)
+		}
+	}
+
+	s.ids.Restore(in.Drawn)
+
+	return nil
+}

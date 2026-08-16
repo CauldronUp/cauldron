@@ -62,7 +62,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Fault injection, clock control, request log | Working |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
-| `snapshot` save/restore | Not built |
+| `snapshot` save/restore | Working |
 | Conformance suites (measured fidelity) | Not built |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -162,6 +162,41 @@ cauldron reset                                    # back to a clean sandbox
 ```
 
 Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
+
+### Snapshots
+
+A bug that only reproduces after eleven API calls is a bug nobody else can
+reproduce. Capture the sandbox instead of describing it:
+
+```bash
+cauldron snapshot save before-refund-bug
+cauldron snapshot load before-refund-bug
+cauldron snapshot list
+```
+
+A snapshot holds every mounted recipe's state, the sandbox clock, and the
+position of the identifier generator, so restoring it does not rewind the next
+identifier into one you already used. It lands in `.cauldron/snapshots/` inside
+the project, which is the point: commit it, or attach it to the issue, and the
+next person runs the same failure rather than reading about it.
+
+Restoring refuses a snapshot that names a recipe you are not running, rather
+than half-applying it. A recipe whose version has moved on since the capture
+loads with a warning.
+
+### Fixtures per recipe
+
+A project with two providers rarely has one fixture name that fits both.
+`--fixture` takes either a single name or `recipe=fixture` pairs:
+
+```bash
+cauldron up --fixture small-shop                        # applied where it fits
+cauldron up --fixture stripe=small-shop,github=small-repo
+```
+
+A bare name is a convenience, so recipes that do not ship it are listed and left
+at their default rather than failing the run. Name a recipe explicitly and a
+missing fixture is an error, because you asked for something specific.
 
 ## Recipes
 

@@ -167,3 +167,44 @@ func TestServeIsListedInHelp(t *testing.T) {
 		t.Errorf("help should list serve\n%s", stdout)
 	}
 }
+
+// Providers name their fixtures differently: stripe ships small-shop, github
+// ships small-repo. A single global name must therefore be a convenience
+// applied where it fits, not an instruction that fails the whole run.
+func TestFixtureChoiceParsesBothForms(t *testing.T) {
+	global := parseFixture("small-shop")
+
+	if fixture, explicit := global.forRecipe("stripe"); fixture != "small-shop" || explicit {
+		t.Errorf("global: got %q explicit=%v", fixture, explicit)
+	}
+
+	pairs := parseFixture("stripe=small-shop,github=small-repo")
+
+	if fixture, explicit := pairs.forRecipe("github"); fixture != "small-repo" || !explicit {
+		t.Errorf("pair: got %q explicit=%v", fixture, explicit)
+	}
+
+	if fixture, _ := pairs.forRecipe("twilio"); fixture != "" {
+		t.Errorf("a recipe with no pair and no global should get nothing; got %q", fixture)
+	}
+}
+
+func TestFixtureChoiceMixesGlobalAndPairs(t *testing.T) {
+	choice := parseFixture("small-shop,github=small-repo")
+
+	if fixture, explicit := choice.forRecipe("github"); fixture != "small-repo" || !explicit {
+		t.Errorf("an explicit pair must win over the global; got %q explicit=%v", fixture, explicit)
+	}
+
+	if fixture, explicit := choice.forRecipe("stripe"); fixture != "small-shop" || explicit {
+		t.Errorf("stripe should fall back to the global; got %q explicit=%v", fixture, explicit)
+	}
+}
+
+func TestFixtureChoiceIgnoresEmptyParts(t *testing.T) {
+	choice := parseFixture(" , stripe=small-shop , ")
+
+	if fixture, _ := choice.forRecipe("stripe"); fixture != "small-shop" {
+		t.Errorf("got %q", fixture)
+	}
+}

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -242,5 +244,115 @@ func TestHelpListsTheControlCommands(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help is missing %q\n%s", want, stdout)
 		}
+	}
+}
+
+func TestSnapshotSaveLoadAndList(t *testing.T) {
+	url := liveServer(t)
+	dir := t.TempDir()
+
+	// Change the sandbox away from its seeded state so the restore is provably
+	// doing something.
+	if _, _, code := run(t, "seed", "stripe", "--fixture", "empty", "--url", url); code != 0 {
+		t.Fatal("seeding empty failed")
+	}
+
+	stdout, stderr, code := run(t, "snapshot", "save", "empty-shop", "--url", url, "--dir", dir)
+	if code != 0 {
+		t.Fatalf("save exit = %d, stderr = %s", code, stderr)
+	}
+
+	if !strings.Contains(stdout, "Saved empty-shop") {
+		t.Errorf("stdout = %q", stdout)
+	}
+
+	// Move away from the captured state.
+	if _, _, code := run(t, "seed", "stripe", "--fixture", "small-shop", "--url", url); code != 0 {
+		t.Fatal("reseeding failed")
+	}
+
+	stdout, stderr, code = run(t, "snapshot", "load", "empty-shop", "--url", url, "--dir", dir)
+	if code != 0 {
+		t.Fatalf("load exit = %d, stderr = %s", code, stderr)
+	}
+
+	if !strings.Contains(stdout, "Restored empty-shop") {
+		t.Errorf("stdout = %q", stdout)
+	}
+
+	stdout, _, code = run(t, "snapshot", "list", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("list exit = %d", code)
+	}
+
+	if !strings.Contains(stdout, "empty-shop") {
+		t.Errorf("listing is missing the snapshot\n%s", stdout)
+	}
+}
+
+func TestSnapshotLoadNamesWhatIsAvailable(t *testing.T) {
+	url := liveServer(t)
+	dir := t.TempDir()
+
+	if _, _, code := run(t, "snapshot", "save", "known-good", "--url", url, "--dir", dir); code != 0 {
+		t.Fatal("save failed")
+	}
+
+	_, stderr, code := run(t, "snapshot", "load", "typo", "--url", url, "--dir", dir)
+
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+
+	if !strings.Contains(stderr, "known-good") {
+		t.Errorf("an unknown name should list what exists; got %q", stderr)
+	}
+}
+
+func TestSnapshotListIsEmptyByDefault(t *testing.T) {
+	stdout, _, code := run(t, "snapshot", "list", "--dir", t.TempDir())
+
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+
+	if !strings.Contains(stdout, "No snapshots") {
+		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+func TestSnapshotSaveNeedsAName(t *testing.T) {
+	_, stderr, code := run(t, "snapshot", "save")
+
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+
+	if !strings.Contains(stderr, "before-refund-bug") {
+		t.Errorf("the error should show a usable example; got %q", stderr)
+	}
+}
+
+func TestSnapshotRejectsAFileThatIsNotASnapshot(t *testing.T) {
+	url := liveServer(t)
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, ".cauldron", "snapshots")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(path, "junk.json"), []byte("not json at all"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, stderr, code := run(t, "snapshot", "load", "junk", "--url", url, "--dir", dir)
+
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+
+	if !strings.Contains(stderr, "not a Cauldron snapshot") {
+		t.Errorf("stderr = %q", stderr)
 	}
 }

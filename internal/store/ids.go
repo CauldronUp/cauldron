@@ -2,6 +2,7 @@ package store
 
 import (
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type shape struct {
 	prefix  string
 	length  int
 	seq     int
+	drawn   int
 }
 
 // Generator mints identifiers that look like the provider's own but are fully
@@ -72,12 +74,16 @@ func (g *Generator) Next(resource string) string {
 		s = shape{prefix: resource + "_", length: 14}
 	}
 
+	s.drawn++
+
 	if s.numeric {
 		s.seq++
 		g.shapes[resource] = s
 
 		return strconv.Itoa(s.seq)
 	}
+
+	g.shapes[resource] = s
 
 	var b strings.Builder
 
@@ -100,6 +106,45 @@ func (g *Generator) Reset() {
 
 	for resource, s := range g.shapes {
 		s.seq = 0
+		s.drawn = 0
 		g.shapes[resource] = s
+	}
+}
+
+// Drawn reports how many identifiers have been minted per resource.
+func (g *Generator) Drawn() map[string]int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	out := make(map[string]int, len(g.shapes))
+
+	for resource, s := range g.shapes {
+		out[resource] = s.drawn
+	}
+
+	return out
+}
+
+// Restore rewinds the generator and replays the recorded number of draws, so
+// that identifiers minted after a restore continue from where the snapshot
+// left off rather than repeating ones already in use.
+func (g *Generator) Restore(drawn map[string]int) {
+	g.Reset()
+
+	g.mu.Lock()
+	shapes := make([]string, 0, len(g.shapes))
+	for resource := range g.shapes {
+		shapes = append(shapes, resource)
+	}
+	g.mu.Unlock()
+
+	// Sorted so the replay is identical on every machine: the shared random
+	// source means the order draws happen in changes what they produce.
+	sort.Strings(shapes)
+
+	for _, resource := range shapes {
+		for i := 0; i < drawn[resource]; i++ {
+			g.Next(resource)
+		}
 	}
 }

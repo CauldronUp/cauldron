@@ -250,3 +250,34 @@ func (c *Client) Advance(duration string) (string, error) {
 
 	return out.Now, nil
 }
+
+// Snapshot fetches the state of every running recipe as raw JSON, so the CLI
+// can write it straight to a file without needing to understand the format.
+func (c *Client) Snapshot() ([]byte, error) {
+	var raw json.RawMessage
+
+	if err := c.do(http.MethodGet, "/_cauldron/snapshot", nil, &raw); err != nil {
+		return nil, err
+	}
+
+	return raw, nil
+}
+
+// Restore applies a snapshot.
+func (c *Client) Restore(snapshot []byte) ([]string, error) {
+	var body any
+
+	if err := json.Unmarshal(snapshot, &body); err != nil {
+		return nil, fmt.Errorf("that file is not a Cauldron snapshot")
+	}
+
+	var out struct {
+		Restored []string `json:"restored"`
+	}
+
+	if err := c.do(http.MethodPost, "/_cauldron/restore", body, &out); err != nil {
+		return nil, err
+	}
+
+	return out.Restored, nil
+}

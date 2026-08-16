@@ -281,3 +281,88 @@ func TestDeletedRecordsLeaveTheOrdering(t *testing.T) {
 		t.Errorf("ordering broke after a delete: %v", page.Records)
 	}
 }
+
+func TestExportAndImportRoundTrip(t *testing.T) {
+	s := newCustomerStore(t, 3)
+
+	var ids []string
+
+	for i := 0; i < 4; i++ {
+		record, _ := s.Create("customer", Record{"n": i})
+		ids = append(ids, record["id"].(string))
+	}
+
+	snapshot := s.Export()
+
+	restored := newCustomerStore(t, 3)
+	if err := restored.Import(snapshot); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	page, err := restored.List("customer", "", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(page.Records) != 4 {
+		t.Fatalf("restored %d records, want 4", len(page.Records))
+	}
+
+	for i, record := range page.Records {
+		if record["id"] != ids[i] {
+			t.Errorf("order changed at %d: %v, want %v", i, record["id"], ids[i])
+		}
+	}
+}
+
+// A restored sandbox must not re-mint identifiers it has already handed out.
+func TestImportContinuesIdentifiersRatherThanRepeatingThem(t *testing.T) {
+	s := newCustomerStore(t, 3)
+
+	for i := 0; i < 4; i++ {
+		_, _ = s.Create("customer", Record{})
+	}
+
+	next, _ := s.Create("customer", Record{})
+	expected := next["id"]
+
+	// Re-take the snapshot from before that fifth record.
+	original := newCustomerStore(t, 3)
+	for i := 0; i < 4; i++ {
+		_, _ = original.Create("customer", Record{})
+	}
+
+	restored := newCustomerStore(t, 3)
+	if err := restored.Import(original.Export()); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	after, _ := restored.Create("customer", Record{})
+
+	if after["id"] != expected {
+		t.Errorf("after restore the next id was %v, want %v", after["id"], expected)
+	}
+}
+
+func TestImportRefusesAForeignSnapshot(t *testing.T) {
+	s := newCustomerStore(t, 1)
+
+	err := s.Import(Export{Resources: map[string][]Record{"invoice": {{"id": "in_1"}}}})
+
+	if !errors.Is(err, ErrUnknownResource) {
+		t.Errorf("err = %v, want ErrUnknownResource; a snapshot from another recipe must not restore", err)
+	}
+}
+
+func TestImportClearsRecordsTheSnapshotDoesNotHave(t *testing.T) {
+	s := newCustomerStore(t, 1)
+	_, _ = s.Create("customer", Record{"n": 1})
+
+	if err := s.Import(Export{Resources: map[string][]Record{}, Drawn: map[string]int{}}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	if s.Count("customer") != 0 {
+		t.Errorf("restoring an empty snapshot left %d records", s.Count("customer"))
+	}
+}

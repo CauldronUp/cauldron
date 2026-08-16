@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ func parseServeFlags(args []string, stderr io.Writer) (serveOptions, error) {
 
 	fs.IntVar(&opts.port, "port", opts.port, "port to listen on")
 	fs.Int64Var(&opts.seed, "seed", opts.seed, "seed for generated identifiers")
-	fs.StringVar(&opts.fixture, "fixture", "", "fixture to seed each recipe with")
+	fs.StringVar(&opts.fixture, "fixture", "", "fixture to seed with, or recipe=fixture pairs")
 	fs.StringVar(&opts.dir, "dir", ".", "project directory to detect recipes from")
 
 	fs.Usage = func() {
@@ -106,9 +107,31 @@ func runServe(ctx *context, args []string) int {
 	}
 
 	srv := server.New()
+	choice := parseFixture(opts.fixture)
+
+	var unseeded []string
 
 	for _, name := range mount {
-		if err := srv.Mount(name, opts.seed, opts.fixture); err != nil {
+		if err := srv.Mount(name, opts.seed, ""); err != nil {
+			fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
+			return 1
+		}
+
+		fixture, explicit := choice.forRecipe(name)
+		if fixture == "" {
+			continue
+		}
+
+		if !explicit && !srv.HasFixture(name, fixture) {
+			// A global fixture is a convenience, not an instruction. Say which
+			// recipes it did not fit, rather than failing the whole run or,
+			// worse, seeding nothing and saying nothing.
+			unseeded = append(unseeded, name)
+
+			continue
+		}
+
+		if err := srv.SeedRecipe(name, fixture); err != nil {
 			fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
 			return 1
 		}
@@ -121,6 +144,11 @@ func runServe(ctx *context, args []string) int {
 	}
 
 	writeServeBanner(ctx.stdout, listener.Addr().String(), srv.Names(), missing, opts)
+
+	if len(unseeded) > 0 {
+		fmt.Fprintf(ctx.stdout, "\nNot seeded, no %q fixture: %s. Name one with --fixture %s=<fixture>.\n",
+			choice.global, strings.Join(unseeded, ", "), unseeded[0])
+	}
 
 	httpServer := &http.Server{
 		Handler:           srv,
@@ -174,4 +202,50 @@ func writeServeBanner(w io.Writer, addr string, names, missing []string, opts se
 	}
 
 	fmt.Fprintf(w, "\nPoint your SDK's base URL at the address above.\nControl it with http://%s/_cauldron/status\n\nPress Ctrl+C to stop.\n", addr)
+}
+
+// fixtureChoice resolves the --fixture flag against the recipes being mounted.
+//
+// A bare name applies to every recipe that ships it. Providers name their
+// fixtures differently (stripe has small-shop, github has small-repo), so a
+// single global name cannot be mandatory without making the flag useless the
+// moment a project uses two providers. Pairs give precision when it matters:
+//
+//	--fixture small-shop
+//	--fixture stripe=small-shop,github=small-repo
+type fixtureChoice struct {
+	global string
+	byName map[string]string
+}
+
+func parseFixture(value string) fixtureChoice {
+	choice := fixtureChoice{byName: map[string]string{}}
+
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		recipe, fixture, isPair := strings.Cut(part, "=")
+		if isPair {
+			choice.byName[strings.TrimSpace(recipe)] = strings.TrimSpace(fixture)
+			continue
+		}
+
+		choice.global = part
+	}
+
+	return choice
+}
+
+// forRecipe returns the fixture to load and whether it was named explicitly.
+// An explicit choice must fail loudly if it does not exist; a global one is
+// applied only where it fits.
+func (f fixtureChoice) forRecipe(name string) (string, bool) {
+	if fixture, ok := f.byName[name]; ok {
+		return fixture, true
+	}
+
+	return f.global, false
 }
