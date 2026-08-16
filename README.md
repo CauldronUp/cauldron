@@ -165,7 +165,7 @@ These are the decisions the project intends to be held to.
 
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
-**Fidelity is measured, not claimed.** Recipes ship with conformance suites, and where a Recipe diverges from the real API that gets published rather than hidden.
+**Fidelity will be measured, not claimed.** The intent is that every Recipe carries a conformance suite run against the real provider, and that divergence is published rather than hidden. This is not built yet — the Recipes here are hand-modelled and unverified, and the status table says so.
 
 ## Contributing
 
