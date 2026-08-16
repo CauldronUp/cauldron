@@ -61,6 +61,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Webhooks (lifecycle events, signing, delivery) | Working |
 | Fault injection, clock control, request log | Working |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
+| `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 26 cases, all from documentation so far |
@@ -162,6 +163,32 @@ cauldron reset                                    # back to a clean sandbox
 ```
 
 Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
+
+### When something is wrong
+
+```bash
+cauldron doctor
+```
+
+```
+ok    project                Laravel, 2 service(s), 1 recipe(s)
+ok    recipes                4 bundled, all parsing
+ok    docker                 running
+warn  ports                  6379 wanted by redis, held by other-project-redis-1
+                             stop the other container, or start this project without that service
+ok    sandbox                serving stripe
+```
+
+It checks the things that are obvious once you know and cost twenty minutes
+when you do not: Docker missing, a port another checkout is already holding, a
+Recipe that stopped parsing, dependencies with no Recipe that will still reach
+the real network.
+
+```bash
+cauldron logs redis          # recent output from one service
+cauldron open mailpit        # the inbox, in a browser
+cauldron open --print        # just print the address
+```
 
 ### How faithful is it, really
 

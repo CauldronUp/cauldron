@@ -51,6 +51,24 @@ func commands() map[string]command {
 			usage:   "cauldron down [--keep-data]",
 			run:     runDown,
 		},
+		"doctor": {
+			name:    "doctor",
+			summary: "Check whether this machine and project can run",
+			usage:   "cauldron doctor [path]",
+			run:     runDoctor,
+		},
+		"logs": {
+			name:    "logs",
+			summary: "Show recent output from a running service",
+			usage:   "cauldron logs <service> [-n 50]",
+			run:     runLogs,
+		},
+		"open": {
+			name:    "open",
+			summary: "Open a running service in a browser",
+			usage:   "cauldron open [service] [--print]",
+			run:     runOpen,
+		},
 		"serve": {
 			name:    "serve",
 			summary: "Serve the fake APIs this project depends on",
@@ -161,7 +179,7 @@ func runVersion(ctx *context, _ []string) int {
 }
 
 func printHelp(w io.Writer) {
-	fmt.Fprint(w, "Cauldron — your code, one command, every dependency.\n\nUsage:\n  cauldron <command> [arguments]\n\nCommands:\n")
+	fmt.Fprint(w, "Cauldron: your code, one command, every dependency.\n\nUsage:\n  cauldron <command> [arguments]\n\nCommands:\n")
 
 	all := commands()
 

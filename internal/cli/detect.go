@@ -44,7 +44,7 @@ func writePlan(w io.Writer, p *detect.Project) {
 	section(w, "Recipes", p.Of(detect.KindRecipe))
 
 	if len(p.Unmatched) > 0 {
-		fmt.Fprint(w, "No recipe yet — these will still reach the real network:\n")
+		fmt.Fprint(w, "No recipe yet. These will still reach the real network:\n")
 
 		for _, r := range p.Unmatched {
 			fmt.Fprintf(w, "  !  %s  (%s)\n", r.Evidence, r.Source)

@@ -359,7 +359,7 @@ func (r *Recipe) Validate() error {
 		}
 
 		if resource.ID.Style != "numeric" && resource.ID.Prefix == "" {
-			add("resource %q must declare an id.prefix — applications routinely prefix-match identifiers", name)
+			add("resource %q must declare an id.prefix. Applications routinely prefix-match identifiers", name)
 		}
 
 		if len(resource.Fields) == 0 {

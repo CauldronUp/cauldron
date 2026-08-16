@@ -462,3 +462,71 @@ func TestFailedStartRemovesThePartialContainer(t *testing.T) {
 		t.Errorf("a failed run must clean up after itself; calls: %v", f.calls)
 	}
 }
+
+func TestLogsReadsOnlyThisProjectsContainer(t *testing.T) {
+	f := newFake()
+	f.replies["ps --filter"] = "redis\nmailpit\n"
+	f.replies["logs"] = "ready to accept connections"
+
+	out, err := engineWith(f).Logs(context.Background(), "redis", 20)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+
+	if !strings.Contains(out, "ready to accept") {
+		t.Errorf("out = %q", out)
+	}
+
+	call := f.find("logs")
+	if call == nil {
+		t.Fatal("no docker logs call was made")
+	}
+
+	joined := strings.Join(call, " ")
+
+	if !strings.Contains(joined, "--tail 20") {
+		t.Errorf("the line count should reach docker; got %q", joined)
+	}
+
+	// Scoped to this project's own container name, so a similarly named
+	// container from another checkout cannot be read by accident.
+	if !strings.Contains(joined, "cauldron-demo-redis") {
+		t.Errorf("call = %q", joined)
+	}
+}
+
+func TestLogsRefusesAServiceThisProjectIsNotRunning(t *testing.T) {
+	f := newFake()
+	f.replies["ps --filter"] = "redis\n"
+
+	_, err := engineWith(f).Logs(context.Background(), "postgres", 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	var missing *ErrNotRunning
+	if !errors.As(err, &missing) {
+		t.Fatalf("err = %T, want *ErrNotRunning", err)
+	}
+
+	if !strings.Contains(err.Error(), "redis") {
+		t.Errorf("the error should name what is running; got %q", err)
+	}
+
+	if f.find("logs") != nil {
+		t.Error("docker logs should not be called for a service that is not running")
+	}
+}
+
+func TestLogsExplainsAnEmptyProject(t *testing.T) {
+	f := newFake()
+
+	_, err := engineWith(f).Logs(context.Background(), "redis", 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !strings.Contains(err.Error(), "cauldron up") {
+		t.Errorf("err = %q, want a way forward", err)
+	}
+}

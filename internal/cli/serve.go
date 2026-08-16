@@ -65,7 +65,7 @@ func plan(opts serveOptions) ([]string, []string, error) {
 	project, err := detect.Detect(opts.dir)
 	if err != nil {
 		if errors.Is(err, detect.ErrNoProject) {
-			return nil, nil, fmt.Errorf("no project found in %s — name the recipes explicitly, e.g. 'cauldron serve stripe'", opts.dir)
+			return nil, nil, fmt.Errorf("no project found in %s. Name the recipes explicitly, e.g. 'cauldron serve stripe'", opts.dir)
 		}
 
 		return nil, nil, err
@@ -88,7 +88,7 @@ func plan(opts serveOptions) ([]string, []string, error) {
 	}
 
 	if len(mount) == 0 {
-		return nil, missing, fmt.Errorf("no recipes to serve — this project uses no APIs Cauldron can emulate yet")
+		return nil, missing, fmt.Errorf("no recipes to serve. This project uses no APIs Cauldron can emulate yet")
 	}
 
 	return mount, missing, nil
@@ -194,7 +194,7 @@ func writeServeBanner(w io.Writer, addr string, names, missing []string, opts se
 	}
 
 	if len(missing) > 0 {
-		fmt.Fprintf(w, "\nNo recipe yet — these will still reach the real network:\n")
+		fmt.Fprintf(w, "\nNo recipe yet. These will still reach the real network:\n")
 
 		for _, name := range missing {
 			fmt.Fprintf(w, "  !  %s\n", name)

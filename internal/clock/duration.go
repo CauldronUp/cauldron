@@ -34,7 +34,7 @@ func ParseDuration(input string) (time.Duration, error) {
 
 	matches := durationPattern.FindAllStringSubmatch(trimmed, -1)
 	if len(matches) == 0 {
-		return 0, fmt.Errorf("cannot understand duration %q — try 30s, 15m, 12h, 7d, 2w, 6mo or 1y", input)
+		return 0, fmt.Errorf("cannot understand duration %q. Try 30s, 15m, 12h, 7d, 2w, 6mo or 1y", input)
 	}
 
 	// Reject trailing junk: "30dd" or "30d!" should fail loudly rather than
@@ -45,7 +45,7 @@ func ParseDuration(input string) (time.Duration, error) {
 	}
 
 	if consumed != len(strings.ReplaceAll(trimmed, " ", "")) {
-		return 0, fmt.Errorf("cannot understand duration %q — try 30s, 15m, 12h, 7d, 2w, 6mo or 1y", input)
+		return 0, fmt.Errorf("cannot understand duration %q. Try 30s, 15m, 12h, 7d, 2w, 6mo or 1y", input)
 	}
 
 	var total time.Duration

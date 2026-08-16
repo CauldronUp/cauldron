@@ -381,6 +381,51 @@ func (e *Engine) Running(ctx context.Context) ([]string, error) {
 	return services, nil
 }
 
+// Logs returns recent output from one of this project's services.
+//
+// Scoped to the project's own containers, so a stray service from another
+// checkout with a similar name cannot be read by accident.
+func (e *Engine) Logs(ctx context.Context, service string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 50
+	}
+
+	running, err := e.Running(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if !contains(running, service) {
+		return "", &ErrNotRunning{Service: service, Running: running}
+	}
+
+	return e.runner.Run(ctx, "logs", "--tail", strconv.Itoa(lines), e.ContainerName(service))
+}
+
+// ErrNotRunning means the named service is not part of this project right now.
+type ErrNotRunning struct {
+	Service string
+	Running []string
+}
+
+func (e *ErrNotRunning) Error() string {
+	if len(e.Running) == 0 {
+		return "nothing is running for this project. Start it with 'cauldron up'"
+	}
+
+	return fmt.Sprintf("%s is not running here. This project has: %s", e.Service, strings.Join(e.Running, ", "))
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, candidate := range haystack {
+		if candidate == needle {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Stop removes every container for this project, and the network with them.
 func (e *Engine) Stop(ctx context.Context, keepData bool) error {
 	out, err := e.runner.Run(ctx, "ps", "--all",

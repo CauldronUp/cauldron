@@ -54,7 +54,7 @@ type ErrUnreachable struct {
 }
 
 func (e *ErrUnreachable) Error() string {
-	return fmt.Sprintf("no Cauldron server at %s — start one with 'cauldron serve'", e.Base)
+	return fmt.Sprintf("no Cauldron server at %s. Start one with 'cauldron serve'", e.Base)
 }
 
 func (e *ErrUnreachable) Unwrap() error { return e.Err }
