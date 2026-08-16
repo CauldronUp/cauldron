@@ -204,6 +204,15 @@ type Page struct {
 // List returns up to limit records, starting after the given cursor. An empty
 // cursor starts at the beginning.
 func (s *Store) List(resource, after string, limit int) (Page, error) {
+	return s.ListWhere(resource, nil, after, limit)
+}
+
+// ListWhere returns records whose fields match every entry in where.
+//
+// This is what makes a scoped route work: /repos/{owner}/{repo}/issues must
+// only ever see that repository's issues, and paging has to happen after the
+// filter or a page could come back empty while claiming there is more.
+func (s *Store) ListWhere(resource string, where map[string]any, after string, limit int) (Page, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -216,12 +225,22 @@ func (s *Store) List(resource, after string, limit int) (Page, error) {
 		limit = 10
 	}
 
+	// Filter first, then page, so a cursor always refers to a position in the
+	// filtered view rather than the whole collection.
+	matching := make([]string, 0, len(c.order))
+
+	for _, id := range c.order {
+		if Matches(c.records[id], where) {
+			matching = append(matching, id)
+		}
+	}
+
 	start := 0
 
 	if after != "" {
 		found := false
 
-		for i, id := range c.order {
+		for i, id := range matching {
 			if id == after {
 				start = i + 1
 				found = true
@@ -237,21 +256,36 @@ func (s *Store) List(resource, after string, limit int) (Page, error) {
 
 	page := Page{Records: []Record{}}
 
-	for i := start; i < len(c.order) && len(page.Records) < limit; i++ {
-		page.Records = append(page.Records, c.records[c.order[i]].Clone())
+	for i := start; i < len(matching) && len(page.Records) < limit; i++ {
+		page.Records = append(page.Records, c.records[matching[i]].Clone())
 	}
 
 	end := start + len(page.Records)
 
-	if end < len(c.order) {
+	if end < len(matching) {
 		page.HasMore = true
 
 		if len(page.Records) > 0 {
-			page.NextCursor = c.order[end-1]
+			page.NextCursor = matching[end-1]
 		}
 	}
 
 	return page, nil
+}
+
+// Matches reports whether a record satisfies every filter.
+//
+// Comparison is on the string form, because a path parameter arrives as text
+// while the stored value may be a number. A scoped route would otherwise
+// silently return nothing whenever the scope field happened to be numeric.
+func Matches(record Record, where map[string]any) bool {
+	for field, want := range where {
+		if fmt.Sprint(record[field]) != fmt.Sprint(want) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Count returns how many records a resource holds.

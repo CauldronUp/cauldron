@@ -67,7 +67,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch matched.spec.Operation {
 	case "create":
-		exchange.Status = s.create(w, r, matched)
+		exchange.Status = s.create(w, r, matched, vars)
 	case "get":
 		exchange.Status = s.get(w, matched, vars)
 	case "update":
@@ -75,16 +75,20 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "delete":
 		exchange.Status = s.delete(w, matched, vars)
 	case "list":
-		exchange.Status = s.list(w, r, matched)
+		exchange.Status = s.list(w, r, matched, vars)
 	default:
 		exchange.Status = s.writeRecipeError(w, "unsupported_operation", 500, "unsupported_operation", "This operation is not implemented.")
 	}
 }
 
-func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route) int {
+func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	record, err := decodeBody(r)
 	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "Request body could not be parsed.")
+	}
+
+	for field, value := range scopeVars(matched, vars) {
+		record[field] = value
 	}
 
 	s.applyDefaults(matched.spec.Resource, record)
@@ -114,6 +118,14 @@ func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]stri
 		return s.notFound(w, err, matched.spec.Resource, vars["id"])
 	}
 
+	// A record that exists but belongs to another scope must look absent, not
+	// forbidden. Leaking existence across tenants is a real provider bug we do
+	// not want to teach an application to rely on.
+	if !store.Matches(record, scopeVars(matched, vars)) {
+		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
+			"No such "+matched.spec.Resource+": "+vars["id"]+".")
+	}
+
 	writeJSON(w, http.StatusOK, record)
 
 	return http.StatusOK
@@ -123,6 +135,16 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 	changes, err := decodeBody(r)
 	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "Request body could not be parsed.")
+	}
+
+	existing, err := s.store.Get(matched.spec.Resource, vars["id"])
+	if err != nil {
+		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+	}
+
+	if !store.Matches(existing, scopeVars(matched, vars)) {
+		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
+			"No such "+matched.spec.Resource+": "+vars["id"]+".")
 	}
 
 	updated, err := s.store.Update(matched.spec.Resource, vars["id"], changes)
@@ -143,6 +165,11 @@ func (s *Sandbox) delete(w http.ResponseWriter, matched route, vars map[string]s
 		return s.notFound(w, err, matched.spec.Resource, vars["id"])
 	}
 
+	if !store.Matches(record, scopeVars(matched, vars)) {
+		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
+			"No such "+matched.spec.Resource+": "+vars["id"]+".")
+	}
+
 	if err := s.store.Delete(matched.spec.Resource, vars["id"]); err != nil {
 		return s.notFound(w, err, matched.spec.Resource, vars["id"])
 	}
@@ -158,7 +185,7 @@ func (s *Sandbox) delete(w http.ResponseWriter, matched route, vars map[string]s
 	return http.StatusOK
 }
 
-func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route) int {
+func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	limit := matched.spec.Pagination.Limit
 	if limit <= 0 {
 		limit = 10
@@ -171,7 +198,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route) in
 		cursor = r.URL.Query().Get("cursor")
 	}
 
-	page, err := s.store.List(matched.spec.Resource, cursor, limit)
+	page, err := s.store.ListWhere(matched.spec.Resource, scopeVars(matched, vars), cursor, limit)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "No such cursor: "+cursor+".")
@@ -204,6 +231,21 @@ func (s *Sandbox) listBody(page store.Page) any {
 			Next:    page.NextCursor,
 		}
 	}
+}
+
+// scopeVars extracts the scope filters for a request from its path parameters.
+func scopeVars(matched route, vars map[string]string) map[string]any {
+	if len(matched.spec.Scope) == 0 {
+		return nil
+	}
+
+	out := make(map[string]any, len(matched.spec.Scope))
+
+	for _, name := range matched.spec.Scope {
+		out[name] = vars[name]
+	}
+
+	return out
 }
 
 func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string) int {

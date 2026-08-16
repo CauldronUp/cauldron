@@ -64,7 +64,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` (container orchestration) | **Not built.** `up` boots the emulated providers and says what it skipped |
 | `snapshot` save/restore | Not built |
 | Conformance suites (measured fidelity) | Not built |
-| Multi-segment paths (`/repos/{owner}/{repo}/…`) | Not built. GitHub pins one repo for now |
+| Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Recipes shipped | Stripe, GitHub |
 
 ## Try it

@@ -4,13 +4,13 @@ Cauldron is early. The architecture is still moving, so the most useful thing yo
 
 ## The most valuable contribution
 
-**A Recipe for an API you actually use** — especially one whose sandbox requires partner approval, costs money, or takes weeks to obtain. Those are exactly the providers no vendor will build for, and exactly the ones people are blocked on.
+**A Recipe for an API you actually use**, especially one whose sandbox requires partner approval, costs money, or takes weeks to obtain. Those are exactly the providers no vendor will build for, and exactly the ones people are blocked on.
 
 The person who owns the weird internal system is the only person who can model it faithfully. That's the whole reason this project is open source.
 
 ## Development
 
-Requires Go 1.26 or later. There are no third-party dependencies, and adding one needs a good reason.
+Requires Go 1.26 or later. There is exactly one third-party dependency, `gopkg.in/yaml.v3`, because Go has no standard-library YAML and Recipes have to be readable by contributors who are not Go developers. Adding a second needs a similarly good reason.
 
 ```bash
 go build -o cauldron ./cmd/cauldron   # build
@@ -31,7 +31,7 @@ gofmt -l .                            # must print nothing
 
 ## Commit messages
 
-Explain what changed and why. The why matters more — the diff already shows the what.
+Explain what changed and why. The why matters more, because the diff already shows the what.
 
 ## Licence
 
