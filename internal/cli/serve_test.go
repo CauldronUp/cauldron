@@ -1,0 +1,166 @@
+package cli
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func projectWith(t *testing.T, composer string) string {
+	t.Helper()
+
+	root := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(root, "composer.json"), []byte(composer), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	return root
+}
+
+func TestServeFlagDefaults(t *testing.T) {
+	var stderr bytes.Buffer
+
+	opts, err := parseServeFlags(nil, &stderr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if opts.port != defaultPort {
+		t.Errorf("port = %d, want %d", opts.port, defaultPort)
+	}
+
+	// A fake must not squat on the port the application under development
+	// is most likely to want.
+	for _, forbidden := range []int{80, 3000, 8000, 8080} {
+		if opts.port == forbidden {
+			t.Errorf("default port must not be %d", forbidden)
+		}
+	}
+
+	if opts.seed != 1 {
+		t.Errorf("seed = %d, want 1", opts.seed)
+	}
+}
+
+func TestServeFlagsAreParsed(t *testing.T) {
+	var stderr bytes.Buffer
+
+	opts, err := parseServeFlags([]string{"-port", "5000", "-seed", "99", "-fixture", "small-shop", "stripe"}, &stderr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if opts.port != 5000 || opts.seed != 99 || opts.fixture != "small-shop" {
+		t.Errorf("opts = %+v", opts)
+	}
+
+	if len(opts.recipes) != 1 || opts.recipes[0] != "stripe" {
+		t.Errorf("recipes = %v", opts.recipes)
+	}
+}
+
+func TestPlanUsesNamedRecipes(t *testing.T) {
+	mount, missing, err := plan(serveOptions{recipes: []string{"stripe"}})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if len(mount) != 1 || mount[0] != "stripe" {
+		t.Errorf("mount = %v", mount)
+	}
+
+	if len(missing) != 0 {
+		t.Errorf("missing = %v", missing)
+	}
+}
+
+func TestPlanDetectsRecipesFromTheProject(t *testing.T) {
+	dir := projectWith(t, `{"require":{"stripe/stripe-php":"^17.0"}}`)
+
+	mount, _, err := plan(serveOptions{dir: dir})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if len(mount) != 1 || mount[0] != "stripe" {
+		t.Errorf("mount = %v, want [stripe]", mount)
+	}
+}
+
+// A detected provider Cauldron cannot emulate must be reported, never silently
+// dropped — otherwise the developer believes it is faked when it is not.
+func TestPlanReportsDetectedRecipesItCannotServe(t *testing.T) {
+	dir := projectWith(t, `{"require":{"stripe/stripe-php":"^17.0","twilio/sdk":"^8.0"}}`)
+
+	mount, missing, err := plan(serveOptions{dir: dir})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if len(mount) != 1 || mount[0] != "stripe" {
+		t.Errorf("mount = %v", mount)
+	}
+
+	if len(missing) != 1 || missing[0] != "twilio" {
+		t.Errorf("missing = %v, want [twilio]", missing)
+	}
+}
+
+func TestPlanFailsWhenNothingCanBeServed(t *testing.T) {
+	dir := projectWith(t, `{"require":{"twilio/sdk":"^8.0"}}`)
+
+	_, missing, err := plan(serveOptions{dir: dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if len(missing) != 1 {
+		t.Errorf("the unservable providers should still be reported; got %v", missing)
+	}
+}
+
+func TestPlanFailsOutsideAProject(t *testing.T) {
+	_, _, err := plan(serveOptions{dir: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !strings.Contains(err.Error(), "cauldron serve stripe") {
+		t.Errorf("the error should suggest naming a recipe, got %q", err)
+	}
+}
+
+func TestServeBannerShowsAddressesAndGaps(t *testing.T) {
+	var out bytes.Buffer
+
+	writeServeBanner(&out, "127.0.0.1:4600", []string{"stripe"}, []string{"twilio"}, serveOptions{fixture: "small-shop"})
+
+	text := out.String()
+
+	for _, want := range []string{
+		"http://127.0.0.1:4600/stripe",
+		"small-shop",
+		"still reach the real network",
+		"twilio",
+		"_cauldron/status",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("banner is missing %q\n%s", want, text)
+		}
+	}
+}
+
+func TestServeIsListedInHelp(t *testing.T) {
+	stdout, _, code := run(t, "help")
+
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+
+	if !strings.Contains(stdout, "serve") {
+		t.Errorf("help should list serve\n%s", stdout)
+	}
+}

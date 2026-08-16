@@ -45,6 +45,12 @@ func commands() map[string]command {
 			usage:   "cauldron up [path]",
 			run:     runUp,
 		},
+		"serve": {
+			name:    "serve",
+			summary: "Serve the fake APIs this project depends on",
+			usage:   "cauldron serve [flags] [recipe...]",
+			run:     runServe,
+		},
 		"recipe": {
 			name:    "recipe",
 			summary: "Inspect the Recipes Cauldron can emulate",

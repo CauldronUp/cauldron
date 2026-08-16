@@ -51,24 +51,65 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 ## Status
 
-**Early. Not yet usable for real work.**
+**Early, but the core works.** The emulator is real: you can point an SDK at it today.
 
 | Area | State |
 |---|---|
-| Detection engine — Composer, npm, Go modules | Working, tested |
-| `cauldron detect` | Working |
-| `cauldron up` | Prints the plan; orchestration not built |
-| Recipe format and runtime | In progress |
-| Container orchestration | Not started |
+| Detection engine — Composer, npm, Go modules | Working |
+| Recipe format and validator | Working |
+| Recipe runtime — routing, state, auth, pagination | Working |
+| Webhooks — lifecycle events, signing, delivery | Working |
+| Fault injection, clock control, request log | Working |
+| `cauldron serve` | Working |
+| `cauldron up` — container orchestration | Not built; prints the plan and says so |
+| Recipes shipped | Stripe only |
 
-`cauldron up` currently tells you what it *would* do and says so plainly. It will not print a convincing boot log for work that didn't happen.
-
-## Try the detector
+## Try it
 
 ```bash
 go build -o cauldron ./cmd/cauldron
+
 ./cauldron detect /path/to/your/project
+./cauldron serve --fixture small-shop stripe
 ```
+
+Then point an SDK at `http://127.0.0.1:4600/stripe` and use it as you would the real thing:
+
+```bash
+# Create a customer — form encoding, exactly as Stripe's own SDKs send it
+curl -X POST http://127.0.0.1:4600/stripe/v1/customers   -H "Authorization: Bearer sk_test_cauldron"   -d "email=ada@example.com&name=Ada+Lovelace&metadata[plan]=pro"
+```
+
+```json
+{
+  "created": 1767225600,
+  "currency": "usd",
+  "email": "ada@example.com",
+  "id": "cus_rfBd56ti2SMtYv",
+  "metadata": { "plan": "pro" },
+  "name": "Ada Lovelace"
+}
+```
+
+That identifier is not random. The same seed and fixture produce it on every machine, every run.
+
+### The things a sandbox cannot do
+
+```bash
+# Rate limit the next request, with the provider's real Retry-After header
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault   -d '{"error":"rate_limit","count":1}'
+
+# Age everything by a month, so a subscription falls into dunning
+curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance   -d '{"duration":"30d"}'
+
+# Fire a signed webhook at your application
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/emit   -d '{"event":"payment_intent.payment_failed","data":{"amount":2500}}'
+
+# See what your code actually sent
+curl http://127.0.0.1:4600/_cauldron/stripe/requests
+```
+
+Webhook deliveries are recorded even when nothing is subscribed, so "this event would have fired" is assertable without standing up a listener.
 
 ## Recipes
 
