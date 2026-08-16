@@ -4,7 +4,7 @@
 
 **Your code. One command. Every dependency.**
 
-The open-source environment compiler — it boots your application *and the third-party APIs it depends on*, locally, from one command.
+The open-source environment compiler. It boots your application *and the third-party APIs it depends on*, locally, from one command.
 
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
@@ -25,7 +25,7 @@ cd project
 cauldron up
 ```
 
-Cauldron reads the manifests already in your repository, works out what the project needs, and boots it — including working emulations of the providers it talks to.
+Cauldron reads the manifests already in your repository, works out what the project needs, and boots it, including working emulations of the providers it talks to.
 
 ```
 Detected a Laravel project.
@@ -43,7 +43,7 @@ Recipes
   +  stripe 17.0       (stripe/stripe-php)
   +  shopify 5.4       (shopify/shopify-api)
 
-No recipe yet — these will still reach the real network:
+No recipe yet. These will still reach the real network:
   !  acme/weather-api-client  (composer.json)
 ```
 
@@ -55,16 +55,16 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 | Area | State |
 |---|---|
-| Detection engine — Composer, npm, Go modules | Working |
+| Detection engine (Composer, npm, Go modules) | Working |
 | Recipe format and validator | Working |
-| Recipe runtime — routing, state, auth, pagination | Working |
-| Webhooks — lifecycle events, signing, delivery | Working |
+| Recipe runtime (routing, state, auth, pagination) | Working |
+| Webhooks (lifecycle events, signing, delivery) | Working |
 | Fault injection, clock control, request log | Working |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
-| `cauldron up` — container orchestration | **Not built.** `up` boots the emulated providers and says what it skipped |
+| `cauldron up` (container orchestration) | **Not built.** `up` boots the emulated providers and says what it skipped |
 | `snapshot` save/restore | Not built |
-| Conformance suites — measured fidelity | Not built |
-| Multi-segment paths (`/repos/{owner}/{repo}/…`) | Not built — GitHub pins one repo for now |
+| Conformance suites (measured fidelity) | Not built |
+| Multi-segment paths (`/repos/{owner}/{repo}/…`) | Not built. GitHub pins one repo for now |
 | Recipes shipped | Stripe, GitHub |
 
 ## Try it
@@ -79,7 +79,7 @@ go build -o cauldron ./cmd/cauldron
 Then point an SDK at `http://127.0.0.1:4600/stripe` and use it as you would the real thing:
 
 ```bash
-# Create a customer — form encoding, exactly as Stripe's own SDKs send it
+# Create a customer, form encoded exactly as Stripe's own SDKs send it
 curl -X POST http://127.0.0.1:4600/stripe/v1/customers \
   -H "Authorization: Bearer sk_test_cauldron" \
   -d "email=ada@example.com&name=Ada+Lovelace&metadata[plan]=pro"
@@ -142,34 +142,34 @@ Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
 
 ## Recipes
 
-A **Recipe** defines how Cauldron emulates an external dependency. It is not a mock — anyone can return `200 OK`. A Recipe models behaviour, and carries the tests that prove it still matches the real API:
+A **Recipe** defines how Cauldron emulates an external dependency. It is not a mock, because anyone can return `200 OK`. A Recipe models behaviour, and carries the tests that prove it still matches the real API:
 
 | Part | Covers |
 |---|---|
 | Auth | OAuth flows, API keys, HMAC signing, token refresh and expiry |
 | Resources | Schemas, ID formats, relationships between objects |
 | Routes | Paths, pagination and cursors, filtering, sorting |
-| Behaviour | State transitions and side effects — an order decrements inventory |
+| Behaviour | State transitions and side effects, so an order decrements inventory |
 | Webhooks | Event catalogue, signing, delivery order, retries, duplicates |
 | Errors | The provider's real error taxonomy and rate-limit shape |
-| Fixtures | Named seed data — `empty`, `small-shop`, `enterprise` |
+| Fixtures | Named seed data: `empty`, `small-shop`, `enterprise` |
 | Conformance | The suite that proves the Recipe still matches the real API |
 
 ## Design commitments
 
 These are the decisions the project intends to be held to.
 
-**Detection never guesses.** Package-to-Recipe mapping is an explicit table. A wrong guess is worse than no guess — booting the wrong fake sends someone chasing a bug that doesn't exist. Anything unrecognised is reported, never silently faked.
+**Detection never guesses.** Package-to-Recipe mapping is an explicit table. A wrong guess is worse than no guess, because booting the wrong fake sends someone chasing a bug that doesn't exist. Anything unrecognised is reported, never silently faked.
 
-**Determinism is enforced at the boundary, not requested politely.** Time comes from a movable sandbox clock and identifiers from a seeded generator — a Recipe has no access to the wall clock or to unseeded randomness. The same fixture and seed produce the same IDs on every machine, and a reset sandbox is indistinguishable from a fresh one.
+**Determinism is enforced at the boundary, not requested politely.** Time comes from a movable sandbox clock and identifiers from a seeded generator. A Recipe has no access to the wall clock or to unseeded randomness. The same fixture and seed produce the same IDs on every machine, and a reset sandbox is indistinguishable from a fresh one.
 
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
-**Fidelity will be measured, not claimed.** The intent is that every Recipe carries a conformance suite run against the real provider, and that divergence is published rather than hidden. This is not built yet — the Recipes here are hand-modelled and unverified, and the status table says so.
+**Fidelity will be measured, not claimed.** The intent is that every Recipe carries a conformance suite run against the real provider, and that divergence is published rather than hidden. This is not built yet. The Recipes here are hand-modelled and unverified, and the status table says so.
 
 ## Contributing
 
-The most valuable contribution is a Recipe for an API you actually use — especially one whose sandbox is painful to get. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The most valuable contribution is a Recipe for an API you actually use, especially one whose sandbox is painful to get. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 

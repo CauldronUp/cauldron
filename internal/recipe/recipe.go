@@ -99,7 +99,15 @@ type Route struct {
 	Path     string `yaml:"path"`
 	Resource string `yaml:"resource"`
 	// Operation is one of: create, get, list, update, delete.
-	Operation  string     `yaml:"operation"`
+	Operation string `yaml:"operation"`
+	// Scope names the path parameters that partition this resource, e.g.
+	// [owner, repo] for /repos/{owner}/{repo}/issues. Scoped requests only
+	// ever see records whose matching fields agree, and creates stamp them.
+	//
+	// Path parameters left out of scope are ignored, which is how an API
+	// version segment like /admin/api/{version}/orders stays a path parameter
+	// without becoming a filter.
+	Scope      []string   `yaml:"scope"`
 	Pagination Pagination `yaml:"pagination"`
 }
 
@@ -272,6 +280,23 @@ func (r *Recipe) Validate() error {
 			add("%s: resource is required", where)
 		} else if _, ok := r.Resources[route.Resource]; !ok {
 			add("%s: unknown resource %q", where, route.Resource)
+		}
+
+		for _, name := range route.Scope {
+			if name == "id" {
+				add("%s: id cannot be a scope parameter", where)
+				continue
+			}
+
+			if !strings.Contains(route.Path, "{"+name+"}") {
+				add("%s: scope %q does not appear in the path", where, name)
+			}
+
+			if resource, ok := r.Resources[route.Resource]; ok {
+				if _, declared := resource.Fields[name]; !declared {
+					add("%s: scope %q is not a field on resource %q", where, name, route.Resource)
+				}
+			}
 		}
 
 		if !contains(validPagination, route.Pagination.Style) {
