@@ -350,7 +350,11 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 				out[field.In] = nested
 			}
 
-			nested[key] = value
+			// The wire name, which is the field's own unless it says
+			// otherwise. Without that, a resource needing both title.rendered
+			// and content.rendered had to name one of them something else, and
+			// the name it was given leaked out as title.title_rendered.
+			nested[field.WireName(key)] = value
 
 			continue
 		}
@@ -390,7 +394,7 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 			continue
 		}
 
-		if value, present := nested[name]; present {
+		if value, present := nested[field.WireName(name)]; present {
 			record[name] = value
 		}
 	}

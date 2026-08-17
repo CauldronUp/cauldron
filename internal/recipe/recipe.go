@@ -397,6 +397,27 @@ type Field struct {
 	// The store stays flat; only the shape on the wire changes, and requests
 	// are flattened back on the way in.
 	In string `yaml:"in"`
+	// As is the name this field takes on the wire, when it differs from the
+	// name it is stored under.
+	//
+	// Nesting alone was not enough. A field's own name is the key inside the
+	// sub-object, so two fields could not share a key under different parents:
+	// a resource wanting both title.rendered and content.rendered had to call
+	// one of them something else, and what it got called leaked onto the wire.
+	// Thirty-one fields across six Recipes ended up emitting amount.amount_value
+	// where Adyen sends amount.value, and title.title_rendered where WordPress
+	// sends title.rendered. Every conformance case about them passed, because
+	// they asserted the shape the emulator produced.
+	As string `yaml:"as"`
+}
+
+// WireName is the key this field takes in a response.
+func (f Field) WireName(name string) string {
+	if f.As != "" {
+		return f.As
+	}
+
+	return name
 }
 
 // Route binds an HTTP method and path to an operation on a resource.
@@ -635,6 +656,21 @@ func (r *Recipe) Validate() error {
 
 		for _, field := range sortedKeys(resource.Fields) {
 			spec := resource.Fields[field]
+
+			if spec.As != "" && spec.In == "" {
+				add("resource %q field %q sets as without in, and a top-level field is already named by its key", name, field)
+			}
+
+			// A field named parent_thing nested under parent emits
+			// parent.parent_thing, which no provider sends. It happened
+			// thirty-one times across six Recipes before anything checked,
+			// and every conformance case about them passed because they
+			// asserted the shape the emulator produced. A provider that
+			// really does repeat the parent says so with an explicit as.
+			if spec.In != "" && spec.As == "" && strings.HasPrefix(strings.ToLower(field), strings.ToLower(spec.In)+"_") {
+				add("resource %q field %q nests under %q and would be sent as %s.%s, which repeats the parent; set as: %s, or set as explicitly if the provider really sends that",
+					name, field, spec.In, spec.In, field, field[len(spec.In)+1:])
+			}
 
 			if spec.Type == "list" && spec.Default != nil {
 				if _, ok := spec.Default.([]any); !ok {
