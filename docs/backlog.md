@@ -21,7 +21,7 @@ Two rules apply to everything here:
 | Provider | Why |
 |---|---|
 | AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
-| AWS SQS | Visibility timeout, retries, duplicate delivery, dead-letter queues |
+| ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
 | AWS SNS | Topics, subscriptions, delivery failures |
 | AWS SES | Sending, bounces, complaints, the suppression list |
 | AWS DynamoDB | Conditional writes, pagination, typed attributes |

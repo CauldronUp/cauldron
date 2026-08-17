@@ -1,0 +1,505 @@
+# AWS SQS Recipe for Cauldron
+#
+# There is no SQS test mode. A queue is a real queue, billed per request, and
+# the alternatives teams reach for are worse than they look. LocalStack is a
+# separate reimplementation with its own divergences. A "test queue" in the
+# real account shares the account's throttles and, more to the point, shares a
+# region with production, so a misconfigured consumer drains the wrong one. And
+# an in-memory fake written by hand always delivers each message exactly once,
+# in order, which is the one thing SQS does not promise.
+#
+# That last point is why this Recipe exists. The failures that break a queue
+# consumer are not errors. They are ordinary successful deliveries of a message
+# the consumer has already seen.
+#
+# Four things worth modelling exactly:
+#
+#   1. Receiving a message does not remove it. It becomes invisible for the
+#      visibility timeout, and if the consumer does not delete it in time it
+#      comes back. Code that treats receive as consume processes the same
+#      message repeatedly, and only under load, which is when nobody is
+#      watching.
+#   2. A message carries ApproximateReceiveCount, and it is the only thing that
+#      says "you have seen this before". A consumer with no idempotency has no
+#      other signal, and the word Approximate is a warning rather than
+#      modesty.
+#   3. ReceiveMessage returning no messages is a success, not an error. It
+#      answers 200 with no Messages key at all — not an empty array — so code
+#      doing `for (const m of response.Messages)` throws on an idle queue
+#      rather than waiting.
+#   4. A ReceiptHandle is not a message id. It is issued per receive, it is
+#      long, and deleting with a stale one from an earlier receive silently
+#      does nothing. Two consumers holding two handles for the same message is
+#      normal.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not verify SigV4. The signature is different on every
+#     request, so there is no key to compare and implementing the algorithm is
+#     not what this project is for. The Recipe checks the Authorization header
+#     has the right shape, which catches the failure that actually happens —
+#     credentials not configured — and accepts a wrongly signed request. That
+#     is a real hole and it is stated here rather than left to be discovered.
+#   - Visibility timeouts do not elapse on their own. A message's visibility is
+#     the state the fixture puts it in, so redelivery is something a test seeds
+#     rather than waits for. That is the more useful shape for a test anyway: a
+#     redelivered message is a fixture, not a race.
+#   - Long polling, message ordering for FIFO queues, and batch operations are
+#     not modelled.
+#
+# Credentials below are fixtures, not secrets. They belong to no account.
+
+recipe: sqs
+version: 0.1.0
+
+upstream:
+  api: "2012-11-05"
+  docs: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4. There is no fixed credential to compare, so the shape is what is
+  # checked: the algorithm, a credential scope, the signed headers and a
+  # signature. A request with no header, or with a bearer token because
+  # somebody wired it up like every other API in this collection, is refused.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+
+responses:
+  list:
+    style: wrapped
+    key: Messages
+    # No Messages key at all when there is nothing to give, rather than an
+    # empty array. This is the single most reproduced SQS mistake: a consumer
+    # iterating response.Messages works for as long as the queue is busy and
+    # throws the first quiet minute.
+    omit_when_empty: true
+  resource:
+    style: bare
+  # The JSON protocol. A type that names the exception, and a message beside
+  # it, both capitalised.
+  error:
+    style: flat
+    code_field: __type
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  message:
+    collection: Messages
+    id:
+      style: uuid
+      field: MessageId
+    fields:
+      # Issued per receive, not per message. Deleting with a stale one from an
+      # earlier receive silently does nothing, and two consumers holding two
+      # handles for the same message is normal.
+      ReceiptHandle:
+        type: string
+      Body:
+        type: string
+      # The MD5 of the body, which SQS expects the consumer to check. Almost
+      # nobody does, and a truncated body is indistinguishable from a short
+      # one without it.
+      MD5OfBody:
+        type: string
+      # The only signal that a message has been seen before. A consumer with
+      # no idempotency has nothing else, and "Approximate" is a warning.
+      ApproximateReceiveCount:
+        type: string
+        in: Attributes
+        as: ApproximateReceiveCount
+      SentTimestamp:
+        type: string
+        in: Attributes
+        as: SentTimestamp
+      # Invisible until the visibility timeout expires. Receiving does not
+      # remove a message, and this is the state that says so.
+      visible:
+        type: boolean
+        default: true
+      # Which queue it is in. A message that exhausted its redrive policy is
+      # in the dead-letter queue, unchanged, with its receive count intact.
+      queue:
+        type: string
+
+  queue:
+    collection: QueueUrls
+    id:
+      style: opaque
+      field: QueueName
+      length: 12
+    fields:
+      # The URL is the identifier SQS actually wants everywhere: every
+      # operation takes a QueueUrl, not a name, and building one by hand from
+      # the account id and region is how people get the region wrong.
+      QueueUrl:
+        type: string
+      # Seconds. The window a consumer has to delete a message before it comes
+      # back, and the number every "why is this processed twice" incident
+      # eventually lands on.
+      VisibilityTimeout:
+        type: string
+        default: "30"
+      # Approximate, and it does not include invisible messages. A queue that
+      # looks empty can have a hundred in flight, so an autoscaler reading
+      # only this scales down mid-flight.
+      ApproximateNumberOfMessages:
+        type: string
+        default: "0"
+      # These are the ones in flight. Reading the pair is the only way to see
+      # the true depth.
+      ApproximateNumberOfMessagesNotVisible:
+        type: string
+        default: "0"
+      # The redrive policy, as a JSON string rather than an object. It is a
+      # string containing JSON, which trips up anything reading it as
+      # structured data.
+      RedrivePolicy:
+        type: string
+
+routes:
+  # The JSON protocol is RPC over POST to the root, with the operation in the
+  # X-Amz-Target header rather than the path.
+  - method: POST
+    path: /
+    resource: message
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /queues
+    resource: queue
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /queues/{id}
+    resource: queue
+    operation: get
+
+  - method: GET
+    path: /messages/{id}
+    resource: message
+    operation: get
+
+  - method: DELETE
+    path: /messages/{id}
+    resource: message
+    operation: delete
+    status: 200
+
+webhooks:
+  # SQS is a queue. Nothing calls back, which is the whole point of it, and
+  # inventing an event catalogue would be describing a different service.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 400
+    code: RequestThrottled
+    message: The request was throttled because too many requests were made.
+
+  authentication_error:
+    status: 403
+    code: InvalidClientTokenId
+    message: The security token included in the request is invalid.
+
+  resource_missing:
+    status: 400
+    code: AWS.SimpleQueueService.NonExistentQueue
+    message: "The specified queue does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: MissingParameter
+    message: "The request must contain the parameter {detail}."
+
+  # The failure a consumer hits when it takes longer than the visibility
+  # timeout: the handle it is holding has expired, the message is already back
+  # on the queue, and the delete does nothing.
+  receipt_handle_invalid:
+    status: 400
+    code: ReceiptHandleIsInvalid
+    message: The input receipt handle is invalid, or the message has already returned to the queue.
+
+  # A queue deleted and recreated with the same name is refused for sixty
+  # seconds, which is exactly long enough to look like a permissions problem
+  # in a teardown script.
+  queue_deleted_recently:
+    status: 400
+    code: AWS.SimpleQueueService.QueueDeletedRecently
+    message: You must wait 60 seconds after deleting a queue before you can create another with the same name.
+
+  # SQS caps a message at 256 KiB, and the failure names a limit rather than
+  # the field, so a batch that grew past it is a hunt.
+  message_too_long:
+    status: 400
+    code: InvalidParameterValue
+    message: "One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes."
+
+fixtures:
+  empty: {}
+
+  small-account:
+    queue:
+      - id: orders
+        QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
+        VisibilityTimeout: "30"
+        # Two waiting and one in flight. A queue that looks nearly empty can
+        # have work in progress, so an autoscaler reading only the first
+        # number scales down mid-flight.
+        ApproximateNumberOfMessages: "2"
+        ApproximateNumberOfMessagesNotVisible: "1"
+        # A string containing JSON, not an object. Anything reading it as
+        # structured data gets a string.
+        RedrivePolicy: '{"deadLetterTargetArn":"arn:aws:sqs:eu-west-2:000000000000:orders-dlq","maxReceiveCount":3}'
+      - id: orders-dlq
+        QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders-dlq
+        VisibilityTimeout: "30"
+        ApproximateNumberOfMessages: "1"
+
+    message:
+      # Never delivered. First receive will set the count to 1.
+      - id: 11111111-1111-4111-8111-111111111111
+        queue: orders
+        ReceiptHandle: AQEBcauldron0000000000000000000000000001
+        Body: '{"order_id":1001}'
+        MD5OfBody: 8b1a9953c4611296a827abf8c47804d7
+        ApproximateReceiveCount: "1"
+        SentTimestamp: "1767225600000"
+        visible: true
+      # Delivered twice already and back on the queue. Nothing about it says
+      # "retry" except the count, and a consumer with no idempotency has
+      # already applied it twice.
+      - id: 22222222-2222-4222-8222-222222222222
+        queue: orders
+        ReceiptHandle: AQEBcauldron0000000000000000000000000002
+        Body: '{"order_id":1002}'
+        MD5OfBody: 8b1a9953c4611296a827abf8c47804d7
+        ApproximateReceiveCount: "3"
+        SentTimestamp: "1767225600000"
+        visible: true
+      # In flight. A consumer is holding it, it is not on the queue, and it is
+      # not gone either. It comes back if that consumer dies.
+      - id: 33333333-3333-4333-8333-333333333333
+        queue: orders
+        ReceiptHandle: AQEBcauldron0000000000000000000000000003
+        Body: '{"order_id":1003}'
+        MD5OfBody: 8b1a9953c4611296a827abf8c47804d7
+        ApproximateReceiveCount: "1"
+        SentTimestamp: "1767225600000"
+        visible: false
+      # Exhausted its redrive policy and moved to the dead-letter queue. The
+      # body is unchanged and the receive count is intact, which is the only
+      # evidence of what happened to it.
+      - id: 44444444-4444-4444-8444-444444444444
+        queue: orders-dlq
+        ReceiptHandle: AQEBcauldron0000000000000000000000000004
+        Body: '{"order_id":900}'
+        MD5OfBody: 8b1a9953c4611296a827abf8c47804d7
+        ApproximateReceiveCount: "4"
+        SentTimestamp: "1767139200000"
+        visible: true
+
+# Conformance cases, read from the SQS API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a redelivered message is an ordinary success
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /messages/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Seen three times. Nothing about the response says "retry" except
+        # this, and a consumer with no idempotency has already applied it
+        # twice. Approximate is a warning rather than modesty.
+        Attributes:
+          ApproximateReceiveCount: "3"
+        Body: '{"order_id":1002}'
+
+  - name: an in-flight message is neither on the queue nor gone
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /messages/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # A consumer is holding it. Receiving did not remove it, and it comes
+        # back if that consumer dies before deleting it.
+        visible: false
+        Attributes:
+          ApproximateReceiveCount: "1"
+
+  - name: a dead-lettered message keeps its body and its count
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /messages/44444444-4444-4444-8444-444444444444
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Unchanged, in a different queue, with the receive count intact. That
+        # count is the only evidence of what happened to it.
+        queue: orders-dlq
+        Body: '{"order_id":900}'
+        Attributes:
+          ApproximateReceiveCount: "4"
+
+  - name: a queue that looks nearly empty can have work in flight
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_GetQueueAttributes.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /queues/orders
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Two waiting, one in flight. An autoscaler reading only the first
+        # number scales down while a consumer is still working.
+        ApproximateNumberOfMessages: "2"
+        ApproximateNumberOfMessagesNotVisible: "1"
+        # Seconds, as a string. Every attribute is a string here, including
+        # the numeric ones.
+        VisibilityTimeout: "30"
+
+  - name: the redrive policy is a string containing JSON
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /queues/orders
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # A string, not an object. Anything reading it as structured data gets
+        # a string, and anything writing it as an object is rejected.
+        RedrivePolicy: '{"deadLetterTargetArn":"arn:aws:sqs:eu-west-2:000000000000:orders-dlq","maxReceiveCount":3}'
+
+  - name: a receipt handle is not a message id
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_DeleteMessage.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /messages/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        MessageId: 11111111-1111-4111-8111-111111111111
+        # Issued per receive, and much longer. Deleting with a stale one from
+        # an earlier receive silently does nothing.
+        ReceiptHandle: AQEBcauldron0000000000000000000000000001
+      matches:
+        # The body's MD5, which SQS expects the consumer to check and almost
+        # nobody does. Without it a truncated body is indistinguishable from a
+        # short one.
+        MD5OfBody: '^[0-9a-f]{32}$'
+
+  - name: an expired handle names the queue rather than the consumer
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_DeleteMessage.html
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /messages/55555555-5555-4555-8555-555555555555
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 400
+      body:
+        # The JSON protocol's shape: a __type naming the exception. Nothing
+        # here is called "code" or "error", so a client written for any other
+        # API in this collection finds nothing.
+        __type: AWS.SimpleQueueService.NonExistentQueue
+      absent:
+        - code
+        - error
+        - errors
+        - Error
+
+  - name: an idle queue omits the key rather than sending an empty array
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      # A success. Nothing to give is not an error, and the response says so
+      # by saying nothing.
+      status: 200
+      absent:
+        # Not an empty array. `for (const m of response.Messages)` throws here,
+        # which is the whole point: it works for as long as the queue is busy.
+        - Messages
+
+  - name: a busy queue does send the key
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # The other half of the pair. Omitting the key when empty only means
+        # something if it is present when not.
+        Messages[0].MessageId: 11111111-1111-4111-8111-111111111111
+
+  - name: a bearer token is not a signature
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/CommonParameters.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /queues
+      headers:
+        # Wired up like every other API in this collection, which is the
+        # mistake. AWS wants a signature, and Cauldron checks its shape
+        # because the value differs on every request.
+        Authorization: Bearer cauldron-sqs-key
+    expect:
+      status: 403
+      body:
+        __type: InvalidClientTokenId
+      matches:
+        message: 'security token'
+
+  - name: a request with no credentials at all is refused
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/CommonParameters.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /queues
+    expect:
+      # The failure that actually happens: credentials not configured. Shape
+      # checking catches it even though the signature itself is not verified.
+      status: 403
+      body:
+        __type: InvalidClientTokenId
