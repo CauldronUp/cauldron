@@ -169,3 +169,44 @@ func TestANestedCursorAppearsUnderItsDeclaredPath(t *testing.T) {
 		t.Errorf("paging.next.after missing from %v", body)
 	}
 }
+
+// A declared envelope constant and a computed value can land in the same
+// nested object. Intercom's pages carries both a declared type and a next
+// cursor, and whichever was written second used to erase the other.
+func TestDeclaredConstantsMergeWithComputedValues(t *testing.T) {
+	r, err := recipe.Open("intercom")
+	if err != nil {
+		t.Fatalf("open intercom: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-workspace"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/contacts?limit=2", nil)
+	req.Header.Set("Authorization", "Bearer dG9rOmNhdWxkcm9u")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	pages, _ := body["pages"].(map[string]any)
+	if pages == nil {
+		t.Fatalf("no pages in %v", body)
+	}
+
+	if pages["type"] != "pages" {
+		t.Errorf("the declared constant was lost: pages = %v", pages)
+	}
+
+	next, _ := pages["next"].(map[string]any)
+	if next == nil || next["starting_after"] == nil {
+		t.Errorf("the computed cursor was lost: pages = %v", pages)
+	}
+}
