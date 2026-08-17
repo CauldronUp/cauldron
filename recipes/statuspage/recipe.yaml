@@ -1,0 +1,415 @@
+# Statuspage Recipe for Cauldron
+#
+# Statuspage is the worst thing on this list to test against for real. A page
+# is public by definition, and creating an incident notifies every subscriber
+# by email, SMS and webhook. There is no test mode and no sandbox page on most
+# plans. Teams either pay for a second page nobody reads or test the incident
+# path exactly once, by accident, in front of their customers.
+#
+# Two things worth modelling exactly:
+#
+#   1. Incident status and impact are independent. An incident can be resolved
+#      and still have had critical impact, and a maintenance window is an
+#      incident with its own separate set of statuses. Code that derives a
+#      page's health from status alone gets it wrong in both directions.
+#   2. A component's status is not a boolean. degraded_performance and
+#      partial_outage sit between operational and major_outage, and a banner
+#      that treats anything other than operational as down overstates every
+#      partial problem.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: statuspage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.statuspage.io/
+
+auth:
+  # Statuspage's own scheme. Not Bearer.
+  scheme: bearer
+  header: Authorization
+  prefix: "OAuth "
+  keys:
+    - cauldron-statuspage-key
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    # A bare string under "error", not an object and not a "message".
+    message_field: error
+
+resources:
+  incident:
+    id:
+      style: hex
+      length: 14
+    fields:
+      page_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # investigating, identified, monitoring, resolved, postmortem for a
+      # real incident; scheduled, in_progress, verifying, completed for a
+      # maintenance window. The two vocabularies do not overlap.
+      status:
+        type: string
+        default: investigating
+      # none, minor, major, critical. Independent of status: an incident can
+      # be resolved and still have had critical impact.
+      impact:
+        type: string
+        default: minor
+      shortlink:
+        type: string
+      # Set only when it is actually resolved.
+      resolved_at:
+        type: datetime
+        stamped: false
+      # A scheduled maintenance has these; a live incident does not.
+      scheduled_for:
+        type: datetime
+        stamped: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  component:
+    id:
+      style: hex
+      length: 14
+    fields:
+      page_id:
+        type: string
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      # operational, degraded_performance, partial_outage, major_outage,
+      # under_maintenance. Not a boolean, and the two middle values are the
+      # ones a naive banner gets wrong.
+      status:
+        type: string
+        default: operational
+      # A component hidden from the public page still reports its status
+      # through the API, which is how an internal-only check leaks into a
+      # customer-facing summary.
+      showcase:
+        type: boolean
+        default: true
+      position:
+        type: integer
+        default: 1
+      created_at:
+        type: datetime
+
+  subscriber:
+    id:
+      style: hex
+      length: 14
+    fields:
+      page_id:
+        type: string
+      email:
+        type: string
+      phone_number:
+        type: string
+      mode:
+        type: string
+        default: email
+      # A subscriber who has not confirmed receives nothing, and counting
+      # them overstates the reach of every announcement.
+      quarantined_at:
+        type: datetime
+        stamped: false
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/pages/{page_id}/incidents
+    resource: incident
+    operation: list
+    scope: [page_id]
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /v1/pages/{page_id}/incidents
+    resource: incident
+    operation: create
+    scope: [page_id]
+    status: 201
+
+  - method: GET
+    path: /v1/pages/{page_id}/incidents/{id}
+    resource: incident
+    operation: get
+    scope: [page_id]
+
+  - method: PATCH
+    path: /v1/pages/{page_id}/incidents/{id}
+    resource: incident
+    operation: update
+    scope: [page_id]
+
+  - method: GET
+    path: /v1/pages/{page_id}/components
+    resource: component
+    operation: list
+    scope: [page_id]
+    pagination:
+      style: page
+      limit: 100
+
+  - method: PATCH
+    path: /v1/pages/{page_id}/components/{id}
+    resource: component
+    operation: update
+    scope: [page_id]
+
+  - method: GET
+    path: /v1/pages/{page_id}/subscribers
+    resource: subscriber
+    operation: list
+    scope: [page_id]
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  events:
+    - incident.create
+    - incident.update
+    - component.update
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: Could not authenticate
+
+  resource_missing:
+    status: 404
+    message: "Could not find the requested resource: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # Statuspage refuses to resolve an incident that has no update, which is
+  # what an automation that only sets the status runs into.
+  missing_update_body:
+    status: 422
+    message: An incident update body is required to change the status
+
+  # The plan wall. Adding a subscriber past the plan limit fails while
+  # everything else keeps working.
+  subscriber_limit_reached:
+    status: 402
+    message: The page has reached its subscriber limit
+
+fixtures:
+  empty: {}
+
+  small-page:
+    component:
+      - id: comp0000000001
+        page_id: pagecauldron01
+        name: API
+        status: operational
+        position: 1
+      - id: comp0000000002
+        page_id: pagecauldron01
+        name: Dashboard
+        # Between operational and down. A banner that treats anything other
+        # than operational as down overstates this.
+        status: degraded_performance
+        position: 2
+      - id: comp0000000003
+        page_id: pagecauldron01
+        name: Internal batch jobs
+        status: partial_outage
+        # Hidden from the public page and still reported by the API, which
+        # is how an internal-only check leaks into a customer summary.
+        showcase: false
+        position: 3
+    incident:
+      - id: inci0000000001
+        page_id: pagecauldron01
+        name: Elevated API latency
+        status: monitoring
+        impact: major
+        shortlink: https://stspg.io/cauldron1
+      - id: inci0000000002
+        page_id: pagecauldron01
+        name: Checkout unavailable
+        # Resolved, and it was critical while it lasted. Deriving a page's
+        # health from status alone loses that.
+        status: resolved
+        impact: critical
+        resolved_at: "2026-01-11T18:40:00Z"
+      - id: inci0000000003
+        page_id: pagecauldron01
+        name: Planned database upgrade
+        # A maintenance window uses a different vocabulary entirely.
+        status: scheduled
+        impact: none
+        scheduled_for: "2026-02-01T02:00:00Z"
+    subscriber:
+      - id: subs0000000001
+        page_id: pagecauldron01
+        email: ada@example.com
+        mode: email
+      - id: subs0000000002
+        page_id: pagecauldron01
+        email: unconfirmed@example.com
+        mode: email
+        # Not confirmed, so receives nothing. Counting them overstates the
+        # reach of every announcement.
+        quarantined_at: "2026-01-05T09:00:00Z"
+
+# Conformance cases, read from Statuspage's API reference rather than observed
+# against a live page. The verify report says so.
+conformance:
+  - name: status and impact are independent
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/incidents
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        '[0]':
+          status: monitoring
+          impact: major
+        # Resolved, and it was critical while it lasted. Deriving health
+        # from status alone loses that entirely.
+        '[1]':
+          status: resolved
+          impact: critical
+
+  - name: a maintenance window uses a different vocabulary
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/incidents/inci0000000003
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        # scheduled is not one of the incident statuses, and impact none is
+        # not the same as no incident.
+        status: scheduled
+        impact: none
+        scheduled_for: "2026-02-01T02:00:00Z"
+      absent:
+        - resolved_at
+
+  - name: component status is not a boolean
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/components
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        '[0]':
+          status: operational
+        # The two middle values are the ones a naive banner gets wrong.
+        '[1]':
+          status: degraded_performance
+        '[2]':
+          status: partial_outage
+
+  - name: a hidden component still reports through the API
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/components
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        # Not on the public page, still in the API. Rolling this into a
+        # customer-facing summary leaks an internal-only check.
+        '[2]':
+          showcase: false
+          name: Internal batch jobs
+
+  - name: an unresolved incident has no resolution time
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/incidents/inci0000000001
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        status: monitoring
+      absent:
+        - resolved_at
+        - scheduled_for
+
+  - name: an unconfirmed subscriber receives nothing
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/subscribers
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 200
+      body:
+        '[1]':
+          quarantined_at: "2026-01-05T09:00:00Z"
+          email: unconfirmed@example.com
+      # The confirmed one has no quarantine date at all.
+      absent:
+        - '[0].quarantined_at'
+
+  - name: the error is a bare string under error
+    source: https://developer.statuspage.io/
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages/pagecauldron01/incidents/doesnotexist00
+      headers:
+        Authorization: OAuth cauldron-statuspage-key
+    expect:
+      status: 404
+      matches:
+        error: 'Could not find'
+      # Not an object, and not a message. Code reading error.message finds a
+      # string where it expected an object.
+      absent:
+        - error.message
+        - message
+        - errors
