@@ -146,6 +146,10 @@ type SuccessResponse struct {
 type ResourceResponse struct {
 	// Style is bare (the default) or wrapped.
 	Style string `yaml:"style"`
+	// Key is the wrapping property name. Empty uses the resource's own name,
+	// which is what Shopify does. Cloudflare wraps everything under "result"
+	// regardless of what the object is, so the name has to be declarable.
+	Key string `yaml:"key"`
 }
 
 // ErrorResponse describes the envelope a provider puts failures in.

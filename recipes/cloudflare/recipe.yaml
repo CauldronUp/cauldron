@@ -1,0 +1,398 @@
+# Cloudflare Recipe for Cauldron
+#
+# Cloudflare has no sandbox and no test mode. Every call acts on a real zone,
+# and the destructive ones are genuinely destructive: purging a cache, changing
+# a DNS record, or deleting one takes effect on a live site immediately. Teams
+# either keep a scratch domain, which costs money and drifts from production,
+# or they test the happy path by hand and never exercise the failures.
+#
+# The distinctive thing is the envelope, and it is worth reproducing exactly:
+# every response, success or failure, has the same four keys. success is a
+# boolean, errors and messages are always arrays, and the payload is always
+# under result whether it is one object or a list of them. A client that
+# branches on the HTTP status rather than reading success is checking the wrong
+# thing, and a client that expects the object at the top level finds nothing.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: cloudflare
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://developers.cloudflare.com/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-api-token
+
+responses:
+  # The four keys every successful response carries.
+  success:
+    fields:
+      success: true
+      errors: []
+      messages: []
+  list:
+    style: wrapped
+    key: result
+    count_field: result_info.total_count
+  # A single object is wrapped under result too, not under its own name.
+  resource:
+    style: wrapped
+    key: result
+  error:
+    style: list
+    key: errors
+    code_field: code
+    message_field: message
+    # The same envelope, with the payload emptied out.
+    fields:
+      success: false
+      messages: []
+      result: null
+
+resources:
+  dns_record:
+    collection: result
+    id:
+      style: hex
+      length: 32
+    fields:
+      zone_id:
+        type: string
+      type:
+        type: string
+        required: true
+      name:
+        type: string
+        required: true
+      content:
+        type: string
+        required: true
+      ttl:
+        type: integer
+        default: 1
+      # Whether Cloudflare proxies the record. Getting this wrong is the
+      # difference between a protected origin and an exposed one.
+      proxied:
+        type: boolean
+        default: false
+      comment:
+        type: string
+      created_on:
+        type: datetime
+      modified_on:
+        type: datetime
+
+  zone:
+    collection: result
+    id:
+      style: hex
+      length: 32
+    fields:
+      name:
+        type: string
+        required: true
+      status:
+        type: string
+        default: active
+      paused:
+        type: boolean
+        default: false
+      type:
+        type: string
+        default: full
+      development_mode:
+        type: integer
+        default: 0
+      created_on:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /client/v4/zones
+    resource: zone
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /client/v4/zones/{id}
+    resource: zone
+    operation: get
+
+  - method: GET
+    path: /client/v4/zones/{zone_id}/dns_records
+    resource: dns_record
+    operation: list
+    scope: [zone_id]
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /client/v4/zones/{zone_id}/dns_records
+    resource: dns_record
+    operation: create
+    scope: [zone_id]
+
+  - method: GET
+    path: /client/v4/zones/{zone_id}/dns_records/{id}
+    resource: dns_record
+    operation: get
+    scope: [zone_id]
+
+  - method: PATCH
+    path: /client/v4/zones/{zone_id}/dns_records/{id}
+    resource: dns_record
+    operation: update
+    scope: [zone_id]
+
+  - method: DELETE
+    path: /client/v4/zones/{zone_id}/dns_records/{id}
+    resource: dns_record
+    operation: delete
+    scope: [zone_id]
+
+webhooks:
+  events:
+    - zone.created
+    - dns_record.created
+    - dns_record.updated
+    - dns_record.deleted
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: "10000"
+    message: More than 1200 requests per five minutes
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 403
+    code: "10000"
+    message: Authentication error
+
+  resource_missing:
+    status: 404
+    code: "81044"
+    message: "Record does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "9106"
+    message: "Missing required parameter: {detail}"
+
+  # The failures that only appear against a real zone, which is exactly why
+  # they never get exercised.
+  record_already_exists:
+    status: 400
+    code: "81057"
+    message: Record already exists.
+
+  # Proxying only works for a hostname the zone actually covers, and the
+  # failure is silent until deploy.
+  invalid_proxy_target:
+    status: 400
+    code: "9021"
+    message: Only A, AAAA and CNAME records can be proxied.
+
+  zone_not_active:
+    status: 403
+    code: "1049"
+    message: The zone is not active, so this request cannot be served.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    zone:
+      - id: "00000000000000000000000000000001"
+        name: example.com
+        status: active
+        type: full
+      - id: "00000000000000000000000000000002"
+        name: staging.example.net
+        # A pending zone serves nothing. Code that assumes every zone in the
+        # list is live fails the moment somebody adds a domain.
+        status: pending
+    dns_record:
+      - id: "0000000000000000000000000000000a"
+        zone_id: "00000000000000000000000000000001"
+        type: A
+        name: example.com
+        content: 203.0.113.10
+        proxied: true
+        ttl: 1
+      - id: "0000000000000000000000000000000b"
+        zone_id: "00000000000000000000000000000001"
+        type: CNAME
+        name: www.example.com
+        content: example.com
+        proxied: true
+      - id: "0000000000000000000000000000000c"
+        zone_id: "00000000000000000000000000000001"
+        type: TXT
+        name: example.com
+        content: v=spf1 include:example.net ~all
+        # A TXT record cannot be proxied, which is why this one is not.
+        proxied: false
+      - id: "0000000000000000000000000000000d"
+        zone_id: "00000000000000000000000000000002"
+        type: A
+        name: staging.example.net
+        content: 203.0.113.99
+
+# Conformance cases, read from Cloudflare's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a single object is wrapped under result, not its own name
+    source: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/get/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/zones/00000000000000000000000000000001/dns_records/0000000000000000000000000000000a
+      headers:
+        Authorization: Bearer cauldron-api-token
+    expect:
+      status: 200
+      body:
+        success: true
+        errors: []
+        messages: []
+        result:
+          type: A
+          name: example.com
+          content: 203.0.113.10
+          proxied: true
+      # A client expecting the record at the top level finds nothing, and one
+      # expecting it under "dns_record" finds nothing either.
+      absent:
+        - dns_record
+        - id
+        - type
+
+  - name: a collection uses the same envelope with an array in result
+    source: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/zones/00000000000000000000000000000001/dns_records
+      headers:
+        Authorization: Bearer cauldron-api-token
+    expect:
+      status: 200
+      body:
+        success: true
+        errors: []
+        result_info:
+          total_count: 3
+        result[0].name: example.com
+        result[2].type: TXT
+      absent:
+        - data
+        - result[3]
+
+  - name: a failure keeps the envelope and empties the payload
+    source: https://developers.cloudflare.com/api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/zones/00000000000000000000000000000001/dns_records/ffffffffffffffffffffffffffffffff
+      headers:
+        Authorization: Bearer cauldron-api-token
+    expect:
+      status: 404
+      body:
+        # Same four keys. A client branching on the HTTP status rather than
+        # reading success is checking the wrong thing.
+        success: false
+        messages: []
+        result: null
+        errors[0].code: 81044
+      matches:
+        errors[0].message: 'Record does not exist'
+      absent:
+        - error
+        - message
+
+  - name: a bad token is a 403 in the same shape
+    source: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/
+    request:
+      method: GET
+      path: /client/v4/zones
+    expect:
+      status: 403
+      body:
+        success: false
+        result: null
+        errors[0].message: Authentication error
+
+  - name: records from another zone are not visible
+    source: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/zones/00000000000000000000000000000002/dns_records
+      headers:
+        Authorization: Bearer cauldron-api-token
+    expect:
+      status: 200
+      body:
+        success: true
+        result_info:
+          total_count: 1
+        result[0].name: staging.example.net
+      absent:
+        - result[1]
+
+  - name: a pending zone is still listed, flagged rather than hidden
+    source: https://developers.cloudflare.com/api/resources/zones/methods/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/zones
+      headers:
+        Authorization: Bearer cauldron-api-token
+    expect:
+      status: 200
+      body:
+        success: true
+        result[0].status: active
+        # A pending zone serves nothing. Code that assumes every zone in the
+        # list is live fails the moment somebody adds a domain.
+        result[1].status: pending
+
+  - name: a created record gets a hex identifier and the proxy default
+    source: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
+    fixture: empty
+    request:
+      method: POST
+      path: /client/v4/zones/00000000000000000000000000000001/dns_records
+      headers:
+        Authorization: Bearer cauldron-api-token
+      json:
+        type: A
+        name: api.example.com
+        content: 203.0.113.20
+    expect:
+      status: 200
+      body:
+        success: true
+        result:
+          type: A
+          name: api.example.com
+          # Not proxied unless asked. Assuming otherwise is the difference
+          # between a protected origin and an exposed one.
+          proxied: false
+          ttl: 1
+      matches:
+        result.id: '^[0-9a-f]{32}$'
