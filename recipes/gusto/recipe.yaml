@@ -1,0 +1,497 @@
+# Gusto Recipe for Cauldron
+#
+# Gusto has a demo environment, and getting into it means applying for
+# developer access and being approved, which is not something a contributor
+# can do on a Tuesday afternoon. Once in, a demo company is a shared fixture
+# with whatever state the last person left it in.
+#
+# The deeper problem is that this API moves money. A payroll submitted against
+# a real company pays real people, and the operation cannot be undone after the
+# deadline passes. There is no dry run that exercises the same code path, so
+# the last thing anybody wants is a test suite pointed anywhere near it.
+#
+# Four things worth modelling exactly:
+#
+#   1. processed means submitted, not paid. A payroll with processed true has
+#      been sent and the money moves on check_date, which can be days later,
+#      and until the deadline it can still be cancelled. Treating processed as
+#      "these people have been paid" is wrong for the entire window that
+#      matters.
+#   2. A payroll carries three dates that are all different: the pay period
+#      start and end, the deadline for submitting, and the check date when
+#      money moves. Reporting on the wrong one puts earnings in the wrong
+#      month, which is a tax problem rather than a display problem.
+#   3. A terminated employee is still returned and still has payroll history.
+#      Excluding them from a payroll run is right; excluding them from a
+#      year-end report is wrong, and the same list serves both.
+#   4. An employee can exist, be listed, and be impossible to pay. onboarded
+#      false means their record is incomplete, and nothing about the employee
+#      object says why beyond that flag.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is calculated here. The gross and net figures in a fixture are
+#     the figures returned, so this Recipe is about the shape of the answer
+#     and the states it comes in.
+#   - A payroll does not progress on its own. Whether it is processed, and
+#     whether its check date has passed, is what a fixture puts there.
+#   - Gusto's OAuth flow, token refresh and company onboarding are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: gusto
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.gusto.com/embedded-payroll/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-gusto-access-token
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: error_key
+    code_type: string
+    type_field: category
+
+resources:
+  employee:
+    id:
+      style: uuid
+    fields:
+      first_name:
+        type: string
+        required: true
+      last_name:
+        type: string
+      email:
+        type: string
+      company_uuid:
+        type: string
+      # Still returned, still holding payroll history. Excluding them from a
+      # run is right and excluding them from a year-end report is wrong, and
+      # the same list serves both.
+      terminated:
+        type: boolean
+        default: false
+      # Set only on a terminated employee, and it is the date the employment
+      # ended rather than the last time they were paid. Those differ by up to
+      # a pay period.
+      terminated_at:
+        type: string
+      # False means the record is incomplete and this person cannot be paid.
+      # Nothing else on the object says why.
+      onboarded:
+        type: boolean
+        default: false
+      onboarding_status:
+        type: string
+        default: admin_onboarding_incomplete
+      # Empty until somebody assigns one. An employee with no job has no
+      # compensation, which is the usual reason onboarded is false.
+      jobs:
+        type: list
+
+  payroll:
+    id:
+      style: uuid
+      field: payroll_uuid
+    fields:
+      company_uuid:
+        type: string
+      # Submitted, not paid. The money moves on check_date below, and until
+      # the deadline this can still be cancelled.
+      processed:
+        type: boolean
+        default: false
+      # When it was submitted. Absent on an unprocessed payroll, which makes
+      # its presence the more reliable signal than the flag.
+      processed_date:
+        type: string
+      # The last moment it can be submitted or cancelled. After this it is
+      # irreversible and before it nothing has moved.
+      payroll_deadline:
+        type: string
+      # When money actually moves. Days after processing, and the date a
+      # report should use.
+      check_date:
+        type: string
+      # The work the payroll is for, which is a different window again.
+      pay_period_start_date:
+        type: string
+        in: pay_period
+        as: start_date
+      pay_period_end_date:
+        type: string
+        in: pay_period
+        as: end_date
+      # A correction or a bonus run, sitting in the same list as the regular
+      # ones. Summing payrolls by pay period double-counts when one exists.
+      off_cycle:
+        type: boolean
+        default: false
+      totals:
+        type: list
+
+routes:
+  - method: GET
+    path: /v1/companies/{company_uuid}/employees
+    resource: employee
+    operation: list
+    scope: [company_uuid]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1/employees/{id}
+    resource: employee
+    operation: get
+
+  - method: GET
+    path: /v1/companies/{company_uuid}/payrolls
+    resource: payroll
+    operation: list
+    scope: [company_uuid]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1/payrolls/{id}
+    resource: payroll
+    operation: get
+
+webhooks:
+  events:
+    - payroll.processed
+    - payroll.paid
+    - employee.created
+    - employee.terminated
+    - company.onboarded
+  signing:
+    scheme: hmac-sha256
+    header: X-Gusto-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    type: rate_limit
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    code: unauthenticated
+    type: authentication
+    message: "Your access token is invalid or has expired."
+
+  resource_missing:
+    status: 404
+    code: not_found
+    type: invalid_request
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: blank
+    type: invalid_attribute_value
+    message: "{detail} can't be blank"
+
+  # The window closed. A payroll cannot be submitted or cancelled after its
+  # deadline, and a job that runs late finds this rather than a retry.
+  deadline_passed:
+    status: 422
+    code: payroll_deadline_passed
+    type: invalid_operation
+    message: The payroll deadline has passed and this payroll can no longer be modified.
+
+  # An employee who is listed and cannot be paid. The failure names the
+  # employee rather than what is missing from their record.
+  employee_not_onboarded:
+    status: 422
+    code: employee_not_onboarded
+    type: invalid_operation
+    message: This employee has not completed onboarding and cannot be included in a payroll.
+
+  # Gusto refuses a payroll for a company that is not fully set up, which is
+  # the state a freshly created company sits in for days.
+  company_not_onboarded:
+    status: 422
+    code: company_not_onboarded
+    type: invalid_operation
+    message: The company has not finished onboarding and cannot run payroll.
+
+fixtures:
+  empty: {}
+
+  small-company:
+    employee:
+      - id: 11111111-1111-4111-8111-111111111111
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        first_name: Ada
+        last_name: Lovelace
+        email: ada@example.com
+        onboarded: true
+        onboarding_status: onboarding_completed
+        jobs:
+          - uuid: j0000000-0000-4000-8000-000000000001
+            title: Principal Engineer
+      # Left the company. Still returned, still holding payroll history, and
+      # the same list serves both the run and the year-end report.
+      - id: 22222222-2222-4222-8222-222222222222
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        first_name: Former
+        last_name: Employee
+        terminated: true
+        # The employment ended here. The last payment came later, on the
+        # check date of the payroll covering their final period.
+        terminated_at: "2026-01-09"
+        onboarded: true
+        onboarding_status: onboarding_completed
+        jobs:
+          - uuid: j0000000-0000-4000-8000-000000000002
+            title: Analyst
+      # Exists, is listed, cannot be paid. Nothing on the object says why
+      # beyond the flag and the empty jobs array.
+      - id: 33333333-3333-4333-8333-333333333333
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        first_name: New
+        last_name: Starter
+        email: new@example.com
+        onboarded: false
+        onboarding_status: admin_onboarding_incomplete
+        jobs: []
+
+    payroll:
+      # Submitted, and the money has not moved. It can still be cancelled
+      # until the deadline, and check_date is when people are actually paid.
+      - id: p0000000-0000-4000-8000-000000000001
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        processed: true
+        processed_date: "2026-01-13"
+        payroll_deadline: "2026-01-14"
+        # Two days after processing. This is the date a report should use.
+        check_date: "2026-01-15"
+        pay_period_start_date: "2026-01-01"
+        pay_period_end_date: "2026-01-14"
+        totals:
+          # Dollar strings, like WooCommerce. Adding two of them in
+          # JavaScript concatenates.
+          - gross_pay: "8400.00"
+            net_pay: "6210.55"
+            employer_taxes: "981.20"
+      # Not submitted. The deadline has not passed and nothing has happened.
+      - id: p0000000-0000-4000-8000-000000000002
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        processed: false
+        payroll_deadline: "2026-01-28"
+        check_date: "2026-01-31"
+        pay_period_start_date: "2026-01-15"
+        pay_period_end_date: "2026-01-28"
+        totals:
+          - gross_pay: "8400.00"
+            net_pay: "6210.55"
+            employer_taxes: "981.20"
+      # A correction, sitting in the same list as the regular runs. Summing
+      # payrolls by pay period double-counts the fortnight this covers.
+      - id: p0000000-0000-4000-8000-000000000003
+        company_uuid: c0000000-0000-4000-8000-000000000001
+        processed: true
+        processed_date: "2026-01-16"
+        payroll_deadline: "2026-01-16"
+        check_date: "2026-01-17"
+        pay_period_start_date: "2026-01-01"
+        pay_period_end_date: "2026-01-14"
+        off_cycle: true
+        totals:
+          - gross_pay: "200.00"
+            net_pay: "148.30"
+            employer_taxes: "23.40"
+
+# Conformance cases, read from the Gusto Embedded Payroll reference rather
+# than observed against a live company. The verify report says so.
+conformance:
+  - name: processed means submitted rather than paid
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/p0000000-0000-4000-8000-000000000001
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        # Submitted on the thirteenth, deadline the fourteenth, money moves
+        # on the fifteenth. Treating processed as "these people have been
+        # paid" is wrong for the entire window that matters, and until the
+        # deadline it can still be cancelled.
+        processed: true
+        processed_date: "2026-01-13"
+        payroll_deadline: "2026-01-14"
+        check_date: "2026-01-15"
+
+  - name: the pay period is a fourth window again
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/p0000000-0000-4000-8000-000000000001
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        # The work was done in the first fortnight of January and paid on the
+        # fifteenth. Reporting on the wrong date puts earnings in the wrong
+        # month, which is a tax problem rather than a display problem.
+        pay_period:
+          start_date: "2026-01-01"
+          end_date: "2026-01-14"
+
+  - name: an unprocessed payroll has no processed date
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/p0000000-0000-4000-8000-000000000002
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        processed: false
+        check_date: "2026-01-31"
+      # Absent rather than null, so its presence is a more reliable signal
+      # than the flag beside it.
+      absent:
+        - processed_date
+
+  - name: an off cycle payroll shares a pay period with a regular one
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/p0000000-0000-4000-8000-000000000003
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        # The same fortnight as the first payroll, paid separately. Summing
+        # payrolls by pay period double-counts it.
+        off_cycle: true
+        pay_period:
+          start_date: "2026-01-01"
+          end_date: "2026-01-14"
+        check_date: "2026-01-17"
+
+  - name: money is a dollar string
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/p0000000-0000-4000-8000-000000000001
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        # Strings, not numbers. Adding two of them in JavaScript
+        # concatenates, and the result is accepted quietly by anything that
+        # stringifies it again on the way out.
+        totals[0].gross_pay: "8400.00"
+        totals[0].net_pay: "6210.55"
+
+  - name: a terminated employee is still in the list
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-employees
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/companies/c0000000-0000-4000-8000-000000000001/employees
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        '[0]':
+          terminated: false
+        # Left the company and still here. Excluding them from a run is
+        # right; excluding them from a year-end report is wrong, and this
+        # same list serves both.
+        '[1]':
+          terminated: true
+          terminated_at: "2026-01-09"
+
+  - name: an employee can exist and be impossible to pay
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-employees-employee_id
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/employees/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        # Listed, addressable, and not payable. The empty jobs array is the
+        # usual reason and the object says nothing else about it.
+        onboarded: false
+        onboarding_status: admin_onboarding_incomplete
+        jobs: []
+      absent:
+        - terminated_at
+
+  - name: a working employee has a job and no termination date
+    source: https://docs.gusto.com/embedded-payroll/reference/get-v1-employees-employee_id
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/employees/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 200
+      body:
+        onboarded: true
+        terminated: false
+        jobs[0].title: Principal Engineer
+      absent:
+        - terminated_at
+
+  - name: failures are an array with a key and a category
+    source: https://docs.gusto.com/embedded-payroll/docs/error-handling
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/payrolls/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer cauldron-gusto-access-token
+    expect:
+      status: 404
+      body:
+        # A key to branch on and a category above it, both strings, in an
+        # array because one request can be wrong several ways.
+        errors[0].error_key: not_found
+        errors[0].category: invalid_request
+      matches:
+        errors[0].message: 'Resource not found'
+      absent:
+        - error
+        - message
+        - code
