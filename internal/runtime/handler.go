@@ -628,6 +628,11 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 		}
 
 		presented = r.Header.Get(header)
+	case "query":
+		// The credential travels in the URL. Reproducing that exactly is the
+		// point: a header-based fake would hide the fact that the secret ends
+		// up in access logs and browser history.
+		presented = r.URL.Query().Get(auth.Param)
 	case "basic":
 		user, password, ok := r.BasicAuth()
 		if !ok {
@@ -722,6 +727,18 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		}
 
 		extra = defined.Fields
+	}
+
+	// Trello answers with plain text, so a client calling .json() on the
+	// response throws rather than reporting the failure. Writing JSON here
+	// would hide that.
+	if s.recipe.Responses.Error.Style == "text" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(status)
+
+		fmt.Fprint(w, message)
+
+		return status
 	}
 
 	writeJSON(w, status, s.errorBody(category, code, message, status, extra))
