@@ -1,0 +1,407 @@
+# Freshdesk Recipe for Cauldron
+#
+# Freshdesk has no sandbox on the plans most people are on. A trial account
+# expires, and a real help desk contains real customers, so a test that creates
+# a ticket can fire a real automation and email somebody. Teams either share a
+# trial that dies mid-project or point tests at production with a naming
+# convention.
+#
+# Two things worth modelling exactly:
+#
+#   1. Status and priority are integer enums, not words. A ticket's status is
+#      2, not "open", and 4 is resolved while 5 is closed. Code that compares
+#      against a string never matches, and code that treats "not 5" as open
+#      counts resolved tickets as outstanding.
+#   2. Collections are bare arrays with the paging in a Link header. An
+#      emulator that wrapped them in an object with a cursor would teach a
+#      client to read something the real API does not send.
+#
+# Known fidelity gap, stated rather than hidden: a Freshdesk validation
+# failure carries a description alongside a per-field errors array. Cauldron
+# sends the description; the per-field array is not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: freshdesk
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.freshdesk.com/api
+
+auth:
+  # Freshdesk sends the API key as the Basic username, with any password.
+  scheme: basic
+  keys:
+    - cauldron-freshdesk-key
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: description
+    code_field: code
+
+resources:
+  ticket:
+    collection: tickets
+    id:
+      style: numeric
+    fields:
+      subject:
+        type: string
+        required: true
+      description_text:
+        type: string
+      # Integer enums. 2 open, 3 pending, 4 resolved, 5 closed. Code that
+      # compares against "open" never matches, and code that treats anything
+      # other than 5 as outstanding counts resolved tickets twice.
+      status:
+        type: integer
+        default: 2
+      # 1 low, 2 medium, 3 high, 4 urgent.
+      priority:
+        type: integer
+        default: 1
+      # 1 email, 2 portal, 3 phone, 7 chat.
+      source:
+        type: integer
+        default: 2
+      requester_id:
+        type: integer
+      responder_id:
+        type: integer
+      group_id:
+        type: integer
+      # A ticket can breach its SLA while still being open, and the flag is
+      # what a report reads rather than the timestamps.
+      fr_escalated:
+        type: boolean
+        default: false
+      is_escalated:
+        type: boolean
+        default: false
+      # Set only when the ticket is actually resolved.
+      resolved_at:
+        type: datetime
+        stamped: false
+      due_by:
+        type: datetime
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  contact:
+    collection: contacts
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+      phone:
+        type: string
+      # An unverified contact cannot use the portal, and is still returned by
+      # a plain listing.
+      active:
+        type: boolean
+        default: false
+      company_id:
+        type: integer
+      created_at:
+        type: datetime
+
+  company:
+    collection: companies
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      domains:
+        type: string
+      # The plan a company is on drives its SLA, and a report that ignores it
+      # compares tickets against the wrong target.
+      note:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v2/tickets
+    resource: ticket
+    operation: list
+    pagination:
+      style: page
+      limit: 30
+
+  - method: POST
+    path: /api/v2/tickets
+    resource: ticket
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/tickets/{id}
+    resource: ticket
+    operation: get
+
+  - method: PUT
+    path: /api/v2/tickets/{id}
+    resource: ticket
+    operation: update
+
+  - method: DELETE
+    path: /api/v2/tickets/{id}
+    resource: ticket
+    operation: delete
+
+  - method: GET
+    path: /api/v2/contacts
+    resource: contact
+    operation: list
+    pagination:
+      style: page
+      limit: 30
+
+  - method: GET
+    path: /api/v2/contacts/{id}
+    resource: contact
+    operation: get
+
+  - method: GET
+    path: /api/v2/companies
+    resource: company
+    operation: list
+    pagination:
+      style: page
+      limit: 30
+
+webhooks:
+  events:
+    - ticket_create
+    - ticket_update
+    - ticket_status_change
+    - ticket_priority_change
+    - note_create
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: You have exceeded the limit of requests per minute
+    headers:
+      Retry-After: "20"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: invalid_credentials
+    message: You have to be logged in to perform this action.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: missing_field
+    message: "Validation failed: {detail} is required"
+
+  # Freshdesk refuses a duplicate contact email outright, which is what breaks
+  # a retried import halfway through.
+  duplicate_value:
+    status: 409
+    code: duplicate_value
+    message: A contact with this email already exists.
+
+  # An agent seat limit reached mid-month refuses writes while reads keep
+  # working, which reads like an intermittent failure.
+  access_denied:
+    status: 403
+    code: access_denied
+    message: You are not authorized to perform this action.
+
+fixtures:
+  empty: {}
+
+  small-helpdesk:
+    company:
+      - id: "1"
+        name: Analytical Engines
+        domains: example.com
+    contact:
+      - id: "10"
+        name: Ada Lovelace
+        email: ada@example.com
+        company_id: 1
+        active: true
+      - id: "11"
+        name: Grace Hopper
+        email: grace@example.com
+        company_id: 1
+        # Never verified. Cannot use the portal, and still listed.
+        active: false
+    ticket:
+      - id: "1"
+        subject: Cannot reset my password
+        description_text: The link says it has expired.
+        # Open, urgent, and already breaching first response.
+        status: 2
+        priority: 4
+        requester_id: 10
+        fr_escalated: true
+      - id: "2"
+        subject: Invoice query
+        # Resolved, not closed. A count of "anything but 5" includes this.
+        status: 4
+        priority: 2
+        requester_id: 10
+        resolved_at: "2026-01-12T14:00:00Z"
+      - id: "3"
+        subject: Feature request
+        status: 5
+        priority: 1
+        requester_id: 11
+        resolved_at: "2026-01-05T10:00:00Z"
+
+# Conformance cases, read from Freshdesk's API reference rather than observed
+# against a live help desk. The verify report says so.
+conformance:
+  - name: status and priority are integers, not words
+    source: https://developers.freshdesk.com/api/#tickets
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets/1
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 200
+      body:
+        # Code comparing against "open" never matches.
+        status: 2
+        priority: 4
+        source: 2
+        subject: Cannot reset my password
+
+  - name: resolved is not closed
+    source: https://developers.freshdesk.com/api/#ticket_attributes
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 200
+      body:
+        # 4 is resolved and 5 is closed. A count of "anything but 5" as
+        # outstanding includes the resolved one.
+        '[1]':
+          status: 4
+        '[2]':
+          status: 5
+
+  - name: a collection is a bare array
+    source: https://developers.freshdesk.com/api/#list_all_tickets
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 200
+      body:
+        '[0]':
+          subject: Cannot reset my password
+      # Paging is in a Link header, not the body. Wrapping these would teach
+      # a client to read something the real API does not send.
+      absent:
+        - data
+        - results
+        - meta
+
+  - name: an open ticket has no resolved_at
+    source: https://developers.freshdesk.com/api/#ticket_attributes
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets/1
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 200
+      body:
+        status: 2
+        # Breaching first response while still open. A report reads this flag
+        # rather than comparing timestamps.
+        fr_escalated: true
+      absent:
+        - resolved_at
+
+  - name: an unverified contact is still listed
+    source: https://developers.freshdesk.com/api/#contacts
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/contacts
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 200
+      body:
+        '[0]':
+          active: true
+        # Cannot use the portal, and still returned.
+        '[1]':
+          active: false
+          name: Grace Hopper
+
+  - name: the error prose is in description
+    source: https://developers.freshdesk.com/api/#error
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets/9999
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+    expect:
+      status: 404
+      body:
+        code: not_found
+      matches:
+        description: 'Resource not found'
+      absent:
+        - message
+        - error
+
+  - name: a new ticket opens at status 2 with the lowest priority
+    source: https://developers.freshdesk.com/api/#create_ticket
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v2/tickets
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZnJlc2hkZXNrLWtleTpY
+      json:
+        subject: Printer is smoking
+    expect:
+      status: 201
+      body:
+        subject: Printer is smoking
+        status: 2
+        priority: 1
+        fr_escalated: false
+      matches:
+        id: '^[0-9]+$'
