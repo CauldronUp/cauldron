@@ -47,3 +47,69 @@ jobs:
       # application months later.
       - name: Conformance
         run: go run ./cmd/cauldron verify
+
+  # The headless integration documented in docs/headless.md, run for real.
+  # Documentation nobody executes drifts, and the whole point of headless mode
+  # is that somebody else's environment depends on the shape of its output.
+  headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t cauldron:ci .
+
+      - name: The container serves the providers and nothing else
+        run: |
+          docker run -d --name cauldron -p 4600:4600 cauldron:ci serve --headless --host 0.0.0.0 stripe wordpress
+
+          # The JSON is on stdout and the diagnostics on stderr, so a caller
+          # can parse one without filtering the other.
+          for _ in $(seq 1 40); do
+            line=$(docker logs cauldron 2>/dev/null | head -1)
+            [ -n "$line" ] && break
+            sleep 0.5
+          done
+
+          echo "$line"
+          echo "$line" | jq -e '.mounted | length == 2' > /dev/null
+          echo "$line" | jq -e '.missing | type == "array"' > /dev/null
+          echo "$line" | jq -e '.unseeded | type == "array"' > /dev/null
+          echo "$line" | jq -e '.bind == "0.0.0.0" and .port == 4600' > /dev/null
+
+          # The address must be dialable. A wildcard bind reporting itself as
+          # [::]:4600 gives a caller something that fails on first use.
+          echo "$line" | jq -e '.address | startswith("http://127.0.0.1")' > /dev/null
+
+      - name: An application on the host can reach it
+        run: |
+          curl -sf http://127.0.0.1:4600/_cauldron/status > /dev/null
+          curl -sf -H "Authorization: Bearer sk_test_cauldron" http://127.0.0.1:4600/stripe/v1/customers | jq -e '.object == "list"' > /dev/null
+
+      - name: Seed through the control plane
+        run: |
+          curl -sf -X POST http://127.0.0.1:4600/_cauldron/wordpress/seed -d '{"fixture":"small-site"}' > /dev/null
+
+      # The compose story in docs/headless.md, minus compose: one container
+      # reaching another by name, with the credentials the Recipe declares.
+      - name: And so can another container, by service name
+        run: |
+          docker network create cauldron-net
+          docker network connect cauldron-net cauldron
+
+          posts=$(docker run --rm --network cauldron-net curlimages/curl:latest -sf --header "Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl" http://cauldron:4600/wordpress/wp-json/wp/v2/posts)
+
+          # The seed reached the same process the other container is talking
+          # to. What shape each field has is the conformance suite's job; this
+          # job is about the integration.
+          echo "$posts" | jq -e 'length > 0' > /dev/null
+          echo "$posts" | jq -e '.[0].id != null' > /dev/null
+
+          # Without the credential it is refused, so the container is really
+          # talking to the emulator rather than to something permissive.
+          code=$(docker run --rm --network cauldron-net curlimages/curl:latest -s -o /dev/null -w "%{http_code}" http://cauldron:4600/wordpress/wp-json/wp/v2/posts)
+          [ "$code" = "401" ] || { echo "unauthenticated request returned $code, want 401"; exit 1; }
+
+      - name: Stop
+        if: always()
+        run: docker rm -f cauldron || true
