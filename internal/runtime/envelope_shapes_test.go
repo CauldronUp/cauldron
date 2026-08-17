@@ -312,3 +312,46 @@ func TestAnUpdateAndDeleteHonourTheDeclaredStatusAndEmptyBody(t *testing.T) {
 		t.Errorf("a delete should answer with nothing at all, got %q", body)
 	}
 }
+
+// "-" means the provider sends no such field. That was honoured for the message
+// everywhere and for the code and type only in the nested style, so a flat
+// Recipe saying type_field: "-" got a literal "-" key in every error body.
+//
+// Three shipped Recipes were doing it and every case about them passed, because
+// a case asserts the fields it names and stays silent about a key nobody
+// thought to look for. It was found by reading an actual response rather than
+// by the suite, which is the argument for doing that occasionally.
+func TestTheOmissionMarkerNeverBecomesAFieldName(t *testing.T) {
+	for _, provider := range []struct {
+		recipe string
+		path   string
+		header string
+		value  string
+	}{
+		{"woocommerce", "/wp-json/wc/v3/orders/999", "Authorization", "Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA=="},
+		{"wordpress", "/wp-json/wp/v2/posts/999", "Authorization", "Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl"},
+		{"digitalocean", "/v2/droplets/999", "Authorization", "Bearer dop_v1_cauldron"},
+	} {
+		r, err := recipe.Open(provider.recipe)
+		if err != nil {
+			t.Fatalf("open %s: %v", provider.recipe, err)
+		}
+
+		sandbox, err := New(r, Options{Seed: 1})
+		if err != nil {
+			t.Fatalf("new sandbox: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, provider.path, nil)
+		req.Header.Set(provider.header, provider.value)
+
+		rec := httptest.NewRecorder()
+		sandbox.ServeHTTP(rec, req)
+
+		body := decode(t, rec)
+
+		if _, present := body["-"]; present {
+			t.Errorf("%s sends a literal %q key: %v", provider.recipe, "-", body)
+		}
+	}
+}
