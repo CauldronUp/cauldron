@@ -511,6 +511,43 @@ func TestAnUndeclaredWebhookEnvelopeStaysTheDefault(t *testing.T) {
 	}
 }
 
+// WooCommerce posts the resource itself, flat, with no envelope of any kind.
+// Which event it was arrives in headers rather than the body, so a handler
+// reading body.type or body.event finds nothing. That is the opposite extreme
+// from Adyen's nested array, and both have to be expressible or the default
+// envelope is a claim rather than a fallback.
+func TestAWebhookEnvelopeCanBeNoEnvelopeAtAll(t *testing.T) {
+	r, err := recipe.Open("woocommerce")
+	if err != nil {
+		t.Fatalf("open woocommerce: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	delivery, err := s.Webhooks().Emit("order.updated", store.Record{
+		"id":     "1001",
+		"status": "processing",
+		"total":  "58.32",
+	})
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	if delivery.Payload["status"] != "processing" {
+		t.Errorf("status = %v, want the record at the top level", delivery.Payload["status"])
+	}
+
+	// Nothing wrapping it, and nothing naming the event.
+	for _, absent := range []string{"type", "event", "created", "data"} {
+		if _, present := delivery.Payload[absent]; present {
+			t.Errorf("WooCommerce sends no top-level %q", absent)
+		}
+	}
+}
+
 func TestSeedLoadsAFixture(t *testing.T) {
 	s := stripe(t)
 

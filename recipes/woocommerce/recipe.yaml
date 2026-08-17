@@ -1,0 +1,581 @@
+# WooCommerce Recipe for Cauldron
+#
+# WooCommerce has no sandbox, because it is not a service. It is a WordPress
+# plugin on somebody's own hosting, so "the test environment" is a second
+# WordPress install that has to be built, kept in step with the live one's
+# plugin versions, and reseeded by hand. In practice teams point their tests at
+# a staging site that drifts, or at production with a read-only key, and either
+# way an order created by a test is an order in a shop, visible in the admin,
+# counted in the reports, and in some configurations emailed to somebody.
+#
+# Five things worth modelling exactly:
+#
+#   1. "processing" is the paid state. "completed" means fulfilled and shipped.
+#      An integration that waits for completed before capturing payment or
+#      granting access waits for a human to click a button in wp-admin, which
+#      on a digital product never happens.
+#   2. Every monetary value is a decimal string. total is "49.99", not 49.99.
+#      In JavaScript, adding two of them concatenates, and the resulting order
+#      total of "49.9912.00" is accepted quietly by anything that stringifies
+#      it again on the way out.
+#   3. meta_data is an array of {id, key, value} objects, not an object. Code
+#      reading order.meta_data.some_key finds undefined, and the field it
+#      wanted is sitting in the array under a key it has to search for.
+#   4. date_created has no timezone and is in the site's local time.
+#      date_created_gmt sits next to it. Parsing the first as UTC shifts every
+#      order by the site's offset, which is invisible in a shop that happens to
+#      run on UTC and wrong everywhere else.
+#   5. A collection is a bare array. There is no envelope, no data key and no
+#      count in the body at all.
+#
+# Known fidelity gaps, stated rather than hidden. WooCommerce reports totals in
+# X-WP-Total and X-WP-TotalPages headers, which Cauldron cannot compute per
+# request, so they are not sent rather than sent wrong. WooCommerce also checks
+# both halves of the basic credential; Cauldron checks one, and this Recipe
+# points it at the consumer secret because that is the half that is actually
+# secret.
+#
+# Keys below are fixtures, not secrets. They belong to no shop.
+
+recipe: woocommerce
+version: 0.1.0
+
+upstream:
+  api: wc/v3
+  docs: https://woocommerce.github.io/woocommerce-rest-api-docs/
+
+auth:
+  # Over HTTPS the consumer key is the basic username and the consumer secret
+  # is the password. Over plain HTTP WooCommerce falls back to OAuth 1.0a
+  # instead, which is not modelled here.
+  scheme: basic
+  credential: password
+  keys:
+    - cs_cauldronconsumersecret
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Flat, and the HTTP status is repeated inside a data object rather than at
+  # the top level. WordPress core answers the same way, because this is the
+  # WP_Error shape rather than anything WooCommerce invented.
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    status_field: data.status
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      style: numeric
+    fields:
+      # pending, processing, on-hold, completed, cancelled, refunded, failed,
+      # trash. Eight of them, and only one means paid.
+      status:
+        type: string
+        default: pending
+      # A decimal string. Adding two of these in JavaScript concatenates.
+      total:
+        type: string
+      # Separate from total, which already includes it. Adding them
+      # double-counts the tax.
+      total_tax:
+        type: string
+      currency:
+        type: string
+        default: GBP
+      payment_method:
+        type: string
+      # Set when the money actually arrived, and absent until then. It is the
+      # only field that says a payment happened, because status alone cannot
+      # distinguish on-hold from failed intent.
+      date_paid:
+        type: string
+      # No timezone, and in the site's local time. Parsing it as UTC shifts
+      # every order by the site's offset.
+      date_created:
+        type: string
+      # The same instant in UTC, sitting right next to it.
+      date_created_gmt:
+        type: string
+      # An array of {id, key, value} objects. Reading order.meta_data.key
+      # finds undefined.
+      meta_data:
+        type: list
+      line_items:
+        type: list
+      customer_id:
+        type: integer
+        default: 0
+
+  product:
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      # simple, variable, grouped, external. A variable product has no price
+      # of its own; its variations carry them.
+      type:
+        type: string
+        default: simple
+      # A decimal string, and empty on a variable product. Parsing it as a
+      # number gives NaN rather than zero, and comparing it to 0 is false.
+      price:
+        type: string
+      regular_price:
+        type: string
+      # Empty unless the product is actually on sale, which is how a shop
+      # ends up advertising a discount of the full price.
+      sale_price:
+        type: string
+      # publish, draft, pending, private. A draft product is still returned
+      # by the API and is not visible in the shop.
+      status:
+        type: string
+        default: publish
+      # null when stock is not managed, and a number when it is. A client
+      # treating null as zero hides every unmanaged product.
+      stock_quantity:
+        type: integer
+      stock_status:
+        type: string
+        default: instock
+      meta_data:
+        type: list
+
+  customer:
+    id:
+      style: numeric
+    fields:
+      email:
+        type: string
+        required: true
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # A guest checkout creates an order with customer_id 0 and no customer
+      # record at all, so an integration keyed on customers misses the
+      # majority of orders in most shops.
+      username:
+        type: string
+      is_paying_customer:
+        type: boolean
+        default: false
+      date_created:
+        type: string
+
+routes:
+  - method: GET
+    path: /wp-json/wc/v3/orders
+    resource: order
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wc/v3/orders/{id}
+    resource: order
+    operation: get
+
+  - method: POST
+    path: /wp-json/wc/v3/orders
+    resource: order
+    operation: create
+    status: 201
+
+  - method: PUT
+    path: /wp-json/wc/v3/orders/{id}
+    resource: order
+    operation: update
+
+  - method: GET
+    path: /wp-json/wc/v3/products
+    resource: product
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wc/v3/products/{id}
+    resource: product
+    operation: get
+
+  - method: GET
+    path: /wp-json/wc/v3/customers
+    resource: customer
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+webhooks:
+  events:
+    - order.created
+    - order.updated
+    - order.deleted
+    - product.created
+    - product.updated
+    - customer.created
+  signing:
+    scheme: hmac-sha256
+    header: X-WC-Webhook-Signature
+    secret: cauldron-webhook-secret
+  payload:
+    # WooCommerce posts the resource itself, flat, with no envelope of any
+    # kind. Everything a handler needs to know about which event this was
+    # arrives in headers rather than the body, so a handler reading
+    # body.type or body.event finds nothing.
+    "{object}": true
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: Too many requests
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 401
+    code: woocommerce_rest_cannot_view
+    message: Sorry, you cannot list resources.
+
+  resource_missing:
+    status: 404
+    code: woocommerce_rest_shop_order_invalid_id
+    message: "Invalid ID: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: rest_missing_callback_param
+    message: "Missing parameter(s): {detail}"
+
+  # WooCommerce refuses to change an order that has been refunded, which is
+  # what a retry after a timeout runs into.
+  order_immutable:
+    status: 400
+    code: woocommerce_rest_invalid_order_status
+    message: Order status cannot be changed once the order is refunded.
+
+  # A key with read permission cannot write, and the failure names the
+  # capability rather than the key.
+  read_only_key:
+    status: 401
+    code: woocommerce_rest_cannot_edit
+    message: Sorry, you are not allowed to edit this resource.
+
+  # Stock ran out between the cart and the checkout, which is the failure that
+  # only appears under load and never in a fixture somebody wrote by hand.
+  out_of_stock:
+    status: 400
+    code: woocommerce_rest_product_out_of_stock
+    message: "Sorry, \"Cast iron cauldron\" is not in stock."
+
+fixtures:
+  empty: {}
+
+  small-shop:
+    product:
+      - id: "201"
+        name: Cast iron cauldron
+        type: simple
+        # Decimal strings. Adding two of them in JavaScript concatenates.
+        price: "49.99"
+        regular_price: "49.99"
+        stock_quantity: 7
+        stock_status: instock
+        meta_data:
+          - id: 9001
+            key: _cauldron_capacity_litres
+            value: "12"
+      - id: "202"
+        name: Cauldron stand
+        type: variable
+        # A variable product has no price of its own. Parsing this as a
+        # number gives NaN rather than zero, and comparing it to 0 is false.
+        price: ""
+        regular_price: ""
+        stock_status: instock
+        meta_data: []
+      - id: "203"
+        name: Seasoning oil
+        type: simple
+        price: "8.50"
+        regular_price: "12.00"
+        # Actually on sale, unlike the two above.
+        sale_price: "8.50"
+        # Stock is not managed, so this is null rather than zero. Treating it
+        # as zero hides the product from anything checking availability.
+        stock_status: instock
+        meta_data: []
+
+    customer:
+      - id: "50"
+        email: ada@example.com
+        first_name: Ada
+        last_name: Lovelace
+        username: ada
+        is_paying_customer: true
+        date_created: "2025-11-02T09:14:00"
+
+    order:
+      # Paid, and waiting to be shipped. This is the state an integration
+      # should act on, and the one that looks unfinished from its name.
+      - id: "1001"
+        status: processing
+        total: "58.32"
+        total_tax: "9.72"
+        currency: GBP
+        payment_method: stripe
+        customer_id: 50
+        date_paid: "2026-01-14T11:22:35"
+        # Local time, no timezone. An hour ahead of the GMT field below,
+        # because the shop is not on UTC.
+        date_created: "2026-01-14T11:22:31"
+        date_created_gmt: "2026-01-14T10:22:31"
+        line_items:
+          - id: 1
+            name: Cast iron cauldron
+            product_id: 201
+            quantity: 1
+            # Excludes tax, which lives in the field beside it. Summing
+            # line item totals and then adding the order tax is right;
+            # summing them and comparing to the order total is not.
+            total: "48.60"
+            total_tax: "9.72"
+        meta_data:
+          - id: 7001
+            key: _shipping_instructions
+            value: Leave with a neighbour
+      # Fulfilled. The money arrived days ago.
+      - id: "1002"
+        status: completed
+        total: "10.20"
+        total_tax: "1.70"
+        currency: GBP
+        payment_method: stripe
+        customer_id: 50
+        date_paid: "2026-01-09T14:03:11"
+        date_created: "2026-01-09T14:03:07"
+        date_created_gmt: "2026-01-09T13:03:07"
+        line_items: []
+        meta_data: []
+      # Awaiting a bank transfer. Not paid, not failed, and not going to
+      # resolve itself. An integration that treats anything not completed as
+      # abandoned cancels an order somebody is about to pay for.
+      - id: "1003"
+        status: on-hold
+        total: "49.99"
+        total_tax: "0.00"
+        currency: GBP
+        payment_method: bacs
+        # A guest checkout. There is no customer record for this order, so an
+        # integration keyed on customers never sees it.
+        customer_id: 0
+        date_created: "2026-01-15T09:40:00"
+        date_created_gmt: "2026-01-15T08:40:00"
+        line_items: []
+        meta_data: []
+
+# Conformance cases, read from the WooCommerce REST API documentation rather
+# than observed against a live shop. The verify report says so.
+conformance:
+  - name: processing is the paid state and completed is the shipped one
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-statuses
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Paid, waiting to be shipped. Waiting for completed before capturing
+        # payment waits for a human to click a button in wp-admin.
+        '[0]':
+          status: processing
+          date_paid: "2026-01-14T11:22:35"
+        '[1]':
+          status: completed
+      absent:
+        - data
+        - orders
+
+  - name: an on-hold order is neither paid nor failed
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-statuses
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/1003
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Waiting for a bank transfer, and it will not resolve itself.
+        # Treating anything not completed as abandoned cancels an order
+        # somebody is about to pay for.
+        status: on-hold
+        payment_method: bacs
+        # A guest checkout, so there is no customer record at all and an
+        # integration keyed on customers never sees this order.
+        customer_id: 0
+      absent:
+        - date_paid
+
+  - name: every monetary value is a decimal string
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/1001
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Strings, not numbers. Adding two of them in JavaScript concatenates,
+        # and the result is accepted quietly by anything that stringifies it
+        # again on the way out.
+        total: "58.32"
+        total_tax: "9.72"
+
+  - name: a line item total excludes its own tax
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-line-items-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/1001
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # 48.60 plus 9.72 of tax is the 58.32 order total. Summing line item
+        # totals and comparing to the order total is short by the tax every
+        # time.
+        line_items[0].total: "48.60"
+        line_items[0].total_tax: "9.72"
+        line_items[0].quantity: 1
+
+  - name: meta_data is an array of objects, not an object
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/1001
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Reading order.meta_data._shipping_instructions finds undefined. The
+        # value is in the array under a key that has to be searched for.
+        meta_data[0].key: _shipping_instructions
+        meta_data[0].value: Leave with a neighbour
+      absent:
+        - meta_data._shipping_instructions
+
+  - name: date_created has no timezone and differs from the GMT field
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/1001
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Site-local, with nothing saying so. Parsing it as UTC puts the order
+        # an hour early, which is invisible on a shop that runs on UTC and
+        # wrong everywhere else.
+        date_created: "2026-01-14T11:22:31"
+        date_created_gmt: "2026-01-14T10:22:31"
+
+  - name: a variable product has an empty price rather than none
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#product-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/products/202
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        type: variable
+        # An empty string. Parsing it as a number gives NaN rather than zero,
+        # and comparing it to 0 is false, so a "free product" check never
+        # fires and a "has a price" check passes.
+        price: ""
+        regular_price: ""
+
+  - name: an unmanaged product has no stock quantity at all
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#product-properties
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/products/203
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 200
+      body:
+        # In stock, with no number attached, because stock is not managed for
+        # this product. Treating a missing quantity as zero hides it from
+        # anything checking availability.
+        stock_status: instock
+        sale_price: "8.50"
+        regular_price: "12.00"
+      absent:
+        - stock_quantity
+
+  - name: the failure repeats its status inside a data object
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#errors
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders/9999
+      headers:
+        Authorization: Basic Y2tfY2F1bGRyb246Y3NfY2F1bGRyb25jb25zdW1lcnNlY3JldA==
+    expect:
+      status: 404
+      body:
+        code: woocommerce_rest_shop_order_invalid_id
+        data:
+          # Nested, not top level. This is WordPress's WP_Error shape rather
+          # than anything WooCommerce invented.
+          status: 404
+      matches:
+        message: 'Invalid ID'
+      absent:
+        - status
+        - error
+        - errors
+
+  - name: the consumer secret is the half that is checked
+    source: https://woocommerce.github.io/woocommerce-rest-api-docs/#authentication
+    fixture: small-shop
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders
+      headers:
+        # The right consumer key, and a wrong secret.
+        Authorization: Basic Y2tfY2F1bGRyb246d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        code: woocommerce_rest_cannot_view
+        data:
+          status: 401
