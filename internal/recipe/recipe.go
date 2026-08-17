@@ -175,6 +175,11 @@ type ErrorResponse struct {
 	// StatusField names a property echoing the HTTP status inside the body,
 	// which Twilio does.
 	StatusField string `yaml:"status_field"`
+	// TypeField names a property carrying the error category in a flat
+	// envelope. Plaid sends error_type and its clients switch on that before
+	// they look at the code, because the category decides whether to retry,
+	// re-authenticate or give up.
+	TypeField string `yaml:"type_field"`
 	// Fields are constants the provider adds to every error, such as GitHub's
 	// documentation_url.
 	Fields map[string]any `yaml:"fields"`

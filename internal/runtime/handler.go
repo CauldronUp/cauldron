@@ -714,6 +714,10 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		setPath(body, spec.CodeField, numberOrString(code))
 	}
 
+	if spec.TypeField != "" {
+		setPath(body, spec.TypeField, category)
+	}
+
 	if spec.StatusField != "" {
 		setPath(body, spec.StatusField, status)
 	}
