@@ -1,0 +1,389 @@
+# Datadog Recipe for Cauldron
+#
+# Datadog bills by host, by custom metric and by ingested log. A test suite
+# that submits metrics creates custom metrics, and custom metrics are charged
+# whether a human ever looks at them. A monitor created by a test can page
+# somebody. There is no sandbox organisation, so the usual approach is to point
+# tests at production with a naming convention and hope nobody deletes the
+# wrong monitor.
+#
+# Two things worth modelling exactly:
+#
+#   1. Failures are an array of bare strings, not an array of objects. A
+#      client looping over the entries and reading .message from each finds
+#      undefined on every one, which throws rather than reporting anything.
+#      Almost every other provider sends objects, so this is the mistake that
+#      gets made by analogy.
+#   2. Credentials are two headers and neither is Authorization. An API key
+#      alone is enough to write, but reading needs an application key too, so
+#      a token that submits metrics happily can still fail every query.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: datadog
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.datadoghq.com/api/latest
+
+auth:
+  scheme: header
+  header: DD-API-KEY
+  keys:
+    - cauldron-api-key
+
+# Writing needs only the API key. Reading needs the application key as well,
+# which is why a suite that submits fine can still fail every query.
+required_headers:
+  DD-APPLICATION-KEY: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    fields:
+      status: ok
+  error:
+    style: string_list
+    key: errors
+
+resources:
+  monitor:
+    collection: monitors
+    id:
+      style: digits
+      length: 8
+    fields:
+      name:
+        type: string
+        required: true
+      type:
+        type: string
+        default: metric alert
+      query:
+        type: string
+        required: true
+      message:
+        type: string
+      # Datadog's real states. A monitor in "No Data" is not alerting and not
+      # healthy either, and code that treats anything other than Alert as
+      # fine reports a broken check as passing.
+      overall_state:
+        type: string
+        default: OK
+      priority:
+        type: integer
+        default: 3
+      # A muted monitor still evaluates and still shows its state. It just
+      # does not notify, which is the distinction people lose.
+      muted:
+        type: boolean
+        default: false
+      created:
+        type: datetime
+      modified:
+        type: datetime
+
+  dashboard:
+    collection: dashboards
+    id:
+      style: opaque
+      length: 11
+    fields:
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+      layout_type:
+        type: string
+        default: ordered
+      is_read_only:
+        type: boolean
+        default: false
+      author_handle:
+        type: string
+      created_at:
+        type: datetime
+
+  event:
+    collection: events
+    id:
+      style: digits
+      length: 16
+    fields:
+      title:
+        type: string
+        required: true
+      text:
+        type: string
+      priority:
+        type: string
+        default: normal
+      alert_type:
+        type: string
+        default: info
+      source_type_name:
+        type: string
+      date_happened:
+        type: timestamp
+
+routes:
+  - method: GET
+    path: /api/v1/monitor
+    resource: monitor
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /api/v1/monitor
+    resource: monitor
+    operation: create
+
+  - method: GET
+    path: /api/v1/monitor/{id}
+    resource: monitor
+    operation: get
+
+  - method: PUT
+    path: /api/v1/monitor/{id}
+    resource: monitor
+    operation: update
+
+  - method: DELETE
+    path: /api/v1/monitor/{id}
+    resource: monitor
+    operation: delete
+
+  - method: GET
+    path: /api/v1/dashboard
+    resource: dashboard
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /api/v1/dashboard/{id}
+    resource: dashboard
+    operation: get
+
+  - method: GET
+    path: /api/v1/events
+    resource: event
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /api/v1/events
+    resource: event
+    operation: create
+
+webhooks:
+  events:
+    - monitor.triggered
+    - monitor.recovered
+    - monitor.no_data
+    - monitor.warning
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit of 1000 requests per hour exceeded
+    headers:
+      Retry-After: "60"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 403
+    message: Forbidden. The API key or application key is missing or invalid.
+
+  resource_missing:
+    status: 404
+    message: "Monitor not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid argument: {detail} is required"
+
+  # Datadog refuses to delete a monitor that a composite or SLO depends on,
+  # which is the failure a cleanup step hits at the end of a test run.
+  monitor_in_use:
+    status: 400
+    message: Monitor cannot be deleted because it is referenced in a composite monitor
+
+  # The billing wall. Nothing about the request is wrong.
+  quota_exceeded:
+    status: 403
+    message: The organization has reached its custom metric limit
+
+fixtures:
+  empty: {}
+
+  small-org:
+    monitor:
+      - id: "10000001"
+        name: Checkout p99 latency
+        type: metric alert
+        query: "avg(last_5m):p99:trace.http.request{service:checkout} > 2"
+        overall_state: Alert
+        priority: 1
+      - id: "10000002"
+        name: Queue depth
+        type: metric alert
+        query: "avg(last_10m):sum:queue.depth{*} > 1000"
+        # Not alerting, not healthy. Code that treats anything other than
+        # Alert as fine reports a broken check as passing.
+        overall_state: "No Data"
+        priority: 2
+      - id: "10000003"
+        name: Nightly batch duration
+        type: metric alert
+        query: "avg(last_1h):avg:batch.duration{*} > 3600"
+        overall_state: OK
+        # Muted monitors still evaluate and still report state. They only
+        # stop notifying.
+        muted: true
+    dashboard:
+      - id: abc-def-ghi
+        title: Checkout health
+        layout_type: ordered
+        author_handle: ada@example.com
+    event:
+      - id: "9000000000000001"
+        title: Deployed checkout 2026.1.0
+        text: Rolled out to all regions
+        alert_type: info
+        source_type_name: deploy
+
+# Conformance cases, read from Datadog's API reference rather than observed
+# against a live organisation. The verify report says so.
+conformance:
+  - name: failures are an array of bare strings, not objects
+    source: https://docs.datadoghq.com/api/latest/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/monitor/99999999
+      headers:
+        DD-API-KEY: cauldron-api-key
+        DD-APPLICATION-KEY: cauldron-app-key
+    expect:
+      status: 404
+      matches:
+        # A string, not an object. Looping over the entries and reading
+        # .message from each finds undefined on every one.
+        errors[0]: 'Monitor not found'
+      absent:
+        - errors[0].message
+        - error
+        - message
+
+  - name: reading without the application key is refused
+    source: https://docs.datadoghq.com/account_management/api-app-keys/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/monitor
+      headers:
+        DD-API-KEY: cauldron-api-key
+    expect:
+      # An API key alone can write but not read, so a suite that submits
+      # metrics happily still fails every query.
+      status: 403
+      matches:
+        errors[0]: 'application key'
+
+  - name: a monitor with no data is not a healthy monitor
+    source: https://docs.datadoghq.com/monitors/manage/status/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/monitor/10000002
+      headers:
+        DD-API-KEY: cauldron-api-key
+        DD-APPLICATION-KEY: cauldron-app-key
+    expect:
+      status: 200
+      body:
+        # Neither alerting nor OK. Treating anything other than Alert as fine
+        # reports a broken check as passing.
+        overall_state: "No Data"
+        name: Queue depth
+
+  - name: a muted monitor still reports its state
+    source: https://docs.datadoghq.com/monitors/notify/downtimes/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/monitor/10000003
+      headers:
+        DD-API-KEY: cauldron-api-key
+        DD-APPLICATION-KEY: cauldron-app-key
+    expect:
+      status: 200
+      body:
+        # Muting stops notifications, not evaluation.
+        muted: true
+        overall_state: OK
+
+  - name: a collection is wrapped and flagged ok
+    source: https://docs.datadoghq.com/api/latest/monitors/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/monitor
+      headers:
+        DD-API-KEY: cauldron-api-key
+        DD-APPLICATION-KEY: cauldron-app-key
+    expect:
+      status: 200
+      body:
+        status: ok
+        monitors[0].name: Checkout p99 latency
+        monitors[0].overall_state: Alert
+      absent:
+        - data
+
+  - name: a bad api key is a 403, not a 401
+    source: https://docs.datadoghq.com/api/latest/authentication/
+    request:
+      method: GET
+      path: /api/v1/monitor
+      headers:
+        DD-API-KEY: wrong-key
+        DD-APPLICATION-KEY: cauldron-app-key
+    expect:
+      # Datadog answers 403 where most providers answer 401, so code checking
+      # for 401 to rotate a credential never fires.
+      status: 403
+      matches:
+        errors[0]: 'Forbidden'
+
+  - name: a created monitor starts in OK, not alerting
+    source: https://docs.datadoghq.com/api/latest/monitors/
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/monitor
+      headers:
+        DD-API-KEY: cauldron-api-key
+        DD-APPLICATION-KEY: cauldron-app-key
+      json:
+        name: Disk usage
+        query: "avg(last_5m):avg:system.disk.in_use{*} > 0.9"
+    expect:
+      status: 200
+      body:
+        name: Disk usage
+        overall_state: OK
+        type: metric alert
+        muted: false
+      matches:
+        id: '^[1-9][0-9]{7}$'

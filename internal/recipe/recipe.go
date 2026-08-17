@@ -164,9 +164,10 @@ type ResourceResponse struct {
 // with a message and a documentation link. Code that unwraps one and receives
 // the other does not report a helpful failure, it panics.
 type ErrorResponse struct {
-	// Style is nested (Stripe, the default), flat (GitHub) or list (SendGrid,
+	// Style is nested (Stripe, the default), flat (GitHub), list (SendGrid,
 	// which sends {"errors": [{...}]} because one request can fail several
-	// ways at once).
+	// ways at once) or string_list (Datadog, which sends the same array with
+	// bare strings in it rather than objects).
 	Style string `yaml:"style"`
 	// Key is the property holding the array when the style is list.
 	Key string `yaml:"key"`
@@ -366,6 +367,7 @@ var (
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
+	validErrStyles  = []string{"", "nested", "flat", "list", "string_list"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
 )
@@ -546,6 +548,10 @@ func (r *Recipe) Validate() error {
 			route.IDFrom == "" && !strings.Contains(route.Path, "{id}") {
 			add("%s: a %s needs an {id} in the path or an id_from", where, route.Operation)
 		}
+	}
+
+	if !contains(validErrStyles, r.Responses.Error.Style) {
+		add("responses.error.style %q must be one of %s", r.Responses.Error.Style, strings.Join(validErrStyles[1:], ", "))
 	}
 
 	if !contains(validListStyles, r.Responses.List.Style) {
