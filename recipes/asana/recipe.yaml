@@ -1,0 +1,384 @@
+# Asana Recipe for Cauldron
+#
+# Asana has no sandbox. A personal access token reaches a real workspace, and
+# a test that creates tasks creates them where people can see them, notifies
+# followers, and counts against the workspace. Teams end up with a graveyard
+# project full of "test task 47", or they never exercise the API at all.
+#
+# Three things worth modelling exactly:
+#
+#   1. The identifier is called gid, not id, and it is a numeric string. Code
+#      that reads task.id finds nothing, and code that parses the gid as a
+#      number loses precision on a real one.
+#   2. Every object declares a resource_type, and a client is expected to read
+#      it before deciding what the object is.
+#   3. Everything, single object or collection, is wrapped under "data". A
+#      client reading the response body directly finds nothing either way.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: asana
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://developers.asana.com/reference/rest-api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron/1234567890
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # Asana's cursor is nested under next_page, and next_page is null when
+    # there is nothing more.
+    cursor_field: next_page.offset
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: list
+    key: errors
+    message_field: message
+
+resources:
+  task:
+    collection: data
+    constants:
+      resource_type: task
+    id:
+      style: digits
+      field: gid
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      notes:
+        type: string
+      project_gid:
+        type: string
+      # A completed task is still returned by a plain task list, which is the
+      # bug most integrations ship: a "remaining work" count that includes
+      # everything ever done.
+      completed:
+        type: boolean
+        default: false
+      due_on:
+        type: string
+      assignee_gid:
+        type: string
+      created_at:
+        type: datetime
+      modified_at:
+        type: datetime
+
+  project:
+    collection: data
+    constants:
+      resource_type: project
+    id:
+      style: digits
+      field: gid
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      notes:
+        type: string
+      archived:
+        type: boolean
+        default: false
+      color:
+        type: string
+      created_at:
+        type: datetime
+
+  user:
+    collection: data
+    constants:
+      resource_type: user
+    id:
+      style: digits
+      field: gid
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/1.0/tasks
+    resource: task
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: POST
+    path: /api/1.0/tasks
+    resource: task
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/1.0/tasks/{id}
+    resource: task
+    operation: get
+
+  - method: PUT
+    path: /api/1.0/tasks/{id}
+    resource: task
+    operation: update
+
+  - method: DELETE
+    path: /api/1.0/tasks/{id}
+    resource: task
+    operation: delete
+
+  - method: GET
+    path: /api/1.0/projects
+    resource: project
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /api/1.0/projects/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /api/1.0/users
+    resource: user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /api/1.0/users/{id}
+    resource: user
+    operation: get
+
+webhooks:
+  events:
+    - task.added
+    - task.changed
+    - task.removed
+    - task.deleted
+    - project.changed
+    - story.added
+  signing:
+    scheme: hmac-sha256
+    header: X-Hook-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_enforced
+    message: Server rate limit exceeded
+    headers:
+      Retry-After: "30"
+
+  authentication_error:
+    status: 401
+    code: not_authorized
+    message: "Not Authorized: authentication is required"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: invalid_request
+    message: "{detail}: Missing input"
+
+  # Asana enforces a hard cap on tasks per project, and an import that hits it
+  # fails halfway with real data already written.
+  project_full:
+    status: 400
+    code: project_full
+    message: The project has reached its maximum number of tasks.
+
+  # A token that can read a workspace cannot always write to a given project,
+  # and the failure looks like a missing resource until you read the code.
+  forbidden:
+    status: 403
+    code: forbidden
+    message: You do not have access to this resource.
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    user:
+      - id: "1000000000000001"
+        name: Ada Lovelace
+        email: ada@example.com
+    project:
+      - id: "2000000000000001"
+        name: Platform roadmap
+        color: dark-blue
+      - id: "2000000000000002"
+        name: Archived experiments
+        archived: true
+    task:
+      - id: "3000000000000001"
+        name: Ship the conformance suite
+        project_gid: "2000000000000001"
+        completed: false
+        assignee_gid: "1000000000000001"
+      - id: "3000000000000002"
+        name: Write the Asana Recipe
+        project_gid: "2000000000000001"
+        # Completed, and still returned by a plain task list. A "remaining
+        # work" count that does not filter on this is wrong from day one.
+        completed: true
+      - id: "3000000000000003"
+        name: Review the format additions
+        project_gid: "2000000000000001"
+        completed: false
+        due_on: "2026-02-01"
+
+# Conformance cases, read from Asana's REST API reference rather than observed
+# against a live workspace. The verify report says so.
+conformance:
+  - name: the identifier is gid, and there is no id anywhere
+    source: https://developers.asana.com/reference/tasks
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/1.0/tasks/3000000000000001
+      headers:
+        Authorization: Bearer cauldron/1234567890
+    expect:
+      status: 200
+      body:
+        data:
+          gid: "3000000000000001"
+          name: Ship the conformance suite
+          resource_type: task
+      # Code reading task.id finds nothing.
+      absent:
+        - data.id
+        - gid
+
+  - name: a single object is wrapped under data, like a collection
+    source: https://developers.asana.com/reference/rest-api-reference
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/1.0/projects/2000000000000001
+      headers:
+        Authorization: Bearer cauldron/1234567890
+    expect:
+      status: 200
+      body:
+        data:
+          name: Platform roadmap
+          resource_type: project
+          archived: false
+      # A client reading the body directly finds nothing, either way round.
+      absent:
+        - name
+        - project
+
+  - name: a completed task is still in the list
+    source: https://developers.asana.com/reference/gettasks
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/1.0/tasks
+      headers:
+        Authorization: Bearer cauldron/1234567890
+    expect:
+      status: 200
+      body:
+        # A "remaining work" count that does not filter on completed is wrong
+        # from the first sprint.
+        data[0].completed: false
+        data[1].completed: true
+        data[1].name: Write the Asana Recipe
+
+  - name: the paging cursor is nested under next_page
+    source: https://developers.asana.com/reference/pagination
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/1.0/tasks
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron/1234567890
+    expect:
+      status: 200
+      matches:
+        next_page.offset: '^[0-9]{16}$'
+      # A client reading response.offset or response.next_cursor finds
+      # nothing.
+      absent:
+        - offset
+        - next_cursor
+        - data[2]
+
+  - name: identifiers are long numeric strings, not numbers
+    source: https://developers.asana.com/reference/rest-api-reference
+    fixture: empty
+    request:
+      method: POST
+      path: /api/1.0/tasks
+      headers:
+        Authorization: Bearer cauldron/1234567890
+      json:
+        name: Created through the API
+    expect:
+      status: 201
+      body:
+        data:
+          name: Created through the API
+          completed: false
+          resource_type: task
+      matches:
+        # Sixteen digits. Parsing a real gid as a number loses precision.
+        data.gid: '^[1-9][0-9]{15}$'
+
+  - name: failures are an array of messages
+    source: https://developers.asana.com/reference/errors
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/1.0/tasks/9999999999999999
+      headers:
+        Authorization: Bearer cauldron/1234567890
+    expect:
+      status: 404
+      matches:
+        errors[0].message: 'Not Found'
+      absent:
+        - error
+        - message
+        - data
+
+  - name: a missing token is refused before any task is read
+    source: https://developers.asana.com/docs/authentication
+    request:
+      method: GET
+      path: /api/1.0/tasks
+    expect:
+      status: 401
+      matches:
+        errors[0].message: 'authentication is required'
