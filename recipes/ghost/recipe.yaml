@@ -1,0 +1,508 @@
+# Ghost Recipe for Cauldron
+#
+# Ghost has no sandbox, because like WordPress it is software rather than a
+# service. A test environment is a second install, either self-hosted or a
+# second paid Ghost(Pro) site, and keeping it in step with the live one's
+# theme and integrations is manual. Teams point tests at a staging site that
+# drifts or at production with a content key.
+#
+# The part that makes a test dangerous here is email. Publishing a post with
+# an email recipient filter does not just publish it, it sends it, to real
+# members, immediately and irreversibly. A test that creates a post with
+# status published and email_segment set mails a newsletter.
+#
+# Four things worth modelling exactly:
+#
+#   1. Every collection is wrapped in a key named after the resource, and the
+#      key is plural even when there is one item. Reading a single post means
+#      posts[0], and code that reads the object directly finds an array-shaped
+#      object it did not expect.
+#   2. status has four values and "sent" is not one an integration usually
+#      expects. published, draft, scheduled, sent. A scheduled post has a
+#      published_at in the future and is not on the site; a sent post is an
+#      email that was never on the site at all.
+#   3. The Admin API wants a JWT built from the key, not the key itself. The
+#      Authorization header is "Ghost <jwt>", and sending the raw key looks
+#      exactly like sending a token and fails as though the key were wrong.
+#   4. Content sent to the Admin API is Lexical, a JSON string, not HTML.
+#      Posting HTML silently produces an empty post unless the source
+#      parameter says otherwise, so the call succeeds and the post is blank.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not build or verify JWTs. The Recipe checks the shape of
+#     the Authorization header, which catches a raw key being sent where a
+#     token belongs, and accepts a well-formed token that is not really
+#     signed.
+#   - Ghost does not send email from here, which is the point, but it also
+#     means the email_segment field is carried rather than acted on.
+#   - Lexical is carried as the string it is. Cauldron does not render it, and
+#     the html field on a fixture is whatever the fixture says.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: ghost
+version: 0.1.0
+
+upstream:
+  api: v5.0
+  docs: https://ghost.org/docs/admin-api/
+
+auth:
+  scheme: header
+  header: Authorization
+  # "Ghost <jwt>", not the admin key. The key is an id and a secret separated
+  # by a colon, and it is used to sign a token rather than sent as one, so a
+  # raw key here is refused by shape rather than by comparison.
+  pattern: '^Ghost [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    # Wrapped, and in the plural key, even for one item. Reading a single post
+    # means posts[0].
+    style: wrapped
+    array: true
+  error:
+    style: list
+    key: errors
+    message_field: message
+    type_field: type
+    code_field: "-"
+
+resources:
+  post:
+    collection: posts
+    id:
+      style: opaque
+      length: 24
+    fields:
+      title:
+        type: string
+        required: true
+      slug:
+        type: string
+      # Lexical, a JSON string, not HTML. Posting HTML without saying so
+      # produces an empty post: the call succeeds and the body is blank.
+      lexical:
+        type: string
+      # Rendered output, and read-only. Sending it does nothing.
+      html:
+        type: string
+      # published, draft, scheduled, sent. Four values, and two of them look
+      # like states an integration never handles.
+      status:
+        type: string
+        default: draft
+      # In the future on a scheduled post, which is not on the site yet and
+      # says nothing else about that.
+      published_at:
+        type: string
+      # Set when the post was emailed. A post can be sent without ever being
+      # on the site, and this is the only field that says so.
+      email_segment:
+        type: string
+      # Members-only content. The post is listed publicly and its body is
+      # withheld, so a scraper sees a title and an empty body rather than a
+      # 403.
+      visibility:
+        type: string
+        default: public
+      featured:
+        type: boolean
+        default: false
+      created_at:
+        type: string
+      updated_at:
+        type: string
+
+  member:
+    collection: members
+    id:
+      style: opaque
+      length: 24
+    fields:
+      email:
+        type: string
+        required: true
+      name:
+        type: string
+      # free, comped, paid. A comped member pays nothing and has paid access,
+      # so counting paid members by status undercounts the audience.
+      status:
+        type: string
+        default: free
+      # Whether they receive email at all. A member who unsubscribed is still
+      # a member, still counted, and must not be mailed.
+      newsletters:
+        type: list
+      email_count:
+        type: integer
+        default: 0
+      # Ghost tracks this and it is the number a churn report wants, not the
+      # member count.
+      email_opened_count:
+        type: integer
+        default: 0
+      created_at:
+        type: string
+
+  tier:
+    collection: tiers
+    id:
+      style: opaque
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      # Amounts are in the smallest currency unit, like Stripe, because Ghost
+      # bills through Stripe.
+      monthly_price:
+        type: integer
+      currency:
+        type: string
+        default: usd
+      # A tier that is not active still has members on it. Archiving a tier
+      # does not move anybody off it.
+      active:
+        type: boolean
+        default: true
+      visibility:
+        type: string
+        default: public
+
+routes:
+  - method: GET
+    path: /ghost/api/admin/posts
+    resource: post
+    operation: list
+    pagination:
+      style: page
+      limit: 15
+
+  - method: GET
+    path: /ghost/api/admin/posts/{id}
+    resource: post
+    operation: get
+
+  - method: POST
+    path: /ghost/api/admin/posts
+    resource: post
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /ghost/api/admin/members
+    resource: member
+    operation: list
+    pagination:
+      style: page
+      limit: 15
+
+  - method: GET
+    path: /ghost/api/admin/members/{id}
+    resource: member
+    operation: get
+
+  - method: GET
+    path: /ghost/api/admin/tiers
+    resource: tier
+    operation: list
+    pagination:
+      style: page
+      limit: 15
+
+webhooks:
+  events:
+    - post.published
+    - post.scheduled
+    - post.unpublished
+    - member.added
+    - member.deleted
+    - member.edited
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    type: TooManyRequestsError
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    type: UnauthorizedError
+    message: "Authorization failed"
+
+  resource_missing:
+    status: 404
+    type: NotFoundError
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    type: ValidationError
+    message: "Validation failed: {detail} is required"
+
+  # The failure a raw admin key produces. It reads as a bad key and the key is
+  # fine: it needed to be signed into a token first.
+  invalid_token:
+    status: 401
+    type: UnauthorizedError
+    message: "Invalid token: the Authorization header should carry a JWT signed with the admin key"
+
+  # Publishing a post whose slug is taken. Ghost appends a suffix in the
+  # editor and refuses over the API, so an importer that worked by hand fails
+  # in bulk.
+  slug_taken:
+    status: 422
+    type: ValidationError
+    message: "Validation error, cannot save post. Post slug already exists."
+
+  # A post scheduled in the past is refused rather than published, which is
+  # what a queued job hits when it runs late.
+  schedule_in_past:
+    status: 422
+    type: ValidationError
+    message: "Error, cannot schedule a post in the past."
+
+fixtures:
+  empty: {}
+
+  small-site:
+    tier:
+      - id: tiercauldron00000000001
+        name: Supporter
+        # Smallest currency unit, like Stripe, because Ghost bills through
+        # Stripe.
+        monthly_price: 500
+        currency: usd
+        active: true
+      - id: tiercauldron00000000002
+        name: Retired tier
+        monthly_price: 300
+        currency: usd
+        # Archived, and members are still on it. Archiving does not move
+        # anybody off.
+        active: false
+        visibility: none
+
+    member:
+      - id: membcauldron00000000001
+        email: ada@example.com
+        name: Ada Lovelace
+        status: paid
+        newsletters:
+          - id: newsletter-default
+            name: Weekly
+        email_count: 12
+        email_opened_count: 9
+      - id: membcauldron00000000002
+        email: grace@example.com
+        name: Grace Hopper
+        # Comped: pays nothing and has paid access. Counting paid members by
+        # status undercounts the audience.
+        status: comped
+        newsletters:
+          - id: newsletter-default
+            name: Weekly
+      - id: membcauldron00000000003
+        email: quiet@example.com
+        status: free
+        # Unsubscribed. Still a member, still counted, and must not be
+        # mailed. An empty list rather than a missing field.
+        newsletters: []
+
+    post:
+      - id: postcauldron00000000001
+        title: Seasoning cast iron
+        slug: seasoning-cast-iron
+        lexical: '{"root":{"children":[{"type":"paragraph","children":[{"type":"text","text":"Heat, oil, repeat."}]}]}}'
+        html: "<p>Heat, oil, repeat.</p>"
+        status: published
+        published_at: "2026-01-14T11:22:31.000Z"
+        created_at: "2026-01-14T11:00:00.000Z"
+      - id: postcauldron00000000002
+        title: Announcing the winter range
+        slug: winter-range
+        status: scheduled
+        # In the future, and not on the site. Nothing about the word
+        # "scheduled" says unpublished to code checking for "draft".
+        published_at: "2026-03-01T09:00:00.000Z"
+      - id: postcauldron00000000003
+        title: This week in the workshop
+        slug: this-week
+        # Sent as an email and never on the site. A post can exist entirely
+        # as a newsletter, and this is the only field that says so.
+        status: sent
+        email_segment: all
+        published_at: "2026-01-10T09:00:00.000Z"
+      - id: postcauldron00000000004
+        title: Members only notes
+        slug: members-only
+        html: ""
+        status: published
+        # Listed publicly with its body withheld. A scraper sees a title and
+        # an empty body rather than a 403.
+        visibility: members
+        published_at: "2026-01-11T09:00:00.000Z"
+
+# Conformance cases, read from Ghost's Admin API reference rather than
+# observed against a live site. The verify report says so.
+conformance:
+  - name: a single post arrives in a plural array
+    source: https://ghost.org/docs/admin-api/#posts
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts/postcauldron00000000001
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        # posts[0], not posts, and not the object itself. Code that reads the
+        # response as the post finds an object with one array in it.
+        posts[0].title: Seasoning cast iron
+        posts[0].status: published
+      absent:
+        - title
+        - post
+
+  - name: a scheduled post is dated in the future and is not live
+    source: https://ghost.org/docs/admin-api/#posts
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts/postcauldron00000000002
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        # Nothing about the word "scheduled" says unpublished to code checking
+        # for "draft", and the date is the only other evidence.
+        posts[0].status: scheduled
+        posts[0].published_at: "2026-03-01T09:00:00.000Z"
+
+  - name: a sent post was never on the site
+    source: https://ghost.org/docs/admin-api/#email-only-posts
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts/postcauldron00000000003
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        # A post that exists entirely as an email. Publishing one is
+        # irreversible: the mail is already gone.
+        posts[0].status: sent
+        posts[0].email_segment: all
+
+  - name: content is Lexical rather than HTML
+    source: https://ghost.org/docs/admin-api/#source-html
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts/postcauldron00000000001
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      matches:
+        # A JSON string. Posting HTML without the source parameter produces an
+        # empty post: the call succeeds and the body is blank.
+        posts[0].lexical: '^\{"root":'
+
+  - name: a members-only post is listed with an empty body
+    source: https://ghost.org/docs/admin-api/#posts
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts/postcauldron00000000004
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        # Published, listed, and withheld. A scraper sees the title and an
+        # empty body rather than a 403, so a content check that looks for a
+        # status code finds nothing wrong.
+        posts[0].visibility: members
+        posts[0].html: ""
+        posts[0].status: published
+
+  - name: a comped member pays nothing and has paid access
+    source: https://ghost.org/docs/admin-api/#members
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/members
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        members[0].status: paid
+        # Counting paid members by status undercounts the audience by however
+        # many were comped.
+        members[1].status: comped
+        members[2].status: free
+
+  - name: an unsubscribed member has an empty newsletter list
+    source: https://ghost.org/docs/admin-api/#members
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/members/membcauldron00000000003
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        # Still a member, still counted, and must not be mailed. An empty
+        # list rather than a missing field, so a truthiness check on the
+        # field passes and the length check is the one that matters.
+        members[0].newsletters: []
+        members[0].status: free
+
+  - name: an archived tier still has members on it
+    source: https://ghost.org/docs/admin-api/#tiers
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/tiers
+      headers:
+        Authorization: Ghost eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjcyMjU2MDB9.cauldronSignature
+    expect:
+      status: 200
+      body:
+        tiers[0].active: true
+        # Archived. Nobody was moved off it, and a price list that filters on
+        # active loses the tier those members are actually paying for.
+        tiers[1].active: false
+        # Smallest currency unit, because Ghost bills through Stripe.
+        tiers[1].monthly_price: 300
+
+  - name: the raw admin key is not a token
+    source: https://ghost.org/docs/admin-api/#token-authentication
+    fixture: small-site
+    request:
+      method: GET
+      path: /ghost/api/admin/posts
+      headers:
+        # The key itself, which is an id and a secret. It has to be signed
+        # into a JWT first, and sending it raw fails as though the key were
+        # wrong rather than as though it were the wrong kind of thing.
+        Authorization: Ghost 65f1a2b3c4d5e6f7a8b9c0d1:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    expect:
+      status: 401
+      body:
+        errors[0].type: UnauthorizedError
+      absent:
+        - error
+        - message
