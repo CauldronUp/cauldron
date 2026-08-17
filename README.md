@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 320 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 348 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 46: Stripe, GitHub, GitLab, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Auth0, Recurly, Trello, Paddle, CircleCI |
+| Recipes shipped | 50: Stripe, GitHub, GitLab, Bitbucket, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 320 cases, none yet run against a live account. Documentation-derived
+Recipe: 348 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -269,8 +269,10 @@ merge request that is closed rather than merged. A CircleCI workflow waiting on
 approval, which is neither a pass nor a failure. A Paddle subscription with a
 cancellation scheduled but not yet applied. Each fixture carries one.
 
-Twenty of the last thirty-one needed no format change at all, which is the sign
-the format has stopped being Stripe-shaped underneath.
+Twenty-four of the last thirty-five needed no format change at all. Writing a
+Recipe is now mostly research rather than engineering: the work is reading the
+provider closely enough to know which state nobody branches on, not teaching
+the format a new trick.
 
 Not every provider fits. Linear is GraphQL: a single endpoint where the request
 body decides the response shape. A Recipe that ignored the query and returned
