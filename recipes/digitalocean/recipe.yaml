@@ -1,0 +1,502 @@
+# DigitalOcean Recipe for Cauldron
+#
+# DigitalOcean has no sandbox and no test mode. A token creates real machines
+# and bills for them by the hour. A test suite that creates a droplet and fails
+# before its teardown leaves something running until somebody notices the
+# invoice, and a test that deletes by name deletes whatever else matched.
+#
+# Three things worth modelling exactly:
+#
+#   1. Creating a droplet is asynchronous. The response is 202, the droplet's
+#      status is "new", and its networks are empty. The IP address does not
+#      exist yet. An integration that creates a droplet and immediately reads
+#      its address gets nothing, and only finds out when the timing differs in
+#      production. This is the behaviour a synchronous fake cannot have.
+#   2. The work is tracked by an action, and an action has three outcomes:
+#      in-progress, completed and errored. Polling until the status is not
+#      in-progress and then assuming success treats a failed provision as a
+#      working machine.
+#   3. The error's code field is called id. A client reading response.id
+#      expecting a resource identifier gets an error slug like "not_found",
+#      which is a string that looks entirely reasonable right up until it is
+#      used as a key.
+#
+# Known fidelity gaps, stated rather than hidden. DigitalOcean answers a create
+# with a links.actions array holding the action to poll, which the Recipe
+# format cannot yet attach to a single resource response, so the action is
+# reachable at its own route instead. Its rate-limit headers are the draft
+# RateLimit-* set rather than Retry-After, which is modelled, but the per-hour
+# budget itself is not.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: digitalocean
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.digitalocean.com/reference/api/api-reference/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - dop_v1_cauldron
+
+responses:
+  list:
+    style: wrapped
+    count_field: meta.total
+    cursor_field: links.pages.next
+    fields:
+      # Always present, and empty when everything fits on one page. A client
+      # reading links.pages.next without checking finds undefined rather than
+      # an error, which is the good case; one that reads links.pages.next.href
+      # throws.
+      links: {}
+  resource:
+    style: wrapped
+  # Flat, and the code field is called id.
+  error:
+    style: flat
+    message_field: message
+    code_field: id
+    code_type: string
+    type_field: "-"
+
+resources:
+  droplet:
+    collection: droplets
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      # new, active, off, archive. A droplet that is new has no address yet,
+      # and a droplet that is off still exists and is still billed.
+      status:
+        type: string
+        default: new
+      memory:
+        type: integer
+        default: 1024
+      vcpus:
+        type: integer
+        default: 1
+      disk:
+        type: integer
+        default: 25
+      region_slug:
+        type: string
+        in: region
+      image_slug:
+        type: string
+        in: image
+      # The address, and it does not exist until the create action finishes.
+      # An integration that reads it straight after creating gets nothing.
+      networks_v4_ip:
+        type: string
+        in: networks
+      created_at:
+        type: datetime
+
+  action:
+    collection: actions
+    id:
+      style: numeric
+    fields:
+      # in-progress, completed, errored. Polling until the status is not
+      # in-progress and then assuming success treats a failed provision as a
+      # working machine.
+      status:
+        type: string
+        default: in-progress
+      # create, power_off, snapshot, resize. What the action was doing, which
+      # matters because several can be queued against one droplet at once.
+      type:
+        type: string
+        default: create
+      resource_id:
+        type: integer
+      resource_type:
+        type: string
+        default: droplet
+      region_slug:
+        type: string
+        in: region
+      started_at:
+        type: datetime
+      # Absent while the action is still running, which is the only reliable
+      # way to tell a finished action from a running one without reading the
+      # status.
+      completed_at:
+        type: datetime
+        stamped: false
+
+  volume:
+    collection: volumes
+    id:
+      style: opaque
+      length: 36
+    fields:
+      name:
+        type: string
+        required: true
+      size_gigabytes:
+        type: integer
+        default: 10
+      # A volume attached to a droplet cannot be deleted, and this is the
+      # field a teardown script has to check first.
+      droplet_ids:
+        type: string
+      region_slug:
+        type: string
+        in: region
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/droplets
+    resource: droplet
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /v2/droplets/{id}
+    resource: droplet
+    operation: get
+
+  # 202 Accepted. The droplet exists, its status is new, and it has no
+  # address. The work happens afterwards.
+  - method: POST
+    path: /v2/droplets
+    resource: droplet
+    operation: create
+    status: 202
+
+  - method: DELETE
+    path: /v2/droplets/{id}
+    resource: droplet
+    operation: delete
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /v2/actions
+    resource: action
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /v2/actions/{id}
+    resource: action
+    operation: get
+
+  - method: GET
+    path: /v2/volumes
+    resource: volume
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+webhooks:
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: API Rate limit exceeded.
+    headers:
+      # The draft RateLimit-* set rather than Retry-After. A client honouring
+      # only the standard header has nothing to wait on.
+      RateLimit-Limit: "5000"
+      RateLimit-Remaining: "0"
+      RateLimit-Reset: "1767225600"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Unable to authenticate you.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: The resource you were accessing could not be found.
+
+  parameter_missing:
+    status: 422
+    code: unprocessable_entity
+    message: "{detail} is required"
+
+  # A volume attached to a droplet cannot be deleted, which is what a teardown
+  # script hits when it removes things in the order it created them.
+  volume_attached:
+    status: 422
+    code: unprocessable_entity
+    message: Volume is still attached to a droplet and cannot be deleted.
+
+  # The account limit. It is not a rate limit and retrying does not help, but
+  # it arrives as a 422 with the same code as a validation failure.
+  droplet_limit_reached:
+    status: 422
+    code: unprocessable_entity
+    message: You have reached your droplet limit.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    droplet:
+      # Provisioned and reachable.
+      - id: "3164444"
+        name: web-01
+        status: active
+        memory: 2048
+        vcpus: 2
+        region_slug: lon1
+        image_slug: ubuntu-24-04-x64
+        networks_v4_ip: 203.0.113.10
+        created_at: "2026-01-10T09:00:00Z"
+      # Still being built. No address at all, which is what an integration
+      # sees if it reads the network straight after creating one.
+      - id: "3164445"
+        name: web-02
+        status: new
+        memory: 2048
+        vcpus: 2
+        region_slug: lon1
+        image_slug: ubuntu-24-04-x64
+      # Powered off, still present, and still billed. A cost report that
+      # counts running machines misses this one entirely.
+      - id: "3164446"
+        name: batch-runner
+        status: off
+        region_slug: lon1
+        image_slug: ubuntu-24-04-x64
+        networks_v4_ip: 203.0.113.12
+
+    action:
+      - id: "36804636"
+        type: create
+        status: completed
+        resource_id: 3164444
+        region_slug: lon1
+        started_at: "2026-01-10T09:00:00Z"
+        completed_at: "2026-01-10T09:00:52Z"
+      # Still running, and no completion time. The droplet it belongs to has
+      # no address yet.
+      - id: "36804637"
+        type: create
+        status: in-progress
+        resource_id: 3164445
+        region_slug: lon1
+        started_at: "2026-01-15T10:00:00Z"
+      # Finished and failed. Polling until the status is not in-progress and
+      # then assuming success treats this as a working machine.
+      - id: "36804638"
+        type: snapshot
+        status: errored
+        resource_id: 3164446
+        region_slug: lon1
+        started_at: "2026-01-14T02:00:00Z"
+        completed_at: "2026-01-14T02:04:00Z"
+
+    volume:
+      - id: cauldron-volume-0000000000000000001
+        name: data-01
+        size_gigabytes: 100
+        region_slug: lon1
+        # Attached. Deleting it is refused until the droplet lets go.
+        droplet_ids: "3164444"
+
+# Conformance cases, read from DigitalOcean's API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a new droplet has no address yet
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/droplets_get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/droplets/3164445
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        droplet:
+          # Being built. An integration that creates a droplet and reads its
+          # address straight afterwards gets nothing, and only finds out when
+          # the timing differs in production.
+          status: new
+          name: web-02
+      absent:
+        - droplet.networks
+
+  - name: a provisioned droplet has one
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/droplets_get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/droplets/3164444
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        droplet:
+          status: active
+          networks:
+            networks_v4_ip: 203.0.113.10
+
+  - name: creating a droplet is accepted rather than done
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/droplets_create
+    fixture: small-account
+    request:
+      method: POST
+      path: /v2/droplets
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+      json:
+        name: web-03
+        region_slug: lon1
+        image_slug: ubuntu-24-04-x64
+    expect:
+      # 202, not 201. The droplet exists and the machine does not.
+      status: 202
+      body:
+        droplet:
+          status: new
+          name: web-03
+      absent:
+        - droplet.networks
+
+  - name: a finished action is not necessarily a successful one
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/actions_get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/actions/36804638
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        action:
+          # Polling until the status is not in-progress and then assuming
+          # success treats a failed provision as a working machine.
+          status: errored
+          completed_at: "2026-01-14T02:04:00Z"
+          type: snapshot
+
+  - name: a running action has no completion time
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/actions_get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/actions/36804637
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        action:
+          status: in-progress
+          resource_id: 3164445
+      absent:
+        - action.completed_at
+
+  - name: a powered off droplet is still there
+    source: https://docs.digitalocean.com/reference/api/api-reference/#operation/droplets_list
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/droplets
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        droplets[0].status: active
+        droplets[1].status: new
+        # Off, still present, still billed. A cost report counting running
+        # machines misses this one entirely.
+        droplets[2].status: off
+        meta:
+          total: 3
+
+  - name: links is present and empty when everything fits on one page
+    source: https://docs.digitalocean.com/reference/api/api-reference/#section/Introduction/Links-and-Pagination
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/volumes
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        volumes[0].name: data-01
+        # Present, and empty. Asserting only the absence of links.pages below
+        # would also pass if links were missing altogether, which is a
+        # different shape and a different bug.
+        links: {}
+      # There is no next page, so there are no pages at all. A client reading
+      # links.pages.next.href throws rather than seeing it has finished.
+      absent:
+        - links.pages
+
+  - name: links carries a next page when there is one
+    source: https://docs.digitalocean.com/reference/api/api-reference/#section/Introduction/Links-and-Pagination
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/droplets
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 200
+      body:
+        # One sent, three matched. The count is of everything, not of what
+        # arrived, so a client sizing a progress bar from the array length
+        # gets a third of the answer.
+        meta:
+          total: 3
+      matches:
+        links.pages.next: '.'
+      absent:
+        - droplets[1]
+
+  - name: the error code field is called id
+    source: https://docs.digitalocean.com/reference/api/api-reference/#section/Introduction/Responses
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/droplets/99999999
+      headers:
+        Authorization: Bearer dop_v1_cauldron
+    expect:
+      status: 404
+      body:
+        # A client reading response.id expecting a resource identifier gets an
+        # error slug, which is a string that looks entirely reasonable right
+        # up until it is used as a key.
+        id: not_found
+      matches:
+        message: 'could not be found'
+      absent:
+        - code
+        - error
+        - errors
