@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,5 +209,119 @@ func TestFixtureChoiceIgnoresEmptyParts(t *testing.T) {
 
 	if fixture, _ := choice.forRecipe("stripe"); fixture != "small-shop" {
 		t.Errorf("got %q", fixture)
+	}
+}
+
+// Cauldron's job is the emulated providers. The application, its database and
+// its web server belong to whoever is already running them, so there has to be
+// a way to get the providers and nothing else: no plan describing an
+// environment Cauldron will not set up, no containers, and output a program
+// can read rather than a banner addressed to a person.
+func TestHeadlessServeReportsItselfAsJSON(t *testing.T) {
+	var out bytes.Buffer
+
+	writeServeJSON(&out, "127.0.0.1:4600", loopback, 4600,
+		[]string{"stripe", "woocommerce"}, []string{"twilio"}, nil)
+
+	line := out.String()
+
+	if strings.Count(strings.TrimSpace(line), "\n") != 0 {
+		t.Errorf("headless output must be one line, so a caller can read one and move on:\n%s", line)
+	}
+
+	var payload struct {
+		Address string `json:"address"`
+		Bind    string `json:"bind"`
+		Port    int    `json:"port"`
+		Control string `json:"control"`
+		Mounted []struct {
+			Recipe string `json:"recipe"`
+			URL    string `json:"url"`
+		} `json:"mounted"`
+		Missing  []string `json:"missing"`
+		Unseeded []string `json:"unseeded"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
+		t.Fatalf("headless output is not JSON: %v\n%s", err, line)
+	}
+
+	if payload.Address != "http://127.0.0.1:4600" {
+		t.Errorf("address = %q", payload.Address)
+	}
+
+	if payload.Port != 4600 || payload.Bind != loopback {
+		t.Errorf("bind = %q port = %d, want them reported separately from the address", payload.Bind, payload.Port)
+	}
+
+	if len(payload.Mounted) != 2 || payload.Mounted[0].URL != "http://127.0.0.1:4600/stripe" {
+		t.Errorf("mounted = %+v", payload.Mounted)
+	}
+
+	// A provider Cauldron cannot emulate still reaches the real network.
+	// Leaving that out of the machine-readable form and keeping it only in the
+	// banner would hide it from exactly the callers that cannot see a banner.
+	if len(payload.Missing) != 1 || payload.Missing[0] != "twilio" {
+		t.Errorf("missing = %v, want the unemulated providers reported", payload.Missing)
+	}
+
+	// Empty rather than null, so a caller can iterate without checking.
+	if payload.Unseeded == nil {
+		t.Error("unseeded should be an empty array rather than null")
+	}
+}
+
+// A wildcard bind reports itself as [::]:4600, which is not a URL. Handing
+// that back as the address gives a caller something that fails the moment it
+// is used, so the reported address is always one that works from this machine
+// and the real bind travels beside it.
+func TestAWildcardBindStillReportsAUsableAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Skipf("cannot bind a wildcard address here: %v", err)
+	}
+
+	defer func() { _ = listener.Close() }()
+
+	addr := dialable(listener.Addr())
+
+	if strings.HasPrefix(addr, "[::]") || strings.HasPrefix(addr, "0.0.0.0") {
+		t.Errorf("addr = %q, which is not something anybody can dial", addr)
+	}
+
+	if !strings.HasPrefix(addr, loopback+":") {
+		t.Errorf("addr = %q, want loopback with the bound port", addr)
+	}
+}
+
+func TestHeadlessAndHostAreParsed(t *testing.T) {
+	var stderr bytes.Buffer
+
+	opts, err := parseServeFlags([]string{"-headless", "-host", "0.0.0.0", "stripe"}, &stderr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if !opts.headless {
+		t.Error("headless should be set")
+	}
+
+	if opts.host != "0.0.0.0" {
+		t.Errorf("host = %q", opts.host)
+	}
+
+	// Loopback by default: a fake provider that answers the network by
+	// accident is worse than one that is awkward to reach.
+	def, err := parseServeFlags(nil, &stderr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if def.host != loopback {
+		t.Errorf("default host = %q, want loopback", def.host)
+	}
+
+	if def.headless {
+		t.Error("headless must be opt-in")
 	}
 }

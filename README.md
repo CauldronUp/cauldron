@@ -66,6 +66,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 469 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
+| Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
 | Recipes shipped | 66: Stripe, GitHub, GitLab, Bitbucket, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean |
 
@@ -99,6 +100,42 @@ Cauldron is listening on http://127.0.0.1:4600
 Containers are labelled and scoped to the project directory, so two checkouts
 side by side get separate environments. `cauldron down` removes them, and
 `--keep-data` preserves the volumes.
+
+### Headless: just the providers
+
+If you already have a way to run your application, you probably do not want a
+second one. Headless mode emulates the providers and nothing else: no
+containers, no plan describing an environment Cauldron is not going to set up,
+and one line of JSON instead of a banner addressed to a person.
+
+```bash
+cauldron serve --headless stripe woocommerce
+```
+
+```json
+{"address":"http://127.0.0.1:4600","bind":"127.0.0.1","port":4600,"control":"http://127.0.0.1:4600/_cauldron/status","mounted":[{"recipe":"stripe","url":"http://127.0.0.1:4600/stripe"},{"recipe":"woocommerce","url":"http://127.0.0.1:4600/woocommerce"}],"missing":[],"unseeded":[]}
+```
+
+One line, printed before anything else, so a script can read it and get on with
+starting the application itself. `missing` is in there for the same reason it is
+in the banner: a provider Cauldron cannot emulate still reaches the real
+network, and that should not be something you find out from a charge.
+
+`cauldron up --headless` does the same and skips the containers, for a project
+whose services are already running.
+
+Cauldron binds loopback by default. An application in its own container cannot
+reach the host's loopback, so `--host` changes that:
+
+```bash
+cauldron serve --headless --host 0.0.0.0 stripe
+```
+
+The reported `address` stays dialable from this machine even on a wildcard bind,
+and the real bind travels beside it as `bind` and `port`, because `http://[::]:4600`
+is not a URL anybody can use. Binding past loopback also puts the control plane
+on the network, where it can seed, reset and fault the providers, so Cauldron
+says so on stderr when you do it.
 
 Then point an SDK at `http://127.0.0.1:4600/stripe` and use it as you would the real thing:
 
