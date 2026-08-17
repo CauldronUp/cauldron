@@ -395,3 +395,75 @@ routes:
 		t.Fatalf("stamped on a datetime field should be accepted: %v", err)
 	}
 }
+
+// A case whose every claim repeats a value it sent proves nothing. A create
+// that posts {"name": "x"} and asserts {"name": "x"} is testing that the
+// request survived the round trip, which every fake does by construction.
+//
+// Four of these were written before anything checked, and each was only found
+// by deliberately breaking the Recipe and noticing the case still passed. One
+// could not be salvaged at all and had to be replaced. The rule is here so the
+// fifth is caught by the validator rather than by somebody remembering.
+func TestACaseThatOnlyEchoesItsRequestIsRejected(t *testing.T) {
+	echo := Case{
+		Name:    "a create returns what it was given",
+		Source:  "https://example.com/docs",
+		Request: Request{Method: "POST", Path: "/things", JSON: map[string]any{"name": "Ada"}},
+		Expect:  Expectation{Status: 201, Body: map[string]any{"name": "Ada"}},
+	}
+
+	if !echoesOnly(echo) {
+		t.Error("a body that only repeats the request should be rejected")
+	}
+
+	// One claim the emulator decides is enough, because then something real is
+	// under test.
+	withGenerated := echo
+	withGenerated.Expect.Matches = map[string]string{"id": "^thing_"}
+
+	if echoesOnly(withGenerated) {
+		t.Error("a matches claim cannot be satisfied by echoing, so the case stands")
+	}
+
+	withAbsence := echo
+	withAbsence.Expect.Absent = []string{"deleted_at"}
+
+	if echoesOnly(withAbsence) {
+		t.Error("an absence cannot be satisfied by echoing either")
+	}
+
+	// A body claim about a field the request never mentioned is the ordinary
+	// case and must not be flagged.
+	withDecision := echo
+	withDecision.Expect.Body = map[string]any{"name": "Ada", "status": "active"}
+
+	if echoesOnly(withDecision) {
+		t.Error("a field the request did not send is the emulator's answer")
+	}
+
+	// A read sends nothing, so nothing can be an echo.
+	read := Case{
+		Name:    "a read",
+		Request: Request{Method: "GET", Path: "/things/1"},
+		Expect:  Expectation{Status: 200, Body: map[string]any{"name": "Ada"}},
+	}
+
+	if echoesOnly(read) {
+		t.Error("a request with no body cannot echo anything")
+	}
+}
+
+// Form values arrive as text, so a form sending "2" and a body asserting the
+// number 2 is still an echo. Requiring the YAML types to match would let the
+// weakest cases through on a technicality.
+func TestAnEchoIsCaughtAcrossFormEncoding(t *testing.T) {
+	c := Case{
+		Name:    "a form create",
+		Request: Request{Method: "POST", Path: "/things", Form: map[string]string{"quantity": "2"}},
+		Expect:  Expectation{Status: 200, Body: map[string]any{"quantity": 2}},
+	}
+
+	if !echoesOnly(c) {
+		t.Error("a form string and a body number are the same claim")
+	}
+}
