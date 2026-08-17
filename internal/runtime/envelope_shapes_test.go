@@ -153,3 +153,50 @@ func TestAuthFailsBeforeAnythingIsSent(t *testing.T) {
 		t.Error("an auth failure should use the same array shape as any other")
 	}
 }
+
+// Datadog sends its errors as an array of bare strings rather than an array of
+// objects. A client looping over the entries and reading .message from each,
+// which is what almost every other provider needs, finds undefined on every
+// one and throws instead of reporting anything.
+func TestErrorsCanBeAnArrayOfBareStrings(t *testing.T) {
+	r, err := recipe.Open("datadog")
+	if err != nil {
+		t.Fatalf("open datadog: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-org"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/99999999", nil)
+	req.Header.Set("DD-API-KEY", "cauldron-api-key")
+	req.Header.Set("DD-APPLICATION-KEY", "cauldron-app-key")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404\n%s", rec.Code, rec.Body)
+	}
+
+	body := decode(t, rec)
+
+	errs, _ := body["errors"].([]any)
+	if len(errs) != 1 {
+		t.Fatalf("errors = %v, want one entry", body["errors"])
+	}
+
+	message, isString := errs[0].(string)
+	if !isString {
+		t.Fatalf("errors[0] is %T, want a bare string", errs[0])
+	}
+
+	if !strings.Contains(message, "Monitor not found") {
+		t.Errorf("errors[0] = %q", message)
+	}
+}

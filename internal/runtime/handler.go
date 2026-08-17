@@ -718,6 +718,18 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 func (s *Sandbox) errorBody(category, code, message string, status int) map[string]any {
 	spec := s.recipe.Responses.Error
 
+	if spec.Style == "string_list" {
+		key := spec.Key
+		if key == "" {
+			key = "errors"
+		}
+
+		// Datadog sends the array with bare strings in it. A client looping
+		// over the entries and reading .message from each finds undefined on
+		// every one, which throws rather than reporting anything.
+		return withFields(map[string]any{key: []any{message}}, spec.Fields)
+	}
+
 	if spec.Style != "flat" && spec.Style != "list" {
 		nested := map[string]any{"message": message}
 
