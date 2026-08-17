@@ -458,7 +458,6 @@ func TestACredentialCanBeCheckedByShape(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // Mux sends messages, plural, as an array: error.message is undefined and
 // error.messages[0] is the sentence, which is backwards from every other
 // provider in the collection. Writing the sentence into a field called
@@ -472,16 +471,6 @@ func TestAnErrorMessageCanBeAnArray(t *testing.T) {
 	r, err := recipe.Open("mux")
 	if err != nil {
 		t.Fatalf("open mux: %v", err)
-=======
-// Pusher answers with an object keyed by channel name rather than an array, so
-// looping over it as a list finds nothing. A channel nobody is on is absent
-// from the object entirely rather than present with a zero, which is the same
-// omit-when-empty idea one level down.
-func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
-	r, err := recipe.Open("pusher")
-	if err != nil {
-		t.Fatalf("open pusher: %v", err)
->>>>>>> b936046 (Add a Pusher Recipe, a keyed collection, and an assertable text body)
 	}
 
 	s, err := New(r, Options{Seed: 1})
@@ -489,21 +478,12 @@ func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
 		t.Fatalf("new sandbox: %v", err)
 	}
 
-<<<<<<< HEAD
 	req := httptest.NewRequest(http.MethodGet, "/video/v1/assets/doesnotexist", nil)
 	req.SetBasicAuth("cauldron-token-id", "cauldron-mux-secret-key")
-=======
-	if err := s.Seed("small-app"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/apps/cauldron/channels?auth_key=cauldronappkey", nil)
->>>>>>> b936046 (Add a Pusher Recipe, a keyed collection, and an assertable text body)
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
-<<<<<<< HEAD
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404\n%s", rec.Code, rec.Body)
 	}
@@ -523,7 +503,33 @@ func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
 	// and picks whichever it was written for.
 	if _, present := failure["message"]; present {
 		t.Error("Mux sends no error.message, only error.messages")
-=======
+	}
+}
+
+// Pusher answers with an object keyed by channel name rather than an array, so
+// looping over it as a list finds nothing. A channel nobody is on is absent
+// from the object entirely rather than present with a zero, which is the same
+// omit-when-empty idea one level down.
+func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
+	r, err := recipe.Open("pusher")
+	if err != nil {
+		t.Fatalf("open pusher: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-app"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/apps/cauldron/channels?auth_key=cauldronappkey", nil)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body)
 	}
@@ -550,6 +556,5 @@ func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
 	// A channel nobody is on is not in the object at all.
 	if _, present := channels["quiet"]; present {
 		t.Error("an unoccupied channel should be absent rather than zeroed")
->>>>>>> b936046 (Add a Pusher Recipe, a keyed collection, and an assertable text body)
 	}
 }
