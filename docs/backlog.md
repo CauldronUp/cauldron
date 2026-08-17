@@ -52,7 +52,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Mollie | Payment lifecycle and asynchronous states |
 | Wise Business | Transfers, recipients, balances, settlement states |
 | GoCardless | Mandates, direct debit, failed collections |
-| Brex | Cards, expenses, transactions |
+| ~~Brex~~ | Shipped. Money as an object, pending cards, expenses against transactions |
 | ~~Ramp~~ | Shipped. Cents without saying so, pending holds, declines in the list |
 | ~~Mercury~~ | Shipped. Direction in the sign, two balances, failed transfers in the list |
 

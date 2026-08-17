@@ -345,11 +345,11 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 		// HubSpot reads contact.properties.email, and a client written against
 		// it finds nothing at the top level.
 		if field, declared := spec.Fields[key]; declared && field.In != "" {
-			nested, _ := out[field.In].(map[string]any)
-			if nested == nil {
-				nested = map[string]any{}
-				out[field.In] = nested
-			}
+			// A dotted name nests twice. Brex puts a card's limit at
+			// spend_controls.limit.amount, and treating the name as one
+			// literal key produced a flat "spend_controls.limit" key that no
+			// provider sends and nothing was checking.
+			nested := nestedObject(out, field.In)
 
 			// The wire name, which is the field's own unless it says
 			// otherwise. Without that, a resource needing both title.rendered
@@ -364,6 +364,48 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 	}
 
 	return out
+}
+
+// lookupNested walks a dotted path through an incoming request body.
+func lookupNested(record store.Record, path string) (map[string]any, bool) {
+	var current any = map[string]any(record)
+
+	for _, segment := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+
+	object, ok := current.(map[string]any)
+
+	return object, ok
+}
+
+// nestedObject walks a dotted path, creating the objects it passes through,
+// and returns the one the field belongs in.
+//
+// Most providers nest one level, which is a single key. Brex nests twice for a
+// card's spending limit, and a dotted name is how a Recipe says so.
+func nestedObject(out map[string]any, path string) map[string]any {
+	current := out
+
+	for _, segment := range strings.Split(path, ".") {
+		next, _ := current[segment].(map[string]any)
+		if next == nil {
+			next = map[string]any{}
+			current[segment] = next
+		}
+
+		current = next
+	}
+
+	return current
 }
 
 // nests reports whether any of a resource's fields live under a sub-object.
@@ -390,7 +432,7 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 			continue
 		}
 
-		nested, isObject := record[field.In].(map[string]any)
+		nested, isObject := lookupNested(record, field.In)
 		if !isObject {
 			continue
 		}
@@ -404,7 +446,7 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 	// same values twice under two shapes.
 	for _, field := range spec.Fields {
 		if field.In != "" {
-			delete(record, field.In)
+			delete(record, strings.Split(field.In, ".")[0])
 		}
 	}
 
