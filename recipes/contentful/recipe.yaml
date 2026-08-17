@@ -1,0 +1,406 @@
+# Contentful Recipe for Cauldron
+#
+# Contentful bills by space, by record and by API call. A test suite that reads
+# content burns the call allowance, and there is no free space to throw away:
+# the sandbox is a real space with real content that editors are using. Teams
+# either share the production space with a "test" content type nobody dares
+# delete, or they stub the client and never find out that their code reads the
+# wrong half of the response.
+#
+# This Recipe models the Content Delivery API, which is what applications read
+# from. Two things about it are worth reproducing exactly:
+#
+#   1. Metadata lives in a sys block and content lives in a fields block. The
+#      identifier is at sys.id, not at the top level, and the content type is
+#      at sys.contentType. Code that reads entry.id or entry.title finds
+#      nothing in either case.
+#   2. A collection is itself a typed object. It carries sys.type "Array"
+#      alongside its items, so a client can tell a collection from an entry
+#      without inspecting the payload.
+#
+# Known fidelity gap, stated rather than hidden: the Content Management API
+# keys every field by locale, so fields.title is an object of locales rather
+# than a value. The Delivery API modelled here resolves a single locale, which
+# is the shape an application reads. A Recipe for the management side would
+# need locale maps that Cauldron cannot express yet.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: contentful
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.contentful.com/developers/docs/references/content-delivery-api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-delivery-token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    count_field: total
+    fields:
+      skip: 0
+      limit: 100
+      # A collection is a typed object in its own right.
+      sys:
+        type: Array
+  error:
+    style: flat
+    message_field: message
+    # The error's own id says which failure it was, and it lives in the same
+    # sys block every other Contentful object has.
+    code_field: sys.id
+    fields:
+      sys:
+        type: Error
+      requestId: cauldron00000001
+
+resources:
+  entry:
+    collection: items
+    id:
+      style: opaque
+      # Not at the top level. Code reading entry.id finds nothing.
+      field: sys.id
+      length: 22
+    fields:
+      # Everything an application reads is under fields.
+      title:
+        type: string
+        required: true
+        in: fields
+      slug:
+        type: string
+        in: fields
+      body:
+        type: string
+        in: fields
+      # And everything about the record itself is under sys.
+      type:
+        type: string
+        default: Entry
+        in: sys
+      # The revision, which increments on every publish. A client caching by
+      # id without checking this serves stale content forever.
+      revision:
+        type: integer
+        default: 1
+        in: sys
+      contentType:
+        type: string
+        in: sys
+      createdAt:
+        type: datetime
+        in: sys
+      updatedAt:
+        type: datetime
+        in: sys
+
+  asset:
+    collection: items
+    id:
+      style: opaque
+      field: sys.id
+      length: 22
+    fields:
+      title:
+        type: string
+        required: true
+        in: fields
+      description:
+        type: string
+        in: fields
+      # An asset that has been created but not processed has no file yet, and
+      # code that assumes a URL is present renders a broken image.
+      url:
+        type: string
+        in: fields
+      type:
+        type: string
+        default: Asset
+        in: sys
+      revision:
+        type: integer
+        default: 1
+        in: sys
+      createdAt:
+        type: datetime
+        in: sys
+
+  content_type:
+    collection: items
+    id:
+      style: opaque
+      field: sys.id
+      length: 22
+    fields:
+      name:
+        type: string
+        required: true
+      displayField:
+        type: string
+      description:
+        type: string
+      type:
+        type: string
+        default: ContentType
+        in: sys
+      revision:
+        type: integer
+        default: 1
+        in: sys
+
+routes:
+  - method: GET
+    path: /spaces/{space}/environments/{environment}/entries
+    resource: entry
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /spaces/{space}/environments/{environment}/entries/{id}
+    resource: entry
+    operation: get
+
+  - method: GET
+    path: /spaces/{space}/environments/{environment}/assets
+    resource: asset
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /spaces/{space}/environments/{environment}/assets/{id}
+    resource: asset
+    operation: get
+
+  - method: GET
+    path: /spaces/{space}/environments/{environment}/content_types
+    resource: content_type
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+webhooks:
+  events:
+    - Entry.publish
+    - Entry.unpublish
+    - Entry.delete
+    - Asset.publish
+    - ContentType.save
+  signing:
+    scheme: hmac-sha256
+    header: x-contentful-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: RateLimitExceeded
+    message: You have exceeded the rate limit for this space
+    headers:
+      X-Contentful-RateLimit-Reset: "1"
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: AccessTokenInvalid
+    message: The access token you sent could not be found or is invalid.
+
+  resource_missing:
+    status: 404
+    code: NotFound
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: BadRequest
+    message: "The request was malformed: {detail} is required"
+
+  # Contentful refuses a query it cannot resolve, which is the failure a
+  # search feature hits the first time somebody filters on an unindexed field.
+  invalid_query:
+    status: 400
+    code: InvalidQuery
+    message: The query you sent was invalid, probably a filter on an unknown field.
+
+  # The billing wall. Nothing about the request is wrong.
+  quota_exceeded:
+    status: 403
+    code: AccessDenied
+    message: The space has exceeded its API request allowance.
+
+fixtures:
+  empty: {}
+
+  small-space:
+    content_type:
+      - id: blogPost
+        name: Blog Post
+        displayField: title
+    entry:
+      - id: entry000000000000000001
+        title: Seasoning cast iron
+        slug: seasoning-cast-iron
+        body: Heat, oil, repeat.
+        contentType: blogPost
+        revision: 3
+      - id: entry000000000000000002
+        title: Choosing a cauldron
+        slug: choosing-a-cauldron
+        contentType: blogPost
+        revision: 1
+    asset:
+      - id: asset000000000000000001
+        title: Cauldron on a stove
+        url: https://images.example.com/cauldron.jpg
+      - id: asset000000000000000002
+        title: Uploaded, not yet processed
+        # No url. An asset that has not been processed has no file, and code
+        # that assumes one renders a broken image.
+
+# Conformance cases, read from Contentful's Content Delivery API reference
+# rather than observed against a live space. The verify report says so.
+conformance:
+  - name: the identifier is at sys.id, not at the top level
+    source: https://www.contentful.com/developers/docs/references/content-delivery-api/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries/entry000000000000000001
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 200
+      body:
+        sys:
+          id: entry000000000000000001
+          type: Entry
+          revision: 3
+      # Code reading entry.id finds nothing.
+      absent:
+        - id
+
+  - name: content is under fields, metadata under sys
+    source: https://www.contentful.com/developers/docs/references/content-delivery-api/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries/entry000000000000000001
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 200
+      body:
+        fields:
+          title: Seasoning cast iron
+          slug: seasoning-cast-iron
+        sys:
+          contentType: blogPost
+      # Code reading entry.title finds nothing either.
+      absent:
+        - title
+        - slug
+
+  - name: a collection is itself a typed object
+    source: https://www.contentful.com/developers/docs/references/content-delivery-api/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 200
+      body:
+        # A client can tell a collection from an entry without inspecting the
+        # payload, because the collection says what it is.
+        sys:
+          type: Array
+        total: 2
+        skip: 0
+        items[0].fields.title: Seasoning cast iron
+      absent:
+        - data
+        - results
+
+  - name: the revision is what tells a cache the content changed
+    source: https://www.contentful.com/developers/docs/references/content-delivery-api/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries/entry000000000000000002
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 200
+      body:
+        sys:
+          revision: 1
+        fields:
+          title: Choosing a cauldron
+      # A client caching by id alone and never reading the revision serves
+      # stale content forever.
+      absent:
+        - revision
+
+  - name: an unprocessed asset has no file url
+    source: https://www.contentful.com/developers/docs/references/content-delivery-api/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/assets/asset000000000000000002
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 200
+      body:
+        fields:
+          title: Uploaded, not yet processed
+      # Assuming a url is always present renders a broken image.
+      absent:
+        - fields.url
+
+  - name: the error is flat with its own sys block
+    source: https://www.contentful.com/developers/docs/references/errors/
+    fixture: small-space
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries/doesnotexist
+      headers:
+        Authorization: Bearer cauldron-delivery-token
+    expect:
+      status: 404
+      body:
+        sys:
+          type: Error
+          id: NotFound
+      matches:
+        message: 'could not be found'
+        requestId: '^cauldron[0-9]+$'
+      absent:
+        - error
+        - errors
+
+  - name: a bad token is refused with the same shape
+    source: https://www.contentful.com/developers/docs/references/authentication/
+    request:
+      method: GET
+      path: /spaces/cauldron/environments/master/entries
+    expect:
+      status: 401
+      body:
+        sys:
+          type: Error
+          id: AccessTokenInvalid

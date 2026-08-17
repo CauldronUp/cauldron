@@ -319,7 +319,9 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 
 	for key, value := range record {
 		if key == "id" && renamed {
-			out[spec.ID.Field] = value
+			// setPath, so a dotted name nests. Contentful keeps the
+			// identifier at sys.id rather than at the top level.
+			setPath(out, spec.ID.Field, value)
 			continue
 		}
 
