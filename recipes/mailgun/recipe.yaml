@@ -1,0 +1,348 @@
+# Mailgun Recipe for Cauldron
+#
+# Mailgun gives every account a sandbox domain, and it only sends to addresses
+# you have authorised one at a time, which makes it useless for testing a real
+# recipient list and misleading for testing anything else: a send that would
+# bounce in production is accepted in the sandbox. Sending from a real domain
+# costs money, consumes reputation, and delivers to real inboxes.
+#
+# Two things worth modelling exactly:
+#
+#   1. The API key is the Basic password, not the username. The username is
+#      the constant "api". An emulator that checked the username would accept
+#      any key at all, so a bad-credential path could never be tested.
+#   2. A queued message is not a delivered one. The send endpoint answers with
+#      a queue id and nothing else, and delivery, bounce and complaint arrive
+#      later as events. Code that treats the 200 as delivery has no way to
+#      learn otherwise.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: mailgun
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://documentation.mailgun.com/docs/mailgun/api-reference/
+
+auth:
+  scheme: basic
+  # Mailgun's username is the constant "api" and the key is the password.
+  # Checking the username would accept anything.
+  credential: password
+  keys:
+    - cauldron-mailgun-key
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    cursor_field: paging.next
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  message:
+    collection: items
+    id:
+      style: opaque
+      field: id
+      length: 20
+    fields:
+      to:
+        type: string
+        required: true
+      from:
+        type: string
+        required: true
+      subject:
+        type: string
+      # The only thing a successful send returns beyond the id. It says the
+      # message was accepted, not that anybody received it.
+      message:
+        type: string
+        default: Queued. Thank you.
+
+  event:
+    collection: items
+    id:
+      style: opaque
+      length: 22
+    fields:
+      # Mailgun's real outcomes, and the ones a sandbox domain will not
+      # produce for you on request.
+      event:
+        type: string
+        default: accepted
+      recipient:
+        type: string
+      # A permanent failure will never succeed on retry; a temporary one
+      # might. Code that retries both wastes reputation on the first.
+      severity:
+        type: string
+      reason:
+        type: string
+      timestamp:
+        type: number
+
+  bounce:
+    collection: items
+    id:
+      style: opaque
+      field: address
+      length: 24
+    fields:
+      # The SMTP code decides whether the address should be suppressed
+      # permanently. 550 is permanent, 4xx is not.
+      code:
+        type: string
+        default: "550"
+      error:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /v3/{domain}/messages
+    resource: message
+    operation: create
+
+  - method: GET
+    path: /v3/{domain}/events
+    resource: event
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: GET
+    path: /v3/{domain}/bounces
+    resource: bounce
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: GET
+    path: /v3/{domain}/bounces/{id}
+    resource: bounce
+    operation: get
+
+  - method: DELETE
+    path: /v3/{domain}/bounces/{id}
+    resource: bounce
+    operation: delete
+
+webhooks:
+  events:
+    - accepted
+    - delivered
+    - opened
+    - clicked
+    - unsubscribed
+    - complained
+    - permanent_fail
+    - temporary_fail
+  signing:
+    scheme: hmac-sha256
+    header: signature
+    secret: cauldron-webhook-signing-key
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: Invalid private key
+
+  resource_missing:
+    status: 404
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} parameter is missing"
+
+  # The sandbox wall, and the reason a sandbox domain is not a test
+  # environment: it refuses anybody who has not been authorised by hand.
+  unauthorised_recipient:
+    status: 400
+    message: Sandbox subdomains are for test purposes only. Please add your own domain or add the address to authorized recipients.
+
+  # A domain whose DNS is not verified cannot send at all, and the failure
+  # only appears once you try.
+  domain_not_verified:
+    status: 403
+    message: The domain is not verified. Please check the DNS records.
+
+  # Mailgun refuses to send to an address already on the suppression list,
+  # which is what a re-import of an old list runs into.
+  suppressed_recipient:
+    status: 400
+    message: The address is on the bounce suppression list.
+
+fixtures:
+  empty: {}
+
+  small-domain:
+    event:
+      - id: eventaccepted00000001
+        event: accepted
+        recipient: ada@example.com
+        timestamp: 1767225600.482
+      - id: eventdelivered0000001
+        event: delivered
+        recipient: ada@example.com
+        timestamp: 1767225611.117
+      - id: eventpermfail00000001
+        event: failed
+        recipient: nobody@example.com
+        # Permanent. Retrying this will never work, and doing so burns
+        # reputation.
+        severity: permanent
+        reason: bounce
+        timestamp: 1767225620.004
+      - id: eventtempfail00000001
+        event: failed
+        recipient: busy@example.com
+        # Temporary. This one may well succeed later.
+        severity: temporary
+        reason: generic
+        timestamp: 1767225630.775
+    bounce:
+      - id: nobody@example.com
+        code: "550"
+        error: "550 5.1.1 The email account that you tried to reach does not exist"
+
+# Conformance cases, read from Mailgun's API reference rather than observed
+# against a live domain. The verify report says so.
+conformance:
+  - name: the key is the basic password, not the username
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: small-domain
+    request:
+      method: GET
+      path: /v3/mg.example.com/events
+      headers:
+        # Base64 of "api:wrong-key". The username is right and the key is
+        # not, so an emulator checking the username would let this through
+        # and a bad-credential path could never be tested.
+        Authorization: Basic YXBpOndyb25nLWtleQ==
+    expect:
+      status: 401
+      body:
+        message: Invalid private key
+
+  - name: the same request with the right key succeeds
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: small-domain
+    request:
+      method: GET
+      path: /v3/mg.example.com/events
+      headers:
+        # Base64 of "api:cauldron-mailgun-key".
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+    expect:
+      status: 200
+      body:
+        items[0].event: accepted
+        items[0].recipient: ada@example.com
+
+  - name: a send is queued, not delivered
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/mg.example.com/messages
+      headers:
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+      form:
+        to: ada@example.com
+        from: billing@mg.example.com
+        subject: Your receipt
+    expect:
+      status: 200
+      body:
+        # Accepted for delivery, and nothing more. Code that treats this as
+        # delivery has no way to learn otherwise.
+        message: Queued. Thank you.
+      matches:
+        id: '^[A-Za-z0-9]{20}$'
+
+  - name: a permanent failure is not a temporary one
+    source: https://documentation.mailgun.com/docs/mailgun/user-manual/events/
+    fixture: small-domain
+    request:
+      method: GET
+      path: /v3/mg.example.com/events
+      headers:
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+    expect:
+      status: 200
+      body:
+        # Retrying the permanent one will never work and burns reputation;
+        # the temporary one may well succeed later.
+        items[2].severity: permanent
+        items[3].severity: temporary
+        items[2].event: failed
+        items[3].event: failed
+
+  - name: a bounce is keyed by the address itself
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: small-domain
+    request:
+      method: GET
+      path: /v3/mg.example.com/bounces/nobody@example.com
+      headers:
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+    expect:
+      status: 200
+      body:
+        # The suppression list is keyed by address, not by an opaque id, so
+        # there is nothing else to look one up by.
+        address: nobody@example.com
+        code: "550"
+      absent:
+        - id
+
+  - name: a collection is wrapped in items with nested paging
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: small-domain
+    request:
+      method: GET
+      path: /v3/mg.example.com/events
+      query:
+        limit: "2"
+      headers:
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+    expect:
+      status: 200
+      matches:
+        paging.next: '^event[a-z0-9]+$'
+      absent:
+        - data
+        - items[2]
+
+  - name: a missing required parameter names it
+    source: https://documentation.mailgun.com/docs/mailgun/api-reference/
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/mg.example.com/messages
+      headers:
+        Authorization: Basic YXBpOmNhdWxkcm9uLW1haWxndW4ta2V5
+      form:
+        from: billing@mg.example.com
+    expect:
+      status: 400
+      matches:
+        message: 'to parameter is missing'
+      absent:
+        - error
+        - errors

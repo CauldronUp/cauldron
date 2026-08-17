@@ -629,12 +629,20 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 
 		presented = r.Header.Get(header)
 	case "basic":
-		user, _, ok := r.BasicAuth()
+		user, password, ok := r.BasicAuth()
 		if !ok {
 			return false
 		}
 
+		// Providers disagree about which half carries the secret. Twilio puts
+		// the account SID in the username; Mailgun's username is the constant
+		// "api" and the key is the password. Checking the wrong half means a
+		// bad key is never rejected, so the Recipe says which.
 		presented = user
+
+		if auth.Credential == "password" {
+			presented = password
+		}
 	default:
 		return true
 	}
