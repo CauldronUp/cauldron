@@ -1,0 +1,402 @@
+# Shippo Recipe for Cauldron
+#
+# Shippo has a test mode, and it is the most misleading kind: test labels are
+# free and always succeed. A rate quote in test mode returns carriers and
+# prices that have nothing to do with what production will offer, and a test
+# label validates an address that a real carrier would reject. So the failures
+# that matter, an address the carrier cannot deliver to, a service unavailable
+# on that lane, a label that takes seconds to generate, never happen.
+#
+# Two things worth modelling exactly:
+#
+#   1. Buying a label is asynchronous. The transaction comes back QUEUED with
+#      no label_url, and the URL appears later. Code that reads label_url from
+#      the create response gets nothing, and on a good day in test mode it
+#      gets a URL and ships broken code to production.
+#   2. Address validation is advisory. An address comes back with
+#      validation_results saying it is not valid, and the request still
+#      succeeds. Code that only checks the HTTP status never sees the warning.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: shippo
+version: 0.1.0
+
+upstream:
+  api: "2018-02-08"
+  docs: https://docs.goshippo.com/shippoapi/public-api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Shippo's own scheme for an API token.
+  prefix: "ShippoToken "
+  keys:
+    - shippo_test_cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    count_field: count
+    cursor_field: next
+  error:
+    style: flat
+    message_field: detail
+
+resources:
+  address:
+    collection: results
+    id:
+      style: hex
+      field: object_id
+      length: 32
+    fields:
+      name:
+        type: string
+      street1:
+        type: string
+        required: true
+      city:
+        type: string
+      state:
+        type: string
+      zip:
+        type: string
+      country:
+        type: string
+        default: GB
+      # Advisory. An address can be stored, returned with a 201, and still be
+      # one the carrier will refuse. Code checking only the status never sees
+      # this.
+      is_valid:
+        type: boolean
+        default: false
+        in: validation_results
+      validation_message:
+        type: string
+        in: validation_results
+      object_state:
+        type: string
+        default: VALID
+      object_created:
+        type: datetime
+
+  rate:
+    collection: results
+    id:
+      style: hex
+      field: object_id
+      length: 32
+    fields:
+      shipment_id:
+        type: string
+      provider:
+        type: string
+        required: true
+      servicelevel_name:
+        type: string
+      # Money as a decimal string with the currency beside it. Parsing this
+      # as a float and adding it to another is how a total ends up a penny out.
+      amount:
+        type: string
+        required: true
+      currency:
+        type: string
+        default: GBP
+      estimated_days:
+        type: integer
+      duration_terms:
+        type: string
+
+  transaction:
+    collection: results
+    id:
+      style: hex
+      field: object_id
+      length: 32
+    fields:
+      rate_id:
+        type: string
+      # Buying a label is asynchronous. QUEUED means nothing has been bought
+      # yet, and SUCCESS is the only state with a label.
+      status:
+        type: string
+        default: QUEUED
+      # Absent until the label actually exists, because nothing supplies it.
+      # Reading this from the create response is the single most common
+      # Shippo mistake, and in test mode it usually appears to work.
+      label_url:
+        type: string
+      tracking_number:
+        type: string
+      tracking_status:
+        type: string
+      object_created:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /addresses
+    resource: address
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: POST
+    path: /addresses
+    resource: address
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /addresses/{id}
+    resource: address
+    operation: get
+
+  - method: GET
+    path: /rates
+    resource: rate
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /rates/{id}
+    resource: rate
+    operation: get
+
+  - method: GET
+    path: /transactions
+    resource: transaction
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: POST
+    path: /transactions
+    resource: transaction
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /transactions/{id}
+    resource: transaction
+    operation: get
+
+webhooks:
+  events:
+    - transaction_created
+    - transaction_updated
+    - track_updated
+    - batch_purchased
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Request was throttled.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: Invalid token header. No credentials provided.
+
+  resource_missing:
+    status: 404
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required."
+
+  # The failures a free test mode will never produce, and the ones a shipping
+  # integration has to survive.
+  address_undeliverable:
+    status: 400
+    message: The address could not be verified and the carrier will not deliver to it.
+
+  service_unavailable_on_lane:
+    status: 400
+    message: The selected service level is not available for this origin and destination.
+
+  # Shippo refuses to buy the same rate twice, which is what a retried
+  # purchase runs into after a timeout that actually succeeded.
+  rate_already_purchased:
+    status: 400
+    message: This rate has already been purchased.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    address:
+      - id: "00000000000000000000000000000a01"
+        name: Ada Lovelace
+        street1: 12 Difference Street
+        city: London
+        zip: SW1A 1AA
+        country: GB
+        is_valid: true
+      - id: "00000000000000000000000000000a02"
+        name: Nowhere
+        street1: 999 Imaginary Road
+        city: London
+        zip: ZZ99 9ZZ
+        country: GB
+        # Stored, returned successfully, and still an address the carrier
+        # will refuse. Code checking only the HTTP status never sees this.
+        is_valid: false
+        validation_message: The address could not be found.
+    rate:
+      - id: "00000000000000000000000000000r01"
+        provider: Royal Mail
+        servicelevel_name: Tracked 48
+        amount: "4.85"
+        currency: GBP
+        estimated_days: 2
+      - id: "00000000000000000000000000000r02"
+        provider: DPD
+        servicelevel_name: Next Day
+        amount: "8.20"
+        currency: GBP
+        estimated_days: 1
+    transaction:
+      - id: "00000000000000000000000000000t01"
+        rate_id: "00000000000000000000000000000r01"
+        status: SUCCESS
+        label_url: https://shippo-delivery.s3.amazonaws.com/cauldron.pdf
+        tracking_number: AB123456789GB
+        tracking_status: TRANSIT
+      - id: "00000000000000000000000000000t02"
+        rate_id: "00000000000000000000000000000r02"
+        # Nothing has been bought yet. There is no label and no tracking
+        # number, and there may never be.
+        status: QUEUED
+
+# Conformance cases, read from Shippo's public API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a queued transaction has no label
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /transactions/00000000000000000000000000000t02
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+    expect:
+      status: 200
+      body:
+        status: QUEUED
+      # Reading label_url from a queued transaction is the single most common
+      # Shippo mistake, and in test mode it usually appears to work.
+      absent:
+        - label_url
+        - tracking_number
+
+  - name: a successful transaction has one
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /transactions/00000000000000000000000000000t01
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+    expect:
+      status: 200
+      body:
+        status: SUCCESS
+        tracking_number: AB123456789GB
+      matches:
+        label_url: '^https://'
+
+  - name: a newly bought label starts QUEUED
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: empty
+    request:
+      method: POST
+      path: /transactions
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+      json:
+        rate_id: "00000000000000000000000000000r01"
+    expect:
+      status: 201
+      body:
+        # Buying is asynchronous. Nothing has been bought yet.
+        status: QUEUED
+      absent:
+        - label_url
+
+  - name: an invalid address is still stored and returned
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /addresses/00000000000000000000000000000a02
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+    expect:
+      status: 200
+      body:
+        # The request succeeded and the address is unusable. Validation is
+        # advisory, and only the nested result says so.
+        validation_results:
+          is_valid: false
+        street1: 999 Imaginary Road
+      absent:
+        - is_valid
+
+  - name: money is a decimal string with the currency beside it
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /rates
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+    expect:
+      status: 200
+      body:
+        # A string, not a number. Parsing it as a float and adding it to
+        # another is how a total ends up a penny out.
+        results[0].amount: "4.85"
+        results[0].currency: GBP
+        results[0].provider: Royal Mail
+
+  - name: the identifier is object_id and a collection reports a count
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /addresses
+      headers:
+        Authorization: ShippoToken shippo_test_cauldron
+    expect:
+      status: 200
+      body:
+        count: 2
+      matches:
+        results[0].object_id: '^[0-9a-f]{32}$'
+      absent:
+        - results[0].id
+        - data
+
+  - name: a bad token is refused with a detail string
+    source: https://docs.goshippo.com/shippoapi/public-api/
+    request:
+      method: GET
+      path: /addresses
+    expect:
+      status: 401
+      body:
+        detail: Invalid token header. No credentials provided.
+      absent:
+        - error
+        - message
