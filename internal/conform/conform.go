@@ -347,11 +347,45 @@ func compareValue(path string, want, got any) []string {
 	}
 }
 
+// splitFieldPath splits a dotted path into segments, honouring a backslash
+// escape so a field name may contain a dot of its own. Dropbox names a field
+// ".tag", where the leading dot is part of the name rather than a separator,
+// and without an escape there is no way to assert on it at all.
+func splitFieldPath(path string) []string {
+	var (
+		segments []string
+		current  strings.Builder
+		escaped  bool
+	)
+
+	for _, r := range path {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+
+			escaped = false
+		// 0x5C is a backslash, written numerically so the escape character
+		// itself does not need escaping here. It escapes the next character,
+		// letting a dot be part of a field name rather than a separator.
+		case r == 0x5C:
+			escaped = true
+		case r == '.':
+			segments = append(segments, current.String())
+
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	return append(segments, current.String())
+}
+
 // lookup resolves a dotted path with optional [n] indexes, e.g. data[0].id.
 func lookup(document any, path string) (any, bool) {
 	current := document
 
-	for _, segment := range strings.Split(path, ".") {
+	for _, segment := range splitFieldPath(path) {
 		name, indexes := splitIndexes(segment)
 
 		if name != "" {

@@ -1,0 +1,370 @@
+# Dropbox Recipe for Cauldron
+#
+# Dropbox has no sandbox. An app folder on a real account is the usual
+# substitute, which means test files sync to somebody's laptop and count
+# against their quota. Deleting is soft and then permanent, and the states
+# worth exercising, a path conflict, a file that is still uploading, an
+# expired short-lived token, are awkward to reach on purpose.
+#
+# Three things worth modelling exactly:
+#
+#   1. Endpoint failures are HTTP 409, not 404. Dropbox reserves 4xx codes for
+#      transport problems and puts the actual outcome in the body, so code
+#      that branches on the status sees a conflict where it expected a missing
+#      file.
+#   2. The failure is a tagged union. Each one carries its own nested shape
+#      under "error", and the flat "error_summary" string is what the official
+#      SDKs actually match on.
+#   3. Every object declares its kind in a field literally named ".tag". A
+#      leading dot is part of the name, not a path.
+#
+# Known fidelity gap, stated rather than hidden: list_folder returns the
+# account's files rather than one folder's, because the folder is chosen by a
+# body parameter that Cauldron cannot scope a listing on.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: dropbox
+version: 0.1.0
+
+upstream:
+  api: "2"
+  docs: https://www.dropbox.com/developers/documentation/http/documentation
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sl.cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: entries
+    cursor_field: cursor
+    has_more_field: has_more
+  error:
+    style: flat
+    # The string the official SDKs match on. The nested union below is the
+    # structured form of the same thing.
+    message_field: error_summary
+
+resources:
+  file:
+    collection: entries
+    constants:
+      # A leading dot is part of the name here, not a path separator.
+      ".tag": file
+    id:
+      prefix: "id:"
+      length: 22
+    fields:
+      name:
+        type: string
+        required: true
+      path_lower:
+        type: string
+      path_display:
+        type: string
+      # Dropbox's content hash, which is how a client decides whether a file
+      # changed without downloading it.
+      content_hash:
+        type: string
+      size:
+        type: integer
+        default: 0
+      # The revision. Writing without it is how two clients silently overwrite
+      # each other.
+      rev:
+        type: string
+      is_downloadable:
+        type: boolean
+        default: true
+      client_modified:
+        type: datetime
+      server_modified:
+        type: datetime
+
+  folder:
+    collection: entries
+    constants:
+      ".tag": folder
+    id:
+      prefix: "id:"
+      length: 22
+    fields:
+      name:
+        type: string
+        required: true
+      path_lower:
+        type: string
+      path_display:
+        type: string
+
+routes:
+  # Every endpoint is a POST and the path travels in the body, which is why
+  # id_from exists.
+  - method: POST
+    path: /2/files/get_metadata
+    resource: file
+    operation: get
+    id_from: body:path
+
+  - method: POST
+    path: /2/files/list_folder
+    resource: file
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /2/files/delete_v2
+    resource: file
+    operation: delete
+    id_from: body:path
+
+  - method: POST
+    path: /2/files/create_folder_v2
+    resource: folder
+    operation: create
+
+webhooks:
+  events:
+    - file_added
+    - file_changed
+    - file_deleted
+    - folder_added
+  signing:
+    scheme: hmac-sha256
+    header: X-Dropbox-Signature
+    secret: cauldron-app-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: too_many_requests/
+    headers:
+      Retry-After: "5"
+    fields:
+      error:
+        ".tag": too_many_requests
+
+  authentication_error:
+    status: 401
+    message: invalid_access_token/
+    fields:
+      error:
+        ".tag": invalid_access_token
+
+  # A missing path is 409, not 404. Dropbox reserves the 4xx codes for
+  # transport problems and puts the outcome in the body.
+  resource_missing:
+    status: 409
+    message: "path/not_found/"
+    fields:
+      error:
+        ".tag": path
+        path:
+          ".tag": not_found
+
+  parameter_missing:
+    status: 400
+    message: "Error in call to API function: request body: {detail} is required"
+
+  # The failures an app folder on a real account makes awkward to produce.
+  path_conflict:
+    status: 409
+    message: "path/conflict/file/"
+    fields:
+      error:
+        ".tag": path
+        path:
+          ".tag": conflict
+
+  insufficient_space:
+    status: 507
+    message: "path/insufficient_space/"
+    fields:
+      error:
+        ".tag": path
+        path:
+          ".tag": insufficient_space
+
+  restricted_content:
+    status: 409
+    message: "path/restricted_content/"
+    fields:
+      error:
+        ".tag": path
+        path:
+          ".tag": restricted_content
+
+fixtures:
+  empty: {}
+
+  small-account:
+    folder:
+      - id: "id:cauldronfolder00001"
+        name: Documents
+        path_lower: /documents
+        path_display: /Documents
+    file:
+      - id: "id:cauldronfile000001"
+        name: report.pdf
+        path_lower: /documents/report.pdf
+        path_display: /Documents/report.pdf
+        size: 184320
+        rev: "0145cauldron00000001"
+        content_hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+      - id: "id:cauldronfile000002"
+        name: notes.txt
+        path_lower: /documents/notes.txt
+        path_display: /Documents/notes.txt
+        size: 512
+        rev: "0146cauldron00000002"
+
+# Conformance cases, read from Dropbox's HTTP API documentation rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a missing path is a 409, not a 404
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: small-account
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        path: "id:doesnotexist00000000"
+    expect:
+      # Dropbox reserves the 4xx codes for transport problems, so code that
+      # branches on the status sees a conflict where it expected a missing
+      # file.
+      status: 409
+      body:
+        error_summary: "path/not_found/"
+        error:
+          ".tag": path
+          path:
+            ".tag": not_found
+
+  - name: each failure carries its own union, not a shared one
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    request:
+      method: POST
+      path: /2/files/list_folder
+      json:
+        path: ""
+    expect:
+      status: 401
+      body:
+        # A different tag from the not_found case above, which a single set of
+        # recipe-wide constants could not express.
+        error_summary: "invalid_access_token/"
+        error:
+          ".tag": invalid_access_token
+      absent:
+        - error.path
+
+  - name: every object declares its kind in a dotted field name
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: small-account
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        path: "id:cauldronfile000001"
+    expect:
+      status: 200
+      body:
+        # The leading dot is part of the name, so the assertion escapes it.
+        '\.tag': file
+        name: report.pdf
+        path_display: /Documents/report.pdf
+        size: 184320
+
+  - name: the identifier is prefixed and travels in the body
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: small-account
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        path: "id:cauldronfile000002"
+    expect:
+      status: 200
+      body:
+        id: "id:cauldronfile000002"
+        name: notes.txt
+      matches:
+        # Applications prefix-match this to tell an id from a path.
+        id: '^id:'
+
+  - name: a file carries the revision a safe write needs
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: small-account
+    request:
+      method: POST
+      path: /2/files/get_metadata
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        path: "id:cauldronfile000001"
+    expect:
+      status: 200
+      body:
+        rev: "0145cauldron00000001"
+      matches:
+        # Writing without the revision is how two clients silently overwrite
+        # each other, and the hash is how a client avoids downloading a file
+        # that has not changed.
+        content_hash: '^[0-9a-f]{64}$'
+
+  - name: a listing is wrapped in entries with a cursor
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: small-account
+    request:
+      method: POST
+      path: /2/files/list_folder
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        path: /documents
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        has_more: true
+        entries[0].name: report.pdf
+        'entries[0].\.tag': file
+      matches:
+        cursor: '^id:'
+      absent:
+        - entries[1]
+        - data
+
+  - name: a created folder is tagged as one
+    source: https://www.dropbox.com/developers/documentation/http/documentation
+    fixture: empty
+    request:
+      method: POST
+      path: /2/files/create_folder_v2
+      headers:
+        Authorization: Bearer sl.cauldron
+      json:
+        name: Invoices
+        path_display: /Invoices
+    expect:
+      status: 200
+      body:
+        '\.tag': folder
+        name: Invoices
+      matches:
+        id: '^id:[A-Za-z0-9]{22}$'
