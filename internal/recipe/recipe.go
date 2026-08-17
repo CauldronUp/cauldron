@@ -650,8 +650,11 @@ func (r *Recipe) Validate() error {
 			}
 		}
 
+		// An absence is a claim too: "another project's issues are not visible"
+		// is exactly the kind of thing worth asserting, and it has no positive
+		// half. Leaving it out of this check rejected real cases.
 		if c.Expect.Status < 400 && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
-			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 {
+			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
 		}
 	}

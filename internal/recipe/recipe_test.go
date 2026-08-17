@@ -257,3 +257,77 @@ webhooks:
 		t.Errorf("Events() = %v", events)
 	}
 }
+
+// An absence is a claim. "Another project's issues are not visible" has no
+// positive half, and rejecting it as evidence-free turned away a real case.
+func TestAnAbsenceCountsAsAnAssertion(t *testing.T) {
+	source := `
+recipe: absence
+version: 0.1.0
+upstream:
+  api: "1"
+auth:
+  scheme: none
+resources:
+  thing:
+    id:
+      prefix: thg_
+    fields:
+      name:
+        type: string
+routes:
+  - method: GET
+    path: /things
+    resource: thing
+    operation: list
+conformance:
+  - name: nothing leaks from another tenant
+    source: https://example.com/docs
+    request:
+      method: GET
+      path: /things
+    expect:
+      status: 200
+      absent:
+        - '[0]'
+`
+
+	if _, err := Parse([]byte(source)); err != nil {
+		t.Fatalf("a case asserting only an absence should be valid: %v", err)
+	}
+}
+
+func TestACaseAssertingNothingIsStillRejected(t *testing.T) {
+	source := `
+recipe: empty-claim
+version: 0.1.0
+upstream:
+  api: "1"
+auth:
+  scheme: none
+resources:
+  thing:
+    id:
+      prefix: thg_
+    fields:
+      name:
+        type: string
+routes:
+  - method: GET
+    path: /things
+    resource: thing
+    operation: list
+conformance:
+  - name: this claims nothing at all
+    source: https://example.com/docs
+    request:
+      method: GET
+      path: /things
+    expect:
+      status: 200
+`
+
+	if _, err := Parse([]byte(source)); err == nil {
+		t.Error("a case asserting only a 200 is not evidence of anything")
+	}
+}
