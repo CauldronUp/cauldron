@@ -73,15 +73,19 @@ func connectionFor(spec engine.Spec) string {
 func runUp(ctx *context, args []string) int {
 	var (
 		port       int
+		host       string
 		fixture    string
 		skipDocker bool
+		headless   bool
 	)
 
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(ctx.stderr)
 	fs.IntVar(&port, "port", defaultPort, "port for the emulated providers")
 	fs.StringVar(&fixture, "fixture", "", "fixture to seed each recipe with")
+	fs.StringVar(&host, "host", loopback, "interface to bind, e.g. 0.0.0.0 to be reachable from a container")
 	fs.BoolVar(&skipDocker, "no-services", false, "skip containers and only run the emulated providers")
+	fs.BoolVar(&headless, "headless", false, "emulate the providers only: no containers, no plan, one line of JSON")
 
 	positional, err := parseFlags(fs, args)
 	if err != nil {
@@ -105,17 +109,28 @@ func runUp(ctx *context, args []string) int {
 		return 1
 	}
 
-	writePlan(ctx.stdout, project)
+	// Headless means the emulated providers and nothing else. No containers,
+	// and no plan describing an environment Cauldron is not going to set up:
+	// the database, the queue and the web server are already somebody else's,
+	// and printing a plan for them invites the belief that Cauldron took them
+	// over.
+	if !headless {
+		writePlan(ctx.stdout, project)
+	}
 
-	if !skipDocker {
+	if !skipDocker && !headless {
 		if code := startServices(ctx, dir, project); code != 0 {
 			return code
 		}
 	}
 
-	serveArgs := []string{"-dir", dir, "-port", fmt.Sprint(port)}
+	serveArgs := []string{"-dir", dir, "-port", fmt.Sprint(port), "-host", host}
 	if fixture != "" {
 		serveArgs = append(serveArgs, "-fixture", fixture)
+	}
+
+	if headless {
+		serveArgs = append(serveArgs, "-headless")
 	}
 
 	return runServe(ctx, serveArgs)
