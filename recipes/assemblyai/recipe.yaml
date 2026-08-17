@@ -1,0 +1,387 @@
+# AssemblyAI Recipe for Cauldron
+#
+# AssemblyAI has no sandbox and no test mode. Every transcription is billed by
+# the hour of audio, and a test suite that transcribes on each run pays for it
+# every time. There is a free tier with credits, which is the same thing with a
+# smaller number.
+#
+# The reason to emulate it is the shape of the work. Transcription is
+# asynchronous and slow: a submitted job is queued, then processing, then
+# completed, over seconds to minutes depending on the audio. A test that
+# submits and reads the text fails; a test that sleeps long enough to pass is
+# slow and still flaky; and a test that polls is testing AssemblyAI's queue
+# depth rather than its own code.
+#
+# Four things worth modelling exactly:
+#
+#   1. A failed transcription arrives with HTTP 200. status is "error" and the
+#      error field holds the reason, so code that branches on the status code
+#      sees a success and code that reads text gets null. This is the single
+#      most important thing here.
+#   2. A queued transcript has text: null, not "" and not absent. The key is
+#      present and the value is null, so a check for the key passes and the
+#      value is unusable.
+#   3. Word timings are milliseconds. Treating them as seconds compresses an
+#      hour of audio into three and a half seconds of subtitles.
+#   4. utterances is null unless speaker labels were requested. Not empty:
+#      null, on a completed transcript that worked perfectly, so a diarisation
+#      feature that forgets the flag gets a successful response with nothing
+#      in it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing transcribes here. The text in a fixture is the text returned, so
+#     this Recipe is about the lifecycle and the shape of the answer.
+#   - A transcript does not progress on its own. Which state it is in is what
+#     a fixture puts there, which is the point: the waiting is what a test
+#     wants removed.
+#   - AssemblyAI fetches audio_url itself, so a signed URL that expires
+#     mid-job fails in production. Cauldron fetches nothing and cannot
+#     reproduce that.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: assemblyai
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.assemblyai.com/docs/api-reference
+
+auth:
+  # The key alone, with no scheme. Not "Bearer", which is the habit almost
+  # every other API in this collection teaches.
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldron00000000000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: transcripts
+  resource:
+    style: bare
+  # A single string under error, and nothing else. No code, no type, no
+  # status in the body.
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  transcript:
+    collection: transcripts
+    id:
+      style: opaque
+      length: 24
+    fields:
+      # queued, processing, completed, error. The last one arrives with HTTP
+      # 200, which is the thing most likely to be missed.
+      status:
+        type: string
+        default: queued
+      # The audio AssemblyAI fetches for itself. A signed URL that expires
+      # between submission and processing fails the job, and the failure is a
+      # 200.
+      audio_url:
+        type: string
+      # Null until completed, and null forever on an error. Present and null,
+      # so a check for the key passes and the value is unusable.
+      text:
+        type: string
+      # The reason, when status is error. Null otherwise, so reading it
+      # unconditionally is safe and branching on the HTTP status is not.
+      error:
+        type: string
+      # Milliseconds, in start and end. Treating them as seconds compresses
+      # an hour of audio into three and a half seconds of subtitles.
+      words:
+        type: list
+      # Null unless speaker_labels was requested, on a transcript that
+      # otherwise worked perfectly.
+      utterances:
+        type: list
+      # Whether diarisation was asked for. The flag and the result are
+      # separate fields, and a feature that forgets this gets a successful
+      # response with nothing in it.
+      speaker_labels:
+        type: boolean
+        default: false
+      # Seconds here, unlike the word timings. Two units in one object.
+      audio_duration:
+        type: integer
+      # Zero to one. A transcript can complete with low confidence, which is
+      # not an error and is often worse than one.
+      confidence:
+        type: number
+      language_code:
+        type: string
+        default: en_us
+
+routes:
+  - method: POST
+    path: /v2/transcript
+    resource: transcript
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v2/transcript/{id}
+    resource: transcript
+    operation: get
+
+  - method: GET
+    path: /v2/transcript
+    resource: transcript
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+webhooks:
+  events:
+    - transcript.completed
+    - transcript.error
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    message: Authentication error, API token missing or invalid
+
+  resource_missing:
+    status: 404
+    message: "Transcript not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is a required field"
+
+  # The account is out of credits. Submissions stop and everything already
+  # submitted carries on, so the queue drains and nothing new joins it.
+  insufficient_funds:
+    status: 402
+    message: "Insufficient funds. Please add credits to your account."
+
+  # An audio URL AssemblyAI cannot fetch. This one is a real HTTP failure at
+  # submission, unlike a download that fails later, which arrives as a 200
+  # with status error.
+  unreachable_audio:
+    status: 400
+    message: "Download error, unable to download the audio from the URL provided"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    transcript:
+      # Just submitted. Everything useful is null, and the keys are present,
+      # so a check for the key passes and the value is unusable.
+      - id: cauldronTranscript00001
+        status: queued
+        audio_url: https://example.com/audio/interview.mp3
+        text: null
+        error: null
+        words: null
+        utterances: null
+        audio_duration: null
+        confidence: null
+      # Finished, with speaker labels never requested. utterances is null on
+      # a transcript that worked perfectly, so a diarisation feature that
+      # forgets the flag gets a successful response with nothing in it.
+      - id: cauldronTranscript00002
+        status: completed
+        audio_url: https://example.com/audio/short.mp3
+        text: Heat the pan before the oil goes in.
+        error: null
+        # Milliseconds. Treating these as seconds compresses an hour of audio
+        # into three and a half seconds.
+        words:
+          - text: Heat
+            start: 320
+            end: 610
+            confidence: 0.99
+          - text: the
+            start: 610
+            end: 720
+            confidence: 0.97
+        utterances: null
+        speaker_labels: false
+        # Seconds, unlike the word timings above. Two units in one object.
+        audio_duration: 4
+        confidence: 0.98
+      # Failed, and it arrives with HTTP 200. Code that branches on the status
+      # code sees a success and code that reads text gets null.
+      - id: cauldronTranscript00003
+        status: error
+        audio_url: https://example.com/audio/expired-signature.mp3
+        text: null
+        error: "Download error, unable to download the audio from the URL provided"
+        words: null
+        utterances: null
+        audio_duration: null
+        confidence: null
+      # Completed with low confidence, which is not an error and is often
+      # worse than one: it produces plausible text nobody flags.
+      - id: cauldronTranscript00004
+        status: completed
+        audio_url: https://example.com/audio/noisy.mp3
+        text: something something the pan
+        error: null
+        words:
+          - text: something
+            start: 100
+            end: 480
+            confidence: 0.41
+        utterances: null
+        audio_duration: 12
+        confidence: 0.44
+
+# Conformance cases, read from the AssemblyAI API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a failed transcription arrives with HTTP 200
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00003
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      # Two hundred. Code that branches on the status code sees a success,
+      # and the only evidence of failure is a field in the body.
+      status: 200
+      body:
+        status: error
+        text: null
+      matches:
+        error: 'Download error'
+
+  - name: a queued transcript has null rather than nothing
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/submit
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00001
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Present and null, not absent and not empty string. A check for the
+        # key passes and the value is unusable, which is the worst of both.
+        status: queued
+        text: null
+        audio_duration: null
+        confidence: null
+
+  - name: word timings are milliseconds and the duration is seconds
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00002
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # 320ms into four seconds of audio. Two units in one object, and
+        # treating the word timings as seconds compresses an hour into three
+        # and a half seconds of subtitles.
+        words[0].start: 320
+        words[0].end: 610
+        audio_duration: 4
+
+  - name: utterances are null without speaker labels
+    source: https://www.assemblyai.com/docs/speech-to-text/speaker-diarization
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00002
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A transcript that worked perfectly, with nothing in the field a
+        # diarisation feature reads. The flag and the result are separate,
+        # and forgetting the flag produces a successful empty answer.
+        status: completed
+        speaker_labels: false
+        utterances: null
+
+  - name: a low confidence transcript is not an error
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00004
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Completed, with text nobody should trust. Not an error, and often
+        # worse than one, because it produces plausible words nothing flags.
+        status: completed
+        confidence: 0.44
+        words[0].confidence: 0.41
+
+  - name: a good transcript carries high confidence beside the low one
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/cauldronTranscript00002
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The same shape as the one above, and the only difference is a
+        # number. Nothing about the response says which to trust.
+        confidence: 0.98
+        text: Heat the pan before the oil goes in.
+
+  - name: the key goes in Authorization with no scheme
+    source: https://www.assemblyai.com/docs/api-reference/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript
+      headers:
+        # The habit every other API in this collection teaches, and it is
+        # wrong here.
+        Authorization: Bearer cauldron00000000000000000000000000000000
+    expect:
+      status: 401
+      matches:
+        error: 'API token missing or invalid'
+      absent:
+        - message
+        - code
+        - errors
+
+  - name: an unreachable audio url fails at submission rather than later
+    source: https://www.assemblyai.com/docs/api-reference/transcripts/submit
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transcript/never-submitted
+      headers:
+        Authorization: cauldron00000000000000000000000000000000
+    expect:
+      # A real HTTP failure, unlike a download that fails after the job
+      # started, which arrives as a 200 with status error.
+      status: 404
+      matches:
+        error: 'Transcript not found'
