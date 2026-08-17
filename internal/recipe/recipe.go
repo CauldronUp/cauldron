@@ -39,6 +39,68 @@ type Recipe struct {
 	Conformance []Case `yaml:"conformance"`
 }
 
+// assertsName reports whether any case claims something about a field by name.
+//
+// The comparison is on the last segment of a dotted path, and it is deliberately
+// loose: a Recipe declaring data.pagination.next may be asserted as a dotted
+// path or as nested maps, and either pins the name down. What it will not
+// accept is silence.
+func assertsName(cases []Case, field string) bool {
+	segments := strings.Split(field, ".")
+	leaf := segments[len(segments)-1]
+
+	for _, c := range cases {
+		for path := range c.Expect.Matches {
+			if mentions(path, leaf) {
+				return true
+			}
+		}
+
+		if mentionedIn(c.Expect.Body, leaf) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mentions reports whether a dotted path names this field at any depth.
+func mentions(path, leaf string) bool {
+	for _, segment := range strings.Split(path, ".") {
+		// Trim any [0] so items[0].next matches next.
+		if index := strings.IndexByte(segment, '['); index >= 0 {
+			segment = segment[:index]
+		}
+
+		if segment == leaf {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mentionedIn walks a body assertion looking for the field, at any depth,
+// because a nested claim is as good as a dotted one.
+func mentionedIn(node any, leaf string) bool {
+	switch typed := node.(type) {
+	case map[string]any:
+		for key, value := range typed {
+			if mentions(key, leaf) || mentionedIn(value, leaf) {
+				return true
+			}
+		}
+	case []any:
+		for _, value := range typed {
+			if mentionedIn(value, leaf) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // echoesOnly reports whether a case's only claims repeat its own request.
 //
 // A create that sends {"name": "x"} and asserts {"name": "x"} is testing that
@@ -860,6 +922,30 @@ func (r *Recipe) Validate() error {
 		if len(c.Expect.Body) > 0 || len(c.Expect.Matches) > 0 || len(c.Expect.Absent) > 0 {
 			add("conformance[%d] %q: expect.no_body claims the response is empty, so there is nothing for body, matches or absent to look at", i, c.Name)
 		}
+	}
+
+	// A field name the Recipe chooses is only a claim if a case asserts it
+	// where the value exists. Asserting its absence on a last page holds
+	// whatever the field happens to be called, so a Recipe could declare
+	// cursor_field: next_page_token, be renamed to anything, and no case
+	// would notice.
+	//
+	// Twenty-one of these were shipped before anything checked, across twenty
+	// Recipes. Two of them turned out to have no successful list case at all:
+	// every case touching the collection was checking a failure, so nothing
+	// asserted what a working listing looks like.
+	for _, declared := range []struct{ what, name string }{
+		{"cursor_field", r.Responses.List.CursorField},
+		{"count_field", r.Responses.List.CountField},
+		{"has_more_field", r.Responses.List.HasMoreField},
+		{"complete_field", r.Responses.List.CompleteField},
+	} {
+		if declared.name == "" || assertsName(r.Conformance, declared.name) {
+			continue
+		}
+
+		add("responses.list.%s is %q and no conformance case asserts that name where the value exists, so renaming it would break nothing",
+			declared.what, declared.name)
 	}
 
 	if r.Responses.List.HasMoreField != "" && r.Responses.List.CompleteField != "" {
