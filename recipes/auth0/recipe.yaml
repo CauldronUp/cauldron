@@ -1,0 +1,417 @@
+# Auth0 Recipe for Cauldron
+#
+# Auth0's free tenant is a real tenant. Users created by a test are real users
+# with real email addresses, verification emails go out, and the Management API
+# token expires every day so a CI suite has to fetch a new one before it can do
+# anything. The rate limit on the free tier is low enough that a suite creating
+# and deleting users trips it, and deleting a user is permanent.
+#
+# Two things worth modelling exactly:
+#
+#   1. The user_id encodes the connection it came from. auth0|abc is a
+#      database user, google-oauth2|123 came from Google, samlp|... from an
+#      enterprise connection. Code that assumes the auth0 prefix breaks the
+#      first time somebody signs in with Google, and the identifier is not
+#      interchangeable between connections either.
+#   2. email_verified is a separate field from the email, and it is false
+#      until somebody clicks the link. A tenant used for testing tends to
+#      contain only verified users, so the branch that handles an unverified
+#      one never runs until production.
+#
+# Known fidelity gap, stated rather than hidden: Auth0 returns a bare array by
+# default and an object with totals when include_totals is set. Cauldron always
+# returns the bare array.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: auth0
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://auth0.com/docs/api/management/v2
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_management_token
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    # Auth0 sends four fields and they are all different things: the HTTP
+    # status, its reason phrase, the prose, and a machine-readable code.
+    status_field: statusCode
+    type_field: error
+    code_field: errorCode
+    message_field: message
+
+resources:
+  user:
+    id:
+      # The prefix says which connection the user came from. Code assuming
+      # this one breaks on the first social login.
+      prefix: "auth0|"
+      length: 24
+      field: user_id
+    fields:
+      email:
+        type: string
+        required: true
+      # False until somebody clicks the link. A test tenant tends to hold
+      # only verified users, so the branch handling this never runs.
+      email_verified:
+        type: boolean
+        default: false
+      name:
+        type: string
+      nickname:
+        type: string
+      # A blocked user still exists and is still returned by a listing. They
+      # simply cannot sign in.
+      blocked:
+        type: boolean
+        default: false
+      connection:
+        type: string
+        default: Username-Password-Authentication
+      logins_count:
+        type: integer
+        default: 0
+      created_at:
+        type: datetime
+      # Absent until they have actually signed in once.
+      last_login:
+        type: datetime
+        stamped: false
+
+  connection:
+    id:
+      prefix: con_
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      strategy:
+        type: string
+        default: auth0
+      enabled_clients:
+        type: string
+
+  client:
+    id:
+      style: opaque
+      field: client_id
+      length: 32
+    fields:
+      name:
+        type: string
+        required: true
+      app_type:
+        type: string
+        default: spa
+      # A first-party client skips the consent screen; a third-party one does
+      # not, and the difference only shows up in a browser.
+      is_first_party:
+        type: boolean
+        default: true
+      token_endpoint_auth_method:
+        type: string
+        default: none
+
+routes:
+  - method: GET
+    path: /api/v2/users
+    resource: user
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: POST
+    path: /api/v2/users
+    resource: user
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/users/{id}
+    resource: user
+    operation: get
+
+  - method: PATCH
+    path: /api/v2/users/{id}
+    resource: user
+    operation: update
+
+  - method: DELETE
+    path: /api/v2/users/{id}
+    resource: user
+    operation: delete
+
+  - method: GET
+    path: /api/v2/connections
+    resource: connection
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /api/v2/clients
+    resource: client
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+webhooks:
+  # Auth0 calls these log stream events.
+  events:
+    - ss
+    - fp
+    - sv
+    - sepft
+    - limit_wc
+  signing:
+    scheme: hmac-sha256
+    header: X-Auth0-Signature
+    secret: cauldron-log-stream-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    type: Too Many Requests
+    message: Global rate limit has been reached
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: invalid_token
+    type: Unauthorized
+    message: Invalid token
+
+  resource_missing:
+    status: 404
+    code: inexistent_user
+    type: Not Found
+    message: "No user exists with the specified ID: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: invalid_body
+    type: Bad Request
+    message: "Payload validation error: {detail} is required"
+
+  # Auth0 refuses a duplicate email in a database connection, which is what
+  # breaks a retried migration halfway through.
+  user_exists:
+    status: 409
+    code: auth0_idp_error
+    type: Conflict
+    message: The user already exists.
+
+  # The Management API token is short lived, and an expired one fails
+  # differently from a malformed one.
+  expired_token:
+    status: 401
+    code: expired_token
+    type: Unauthorized
+    message: The access token has expired
+
+  # A token without the right scope reads like a missing resource until you
+  # read the code.
+  insufficient_scope:
+    status: 403
+    code: insufficient_scope
+    type: Forbidden
+    message: "Insufficient scope, expected any of: read:users"
+
+fixtures:
+  empty: {}
+
+  small-tenant:
+    connection:
+      - id: con_cauldron00000001
+        name: Username-Password-Authentication
+        strategy: auth0
+      - id: con_cauldron00000002
+        name: google-oauth2
+        strategy: google-oauth2
+    user:
+      - id: "auth0|000000000000000000000001"
+        email: ada@example.com
+        email_verified: true
+        name: Ada Lovelace
+        logins_count: 42
+        last_login: "2026-01-14T09:12:00Z"
+      - id: "auth0|000000000000000000000002"
+        email: grace@example.com
+        # Signed up, never clicked the link. Cannot be trusted as an
+        # identity, and a test tenant rarely contains one.
+        email_verified: false
+        name: Grace Hopper
+      - id: "google-oauth2|107329581004"
+        email: alan@example.com
+        email_verified: true
+        name: Alan Turing
+        # Came from Google. Code that parses the id assuming auth0| breaks
+        # here, and the identifier is not interchangeable with the database
+        # user of the same email address.
+        connection: google-oauth2
+        logins_count: 3
+      - id: "auth0|000000000000000000000004"
+        email: blocked@example.com
+        email_verified: true
+        # Still exists, still listed, cannot sign in.
+        blocked: true
+    client:
+      - id: "00000000000000000000000000000001"
+        name: Cauldron SPA
+        app_type: spa
+        is_first_party: true
+
+# Conformance cases, read from Auth0's Management API reference rather than
+# observed against a live tenant. The verify report says so.
+conformance:
+  - name: the user_id encodes the connection it came from
+    source: https://auth0.com/docs/manage-users/user-accounts/identify-users
+    fixture: small-tenant
+    request:
+      method: GET
+      path: /api/v2/users
+      headers:
+        Authorization: Bearer cauldron_management_token
+    expect:
+      status: 200
+      body:
+        '[0]':
+          user_id: "auth0|000000000000000000000001"
+        # Came from Google. Code parsing the id and assuming auth0| breaks
+        # here, and this identifier is not interchangeable with a database
+        # user of the same email address.
+        '[2]':
+          user_id: "google-oauth2|107329581004"
+          connection: google-oauth2
+      absent:
+        - '[0].id'
+
+  - name: an unverified email is a separate fact from the email
+    source: https://auth0.com/docs/manage-users/user-accounts
+    fixture: small-tenant
+    request:
+      method: GET
+      path: "/api/v2/users/auth0|000000000000000000000002"
+      headers:
+        Authorization: Bearer cauldron_management_token
+    expect:
+      status: 200
+      body:
+        # Signed up, never clicked the link. A tenant used for testing tends
+        # to hold only verified users, so this branch never runs until
+        # production.
+        email: grace@example.com
+        email_verified: false
+      absent:
+        - last_login
+
+  - name: a blocked user is still returned
+    source: https://auth0.com/docs/manage-users/user-accounts/block-and-unblock-users
+    fixture: small-tenant
+    request:
+      method: GET
+      path: "/api/v2/users/auth0|000000000000000000000004"
+      headers:
+        Authorization: Bearer cauldron_management_token
+    expect:
+      status: 200
+      body:
+        # Exists, listed, cannot sign in. Filtering a user list without
+        # reading this shows somebody who has no access.
+        blocked: true
+        email_verified: true
+
+  - name: a collection is a bare array
+    source: https://auth0.com/docs/api/management/v2
+    fixture: small-tenant
+    request:
+      method: GET
+      path: /api/v2/connections
+      headers:
+        Authorization: Bearer cauldron_management_token
+    expect:
+      status: 200
+      body:
+        '[0]':
+          name: Username-Password-Authentication
+          strategy: auth0
+        '[1]':
+          strategy: google-oauth2
+      absent:
+        - users
+        - data
+        - total
+
+  - name: the error carries four distinct fields
+    source: https://auth0.com/docs/api/management/v2
+    fixture: small-tenant
+    request:
+      method: GET
+      path: "/api/v2/users/auth0|doesnotexist"
+      headers:
+        Authorization: Bearer cauldron_management_token
+    expect:
+      status: 404
+      body:
+        # The status, its reason phrase, the prose and a machine-readable
+        # code are four different things, and only the last is stable.
+        statusCode: 404
+        error: Not Found
+        errorCode: inexistent_user
+      matches:
+        message: 'No user exists'
+
+  - name: a created user is unverified and has never signed in
+    source: https://auth0.com/docs/api/management/v2
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v2/users
+      headers:
+        Authorization: Bearer cauldron_management_token
+      json:
+        email: alan@example.com
+        name: Alan Turing
+    expect:
+      status: 201
+      body:
+        email: alan@example.com
+        # Created is not verified, and creating a user through the API does
+        # not make them trustworthy as an identity.
+        email_verified: false
+        blocked: false
+        logins_count: 0
+      matches:
+        user_id: '^auth0\|[A-Za-z0-9]{24}$'
+      absent:
+        - last_login
+
+  - name: a bad token is refused with the same four fields
+    source: https://auth0.com/docs/api/management/v2
+    request:
+      method: GET
+      path: /api/v2/users
+    expect:
+      status: 401
+      body:
+        statusCode: 401
+        error: Unauthorized
+        errorCode: invalid_token
