@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
@@ -81,6 +82,8 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "Request body could not be parsed.")
 	}
+
+	record = s.flatten(matched.spec.Resource, record)
 
 	for field, value := range scopeVars(matched, vars) {
 		record[field] = value
@@ -170,6 +173,8 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "Request body could not be parsed.")
 	}
 
+	changes = s.flatten(matched.spec.Resource, changes)
+
 	existing, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
 		return s.notFound(w, err, matched.spec.Resource, id)
@@ -254,15 +259,37 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 // stay uniform; only the wire shape changes, which is where it matters.
 func (s *Sandbox) present(resource string, record store.Record) store.Record {
 	spec, ok := s.recipe.Resources[resource]
-	if !ok || spec.ID.Field == "" || spec.ID.Field == "id" {
+	if !ok {
+		return record
+	}
+
+	renamed := spec.ID.Field != "" && spec.ID.Field != "id"
+
+	if !renamed && !s.nests(spec) {
 		return record
 	}
 
 	out := make(store.Record, len(record))
 
 	for key, value := range record {
-		if key == "id" {
-			key = spec.ID.Field
+		if key == "id" && renamed {
+			out[spec.ID.Field] = value
+			continue
+		}
+
+		// A field declared with "in" moves under that sub-object on the wire.
+		// HubSpot reads contact.properties.email, and a client written against
+		// it finds nothing at the top level.
+		if field, declared := spec.Fields[key]; declared && field.In != "" {
+			nested, _ := out[field.In].(map[string]any)
+			if nested == nil {
+				nested = map[string]any{}
+				out[field.In] = nested
+			}
+
+			nested[key] = value
+
+			continue
 		}
 
 		out[key] = value
@@ -271,10 +298,55 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 	return out
 }
 
+// nests reports whether any of a resource's fields live under a sub-object.
+func (s *Sandbox) nests(spec recipe.Resource) bool {
+	for _, field := range spec.Fields {
+		if field.In != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// flatten is the inverse of present for an incoming request: a client sends
+// {"properties": {"email": "..."}} and the store keeps fields flat.
+func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
+	spec, ok := s.recipe.Resources[resource]
+	if !ok || !s.nests(spec) {
+		return record
+	}
+
+	for name, field := range spec.Fields {
+		if field.In == "" {
+			continue
+		}
+
+		nested, isObject := record[field.In].(map[string]any)
+		if !isObject {
+			continue
+		}
+
+		if value, present := nested[name]; present {
+			record[name] = value
+		}
+	}
+
+	// The sub-objects have been unpacked, so drop them rather than storing the
+	// same values twice under two shapes.
+	for _, field := range spec.Fields {
+		if field.In != "" {
+			delete(record, field.In)
+		}
+	}
+
+	return record
+}
+
 // presentAll renames identifiers across a page.
 func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Record {
 	spec, ok := s.recipe.Resources[resource]
-	if !ok || spec.ID.Field == "" || spec.ID.Field == "id" {
+	if !ok || ((spec.ID.Field == "" || spec.ID.Field == "id") && !s.nests(spec)) {
 		return records
 	}
 

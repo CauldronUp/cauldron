@@ -216,9 +216,19 @@ type ID struct {
 
 // Field is a single attribute on a resource.
 type Field struct {
+	// Type is string, integer, boolean, timestamp (a Unix integer, which is
+	// what Stripe and Twilio send) or datetime (an RFC 3339 string, which is
+	// what GitHub, HubSpot and most newer APIs send). The difference is not
+	// cosmetic: one parses as a number and the other does not.
 	Type     string `yaml:"type"`
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
+	// In nests this field under a sub-object on the wire. HubSpot puts every
+	// business attribute under "properties" and leaves only id, timestamps and
+	// archived at the top level, so a client reads contact.properties.email.
+	// The store stays flat; only the shape on the wire changes, and requests
+	// are flattened back on the way in.
+	In string `yaml:"in"`
 }
 
 // Route binds an HTTP method and path to an operation on a resource.
@@ -296,6 +306,7 @@ var (
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp"}
+	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "datetime"}
 )
 
 // Load reads and validates a Recipe from a YAML file.
@@ -385,6 +396,13 @@ func (r *Recipe) Validate() error {
 
 		if len(resource.Fields) == 0 {
 			add("resource %q has no fields", name)
+		}
+
+		for _, field := range sortedKeys(resource.Fields) {
+			if !contains(validFieldTypes, resource.Fields[field].Type) {
+				add("resource %q field %q has type %q, which must be one of %s",
+					name, field, resource.Fields[field].Type, strings.Join(validFieldTypes[1:], ", "))
+			}
 		}
 	}
 

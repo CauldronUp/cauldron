@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CauldronUp/cauldron/internal/clock"
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -244,8 +245,14 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 			continue
 		}
 
-		if field.Type == "timestamp" {
+		switch field.Type {
+		case "timestamp":
 			record[name] = s.clock.Unix()
+		case "datetime":
+			// RFC 3339, from the sandbox clock. GitHub, HubSpot and most newer
+			// APIs send a string here, and a client parsing one does not
+			// silently cope with the other.
+			record[name] = s.clock.Now().UTC().Format(time.RFC3339)
 		}
 	}
 }
