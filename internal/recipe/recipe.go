@@ -105,10 +105,19 @@ type Upstream struct {
 
 // Auth describes how the provider authenticates callers.
 type Auth struct {
-	// Scheme is one of: bearer, basic, header, none.
+	// Scheme is one of: bearer, basic, header, query, none.
+	//
+	// A query credential travels in the URL, which is worth reproducing
+	// precisely because it is a bad idea: URLs end up in access logs, browser
+	// history and error reports. Trello and a good deal of older software do
+	// it anyway, and an emulator that quietly accepted a header instead would
+	// hide the exposure.
 	Scheme string `yaml:"scheme"`
 	// Header is the header carrying the credential, when scheme is header.
 	Header string `yaml:"header"`
+	// Param is the query parameter carrying the credential, when the scheme
+	// is query.
+	Param string `yaml:"param"`
 	// Prefix is stripped from the credential before comparison, e.g. "Bearer ".
 	Prefix string `yaml:"prefix"`
 	// Credential says which half of a basic credential carries the secret:
@@ -171,8 +180,9 @@ type ResourceResponse struct {
 type ErrorResponse struct {
 	// Style is nested (Stripe, the default), flat (GitHub), list (SendGrid,
 	// which sends {"errors": [{...}]} because one request can fail several
-	// ways at once) or string_list (Datadog, which sends the same array with
-	// bare strings in it rather than objects).
+	// ways at once), string_list (Datadog, which sends the same array with
+	// bare strings in it rather than objects) or text (Trello, whose failures
+	// are not JSON at all, so a client calling .json() on one throws).
 	Style string `yaml:"style"`
 	// Key is the property holding the array when the style is list.
 	Key string `yaml:"key"`
@@ -383,12 +393,12 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-	validSchemes    = []string{"bearer", "basic", "header", "none"}
+	validSchemes    = []string{"bearer", "basic", "header", "query", "none"}
 	validOperations = []string{"create", "get", "list", "update", "delete"}
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
-	validErrStyles  = []string{"", "nested", "flat", "list", "string_list"}
+	validErrStyles  = []string{"", "nested", "flat", "list", "string_list", "text"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
@@ -472,6 +482,14 @@ func (r *Recipe) Validate() error {
 
 	if r.Auth.Credential != "" && r.Auth.Scheme != "basic" {
 		add("auth.credential only applies to the basic scheme")
+	}
+
+	if r.Auth.Scheme == "query" && r.Auth.Param == "" {
+		add("auth.param is required when the scheme is query")
+	}
+
+	if r.Auth.Param != "" && r.Auth.Scheme != "query" {
+		add("auth.param only applies to the query scheme")
 	}
 
 	if len(r.Resources) == 0 {

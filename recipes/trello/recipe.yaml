@@ -1,0 +1,370 @@
+# Trello Recipe for Cauldron
+#
+# Trello has no sandbox. A key and token reach a real account, and a test that
+# creates a board creates it in somebody's workspace, where it stays until
+# deleted. Boards can be closed but not easily removed, so a test suite leaves
+# a trail. Worse, the interesting behaviour is in the webhooks, and pointing a
+# real Trello webhook at a laptop needs a tunnel and a publicly reachable URL.
+#
+# Two things worth reproducing exactly, both of which a well-behaved fake would
+# quietly paper over:
+#
+#   1. The credentials travel in the query string. That is a bad idea and
+#      Trello does it anyway: the key and token end up in access logs, browser
+#      history and error reports. An emulator that accepted a header instead
+#      would hide the exposure from anybody testing against it.
+#   2. Failures are plain text, not JSON. A client calling .json() on the
+#      response throws rather than reporting the failure, and code written
+#      against a JSON-emitting fake never meets that until production.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: trello
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://developer.atlassian.com/cloud/trello/rest/
+
+auth:
+  # In the URL, which is the point.
+  scheme: query
+  param: key
+  keys:
+    - cauldronkey
+
+responses:
+  list:
+    style: bare
+  # Not JSON. A client calling .json() on this throws.
+  error:
+    style: text
+
+resources:
+  board:
+    id:
+      style: hex
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      desc:
+        type: string
+      # A closed board is archived, not deleted. It still exists, still
+      # counts, and is still reachable by id.
+      closed:
+        type: boolean
+        default: false
+      idOrganization:
+        type: string
+      url:
+        type: string
+      shortLink:
+        type: string
+
+  list:
+    id:
+      style: hex
+      length: 24
+    fields:
+      idBoard:
+        type: string
+      name:
+        type: string
+        required: true
+      closed:
+        type: boolean
+        default: false
+      # Trello orders by a float so a card can be inserted between two others
+      # without renumbering everything. Treating it as an integer collapses
+      # the ordering.
+      pos:
+        type: number
+        default: 65535
+
+  card:
+    id:
+      style: hex
+      length: 24
+    fields:
+      idBoard:
+        type: string
+      idList:
+        type: string
+      name:
+        type: string
+        required: true
+      desc:
+        type: string
+      closed:
+        type: boolean
+        default: false
+      pos:
+        type: number
+        default: 65535
+      # Absent unless somebody set one. A card with no due date is the normal
+      # case, and stamping one would invent a deadline.
+      due:
+        type: datetime
+        stamped: false
+      dueComplete:
+        type: boolean
+        default: false
+      shortUrl:
+        type: string
+
+routes:
+  - method: GET
+    path: /1/boards/{id}
+    resource: board
+    operation: get
+
+  - method: PUT
+    path: /1/boards/{id}
+    resource: board
+    operation: update
+
+  - method: POST
+    path: /1/boards
+    resource: board
+    operation: create
+
+  - method: GET
+    path: /1/boards/{idBoard}/lists
+    resource: list
+    operation: list
+    scope: [idBoard]
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /1/boards/{idBoard}/cards
+    resource: card
+    operation: list
+    scope: [idBoard]
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /1/cards/{id}
+    resource: card
+    operation: get
+
+  - method: POST
+    path: /1/cards
+    resource: card
+    operation: create
+
+  - method: PUT
+    path: /1/cards/{id}
+    resource: card
+    operation: update
+
+webhooks:
+  events:
+    - createCard
+    - updateCard
+    - deleteCard
+    - commentCard
+    - updateBoard
+    - createList
+  signing:
+    scheme: hmac-sha256
+    header: x-trello-webhook
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: API_TOKEN_LIMIT_EXCEEDED
+    headers:
+      Retry-After: "10"
+
+  authentication_error:
+    status: 401
+    message: invalid key
+
+  resource_missing:
+    status: 404
+    message: "The requested resource was not found."
+
+  parameter_missing:
+    status: 400
+    message: "invalid value for {detail}"
+
+  # Trello's own wording, which is unhelpfully terse and worth reproducing
+  # because support threads quote it verbatim.
+  invalid_id:
+    status: 400
+    message: invalid id
+
+  # A token scoped to read cannot write, and the message says nothing about
+  # scopes at all.
+  unauthorized_write:
+    status: 401
+    message: unauthorized card permission requested
+
+  # The plan wall on a free workspace, which arrives mid-import.
+  board_limit_reached:
+    status: 403
+    message: You have reached the limit of 10 open boards in this Workspace.
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    board:
+      - id: "000000000000000000000b01"
+        name: Roadmap
+        desc: Quarterly planning
+        closed: false
+        shortLink: cauldron1
+        url: https://trello.com/b/cauldron1/roadmap
+      - id: "000000000000000000000b02"
+        name: Archived experiments
+        # Closed is archived, not deleted. Still exists, still counts, still
+        # reachable by id.
+        closed: true
+    list:
+      - id: "000000000000000000000l01"
+        idBoard: "000000000000000000000b01"
+        name: To do
+        pos: 16384
+      - id: "000000000000000000000l02"
+        idBoard: "000000000000000000000b01"
+        name: Doing
+        # A float, so a list can be inserted between two others without
+        # renumbering. Treating it as an integer collapses the ordering.
+        pos: 24576.5
+    card:
+      - id: "000000000000000000000c01"
+        idBoard: "000000000000000000000b01"
+        idList: "000000000000000000000l01"
+        name: Ship the conformance suite
+        pos: 16384
+        due: "2026-02-01T17:00:00Z"
+      - id: "000000000000000000000c02"
+        idBoard: "000000000000000000000b01"
+        idList: "000000000000000000000l01"
+        name: No deadline on this one
+        pos: 32768
+      - id: "000000000000000000000c03"
+        idBoard: "000000000000000000000b02"
+        idList: "000000000000000000000l01"
+        name: Should not appear on the roadmap board
+        pos: 16384
+
+# Conformance cases, read from Trello's REST reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a failure is plain text, not JSON
+    source: https://developer.atlassian.com/cloud/trello/rest/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000bff
+      query:
+        key: cauldronkey
+    expect:
+      # A client calling .json() on this throws rather than reporting the
+      # failure, and code written against a JSON-emitting fake never meets
+      # that until production.
+      status: 404
+      headers:
+        Content-Type: text/plain
+
+  - name: the credential travels in the query string
+    source: https://developer.atlassian.com/cloud/trello/rest/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000b01
+      query:
+        key: cauldronkey
+    expect:
+      status: 200
+      body:
+        name: Roadmap
+        closed: false
+
+  - name: a request with no key in the URL is refused
+    source: https://developer.atlassian.com/cloud/trello/rest/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000b01
+    expect:
+      # Sending the credential as a header instead gets nowhere, which is the
+      # exposure a header-based fake would hide.
+      status: 401
+      headers:
+        Content-Type: text/plain
+
+  - name: a closed board is archived, not deleted
+    source: https://developer.atlassian.com/cloud/trello/rest/api-group-boards/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000b02
+      query:
+        key: cauldronkey
+    expect:
+      status: 200
+      body:
+        # Still exists, still counts against the plan, still reachable by id.
+        closed: true
+        name: Archived experiments
+
+  - name: positions are floats so a card can be inserted between two others
+    source: https://developer.atlassian.com/cloud/trello/guides/rest-api/object-definitions/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000b01/lists
+      query:
+        key: cauldronkey
+    expect:
+      status: 200
+      body:
+        '[0]':
+          pos: 16384
+        # Treating this as an integer collapses the ordering.
+        '[1]':
+          pos: 24576.5
+
+  - name: a card with no due date has none
+    source: https://developer.atlassian.com/cloud/trello/rest/api-group-cards/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/cards/000000000000000000000c02
+      query:
+        key: cauldronkey
+    expect:
+      status: 200
+      body:
+        name: No deadline on this one
+        dueComplete: false
+      # The normal case. Stamping one would invent a deadline.
+      absent:
+        - due
+
+  - name: another board's cards are not visible
+    source: https://developer.atlassian.com/cloud/trello/rest/api-group-boards/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /1/boards/000000000000000000000b02/cards
+      query:
+        key: cauldronkey
+    expect:
+      status: 200
+      body:
+        '[0]':
+          name: Should not appear on the roadmap board
+      absent:
+        - '[1]'
+        - data

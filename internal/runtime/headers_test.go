@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -151,4 +153,95 @@ func TestBasicAuthCanCheckThePasswordHalf(t *testing.T) {
 	if code := call("cauldron-mailgun-key", "api"); code != http.StatusUnauthorized {
 		t.Errorf("the key in the username half should not be accepted, got %d", code)
 	}
+}
+
+// Trello puts the credential in the URL and answers failures in plain text.
+// Both are worth reproducing precisely because a well-behaved fake would paper
+// over them: a header-based fake hides that the secret ends up in access logs,
+// and a JSON-emitting one hides that .json() throws on every error.
+func TestAQueryStringCredential(t *testing.T) {
+	s := trelloSandbox(t)
+
+	authorised := httptest.NewRequest(http.MethodGet,
+		"/1/boards/000000000000000000000b01?key=cauldronkey", nil)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, authorised)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body)
+	}
+
+	// The same credential in a header gets nowhere, which is the exposure a
+	// header-based fake would hide.
+	viaHeader := httptest.NewRequest(http.MethodGet, "/1/boards/000000000000000000000b01", nil)
+	viaHeader.Header.Set("Authorization", "Bearer cauldronkey")
+
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, viaHeader)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("a header credential should not be accepted, got %d", rec.Code)
+	}
+
+	wrong := httptest.NewRequest(http.MethodGet,
+		"/1/boards/000000000000000000000b01?key=nope", nil)
+
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, wrong)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("a wrong key should be refused, got %d", rec.Code)
+	}
+}
+
+func TestAPlainTextErrorBody(t *testing.T) {
+	s := trelloSandbox(t)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/1/boards/000000000000000000000bff?key=cauldronkey", nil)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", contentType)
+	}
+
+	body := strings.TrimSpace(rec.Body.String())
+
+	// Not JSON at all. A client calling .json() on this throws rather than
+	// reporting the failure.
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err == nil {
+		t.Errorf("body parsed as JSON, which is what this style exists to prevent: %q", body)
+	}
+
+	if !strings.Contains(body, "not found") {
+		t.Errorf("body = %q", body)
+	}
+}
+
+func trelloSandbox(t *testing.T) *Sandbox {
+	t.Helper()
+
+	r, err := recipe.Open("trello")
+	if err != nil {
+		t.Fatalf("open trello: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-workspace"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	return s
 }
