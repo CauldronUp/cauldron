@@ -1,0 +1,437 @@
+# Ably Recipe for Cauldron
+#
+# Ably has no sandbox. An app in the dashboard is a real app, the free tier is
+# metered at six million messages a month and two hundred concurrent
+# connections, and a test that publishes into a shared development app pushes
+# messages at whatever is connected, which is usually somebody's browser.
+#
+# It is the second realtime provider in this collection and it makes the same
+# point Pusher does from a different angle: publishing tells you nothing.
+# Pusher answers with an empty object. Ably answers with 204 and no body at
+# all, so there is not even a shape to inspect. A test against the real service
+# can assert that the request was accepted and nothing else, which is exactly
+# what a fake can assert.
+#
+# Four things worth modelling exactly:
+#
+#   1. Publishing answers 204 with no body. A client calling .json() on the
+#      response throws, and there is no message id to correlate anything with
+#      afterwards.
+#   2. History comes back newest first. The default direction is backwards, so
+#      code that iterates the array expecting chronological order replays a
+#      conversation in reverse and only notices when somebody reads it.
+#   3. A token's capability is a JSON string, not an object. It looks like
+#      structured data in the response and is text, so reading
+#      token.capability["*"] finds undefined until it is parsed a second time.
+#   4. The error carries a five digit code and an HTTP status separately, and
+#      they are different numbers. 40400 is not 404, the first three digits
+#      are the status and the last two are the reason, and support threads
+#      quote the long one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron serves no WebSocket and no realtime transport. This Recipe
+#     covers the REST surface, which is what a server publishes through.
+#   - The history order is what the fixture holds rather than something
+#     Cauldron sorts. The claim being made is about the shape of the response,
+#     not that the emulator re-orders on request.
+#   - Token requests are not signed and issued tokens are not verified. The
+#     key is checked; the HMAC in a signed token request is not.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: ably
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://ably.com/docs/api/rest-api
+
+auth:
+  # The API key is keyName:keySecret, sent as Basic. The secret half is the
+  # half worth checking.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldronKeySecret
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Nested, with a five digit code and the HTTP status beside it as a
+  # different number, plus a link to the explanation.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    status_field: statusCode
+    type_field: "-"
+    fields:
+      error:
+        # Ably documents every code at a stable URL, which is genuinely
+        # useful and is the thing worth quoting in a bug report.
+        href: https://help.ably.io/error/40400
+
+resources:
+  message:
+    id:
+      style: opaque
+      length: 22
+    fields:
+      name:
+        type: string
+      # The payload. Ably does not parse it: a JSON object published as a
+      # string comes back as a string.
+      data:
+        type: string
+      # Milliseconds. Treating it as seconds puts every message in 1970.
+      timestamp:
+        type: timestamp_ms
+      # Who published it, if the publishing key had an identity. Absent
+      # otherwise, so a chat that keys on it drops messages from server-side
+      # publishers.
+      clientId:
+        type: string
+      connectionId:
+        type: string
+
+  channel:
+    id:
+      style: opaque
+      field: channelId
+      length: 22
+    fields:
+      # Present only while the channel is active. A channel nobody is on has
+      # no occupancy at all rather than one full of zeroes.
+      isActive:
+        type: boolean
+        in: status
+        as: isActive
+      connections:
+        type: integer
+        in: occupancy
+        as: connections
+      publishers:
+        type: integer
+        in: occupancy
+        as: publishers
+      subscribers:
+        type: integer
+        in: occupancy
+        as: subscribers
+      # Presence is separate from connection. A connection that has not
+      # entered presence is connected and invisible to a member list.
+      presenceConnections:
+        type: integer
+        in: occupancy
+        as: presenceConnections
+
+  token:
+    id:
+      style: opaque
+      field: token
+      length: 32
+    fields:
+      # A JSON string, not an object. Reading token.capability["*"] finds
+      # undefined until it is parsed a second time. The default matters: a
+      # token requested without an explicit capability still comes back with
+      # one, and it is still text.
+      capability:
+        type: string
+        default: '{"*":["*"]}'
+      # Milliseconds, like everything else here.
+      issued:
+        type: timestamp_ms
+      expires:
+        type: timestamp_ms
+      clientId:
+        type: string
+
+routes:
+  # 204 and no body. Not an id, not a count, not an empty object.
+  - method: POST
+    path: /channels/{channel}/messages
+    resource: message
+    operation: create
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /channels/{channel}/messages
+    resource: message
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /channels/{id}
+    resource: channel
+    operation: get
+
+  - method: POST
+    path: /keys/{keyName}/requestToken
+    resource: token
+    operation: create
+
+webhooks:
+  events:
+    - channel.opened
+    - channel.closed
+    - presence.enter
+    - presence.leave
+    - message
+  signing:
+    scheme: hmac-sha256
+    header: X-Ably-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "42910"
+    message: Request rate exceeded
+
+  authentication_error:
+    status: 401
+    code: "40100"
+    message: "Invalid credentials"
+
+  resource_missing:
+    status: 404
+    code: "40400"
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "40000"
+    message: "Invalid request: {detail} is required"
+
+  # The key exists and does not permit this channel. Ably encodes capability
+  # per key, so a key that works everywhere in development fails on one
+  # channel in production.
+  capability_denied:
+    status: 401
+    code: "40160"
+    message: "Given credentials do not grant the required access rights"
+
+  # The account is over its connection limit. Existing connections stay up
+  # and new ones are refused, so the application looks healthy to whoever is
+  # already connected.
+  connection_limit:
+    status: 429
+    code: "42901"
+    message: Maximum number of concurrent connections exceeded
+
+  # A token that has expired. The client is expected to renew it before this
+  # happens, and an integration without renewal works for exactly one hour.
+  token_expired:
+    status: 401
+    code: "40142"
+    message: "Token expired"
+
+fixtures:
+  empty: {}
+
+  small-app:
+    channel:
+      - id: chat:general
+        isActive: true
+        connections: 4
+        publishers: 2
+        subscribers: 4
+        # Two of the four connections have not entered presence. They are
+        # connected and invisible to a member list.
+        presenceConnections: 2
+
+    message:
+      # Newest first. The default direction is backwards, so this is the
+      # order a client actually receives, and iterating it as chronological
+      # replays the conversation in reverse.
+      - id: cauldronMessage000003
+        name: message
+        data: '{"text":"and finally this one"}'
+        timestamp: 1767225800000
+        clientId: ada
+        connectionId: cauldronConn000001
+      - id: cauldronMessage000002
+        name: message
+        data: '{"text":"then this"}'
+        timestamp: 1767225700000
+        clientId: grace
+        connectionId: cauldronConn000002
+      - id: cauldronMessage000001
+        name: message
+        data: '{"text":"this happened first"}'
+        timestamp: 1767225600000
+        # No clientId. Published from a server with a key that carries no
+        # identity, so a chat keying on it drops this message entirely.
+        connectionId: cauldronConn000003
+
+    token:
+      - id: cauldronToken00000000000000000001
+        # A JSON string, not an object. It looks like structured data and is
+        # text, so reading capability["*"] finds undefined.
+        capability: '{"chat:*":["publish","subscribe"]}'
+        issued: 1767225600000
+        expires: 1767229200000
+        clientId: ada
+
+# Conformance cases, read from Ably's REST API reference rather than observed
+# against a live app. The verify report says so.
+conformance:
+  - name: publishing answers 204 with no body at all
+    source: https://ably.com/docs/api/rest-api#publish
+    fixture: small-app
+    request:
+      method: POST
+      path: /channels/chat%3Ageneral/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+      json:
+        name: message
+        data: '{"text":"hello"}'
+    expect:
+      # Not an empty object like Pusher: nothing at all. A client calling
+      # .json() on this throws, and there is no id to correlate with.
+      status: 204
+      no_body: true
+
+  - name: history comes back newest first
+    source: https://ably.com/docs/api/rest-api#message-history
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/chat%3Ageneral/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+    expect:
+      status: 200
+      body:
+        # The default direction is backwards. Iterating this as chronological
+        # replays the conversation in reverse, and nothing about the array
+        # says so.
+        '[0]':
+          timestamp: 1767225800000
+        '[2]':
+          timestamp: 1767225600000
+
+  - name: a server published message has no clientId
+    source: https://ably.com/docs/api/rest-api#message-history
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/chat%3Ageneral/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+    expect:
+      status: 200
+      body:
+        '[0]':
+          clientId: ada
+      # Published with a key that carries no identity. A chat keying on
+      # clientId drops this message entirely rather than showing it as
+      # anonymous.
+      absent:
+        - '[2].clientId'
+
+  - name: a timestamp is milliseconds
+    source: https://ably.com/docs/api/rest-api#message-history
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/chat%3Ageneral/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+    expect:
+      status: 200
+      body:
+        # Thirteen digits. Treating it as seconds puts every message in 1970,
+        # and dividing by a thousand without rounding loses the ordering
+        # within a second.
+        '[1]':
+          timestamp: 1767225700000
+
+  - name: presence is separate from connection
+    source: https://ably.com/docs/api/rest-api#channel-status
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/chat%3Ageneral
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+    expect:
+      status: 200
+      body:
+        occupancy:
+          connections: 4
+          # Two of the four have not entered presence. They are connected and
+          # invisible to a member list, so the two numbers disagree by
+          # however many are lurking.
+          presenceConnections: 2
+          publishers: 2
+        status:
+          isActive: true
+
+  - name: a capability is a JSON string rather than an object
+    source: https://ably.com/docs/api/rest-api#request-token
+    fixture: small-app
+    request:
+      method: POST
+      path: /keys/cauldronApp.key/requestToken
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+      json:
+        ttl: 3600000
+    expect:
+      status: 200
+      body:
+        # Text that looks like structured data. Reading capability["*"] finds
+        # undefined until it is parsed a second time.
+        #
+        # The request deliberately does not send a capability, so this value
+        # is the emulator's rather than an echo of the case's own input.
+        capability: '{"*":["*"]}'
+
+  - name: the error code is not the HTTP status
+    source: https://ably.com/docs/api/rest-api#common
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/doesnotexist
+      headers:
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5OmNhdWxkcm9uS2V5U2VjcmV0
+    expect:
+      status: 404
+      body:
+        error:
+          # Five digits, a number, and a different number from the status
+          # beside it.
+          # The first three are the status and the last two are the reason,
+          # and the long one is what support threads quote.
+          code: 40400
+          statusCode: 404
+          href: https://help.ably.io/error/40400
+      absent:
+        - error.type
+        - code
+        - message
+
+  - name: the key secret is the half that is checked
+    source: https://ably.com/docs/api/rest-api#authentication
+    fixture: small-app
+    request:
+      method: GET
+      path: /channels/chat%3Ageneral
+      headers:
+        # The right key name, and a wrong secret.
+        Authorization: Basic Y2F1bGRyb25BcHAua2V5Ondyb25n
+    expect:
+      status: 401
+      body:
+        error:
+          code: 40100
+          statusCode: 401
