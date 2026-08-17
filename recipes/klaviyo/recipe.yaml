@@ -1,0 +1,419 @@
+# Klaviyo Recipe for Cauldron
+#
+# Klaviyo has no sandbox. A private key reaches a real account, and a test that
+# creates a profile creates a real contact who can then be swept into a real
+# flow and emailed. Profiles cannot be hard deleted through the API either, so
+# test data accumulates permanently and counts towards the plan. Teams share
+# one account and prefix everything with "test-", which is not a boundary.
+#
+# Three things worth modelling exactly:
+#
+#   1. This is JSON:API. Every object is {type, id, attributes}, so the data a
+#      client wants is one level down at data.attributes, and the object's own
+#      kind is a sibling of its id rather than a field inside it.
+#   2. The revision header is mandatory and dated. Klaviyo pins behaviour to
+#      it, and omitting it is a hard failure rather than a default to latest,
+#      which is the first wall a new integration hits.
+#   3. Authentication is not a bearer token. The scheme is "Klaviyo-API-Key",
+#      and sending Bearer fails in a way that reads like a bad key.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: klaviyo
+version: 0.1.0
+
+upstream:
+  api: "2024-10-15"
+  docs: https://developers.klaviyo.com/en/reference/api_overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Klaviyo's own scheme. Not Bearer.
+  prefix: "Klaviyo-API-Key "
+  keys:
+    - pk_cauldron
+
+# Klaviyo pins behaviour to a dated revision and refuses a request without one.
+required_headers:
+  revision: missing_revision
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    cursor_field: links.next
+  resource:
+    style: wrapped
+    key: data
+  # JSON:API errors: an array, each entry with its own status, code and detail.
+  error:
+    style: list
+    key: errors
+    type_field: title
+    code_field: code
+    message_field: detail
+    status_field: status
+
+resources:
+  profile:
+    collection: data
+    constants:
+      type: profile
+    id:
+      style: opaque
+      length: 26
+    fields:
+      # Everything a client reads is one level down, under attributes.
+      email:
+        type: string
+        in: attributes
+      phone_number:
+        type: string
+        in: attributes
+      first_name:
+        type: string
+        in: attributes
+      last_name:
+        type: string
+        in: attributes
+      external_id:
+        type: string
+        in: attributes
+      created:
+        type: datetime
+        in: attributes
+      updated:
+        type: datetime
+        in: attributes
+
+  list:
+    collection: data
+    constants:
+      type: list
+    id:
+      style: opaque
+      length: 6
+    fields:
+      name:
+        type: string
+        required: true
+        in: attributes
+      # An opt-in process of double means a new profile receives nothing until
+      # it confirms, and code that counts every member as reachable overstates
+      # the audience.
+      opt_in_process:
+        type: string
+        default: single
+        in: attributes
+      created:
+        type: datetime
+        in: attributes
+
+  campaign:
+    collection: data
+    constants:
+      type: campaign
+    id:
+      style: opaque
+      length: 26
+    fields:
+      name:
+        type: string
+        required: true
+        in: attributes
+      # A draft campaign has sent nothing. Reporting on every campaign in the
+      # list without checking this reports zeroes as failures.
+      status:
+        type: string
+        default: Draft
+        in: attributes
+      channel:
+        type: string
+        default: email
+        in: attributes
+      send_time:
+        type: datetime
+        in: attributes
+      created_at:
+        type: datetime
+        in: attributes
+
+routes:
+  - method: GET
+    path: /api/profiles
+    resource: profile
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: POST
+    path: /api/profiles
+    resource: profile
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/profiles/{id}
+    resource: profile
+    operation: get
+
+  - method: PATCH
+    path: /api/profiles/{id}
+    resource: profile
+    operation: update
+
+  - method: GET
+    path: /api/lists
+    resource: list
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /api/lists/{id}
+    resource: list
+    operation: get
+
+  - method: GET
+    path: /api/campaigns
+    resource: campaign
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /api/campaigns/{id}
+    resource: campaign
+    operation: get
+
+webhooks:
+  events:
+    - profile.created
+    - profile.updated
+    - subscription.created
+    - subscription.deleted
+    - campaign.sent
+  signing:
+    scheme: hmac-sha256
+    header: Klaviyo-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: throttled
+    type: Rate limit exceeded
+    message: Request was throttled. Expected available in 1 second.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: not_authenticated
+    type: Authentication credentials were not provided
+    message: The API key is missing or invalid.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    type: Not found
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: invalid
+    type: Invalid input
+    message: "{detail} is a required field."
+
+  missing_revision:
+    status: 400
+    code: invalid
+    type: Invalid input
+    message: The revision header is required and must be a supported date.
+
+  # Klaviyo refuses a duplicate email on create, which is what breaks a
+  # retried import halfway through a batch.
+  duplicate_profile:
+    status: 409
+    code: duplicate_profile
+    type: Conflict
+    message: A profile already exists with that email address.
+
+  # A key scoped to read cannot write, and the failure names neither the
+  # scope nor the key, which is worth reproducing exactly.
+  insufficient_scope:
+    status: 403
+    code: permission_denied
+    type: Permission denied
+    message: You do not have permission to perform this action.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    list:
+      - id: aBc123
+        name: Newsletter
+        opt_in_process: double
+    profile:
+      - id: "01HCAULDRON00000000000001"
+        email: ada@example.com
+        first_name: Ada
+        last_name: Lovelace
+        external_id: cust-1001
+      - id: "01HCAULDRON00000000000002"
+        email: grace@example.com
+        first_name: Grace
+    campaign:
+      - id: "01HCAULDRON00000000000010"
+        name: January announcements
+        status: Sent
+        channel: email
+      - id: "01HCAULDRON00000000000011"
+        name: Never finished
+        # A draft has sent nothing. Reporting on every campaign without
+        # checking this reports zeroes as failures.
+        status: Draft
+
+# Conformance cases, read from Klaviyo's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a request without the revision header is refused
+    source: https://developers.klaviyo.com/en/reference/api_overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/profiles
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+    expect:
+      # Klaviyo pins behaviour to the revision and does not default to
+      # latest, so this is the first wall a new integration hits.
+      status: 400
+      body:
+        errors[0].code: invalid
+        errors[0].status: 400
+
+  - name: an object is type, id and attributes
+    source: https://developers.klaviyo.com/en/reference/get_profile
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/profiles/01HCAULDRON00000000000001
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      status: 200
+      body:
+        data:
+          type: profile
+          id: "01HCAULDRON00000000000001"
+          attributes:
+            email: ada@example.com
+            first_name: Ada
+      # The data a client wants is one level down. Reading data.email finds
+      # nothing, and so does reading profile.email.
+      absent:
+        - data.email
+        - email
+
+  - name: the credential scheme is Klaviyo-API-Key, not Bearer
+    source: https://developers.klaviyo.com/en/reference/api_overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/profiles
+      headers:
+        Authorization: Bearer pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      # Sending Bearer fails in a way that reads like a bad key.
+      status: 401
+      body:
+        errors[0].code: not_authenticated
+      matches:
+        errors[0].detail: 'missing or invalid'
+
+  - name: a collection is an array of typed objects under data
+    source: https://developers.klaviyo.com/en/reference/get_profiles
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/profiles
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      status: 200
+      body:
+        data[0].type: profile
+        data[0].attributes.email: ada@example.com
+        data[1].attributes.first_name: Grace
+      absent:
+        - items
+        - results
+        - data[0].email
+
+  - name: failures are an array with status and code in each entry
+    source: https://developers.klaviyo.com/en/reference/api_overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/profiles/doesnotexist
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      status: 404
+      body:
+        errors[0].status: 404
+        errors[0].code: not_found
+        errors[0].title: Not found
+      matches:
+        errors[0].detail: 'could not be found'
+      absent:
+        - error
+        - message
+
+  - name: a double opt-in list reaches nobody until they confirm
+    source: https://developers.klaviyo.com/en/reference/get_list
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/lists/aBc123
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      status: 200
+      body:
+        data:
+          type: list
+          attributes:
+            # Counting every member as reachable overstates the audience by
+            # everyone who never confirmed.
+            opt_in_process: double
+            name: Newsletter
+
+  - name: a draft campaign has sent nothing
+    source: https://developers.klaviyo.com/en/reference/get_campaigns
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/campaigns
+      headers:
+        Authorization: Klaviyo-API-Key pk_cauldron
+        revision: "2024-10-15"
+    expect:
+      status: 200
+      body:
+        data[0].attributes.status: Sent
+        # Reporting on every campaign in the list reports this one's zeroes
+        # as a failed send.
+        data[1].attributes.status: Draft
+        data[1].type: campaign
