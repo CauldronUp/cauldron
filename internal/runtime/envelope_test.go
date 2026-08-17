@@ -290,3 +290,55 @@ func TestASingleResourceCanComeBackAsAListOfOne(t *testing.T) {
 		t.Error("the object should not also appear under its singular name")
 	}
 }
+
+// Chargebee wraps every item in a collection under its own resource name, so a
+// client reads list[0].subscription.id. Anyone indexing straight into the item
+// finds nothing, and no other shipped Recipe does this.
+func TestListEntriesCanBeWrappedIndividually(t *testing.T) {
+	r, err := recipe.Open("chargebee")
+	if err != nil {
+		t.Fatalf("open chargebee: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-site"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/subscriptions", nil)
+	req.SetBasicAuth("cauldron_test_key", "")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	list, _ := body["list"].([]any)
+	if len(list) == 0 {
+		t.Fatalf("no list in %v", body)
+	}
+
+	entry, _ := list[0].(map[string]any)
+	if entry == nil {
+		t.Fatalf("entry is %T, want an object", list[0])
+	}
+
+	inner, _ := entry["subscription"].(map[string]any)
+	if inner == nil {
+		t.Fatalf("entry = %v, want it wrapped under subscription", entry)
+	}
+
+	if inner["id"] != "sub_active001" {
+		t.Errorf("id = %v", inner["id"])
+	}
+
+	// The record must not also sit at the top of the entry, or a client
+	// written for either shape would pass.
+	if _, flat := entry["id"]; flat {
+		t.Error("the record should not also be readable straight off the entry")
+	}
+}
