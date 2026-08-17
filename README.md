@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 103 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 138 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 15: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord |
+| Recipes shipped | 20: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 103 cases, none yet run against a live account. Documentation-derived
+Recipe: 138 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -225,7 +225,10 @@ attribute under `properties`. Notion refuses a request with no version header.
 Plaid's error category is a separate field from its code. Intercom's paging
 state is nested, which exposed declared constants silently overwriting computed
 values. Discord's snowflakes are numeric strings long enough that minting small
-integers would let a rounding bug through.
+integers would let a rounding bug through. Square's money is an object in minor
+units. Cloudflare puts every payload under `result`, success or failure, so a
+client branching on the HTTP status is checking the wrong thing. Xero answers a
+request for one invoice with a list of one.
 
 The earlier round found real bugs rather than confirming what the code did:
 routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
