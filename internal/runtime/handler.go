@@ -480,6 +480,10 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 			setPath(body, spec.HasMoreField, page.HasMore)
 		}
 
+		if spec.CountField != "" {
+			setPath(body, spec.CountField, page.Total)
+		}
+
 		body = withFields(body, s.recipe.Responses.Success.Fields)
 
 		return withFields(body, spec.Fields)

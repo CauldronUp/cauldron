@@ -197,6 +197,10 @@ type ListResponse struct {
 	// A dotted name nests, so Slack's response_metadata.next_cursor is
 	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
+	// CountField names a property carrying how many records matched in total,
+	// which is not the same as how many are on this page. Zendesk sends one and
+	// a pagination UI cannot be built without it.
+	CountField string `yaml:"count_field"`
 	// HasMoreField names a boolean saying whether more pages remain. The
 	// envelope style always sends has_more because Stripe does; other styles
 	// send one only when the Recipe says so.
