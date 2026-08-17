@@ -145,7 +145,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 
 | Provider | Why |
 |---|---|
-| Resend | Transactional email, domains, bounces, webhooks |
+| ~~Resend~~ | Shipped. last_event as the only history, restricted keys |
 | Amazon Pinpoint | Messaging and delivery events |
 | OneSignal | Push notifications, users, subscriptions |
 | Pusher | Channels, events, authentication |
