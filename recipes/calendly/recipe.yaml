@@ -1,0 +1,400 @@
+# Calendly Recipe for Cauldron
+#
+# Calendly has no sandbox. A token reaches a real account, and testing the part
+# that matters means creating real scheduled events, which send real
+# confirmation emails and real calendar invitations to whoever is named as the
+# invitee. Cancelling a test booking emails them again. Most integrations get
+# tested by booking against the developer's own calendar and hoping nobody
+# notices, and the interesting states, a cancelled event, a no-show, an invitee
+# who rescheduled, are never exercised at all.
+#
+# Two things worth modelling exactly:
+#
+#   1. Resources are addressed by URI, not by a bare identifier. The field is
+#      literally called "uri" and holds a full URL, and code that tries to
+#      build a path out of an id has nothing to build from. Relationships
+#      point at URIs too.
+#   2. Paging is nested under "pagination" and the cursor is a token rather
+#      than an identifier, so a client that pages by remembering the last id
+#      gets stuck on the first page forever.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: calendly
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.calendly.com/api-docs
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_calendly_token
+
+responses:
+  list:
+    style: wrapped
+    key: collection
+    count_field: pagination.count
+    cursor_field: pagination.next_page_token
+  resource:
+    style: wrapped
+    key: resource
+  error:
+    style: flat
+    code_field: title
+    message_field: message
+
+resources:
+  scheduled_event:
+    collection: collection
+    id:
+      style: uuid
+      field: uri
+    fields:
+      name:
+        type: string
+        required: true
+      # Calendly's real lifecycle. A cancelled event is still returned by a
+      # plain listing, and code that counts every event as a booking
+      # overstates the diary.
+      status:
+        type: string
+        default: active
+      start_time:
+        type: datetime
+      end_time:
+        type: datetime
+      event_type:
+        type: string
+      invitees_counter_total:
+        type: integer
+        default: 1
+      invitees_counter_active:
+        type: integer
+        default: 1
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  invitee:
+    collection: collection
+    id:
+      style: uuid
+      field: uri
+    fields:
+      event:
+        type: string
+      email:
+        type: string
+        required: true
+      name:
+        type: string
+      status:
+        type: string
+        default: active
+      timezone:
+        type: string
+        default: Europe/London
+      # Set only when the invitee cancelled, and the presence of it is how a
+      # client knows the difference between cancelled and never booked.
+      rescheduled:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+
+  event_type:
+    collection: collection
+    id:
+      style: uuid
+      field: uri
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+      duration:
+        type: integer
+        default: 30
+      kind:
+        type: string
+        default: solo
+      # An inactive event type accepts no bookings, and it is still listed.
+      active:
+        type: boolean
+        default: true
+      scheduling_url:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /scheduled_events
+    resource: scheduled_event
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /scheduled_events/{id}
+    resource: scheduled_event
+    operation: get
+
+  - method: GET
+    path: /scheduled_events/{event}/invitees
+    resource: invitee
+    operation: list
+    scope: [event]
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /invitees/{id}
+    resource: invitee
+    operation: get
+
+  - method: GET
+    path: /event_types
+    resource: event_type
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /event_types/{id}
+    resource: event_type
+    operation: get
+
+webhooks:
+  events:
+    - invitee.created
+    - invitee.canceled
+    - invitee_no_show.created
+    - invitee_no_show.deleted
+    - routing_form_submission.created
+  signing:
+    scheme: hmac-sha256
+    header: Calendly-Webhook-Signature
+    secret: cauldron-signing-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: Too Many Requests
+    message: The request was rate limited.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: Unauthenticated
+    message: The access token is invalid
+
+  resource_missing:
+    status: 404
+    code: Resource Not Found
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: Invalid Argument
+    message: "The supplied parameters are invalid: {detail} is required"
+
+  # A token scoped to one user cannot read another's events, and the failure
+  # is a 403 rather than an empty list, which is the difference between
+  # "nothing booked" and "you cannot see this".
+  permission_denied:
+    status: 403
+    code: Permission Denied
+    message: The token does not have permission to access this resource
+
+  # Calendly refuses to cancel an event that has already happened, which is
+  # the state a test suite reaches after its fixtures go stale.
+  already_ended:
+    status: 400
+    code: Invalid Argument
+    message: Cannot cancel an event that has already ended
+
+fixtures:
+  empty: {}
+
+  small-account:
+    event_type:
+      - id: 11111111-1111-4111-8111-111111111111
+        name: 30 Minute Meeting
+        slug: 30min
+        duration: 30
+        active: true
+        scheduling_url: https://calendly.com/cauldron/30min
+      - id: 22222222-2222-4222-8222-222222222222
+        name: Retired intro call
+        slug: intro
+        duration: 15
+        # Still listed, accepts no bookings. Code that offers every event
+        # type it finds sends people to a dead link.
+        active: false
+    scheduled_event:
+      - id: 33333333-3333-4333-8333-333333333333
+        name: 30 Minute Meeting
+        status: active
+        event_type: 11111111-1111-4111-8111-111111111111
+        invitees_counter_total: 1
+        invitees_counter_active: 1
+      - id: 44444444-4444-4444-8444-444444444444
+        name: 30 Minute Meeting
+        # Cancelled, and still returned by a plain listing. Counting every
+        # event as a booking overstates the diary.
+        status: canceled
+        event_type: 11111111-1111-4111-8111-111111111111
+        invitees_counter_total: 1
+        invitees_counter_active: 0
+    invitee:
+      - id: 55555555-5555-4555-8555-555555555555
+        event: 33333333-3333-4333-8333-333333333333
+        email: ada@example.com
+        name: Ada Lovelace
+        status: active
+      - id: 66666666-6666-4666-8666-666666666666
+        event: 44444444-4444-4444-8444-444444444444
+        email: grace@example.com
+        name: Grace Hopper
+        status: canceled
+        rescheduled: true
+
+# Conformance cases, read from Calendly's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a resource is addressed by uri, not by a bare id
+    source: https://developer.calendly.com/api-docs
+    fixture: small-account
+    request:
+      method: GET
+      path: /scheduled_events/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        resource:
+          uri: 33333333-3333-4333-8333-333333333333
+          status: active
+          name: 30 Minute Meeting
+      # Code that tries to build a path out of an id has nothing to build
+      # from, because there is no id field at all.
+      absent:
+        - resource.id
+        - id
+
+  - name: a single resource is wrapped under resource, a list under collection
+    source: https://developer.calendly.com/api-docs
+    fixture: small-account
+    request:
+      method: GET
+      path: /event_types
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        collection[0].name: 30 Minute Meeting
+        collection[0].duration: 30
+      # Two different wrappers for the two shapes, so a client cannot use one
+      # accessor for both.
+      absent:
+        - resource
+        - data
+
+  - name: a cancelled event is still in the list
+    source: https://developer.calendly.com/api-docs/e2f95ebd44914-list-events
+    fixture: small-account
+    request:
+      method: GET
+      path: /scheduled_events
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        # Counting every event as a booking overstates the diary by exactly
+        # the number of cancellations.
+        collection[0].status: active
+        collection[1].status: canceled
+        collection[1].invitees_counter_active: 0
+
+  - name: an inactive event type is still listed
+    source: https://developer.calendly.com/api-docs/2d5db83e5c8f5-list-user-s-event-types
+    fixture: small-account
+    request:
+      method: GET
+      path: /event_types
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        # Offering every event type found sends people to a dead link.
+        collection[1].active: false
+        collection[1].name: Retired intro call
+
+  - name: paging is nested and the cursor is a token, not an id
+    source: https://developer.calendly.com/api-docs
+    fixture: small-account
+    request:
+      method: GET
+      path: /scheduled_events
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        pagination:
+          count: 2
+      matches:
+        pagination.next_page_token: '^[0-9a-f-]+$'
+      # A client paging by remembering the last id is stuck on page one.
+      absent:
+        - next_page_token
+        - collection[1]
+
+  - name: invitees are scoped to their event
+    source: https://developer.calendly.com/api-docs/463b90a0e4e01-list-event-invitees
+    fixture: small-account
+    request:
+      method: GET
+      path: /scheduled_events/44444444-4444-4444-8444-444444444444/invitees
+      headers:
+        Authorization: Bearer cauldron_calendly_token
+    expect:
+      status: 200
+      body:
+        collection[0].email: grace@example.com
+        collection[0].status: canceled
+        collection[0].rescheduled: true
+      absent:
+        - collection[1]
+
+  - name: a bad token is refused with a title and a message
+    source: https://developer.calendly.com/api-docs
+    request:
+      method: GET
+      path: /scheduled_events
+    expect:
+      status: 401
+      body:
+        title: Unauthenticated
+        message: The access token is invalid
+      absent:
+        - error
+        - errors
