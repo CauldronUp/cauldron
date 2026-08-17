@@ -1,0 +1,382 @@
+# CircleCI Recipe for Cauldron
+#
+# CircleCI has no sandbox. Exercising an integration means triggering real
+# pipelines, which consume real credits, take minutes to finish, and cannot be
+# made to fail on demand without committing something broken on purpose. The
+# states that matter to a deployment gate are the ones that are hardest to
+# arrange: a workflow waiting on manual approval, one that errored before any
+# job ran, one cancelled halfway.
+#
+# Two things worth modelling exactly:
+#
+#   1. A workflow can be "on_hold", waiting for somebody to approve it. That
+#      is neither a pass nor a failure, and a gate that treats anything other
+#      than success as failure rejects a build that is waiting for a human.
+#      "not_run" and "error" are similarly neither.
+#   2. A workflow that has not finished has no stopped_at. Reading a duration
+#      from the create or trigger response gets nothing.
+#
+# Known fidelity gap, stated rather than hidden: CircleCI pages with an opaque
+# next_page_token that Cauldron issues from its own cursor rather than
+# reproducing the real encoding.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: circleci
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://circleci.com/docs/api/v2/
+
+auth:
+  # CircleCI's own header for a personal API token.
+  scheme: header
+  header: Circle-Token
+  keys:
+    - cauldron-circle-token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    cursor_field: next_page_token
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  pipeline:
+    collection: items
+    id:
+      style: uuid
+    fields:
+      project_slug:
+        type: string
+      number:
+        type: integer
+      # created, errored, setup-pending, setup, pending. An errored pipeline
+      # never produced a workflow at all.
+      state:
+        type: string
+        default: created
+      # Which branch or tag it ran on, and what triggered it. A scheduled
+      # pipeline has no commit author, which breaks notification code that
+      # assumes one.
+      branch:
+        type: string
+        in: vcs
+      revision:
+        type: string
+        in: vcs
+      trigger_type:
+        type: string
+        default: webhook
+      created_at:
+        type: datetime
+
+  workflow:
+    collection: items
+    id:
+      style: uuid
+    fields:
+      pipeline_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # success, running, not_run, failed, error, failing, on_hold,
+      # canceled, unauthorized. Only one of those is a pass, and three of
+      # them are neither a pass nor a failure.
+      status:
+        type: string
+        default: running
+      project_slug:
+        type: string
+      pipeline_number:
+        type: integer
+      created_at:
+        type: datetime
+      # Absent until it actually finishes. Reading a duration from a trigger
+      # response gets nothing.
+      stopped_at:
+        type: datetime
+        stamped: false
+
+  job:
+    collection: items
+    id:
+      style: uuid
+    fields:
+      workflow_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # A blocked job is waiting on an approval step, and a job of type
+      # approval is the approval step itself.
+      status:
+        type: string
+        default: running
+      type:
+        type: string
+        default: build
+      job_number:
+        type: integer
+      started_at:
+        type: datetime
+        stamped: false
+      stopped_at:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /api/v2/pipeline
+    resource: pipeline
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /api/v2/pipeline/{id}
+    resource: pipeline
+    operation: get
+
+  - method: GET
+    path: /api/v2/pipeline/{pipeline_id}/workflow
+    resource: workflow
+    operation: list
+    scope: [pipeline_id]
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /api/v2/workflow/{id}
+    resource: workflow
+    operation: get
+
+  - method: GET
+    path: /api/v2/workflow/{workflow_id}/job
+    resource: job
+    operation: list
+    scope: [workflow_id]
+    pagination:
+      style: cursor
+      limit: 20
+
+webhooks:
+  events:
+    - workflow-completed
+    - job-completed
+  signing:
+    scheme: hmac-sha256
+    header: circleci-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: Authentication failed.
+
+  resource_missing:
+    status: 404
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # CircleCI answers 404 rather than 403 for a project the token cannot see,
+  # deliberately not confirming that it exists, which reads as a typo in the
+  # project slug until you check the token's scope.
+  forbidden_project:
+    status: 404
+    message: Project not found
+
+  # A pipeline cannot be triggered for a branch that does not exist, and the
+  # message says nothing about branches.
+  invalid_branch:
+    status: 400
+    message: Branch not found
+
+fixtures:
+  empty: {}
+
+  small-org:
+    pipeline:
+      - id: 11111111-1111-4111-8111-111111111111
+        project_slug: gh/cauldron/engine
+        number: 42
+        state: created
+        branch: main
+        revision: 4f21c9ab
+        trigger_type: webhook
+      - id: 22222222-2222-4222-8222-222222222222
+        project_slug: gh/cauldron/engine
+        number: 43
+        # Errored before any workflow ran, usually a config problem. There is
+        # nothing to poll for.
+        state: errored
+        branch: broken-config
+        trigger_type: webhook
+    workflow:
+      - id: 33333333-3333-4333-8333-333333333333
+        pipeline_id: 11111111-1111-4111-8111-111111111111
+        name: build-and-test
+        status: success
+        pipeline_number: 42
+        stopped_at: "2026-01-12T10:05:00Z"
+      - id: 44444444-4444-4444-8444-444444444444
+        pipeline_id: 11111111-1111-4111-8111-111111111111
+        name: deploy
+        # Waiting for somebody to approve it. Not a pass, not a failure, and
+        # a gate that rejects anything other than success rejects a build
+        # that is waiting for a human.
+        status: on_hold
+        pipeline_number: 42
+      - id: 55555555-5555-4555-8555-555555555555
+        pipeline_id: 11111111-1111-4111-8111-111111111111
+        name: nightly-only
+        # Never started, because its filters excluded this pipeline.
+        status: not_run
+        pipeline_number: 42
+    job:
+      - id: 66666666-6666-4666-8666-666666666666
+        workflow_id: 44444444-4444-4444-8444-444444444444
+        name: hold-for-approval
+        # The approval step itself.
+        type: approval
+        status: on_hold
+      - id: 77777777-7777-4777-8777-777777777777
+        workflow_id: 44444444-4444-4444-8444-444444444444
+        name: deploy-production
+        # Waiting behind the approval.
+        status: blocked
+        type: build
+
+# Conformance cases, read from CircleCI's API reference rather than observed
+# against a live organisation. The verify report says so.
+conformance:
+  - name: on_hold is neither a pass nor a failure
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/workflow/44444444-4444-4444-8444-444444444444
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        # A gate that treats anything other than success as failure rejects a
+        # build that is waiting for a human to approve it.
+        status: on_hold
+        name: deploy
+      absent:
+        - stopped_at
+
+  - name: not_run is neither either
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/pipeline/11111111-1111-4111-8111-111111111111/workflow
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        items[0].status: success
+        items[1].status: on_hold
+        # Never started, because its filters excluded this pipeline.
+        items[2].status: not_run
+
+  - name: a finished workflow has a stop time
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/workflow/33333333-3333-4333-8333-333333333333
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        status: success
+        stopped_at: "2026-01-12T10:05:00Z"
+
+  - name: an errored pipeline produced no workflow
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/pipeline/22222222-2222-4222-8222-222222222222
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        # Usually a config problem. There is nothing to poll for, and code
+        # that waits for a workflow waits forever.
+        state: errored
+        vcs:
+          branch: broken-config
+
+  - name: the branch is nested under vcs
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/pipeline/11111111-1111-4111-8111-111111111111
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        vcs:
+          branch: main
+          revision: 4f21c9ab
+        number: 42
+      absent:
+        - branch
+
+  - name: an approval job blocks the ones behind it
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/workflow/44444444-4444-4444-8444-444444444444/job
+      headers:
+        Circle-Token: cauldron-circle-token
+    expect:
+      status: 200
+      body:
+        items[0].type: approval
+        items[0].status: on_hold
+        # Waiting behind the approval, not failed.
+        items[1].status: blocked
+
+  - name: the token header is Circle-Token, not Authorization
+    source: https://circleci.com/docs/api/v2/index.html
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v2/pipeline
+      headers:
+        Authorization: Bearer cauldron-circle-token
+    expect:
+      status: 401
+      body:
+        message: Authentication failed.
+      absent:
+        - error
+        - errors
