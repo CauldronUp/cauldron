@@ -182,7 +182,9 @@ type ErrorResponse struct {
 	// TypeField names a property carrying the error category in a flat
 	// envelope. Plaid sends error_type and its clients switch on that before
 	// they look at the code, because the category decides whether to retry,
-	// re-authenticate or give up.
+	// re-authenticate or give up. As with CodeField, "-" omits the category,
+	// which the nested style needs too: Vercel nests its error and sends only
+	// a code and a message.
 	TypeField string `yaml:"type_field"`
 	// Fields are constants the provider adds to every error, such as GitHub's
 	// documentation_url.

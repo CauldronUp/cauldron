@@ -1,0 +1,405 @@
+# Vercel Recipe for Cauldron
+#
+# Vercel has no test mode. Creating a deployment through the API creates a real
+# deployment: it builds, it costs build minutes, and it can be promoted to
+# production by accident. Deleting one is permanent. Teams that automate
+# against it end up with a scratch project full of half-finished builds, and
+# the failures worth handling (a build that fails, a deployment stuck in
+# QUEUED, a token without team scope) cannot be produced on demand.
+#
+# Two things worth getting exactly right:
+#
+#   1. The error is nested under "error" with only a code and a message. No
+#      type, no status inside the body. Code written for Stripe's shape reads
+#      error.type and finds nothing.
+#   2. Deployment state is a string enum, and READY is not the only terminal
+#      value. Code that polls until state is not BUILDING and then assumes
+#      success ships a broken build.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: vercel
+version: 0.1.0
+
+upstream:
+  api: v13
+  docs: https://vercel.com/docs/rest-api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_vercel_token
+
+responses:
+  list:
+    style: wrapped
+    count_field: pagination.count
+    cursor_field: pagination.next
+  # Nested, with a code and a message and nothing else.
+  error:
+    style: nested
+    type_field: "-"
+
+resources:
+  deployment:
+    collection: deployments
+    id:
+      prefix: dpl_
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      url:
+        type: string
+      # Vercel's real lifecycle. READY is not the only terminal state, and
+      # code that polls until BUILDING ends and assumes success ships a
+      # broken build.
+      state:
+        type: string
+        default: QUEUED
+      readyState:
+        type: string
+        default: QUEUED
+      target:
+        type: string
+      # A deployment is a preview unless it is explicitly production, and
+      # promoting one by accident is the expensive mistake here.
+      source:
+        type: string
+        default: cli
+      # Nested under creator, which is how Vercel sends it. The field name
+      # is the key inside the sub-object, so these are uid and username.
+      uid:
+        type: string
+        in: creator
+      username:
+        type: string
+        in: creator
+      created:
+        type: timestamp_ms
+      buildingAt:
+        type: timestamp_ms
+
+  project:
+    collection: projects
+    id:
+      prefix: prj_
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      framework:
+        type: string
+      accountId:
+        type: string
+      nodeVersion:
+        type: string
+        default: "22.x"
+      createdAt:
+        type: timestamp_ms
+      updatedAt:
+        type: timestamp_ms
+
+  domain:
+    collection: domains
+    id:
+      prefix: dom_
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      projectId:
+        type: string
+      # An unverified domain serves nothing, and the verification step is
+      # exactly what a scratch project cannot rehearse.
+      verified:
+        type: boolean
+        default: false
+      redirect:
+        type: string
+      createdAt:
+        type: timestamp_ms
+
+routes:
+  - method: GET
+    path: /v6/deployments
+    resource: deployment
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: POST
+    path: /v13/deployments
+    resource: deployment
+    operation: create
+
+  - method: GET
+    path: /v13/deployments/{id}
+    resource: deployment
+    operation: get
+
+  - method: DELETE
+    path: /v13/deployments/{id}
+    resource: deployment
+    operation: delete
+
+  - method: GET
+    path: /v9/projects
+    resource: project
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: POST
+    path: /v9/projects
+    resource: project
+    operation: create
+
+  - method: GET
+    path: /v9/projects/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /v5/domains
+    resource: domain
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /v5/domains/{id}
+    resource: domain
+    operation: get
+
+webhooks:
+  events:
+    - deployment.created
+    - deployment.succeeded
+    - deployment.error
+    - deployment.canceled
+    - deployment.promoted
+    - project.created
+    - domain.created
+  signing:
+    scheme: hmac-sha256
+    header: x-vercel-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: Too many requests are being made to the API.
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 403
+    code: forbidden
+    message: Not authorized
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    message: "Invalid request: {detail} is required"
+
+  # A personal token used against a team resource. The message is unhelpful in
+  # the real API too, which is why reproducing it is worth something.
+  team_scope_missing:
+    status: 403
+    code: forbidden
+    message: Not authorized to access this team
+
+  # A build that fails is a normal outcome, not an API error, but the
+  # deployment-limit refusal is a real one and only appears under load.
+  deployment_limit_reached:
+    status: 402
+    code: deployment_limit_reached
+    message: You have reached your deployment limit for today.
+
+fixtures:
+  empty: {}
+
+  small-team:
+    project:
+      - id: prj_000000000000000000000001
+        name: marketing-site
+        framework: nextjs
+        nodeVersion: "22.x"
+    deployment:
+      - id: dpl_000000000000000000000001
+        name: marketing-site
+        url: marketing-site-abc123.vercel.app
+        state: READY
+        readyState: READY
+        target: production
+        username: ada
+      - id: dpl_000000000000000000000002
+        name: marketing-site
+        url: marketing-site-def456.vercel.app
+        # A failed build. Code that polls until the state stops being
+        # BUILDING and then assumes success ships this one.
+        state: ERROR
+        readyState: ERROR
+      - id: dpl_000000000000000000000003
+        name: marketing-site
+        url: marketing-site-ghi789.vercel.app
+        state: QUEUED
+        readyState: QUEUED
+    domain:
+      - id: dom_000000000000000000000001
+        name: example.com
+        projectId: prj_000000000000000000000001
+        verified: true
+      - id: dom_000000000000000000000002
+        name: staging.example.com
+        projectId: prj_000000000000000000000001
+        # Unverified domains serve nothing.
+        verified: false
+
+# Conformance cases, read from Vercel's REST API reference rather than observed
+# against a live team. The verify report says so.
+conformance:
+  - name: the error is nested with a code and a message and nothing else
+    source: https://vercel.com/docs/rest-api/errors
+    fixture: small-team
+    request:
+      method: GET
+      path: /v13/deployments/dpl_doesnotexist
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+    expect:
+      status: 404
+      body:
+        error:
+          code: not_found
+      matches:
+        error.message: 'could not be found'
+      # Code written for Stripe's shape reads error.type and finds nothing.
+      absent:
+        - error.type
+        - message
+        - errors
+
+  - name: READY is not the only terminal deployment state
+    source: https://vercel.com/docs/rest-api/endpoints/deployments
+    fixture: small-team
+    request:
+      method: GET
+      path: /v13/deployments/dpl_000000000000000000000002
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+    expect:
+      status: 200
+      body:
+        # Code that polls until the state stops being BUILDING and then
+        # assumes success ships this deployment.
+        state: ERROR
+        readyState: ERROR
+        name: marketing-site
+
+  - name: a collection carries its paging state under pagination
+    source: https://vercel.com/docs/rest-api/endpoints/deployments
+    fixture: small-team
+    request:
+      method: GET
+      path: /v6/deployments
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+    expect:
+      status: 200
+      body:
+        pagination:
+          count: 3
+        deployments[0].state: READY
+        deployments[1].state: ERROR
+      matches:
+        pagination.next: '^dpl_[0-9]+$'
+      absent:
+        - deployments[2]
+        - data
+
+  - name: timestamps are milliseconds
+    source: https://vercel.com/docs/rest-api/endpoints/deployments
+    fixture: empty
+    request:
+      method: POST
+      path: /v13/deployments
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+      json:
+        name: marketing-site
+    expect:
+      status: 200
+      body:
+        name: marketing-site
+        # A new deployment has not built yet. Treating a create response as
+        # a finished deployment is the mistake this catches.
+        state: QUEUED
+        source: cli
+      matches:
+        created: '^[0-9]{13}$'
+        id: '^dpl_[A-Za-z0-9]{24}$'
+
+  - name: the creator is nested, not flattened onto the deployment
+    source: https://vercel.com/docs/rest-api/endpoints/deployments
+    fixture: small-team
+    request:
+      method: GET
+      path: /v13/deployments/dpl_000000000000000000000001
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+    expect:
+      status: 200
+      body:
+        creator:
+          username: ada
+        target: production
+      absent:
+        - username
+
+  - name: a bad token is a 403, not a 401
+    source: https://vercel.com/docs/rest-api/errors
+    request:
+      method: GET
+      path: /v6/deployments
+    expect:
+      # Vercel answers 403 where most providers answer 401, and code checking
+      # for 401 to trigger a token refresh never fires.
+      status: 403
+      body:
+        error:
+          code: forbidden
+          message: Not authorized
+
+  - name: an unverified domain is listed, flagged rather than hidden
+    source: https://vercel.com/docs/rest-api/endpoints/domains
+    fixture: small-team
+    request:
+      method: GET
+      path: /v5/domains
+      headers:
+        Authorization: Bearer cauldron_vercel_token
+    expect:
+      status: 200
+      body:
+        domains[0].verified: true
+        domains[1].verified: false
+        domains[1].name: staging.example.com
