@@ -1,0 +1,410 @@
+# Bitbucket Recipe for Cauldron
+#
+# Bitbucket Cloud has no sandbox. An app password reaches real repositories,
+# and a test that opens a pull request notifies reviewers and triggers
+# Pipelines that consume build minutes. Declining a pull request leaves it in
+# the history permanently, so a test suite that opens and closes them leaves a
+# visible trail in a real repository.
+#
+# Two things worth modelling exactly, and the first catches people arriving
+# from GitHub:
+#
+#   1. A pull request that is DECLINED was not merged, and SUPERSEDED is a
+#      third terminal state again. Code that treats anything other than OPEN
+#      as merged ships changes somebody rejected.
+#   2. The error is nested under "error" with only a message, while the
+#      response also carries a top-level type saying it is an error. Code
+#      written for a flat message finds nothing, and code reading error.code
+#      finds nothing either.
+#
+# Known fidelity gap, stated rather than hidden: Bitbucket pages with a full
+# URL in "next" rather than a cursor, and Cauldron issues its own cursor there.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: bitbucket
+version: 0.1.0
+
+upstream:
+  api: "2.0"
+  docs: https://developer.atlassian.com/cloud/bitbucket/rest/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_bitbucket_token
+
+responses:
+  list:
+    style: wrapped
+    key: values
+    count_field: size
+    cursor_field: next
+    fields:
+      pagelen: 10
+      page: 1
+  error:
+    style: flat
+    message_field: error.message
+    fields:
+      # Bitbucket labels the response itself, the same way it labels every
+      # other object.
+      type: error
+
+resources:
+  repository:
+    collection: values
+    constants:
+      type: repository
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      full_name:
+        type: string
+      description:
+        type: string
+      # Bitbucket calls it is_private rather than a visibility enum, and a
+      # private repository in a public workspace is still private.
+      is_private:
+        type: boolean
+        default: true
+      mainbranch:
+        type: string
+        default: main
+      created_on:
+        type: datetime
+
+  pullrequest:
+    collection: values
+    constants:
+      type: pullrequest
+    id:
+      style: numeric
+    fields:
+      repository_uuid:
+        type: string
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+      # OPEN, MERGED, DECLINED, SUPERSEDED. Only one of the three terminal
+      # states means the change landed.
+      state:
+        type: string
+        default: OPEN
+      source_branch:
+        type: string
+      destination_branch:
+        type: string
+        default: main
+      # Bitbucket tracks whether the author closed it themselves, which
+      # matters when deciding whether to notify anybody.
+      close_source_branch:
+        type: boolean
+        default: false
+      created_on:
+        type: datetime
+      updated_on:
+        type: datetime
+
+  pipeline:
+    collection: values
+    constants:
+      type: pipeline
+    id:
+      style: uuid
+    fields:
+      repository_uuid:
+        type: string
+      build_number:
+        type: integer
+      # PENDING, IN_PROGRESS, COMPLETED, ERROR, STOPPED. COMPLETED says the
+      # pipeline finished, not that it passed: the result is a separate
+      # field, and conflating the two reports every finished build as green.
+      state_name:
+        type: string
+        default: PENDING
+      result_name:
+        type: string
+        in: state_result
+      created_on:
+        type: datetime
+      completed_on:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /2.0/repositories/{workspace}
+    resource: repository
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /2.0/repositories/{workspace}/{id}
+    resource: repository
+    operation: get
+
+  - method: GET
+    path: /2.0/repositories/{workspace}/{repository_uuid}/pullrequests
+    resource: pullrequest
+    operation: list
+    scope: [repository_uuid]
+    pagination:
+      style: page
+      limit: 10
+
+  - method: POST
+    path: /2.0/repositories/{workspace}/{repository_uuid}/pullrequests
+    resource: pullrequest
+    operation: create
+    scope: [repository_uuid]
+    status: 201
+
+  - method: GET
+    path: /2.0/repositories/{workspace}/{repository_uuid}/pullrequests/{id}
+    resource: pullrequest
+    operation: get
+    scope: [repository_uuid]
+
+  - method: GET
+    path: /2.0/repositories/{workspace}/{repository_uuid}/pipelines
+    resource: pipeline
+    operation: list
+    scope: [repository_uuid]
+    pagination:
+      style: page
+      limit: 10
+
+webhooks:
+  events:
+    - repo:push
+    - pullrequest:created
+    - pullrequest:fulfilled
+    - pullrequest:rejected
+    - repo:commit_status_created
+  signing:
+    scheme: hmac-sha256
+    header: X-Hub-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit for this resource has been exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: Access token expired or invalid
+
+  resource_missing:
+    status: 404
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # Bitbucket refuses a pull request whose source and destination are the same
+  # branch, which is what a misconfigured automation produces.
+  same_branch:
+    status: 400
+    message: The source branch and destination branch must be different
+
+  # A pull request already declined cannot be declined again, and a retried
+  # request after a timeout hits exactly this.
+  invalid_state:
+    status: 409
+    message: The pull request is not in a state that allows this action
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    repository:
+      - id: 11111111-1111-4111-8111-111111111111
+        name: engine
+        full_name: cauldron/engine
+        is_private: true
+        mainbranch: main
+      - id: 22222222-2222-4222-8222-222222222222
+        name: docs
+        full_name: cauldron/docs
+        is_private: false
+    pullrequest:
+      - id: "1"
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        title: Add the conformance suite
+        state: MERGED
+        source_branch: conformance
+      - id: "2"
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        title: Rejected approach
+        # Declined is not merged. Somebody said no.
+        state: DECLINED
+        source_branch: other-approach
+      - id: "3"
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        title: Replaced by a rebase
+        # A third terminal state, and also not merged.
+        state: SUPERSEDED
+        source_branch: old-base
+    pipeline:
+      - id: 33333333-3333-4333-8333-333333333333
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        build_number: 41
+        state_name: COMPLETED
+        result_name: SUCCESSFUL
+        completed_on: "2026-01-12T10:05:00Z"
+      - id: 44444444-4444-4444-8444-444444444444
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        build_number: 42
+        # Finished, and failed. COMPLETED says it stopped, not that it
+        # passed, and conflating the two reports every finished build green.
+        state_name: COMPLETED
+        result_name: FAILED
+        completed_on: "2026-01-12T11:20:00Z"
+      - id: 55555555-5555-4555-8555-555555555555
+        repository_uuid: 11111111-1111-4111-8111-111111111111
+        build_number: 43
+        state_name: IN_PROGRESS
+
+# Conformance cases, read from Bitbucket's REST reference rather than observed
+# against a live workspace. The verify report says so.
+conformance:
+  - name: DECLINED and SUPERSEDED are terminal but not merged
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron/11111111-1111-4111-8111-111111111111/pullrequests
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 200
+      body:
+        values[0].state: MERGED
+        # Somebody said no. Code that treats anything other than OPEN as
+        # merged ships changes that were rejected.
+        values[1].state: DECLINED
+        # A third terminal state, and also not merged.
+        values[2].state: SUPERSEDED
+
+  - name: COMPLETED says a pipeline stopped, not that it passed
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pipelines/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron/11111111-1111-4111-8111-111111111111/pipelines
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 200
+      body:
+        values[0].state_name: COMPLETED
+        values[0].state_result:
+          result_name: SUCCESSFUL
+        # Also COMPLETED, and it failed. Reading only the state reports every
+        # finished build as green.
+        values[1].state_name: COMPLETED
+        values[1].state_result:
+          result_name: FAILED
+
+  - name: a running pipeline has no completion time
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pipelines/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron/11111111-1111-4111-8111-111111111111/pipelines
+      query:
+        limit: "3"
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 200
+      body:
+        values[2].state_name: IN_PROGRESS
+      absent:
+        - values[2].completed_on
+        - values[2].state_result
+
+  - name: a collection is wrapped in values with a size
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 200
+      body:
+        size: 2
+        pagelen: 10
+        page: 1
+        values[0].name: engine
+        values[0].type: repository
+      absent:
+        - data
+        - items
+
+  - name: the error is nested under error with only a message
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron/99999999-9999-4999-8999-999999999999
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 404
+      body:
+        # The response says it is an error, and the detail is one level down.
+        type: error
+      matches:
+        error.message: 'Resource not found'
+      # Code written for a flat message finds nothing, and code reading
+      # error.code finds nothing either.
+      absent:
+        - message
+        - error.code
+        - errors
+
+  - name: privacy is a boolean, not a visibility enum
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/api-group-repositories/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: Bearer cauldron_bitbucket_token
+    expect:
+      status: 200
+      body:
+        is_private: false
+        name: docs
+        type: repository
+      absent:
+        - visibility
+
+  - name: a bad token is refused with the same shape
+    source: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+    request:
+      method: GET
+      path: /2.0/repositories/cauldron
+    expect:
+      status: 401
+      body:
+        type: error
+      matches:
+        error.message: 'expired or invalid'
