@@ -1,0 +1,447 @@
+# Square Recipe for Cauldron
+#
+# Square has a sandbox, and it is a shared one: a single set of test
+# credentials per developer account, with state that persists between runs and
+# between people. Two engineers testing refunds at the same time interfere with
+# each other, and the failures worth rehearsing (a declined card, a payment
+# that is authorised but never captured, an idempotency collision) need
+# specific magic values that are easy to get wrong.
+#
+# Three things this Recipe insists on:
+#
+#   1. Money is an object, not a number. A payment carries
+#      amount_money.amount in minor units and amount_money.currency beside it.
+#      Code that reads payment.amount finds nothing, and code that treats the
+#      minor units as pounds is out by a hundred.
+#   2. The Square-Version header is required. Square pins behaviour to it, and
+#      omitting it is a 400 rather than a sensible default.
+#   3. Failures carry a category as well as a code, and clients switch on the
+#      category first because it decides whether a retry could ever work.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: square
+version: 0.1.0
+
+upstream:
+  api: "2026-01-22"
+  docs: https://developer.squareup.com/reference/square
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - EAAAcauldron
+
+# Square pins behaviour to the version and refuses a request without it.
+required_headers:
+  Square-Version: parameter_missing
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: cursor
+  resource:
+    style: wrapped
+  error:
+    style: list
+    key: errors
+    type_field: category
+    code_field: code
+    message_field: detail
+
+resources:
+  payment:
+    collection: payments
+    id:
+      style: opaque
+      length: 22
+    fields:
+      # Minor units. A payment of ten pounds is 1000, and treating it as
+      # pounds is the classic hundredfold bug.
+      amount:
+        type: integer
+        required: true
+        in: amount_money
+      currency:
+        type: string
+        default: GBP
+        in: amount_money
+      # Square's real lifecycle. An APPROVED payment has taken no money yet,
+      # which is the state most integrations forget to complete.
+      status:
+        type: string
+        default: APPROVED
+      source_type:
+        type: string
+        default: CARD
+      order_id:
+        type: string
+      customer_id:
+        type: string
+      receipt_number:
+        type: string
+      note:
+        type: string
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  refund:
+    collection: refunds
+    id:
+      style: opaque
+      length: 22
+    fields:
+      amount:
+        type: integer
+        required: true
+        in: amount_money
+      currency:
+        type: string
+        default: GBP
+        in: amount_money
+      payment_id:
+        type: string
+        required: true
+      status:
+        type: string
+        default: PENDING
+      reason:
+        type: string
+      created_at:
+        type: datetime
+
+  customer:
+    collection: customers
+    id:
+      style: opaque
+      length: 22
+    fields:
+      given_name:
+        type: string
+      family_name:
+        type: string
+      email_address:
+        type: string
+      phone_number:
+        type: string
+      reference_id:
+        type: string
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/payments
+    resource: payment
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /v2/payments
+    resource: payment
+    operation: create
+
+  - method: GET
+    path: /v2/payments/{id}
+    resource: payment
+    operation: get
+
+  - method: GET
+    path: /v2/refunds
+    resource: refund
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /v2/refunds
+    resource: refund
+    operation: create
+
+  - method: GET
+    path: /v2/refunds/{id}
+    resource: refund
+    operation: get
+
+  - method: GET
+    path: /v2/customers
+    resource: customer
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /v2/customers
+    resource: customer
+    operation: create
+
+  - method: GET
+    path: /v2/customers/{id}
+    resource: customer
+    operation: get
+
+  - method: PUT
+    path: /v2/customers/{id}
+    resource: customer
+    operation: update
+
+  - method: DELETE
+    path: /v2/customers/{id}
+    resource: customer
+    operation: delete
+
+webhooks:
+  events:
+    - payment.created
+    - payment.updated
+    - refund.created
+    - refund.updated
+    - customer.created
+    - order.created
+    - dispute.created
+  signing:
+    scheme: hmac-sha256
+    header: x-square-hmacsha256-signature
+    secret: cauldron-signature-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: RATE_LIMITED
+    type: RATE_LIMIT_ERROR
+    message: The request was rate limited.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: UNAUTHORIZED
+    type: AUTHENTICATION_ERROR
+    message: This request could not be authorized.
+
+  resource_missing:
+    status: 404
+    code: NOT_FOUND
+    type: INVALID_REQUEST_ERROR
+    message: "Could not find the resource: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: MISSING_REQUIRED_PARAMETER
+    type: INVALID_REQUEST_ERROR
+    message: "Missing required parameter: {detail}"
+
+  # The failures a payments integration has to handle and a shared sandbox
+  # makes awkward to produce on demand.
+  card_declined:
+    status: 402
+    code: CARD_DECLINED
+    type: PAYMENT_METHOD_ERROR
+    message: Card declined.
+
+  cvv_failure:
+    status: 402
+    code: CVV_FAILURE
+    type: PAYMENT_METHOD_ERROR
+    message: Card declined due to invalid CVV.
+
+  insufficient_funds:
+    status: 402
+    code: INSUFFICIENT_FUNDS
+    type: PAYMENT_METHOD_ERROR
+    message: Insufficient funds for the requested amount.
+
+  # Square rejects a repeated idempotency key whose body differs, which is the
+  # bug a retry loop introduces and nobody sees until production.
+  idempotency_key_reused:
+    status: 409
+    code: IDEMPOTENCY_KEY_REUSED
+    type: INVALID_REQUEST_ERROR
+    message: The idempotency key was reused with a different request body.
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    payment:
+      - id: pay000000000000000001
+        amount: 2500
+        currency: GBP
+        status: COMPLETED
+        source_type: CARD
+        receipt_number: "0001"
+        customer_id: cus000000000000000001
+      - id: pay000000000000000002
+        amount: 1099
+        currency: GBP
+        # Authorised but not captured. No money has moved, and an integration
+        # that treats this as paid ships goods for free.
+        status: APPROVED
+        source_type: CARD
+      - id: pay000000000000000003
+        amount: 450
+        currency: GBP
+        status: FAILED
+        source_type: CARD
+    refund:
+      - id: ref000000000000000001
+        payment_id: pay000000000000000001
+        amount: 500
+        currency: GBP
+        status: COMPLETED
+        reason: Returned one item
+    customer:
+      - id: cus000000000000000001
+        given_name: Ada
+        family_name: Lovelace
+        email_address: ada@example.com
+        reference_id: cust-1001
+
+# Conformance cases, read from Square's API reference rather than observed
+# against a live sandbox. The verify report says so.
+conformance:
+  - name: a request without Square-Version is refused
+    source: https://developer.squareup.com/docs/build-basics/common-api-patterns/versioning-overview
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/payments
+      headers:
+        Authorization: Bearer EAAAcauldron
+    expect:
+      status: 400
+      body:
+        errors[0].category: INVALID_REQUEST_ERROR
+        errors[0].code: MISSING_REQUIRED_PARAMETER
+
+  - name: money is an object in minor units, not a number
+    source: https://developer.squareup.com/reference/square/objects/Money
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/payments/pay000000000000000001
+      headers:
+        Authorization: Bearer EAAAcauldron
+        Square-Version: "2026-01-22"
+    expect:
+      status: 200
+      body:
+        payment:
+          amount_money:
+            amount: 2500
+            currency: GBP
+          status: COMPLETED
+      # Code reading payment.amount finds nothing, and code treating 2500 as
+      # pounds is out by a hundred.
+      absent:
+        - payment.amount
+        - payment.currency
+
+  - name: an approved payment has taken no money yet
+    source: https://developer.squareup.com/docs/payments-api/take-payments
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/payments/pay000000000000000002
+      headers:
+        Authorization: Bearer EAAAcauldron
+        Square-Version: "2026-01-22"
+    expect:
+      status: 200
+      body:
+        payment:
+          status: APPROVED
+          amount_money:
+            amount: 1099
+
+  - name: a collection is wrapped under its plural name with a cursor
+    source: https://developer.squareup.com/reference/square/payments-api/list-payments
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/payments
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer EAAAcauldron
+        Square-Version: "2026-01-22"
+    expect:
+      status: 200
+      body:
+        payments[0].id: pay000000000000000001
+        payments[1].status: APPROVED
+      matches:
+        cursor: '^pay[0-9]+$'
+      absent:
+        - payments[2]
+        - data
+
+  - name: a failure carries a category as well as a code
+    source: https://developer.squareup.com/reference/square/objects/Error
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/payments/doesnotexist
+      headers:
+        Authorization: Bearer EAAAcauldron
+        Square-Version: "2026-01-22"
+    expect:
+      status: 404
+      body:
+        errors[0].category: INVALID_REQUEST_ERROR
+        errors[0].code: NOT_FOUND
+      matches:
+        errors[0].detail: 'Could not find'
+      # Nothing nested under error, and no bare message.
+      absent:
+        - error
+        - message
+
+  - name: a bad token is refused with the same array shape
+    source: https://developer.squareup.com/docs/build-basics/access-tokens
+    request:
+      method: GET
+      path: /v2/payments
+      headers:
+        Square-Version: "2026-01-22"
+    expect:
+      status: 401
+      body:
+        errors[0].category: AUTHENTICATION_ERROR
+        errors[0].code: UNAUTHORIZED
+
+  - name: creating a payment sends money nested and gets it back nested
+    source: https://developer.squareup.com/reference/square/payments-api/create-payment
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/payments
+      headers:
+        Authorization: Bearer EAAAcauldron
+        Square-Version: "2026-01-22"
+      json:
+        amount_money:
+          amount: 4999
+          currency: GBP
+        note: Conformance case
+    expect:
+      status: 200
+      body:
+        payment:
+          amount_money:
+            amount: 4999
+            currency: GBP
+          status: APPROVED
+          source_type: CARD
+      matches:
+        payment.id: '^[A-Za-z0-9]{22}$'
