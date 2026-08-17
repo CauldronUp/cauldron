@@ -147,7 +147,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 |---|---|
 | ~~Resend~~ | Shipped. last_event as the only history, restricted keys |
 | Amazon Pinpoint | Messaging and delivery events |
-| OneSignal | Push notifications, users, subscriptions |
+| ~~OneSignal~~ | Shipped. 200 with errors, recipients as a ceiling, dead devices |
 | ~~Pusher~~ | Shipped. Keyed channel map, empty publish response, text errors |
 | ~~Ably~~ | Shipped. 204 publish, newest-first history, capability as a string |
 | Bird | SMS, WhatsApp, conversations |
