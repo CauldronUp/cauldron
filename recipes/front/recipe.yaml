@@ -1,0 +1,404 @@
+# Front Recipe for Cauldron
+#
+# Front is a shared inbox, which makes it the worst kind of thing to test
+# against for real: a test that replies to a conversation sends an email to a
+# customer. There is no sandbox. Teams use a spare inbox and a spare domain,
+# which drifts from the production setup in exactly the ways that matter, and
+# the states worth exercising, an archived conversation, an unassigned one, a
+# comment that must stay internal, are never rehearsed.
+#
+# Two things worth modelling exactly:
+#
+#   1. The envelope keys are underscore-prefixed. A collection is under
+#      _results, paging under _pagination, and the error under _error. Code
+#      written by analogy with any other provider reaches for data, results or
+#      error and finds nothing.
+#   2. Timestamps are floating point Unix seconds, not integers and not
+#      strings. Code that parses them as integers loses the sub-second part
+#      that Front uses to order messages inside a conversation.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: front
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://dev.frontapp.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_front_token
+
+responses:
+  list:
+    style: wrapped
+    key: _results
+    cursor_field: _pagination.next
+    fields:
+      _links:
+        self: https://api2.frontapp.com
+  error:
+    # Everything under _error, which the dotted names below put there.
+    style: flat
+    code_field: _error.title
+    message_field: _error.message
+    status_field: _error.status
+
+resources:
+  conversation:
+    collection: _results
+    id:
+      prefix: cnv_
+      length: 8
+    fields:
+      subject:
+        type: string
+      # Front's real states. An archived conversation is not deleted and is
+      # still returned by an unfiltered listing, so an inbox count that does
+      # not filter is wrong from the first archive.
+      status:
+        type: string
+        default: unassigned
+      assignee_id:
+        type: string
+      recipient_handle:
+        type: string
+      is_private:
+        type: boolean
+        default: false
+      # Floating point Unix seconds. The fractional part orders messages
+      # inside a conversation, and parsing as an integer discards it.
+      created_at:
+        type: number
+      waiting_since:
+        type: number
+
+  message:
+    collection: _results
+    id:
+      prefix: msg_
+      length: 8
+    fields:
+      conversation_id:
+        type: string
+      type:
+        type: string
+        default: email
+      # An inbound message came from the customer; an outbound one came from
+      # an agent. A handler that replies to its own output loops.
+      is_inbound:
+        type: boolean
+        default: true
+      is_draft:
+        type: boolean
+        default: false
+      subject:
+        type: string
+      blurb:
+        type: string
+      author_id:
+        type: string
+      created_at:
+        type: number
+
+  comment:
+    collection: _results
+    id:
+      prefix: com_
+      length: 8
+    fields:
+      conversation_id:
+        type: string
+      author_id:
+        type: string
+      body:
+        type: string
+        required: true
+      # A comment is internal by construction. Posting one where a reply was
+      # meant is invisible to the customer; the reverse is not.
+      is_pinned:
+        type: boolean
+        default: false
+      posted_at:
+        type: number
+
+routes:
+  - method: GET
+    path: /conversations
+    resource: conversation
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /conversations/{id}
+    resource: conversation
+    operation: get
+
+  - method: PATCH
+    path: /conversations/{id}
+    resource: conversation
+    operation: update
+
+  - method: GET
+    path: /conversations/{conversation_id}/messages
+    resource: message
+    operation: list
+    scope: [conversation_id]
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /messages/{id}
+    resource: message
+    operation: get
+
+  - method: GET
+    path: /conversations/{conversation_id}/comments
+    resource: comment
+    operation: list
+    scope: [conversation_id]
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: POST
+    path: /conversations/{conversation_id}/comments
+    resource: comment
+    operation: create
+    scope: [conversation_id]
+    status: 201
+
+webhooks:
+  events:
+    - inbound
+    - outbound
+    - out_reply
+    - archive
+    - reopen
+    - assign
+    - unassign
+    - comment
+    - tag
+  signing:
+    scheme: hmac-sha256
+    header: X-Front-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: Too Many Requests
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: The API token is invalid or missing
+
+  resource_missing:
+    status: 404
+    code: Not found
+    message: "Unknown resource ID: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: Bad request
+    message: "Invalid request body: {detail} is required"
+
+  # Front refuses to send from a channel the token cannot use, and the failure
+  # arrives after the conversation already exists, which is the awkward half
+  # state a live inbox makes hard to reach on purpose.
+  channel_not_permitted:
+    status: 403
+    code: Forbidden
+    message: The token does not have permission to send from this channel
+
+  # A conversation that somebody else has open is locked briefly, which is a
+  # race a single-developer test never produces.
+  conflict:
+    status: 409
+    code: Conflict
+    message: The conversation was modified by another user
+
+fixtures:
+  empty: {}
+
+  small-inbox:
+    conversation:
+      - id: cnv_00001
+        subject: Refund for order 4412
+        status: unassigned
+        recipient_handle: ada@example.com
+        created_at: 1767225600.482
+      - id: cnv_00002
+        subject: Where is my delivery
+        status: assigned
+        assignee_id: tea_00001
+        recipient_handle: grace@example.com
+        created_at: 1767225601.115
+      - id: cnv_00003
+        subject: Resolved last week
+        # Archived, not deleted, and still returned by an unfiltered listing.
+        status: archived
+        recipient_handle: alan@example.com
+        created_at: 1767225602.900
+    message:
+      - id: msg_00001
+        conversation_id: cnv_00001
+        is_inbound: true
+        subject: Refund for order 4412
+        blurb: The jacket arrived damaged.
+        created_at: 1767225600.482
+      - id: msg_00002
+        conversation_id: cnv_00001
+        # Outbound. A handler that replies to its own output loops forever.
+        is_inbound: false
+        blurb: Sorry about that, sending a replacement.
+        created_at: 1767225660.221
+    comment:
+      - id: com_00001
+        conversation_id: cnv_00001
+        body: Customer has had two damaged orders this month.
+        posted_at: 1767225700.010
+
+# Conformance cases, read from Front's API reference rather than observed
+# against a live inbox. The verify report says so.
+conformance:
+  - name: a collection is under _results, not data
+    source: https://dev.frontapp.com/reference/conversations
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 200
+      body:
+        _results[0].subject: Refund for order 4412
+        _results[0].status: unassigned
+      # Code written by analogy with any other provider reaches for one of
+      # these and finds nothing.
+      absent:
+        - data
+        - results
+        - items
+
+  - name: the error is under _error with a status and a title
+    source: https://dev.frontapp.com/reference/errors
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations/cnv_99999
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 404
+      body:
+        _error:
+          status: 404
+          title: Not found
+      matches:
+        _error.message: 'Unknown resource ID'
+      absent:
+        - error
+        - message
+        - errors
+
+  - name: timestamps are floating point seconds
+    source: https://dev.frontapp.com/reference/conversations
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations/cnv_00001
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 200
+      body:
+        # The fractional part orders messages inside a conversation. Parsing
+        # this as an integer discards it and the order goes with it.
+        created_at: 1767225600.482
+        subject: Refund for order 4412
+
+  - name: an archived conversation is still in the list
+    source: https://dev.frontapp.com/reference/conversations
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 200
+      body:
+        # An inbox count that does not filter on status is wrong from the
+        # first archive.
+        _results[2].status: archived
+        _results[2].subject: Resolved last week
+
+  - name: inbound and outbound messages are distinguishable
+    source: https://dev.frontapp.com/reference/messages
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations/cnv_00001/messages
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 200
+      body:
+        # A handler that cannot tell its own output from the customer's
+        # replies to itself forever.
+        _results[0].is_inbound: true
+        _results[1].is_inbound: false
+      absent:
+        - _results[2]
+
+  - name: paging is under _pagination, not at the top level
+    source: https://dev.frontapp.com/reference/pagination
+    fixture: small-inbox
+    request:
+      method: GET
+      path: /conversations
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron_front_token
+    expect:
+      status: 200
+      matches:
+        _pagination.next: '^cnv_[0-9]+$'
+      absent:
+        - next
+        - next_cursor
+        - _results[2]
+
+  - name: a comment is created against its conversation
+    source: https://dev.frontapp.com/reference/comments
+    fixture: small-inbox
+    request:
+      method: POST
+      path: /conversations/cnv_00002/comments
+      headers:
+        Authorization: Bearer cauldron_front_token
+      json:
+        body: Checked with the courier, out for delivery today.
+    expect:
+      status: 201
+      body:
+        body: Checked with the courier, out for delivery today.
+        conversation_id: cnv_00002
+        is_pinned: false
+      matches:
+        id: '^com_[A-Za-z0-9]{8}$'
