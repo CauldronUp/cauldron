@@ -1,0 +1,457 @@
+# AWS SES v2 Recipe for Cauldron
+#
+# SES has a sandbox, and it is the most misleading test environment in this
+# collection. In the sandbox you can only send to verified addresses, so every
+# send succeeds and every recipient is somebody who agreed to receive it. The
+# behaviour that matters in production — bounces, complaints, and the
+# suppression list that quietly swallows sends afterwards — cannot happen
+# there. An integration that works perfectly in the sandbox can fail on its
+# first real send, and the failure is silent.
+#
+# Four things worth modelling exactly:
+#
+#   1. A successful send means accepted, not delivered. SendEmail answers 200
+#      with a MessageId, and that is a promise to try. The bounce arrives
+#      minutes later on a completely different channel. Code that treats the
+#      200 as delivery reports a delivery rate of one hundred per cent
+#      regardless of what actually happened.
+#   2. The suppression list is invisible on the way out. An address that has
+#      bounced is added automatically, and a later send to it is accepted with
+#      a MessageId and then dropped. No error, no bounce, no event. The only
+#      way to know is to check the list, and almost nothing does.
+#   3. An identity is verified, pending, failed or temporary-failure, and only
+#      one of those can send. A DKIM record that was removed puts a
+#      previously working identity into failed, so an identity that sent fine
+#      last week stops without anybody changing anything.
+#   4. The account itself has a sending state and a production-access flag,
+#      and either can stop everything. An account still in the sandbox reports
+#      ProductionAccessEnabled false while every individual send to a verified
+#      address succeeds.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not verify SigV4, for the same reason as the other AWS
+#     Recipes. The shape is checked and a wrongly signed request is accepted.
+#   - Sending does not add to the suppression list, and suppression does not
+#     drop a send. Both are states a fixture puts in place, so "this address
+#     is suppressed" is something a test seeds rather than something the
+#     emulator decides.
+#   - Bounce and complaint notifications go out over SNS or EventBridge, which
+#     are separate services. This Recipe covers the sending API and the state
+#     it exposes, not the notification path.
+#
+# Addresses below are example.com and example.invalid, which cannot receive
+# mail. Credentials are fixtures.
+
+recipe: ses
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.aws.amazon.com/ses/latest/APIReference-V2/
+
+auth:
+  scheme: header
+  header: Authorization
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+
+responses:
+  list:
+    style: wrapped
+    omit_when_empty: true
+    cursor_field: NextToken
+  resource:
+    style: bare
+  error:
+    style: flat
+    code_field: __type
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  # A send. The response is a MessageId and nothing else, which is the whole
+  # point: it says a message was accepted, not that anybody received it.
+  send:
+    collection: Sends
+    id:
+      style: opaque
+      field: MessageId
+      length: 24
+    fields:
+      FromEmailAddress:
+        type: string
+      Subject:
+        type: string
+
+  suppressedDestination:
+    collection: SuppressedDestinationSummaries
+    id:
+      style: opaque
+      field: EmailAddress
+      length: 12
+    fields:
+      # BOUNCE or COMPLAINT. A complaint is somebody pressing the spam button,
+      # and removing them from suppression without their consent is how a
+      # sending reputation ends.
+      Reason:
+        type: string
+        default: BOUNCE
+      LastUpdateTime:
+        type: datetime
+        stamped: false
+
+  emailIdentity:
+    collection: EmailIdentities
+    id:
+      style: opaque
+      field: IdentityName
+      length: 12
+    fields:
+      # EMAIL_ADDRESS or DOMAIN. A verified address does not verify its
+      # domain, so a working sender does not make its siblings work.
+      IdentityType:
+        type: string
+        default: EMAIL_ADDRESS
+      # Only a verified identity can send. This is the one that flips when a
+      # DNS record is removed.
+      SendingEnabled:
+        type: boolean
+        default: false
+      # SUCCESS, PENDING, FAILED, TEMPORARY_FAILURE, NOT_STARTED. A previously
+      # working identity goes to FAILED when its DKIM record disappears, and
+      # nothing else changes.
+      DkimStatus:
+        type: string
+        in: DkimAttributes
+        as: Status
+      DkimSigningEnabled:
+        type: boolean
+        in: DkimAttributes
+        as: SigningEnabled
+      VerifiedForSendingStatus:
+        type: boolean
+        default: false
+
+  account:
+    collection: Accounts
+    id:
+      style: opaque
+      length: 12
+    fields:
+      # False while the account is in the sandbox, where every send to a
+      # verified address succeeds and nothing else is possible.
+      ProductionAccessEnabled:
+        type: boolean
+        default: false
+      SendingEnabled:
+        type: boolean
+        default: true
+      # HEALTHY, PROBATION or SHUTDOWN. Probation is the interesting one:
+      # sending still works, and it is the last warning before it does not.
+      EnforcementStatus:
+        type: string
+        default: HEALTHY
+      Max24HourSend:
+        type: number
+      SentLast24Hours:
+        type: number
+
+routes:
+  - method: POST
+    path: /v2/email/outbound-emails
+    resource: send
+    operation: create
+
+  - method: GET
+    path: /v2/email/suppression/addresses
+    resource: suppressedDestination
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /v2/email/suppression/addresses/{id}
+    resource: suppressedDestination
+    operation: get
+
+  - method: GET
+    path: /v2/email/identities
+    resource: emailIdentity
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /v2/email/identities/{id}
+    resource: emailIdentity
+    operation: get
+
+  - method: GET
+    path: /v2/email/account
+    resource: account
+    operation: list
+
+webhooks:
+  # SES publishes bounces and complaints through SNS or EventBridge rather
+  # than calling anything itself. The events are named here because they are
+  # what a test wants to provoke, and the header says where they really come
+  # from.
+  events:
+    - Bounce
+    - Complaint
+    - Delivery
+    - Reject
+    - DeliveryDelay
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: TooManyRequestsException
+    message: Maximum sending rate exceeded.
+
+  authentication_error:
+    status: 403
+    code: InvalidClientTokenId
+    message: The security token included in the request is invalid.
+
+  resource_missing:
+    status: 404
+    code: NotFoundException
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: BadRequestException
+    message: "{detail} is required"
+
+  # The sandbox wall. Every send to a verified address works, and the first
+  # send to anybody else fails with this, which is why sandbox testing proves
+  # so little.
+  not_verified:
+    status: 400
+    code: MessageRejected
+    message: "Email address is not verified. The following identities failed the check in region EU-WEST-2: nobody@example.invalid"
+
+  # The account is over its daily quota. It is not a rate limit and retrying
+  # in a second does not help, but it arrives looking like one.
+  quota_exceeded:
+    status: 400
+    code: LimitExceededException
+    message: Daily message quota exceeded.
+
+  # Sending paused, usually for reputation. Every send fails until somebody
+  # in support agrees to turn it back on.
+  sending_paused:
+    status: 400
+    code: AccountSuspendedException
+    message: The account's ability to send email has been permanently removed.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    account:
+      - id: cauldron
+        # Still in the sandbox. Every send to a verified address succeeds, and
+        # nothing about an individual send says the account cannot reach
+        # anybody else.
+        ProductionAccessEnabled: false
+        SendingEnabled: true
+        # Sending still works. This is the last warning before it does not.
+        EnforcementStatus: PROBATION
+        Max24HourSend: 200
+        SentLast24Hours: 41
+
+    emailIdentity:
+      - id: billing@example.com
+        IdentityType: EMAIL_ADDRESS
+        SendingEnabled: true
+        VerifiedForSendingStatus: true
+        DkimStatus: SUCCESS
+        DkimSigningEnabled: true
+      - id: example.com
+        IdentityType: DOMAIN
+        # Its DKIM record was removed. It sent fine last week and nobody
+        # changed anything in the application.
+        SendingEnabled: false
+        VerifiedForSendingStatus: false
+        DkimStatus: FAILED
+        DkimSigningEnabled: true
+
+    suppressedDestination:
+      # Bounced once and added automatically. Every later send to this address
+      # is accepted with a MessageId and then dropped: no error, no bounce, no
+      # event.
+      - id: nobody@example.invalid
+        Reason: BOUNCE
+        LastUpdateTime: "2026-01-10T09:00:00Z"
+      # Pressed the spam button. Removing them without their consent is how a
+      # sending reputation ends.
+      - id: annoyed@example.com
+        Reason: COMPLAINT
+        LastUpdateTime: "2026-01-12T14:00:00Z"
+
+# Conformance cases, read from the SES v2 API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a send is accepted, not delivered
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SendEmail.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /v2/email/outbound-emails
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        FromEmailAddress: billing@example.com
+        Subject: Your receipt
+    expect:
+      status: 200
+      matches:
+        # A MessageId and a promise to try. The bounce arrives minutes later
+        # on a different channel, so treating this as delivery reports a
+        # delivery rate of one hundred per cent whatever happened.
+        MessageId: '^[A-Za-z0-9]{24}$'
+      absent:
+        # Nothing here says delivered, because nothing knows yet.
+        - Status
+        - Delivered
+        - status
+
+  - name: a suppressed address is suppressed for a reason
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_GetSuppressedDestination.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/suppression/addresses/nobody@example.invalid
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Bounced once and added automatically. Every later send here is
+        # accepted with a MessageId and then dropped: no error, no bounce, no
+        # event. Checking this list is the only way to know, and almost
+        # nothing does.
+        Reason: BOUNCE
+        EmailAddress: nobody@example.invalid
+
+  - name: a complaint is not a bounce
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SuppressedDestination.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/suppression/addresses/annoyed@example.com
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Somebody pressed the spam button. Removing them from suppression
+        # without their consent is how a sending reputation ends, and code
+        # that clears the list wholesale does exactly that.
+        Reason: COMPLAINT
+
+  - name: an identity can stop verifying without anybody changing anything
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_GetEmailIdentity.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/identities/example.com
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Its DKIM record was removed. It sent fine last week, the application
+        # did not change, and it cannot send now.
+        SendingEnabled: false
+        VerifiedForSendingStatus: false
+        DkimAttributes:
+          Status: FAILED
+          # Still asking to sign, and unable to.
+          SigningEnabled: true
+
+  - name: a verified address does not verify its domain
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_ListEmailIdentities.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/identities
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # One address works and its own domain does not. A working sender does
+        # not make its siblings work.
+        EmailIdentities[0].IdentityName: billing@example.com
+        EmailIdentities[0].SendingEnabled: true
+        EmailIdentities[1].IdentityName: example.com
+        EmailIdentities[1].SendingEnabled: false
+
+  - name: an account can be sending and still be in the sandbox
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_GetAccount.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/account
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Sending works, to verified addresses, and the account cannot reach
+        # anybody else. Nothing about an individual send says so.
+        Accounts[0].SendingEnabled: true
+        Accounts[0].ProductionAccessEnabled: false
+        # Sending still works. This is the last warning before it does not.
+        Accounts[0].EnforcementStatus: PROBATION
+
+  - name: an empty suppression list omits the key
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_ListSuppressedDestinations.html
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/email/suppression/addresses
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      absent:
+        - SuppressedDestinationSummaries
+
+  - name: SES v2 uses HTTP statuses rather than one status for everything
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/CommonErrors.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/identities/doesnotexist.example
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/ses/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      # 404, unlike the older AWS services in this collection, which answer
+      # 400 for everything. Two AWS APIs, two conventions.
+      status: 404
+      body:
+        __type: NotFoundException
+      absent:
+        - code
+        - error
+        - "-"
+
+  - name: a request with no credentials is refused
+    source: https://docs.aws.amazon.com/ses/latest/APIReference-V2/CommonParameters.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/email/account
+    expect:
+      status: 403
+      body:
+        __type: InvalidClientTokenId

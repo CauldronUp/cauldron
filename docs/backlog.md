@@ -23,7 +23,7 @@ Two rules apply to everything here:
 | AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
 | ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
 | AWS SNS | Topics, subscriptions, delivery failures |
-| AWS SES | Sending, bounces, complaints, the suppression list |
+| ~~AWS SES~~ | Shipped. Accepted-not-delivered, the invisible suppression list |
 | ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
 | ~~AWS Secrets Manager~~ | Shipped. Undeducible ARNs, rotation stages, scheduled deletion |
 | Google Cloud Storage | Objects, signed URLs, permissions |
