@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,6 +105,63 @@ func TestListAndResourceCarryDifferentObjectTypes(t *testing.T) {
 	page := decode(t, notionRequest(t, s, "/v1/pages/11111111-1111-4111-8111-111111111111", true))
 	if page["object"] != "page" {
 		t.Errorf("page object = %v, want page", page["object"])
+	}
+}
+
+// Greenhouse wants On-Behalf-Of on a write and ignores it on a read. That
+// asymmetry is worth enforcing rather than smoothing over: an integration whose
+// tests only read never carries the header, passes everything, and meets the
+// requirement for the first time in production. A fake that demands it
+// everywhere is wrong in the other direction, and sends people hunting for a
+// header their reads do not actually need.
+func TestARequiredHeaderCanBeLimitedToSomeMethods(t *testing.T) {
+	r, err := recipe.Open("greenhouse")
+	if err != nil {
+		t.Fatalf("open greenhouse: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-org"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	call := func(method, target string, onBehalfOf bool) int {
+		t.Helper()
+
+		var body io.Reader
+		if method == http.MethodPost {
+			body = strings.NewReader(`{"first_name":"Katherine","last_name":"Johnson"}`)
+		}
+
+		req := httptest.NewRequest(method, target, body)
+		req.SetBasicAuth("cauldron_harvest_key", "")
+
+		if onBehalfOf {
+			req.Header.Set("On-Behalf-Of", "4001")
+		}
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		return rec.Code
+	}
+
+	// The read needs nothing, which is the half a test suite exercises.
+	if code := call(http.MethodGet, "/v1/candidates", false); code != http.StatusOK {
+		t.Errorf("a read without the header should succeed, got %d", code)
+	}
+
+	// The write is refused, which is the half production exercises.
+	if code := call(http.MethodPost, "/v1/candidates", false); code != http.StatusForbidden {
+		t.Errorf("a write without the header should be refused, got %d", code)
+	}
+
+	if code := call(http.MethodPost, "/v1/candidates", true); code != http.StatusCreated {
+		t.Errorf("a write with the header should succeed, got %d", code)
 	}
 }
 

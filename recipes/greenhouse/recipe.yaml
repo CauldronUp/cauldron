@@ -1,0 +1,503 @@
+# Greenhouse Recipe for Cauldron
+#
+# Greenhouse has no sandbox. A Harvest key reaches the real ATS, which holds
+# job applications from real people: names, addresses, salary expectations,
+# interview scorecards. A test that creates a candidate puts a fictional person
+# into a recruiter's pipeline, and a test that advances one moves a real
+# application through a real hiring stage. There is no reset.
+#
+# Four things worth modelling exactly:
+#
+#   1. A candidate is not an application. GET /candidates returns people; the
+#      hiring decision lives on the application underneath. One person can hold
+#      several applications at once, to different jobs, at different stages,
+#      with different outcomes. "The candidate's status" is not a thing that
+#      exists, and code that reads one gets whichever application happened to
+#      come back first.
+#   2. status is active, rejected or hired, and a rejected application is still
+#      returned by a plain list and still sits in the candidate's applications
+#      array. Rejection is not deletion, and a pipeline count that does not
+#      filter includes everybody ever turned down.
+#   3. A prospect is a candidate who has not applied to anything. is_prospect
+#      is true, the application carries prospect: true, and it has no job until
+#      somebody converts it. A funnel that counts applications counts sourcing
+#      leads as applicants.
+#   4. Writes need On-Behalf-Of, a Greenhouse user id, and reads do not. An
+#      integration whose tests only read meets that requirement for the first
+#      time in production, and the refusal names the header rather than the
+#      permission.
+#
+# Known fidelity gap, stated rather than hidden: Greenhouse pages with a Link
+# header carrying rel="next", which Cauldron does not model. Paging here is by
+# page and per_page, which are the query parameters Greenhouse also accepts.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: greenhouse
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.greenhouse.io/harvest.html
+
+auth:
+  # The Harvest key is the Basic username, with an empty password. Sending it
+  # as a bearer token is refused.
+  scheme: basic
+  keys:
+    - cauldron_harvest_key
+
+# On-Behalf-Of is a Greenhouse user id, and it is only wanted on a write. Reads
+# work without it, which is why an integration meets this requirement for the
+# first time in production.
+required_headers:
+  On-Behalf-Of:
+    error: missing_on_behalf_of
+    methods: [POST, PATCH, PUT, DELETE]
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  candidate:
+    id:
+      style: numeric
+    fields:
+      first_name:
+        type: string
+        required: true
+      last_name:
+        type: string
+        required: true
+      company:
+        type: string
+      title:
+        type: string
+      # A prospect has not applied to anything. A funnel that counts
+      # applications counts sourcing leads as applicants.
+      is_prospect:
+        type: boolean
+        default: false
+      # Greenhouse marks a candidate private when the role is confidential,
+      # and a key without the right permission cannot see them at all. They
+      # are simply missing from the list rather than refused.
+      is_private:
+        type: boolean
+        default: false
+      # A candidate can be merged into another, and the surviving record keeps
+      # both sets of applications. The merged id still resolves, to the
+      # survivor, so an integration keyed on candidate id silently follows.
+      can_email:
+        type: boolean
+        default: true
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      last_activity:
+        type: datetime
+        stamped: false
+
+  application:
+    id:
+      style: numeric
+    fields:
+      candidate_id:
+        type: integer
+      # Null on a prospect until somebody converts it, which is the field a
+      # report groups by.
+      job_id:
+        type: integer
+      # active, rejected, hired. A rejected application is still returned by a
+      # plain list and still sits in the candidate's applications array.
+      status:
+        type: string
+        default: active
+      # A sourcing lead rather than an applicant. Counting these as
+      # applications overstates the top of the funnel.
+      prospect:
+        type: boolean
+        default: false
+      # The stage name belongs to an interview plan a recruiter can rename at
+      # any time, so it is a label rather than a key.
+      current_stage:
+        type: string
+      source:
+        type: string
+      applied_at:
+        type: datetime
+      # Set only on a rejected application.
+      rejected_at:
+        type: datetime
+        stamped: false
+      # Greenhouse nests the reason under a type, and the type is what a report
+      # actually wants: "we rejected them" against "they withdrew" are both
+      # rejections here.
+      rejection_reason_name:
+        type: string
+        in: rejection_reason
+      rejection_reason_type:
+        type: string
+        in: rejection_reason
+
+  job:
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      # open, closed, draft. A closed job still has live applications attached
+      # to it, because closing a job does not reject the people in it.
+      status:
+        type: string
+        default: open
+      # Confidential jobs are invisible to a key without the permission, and
+      # so are their applications, which makes a headcount quietly wrong.
+      confidential:
+        type: boolean
+        default: false
+      # How many people Greenhouse expects to hire. A job with two openings
+      # can be filled once and still be open.
+      openings:
+        type: integer
+        default: 1
+      opened_at:
+        type: datetime
+      closed_at:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /v1/candidates
+    resource: candidate
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /v1/candidates/{id}
+    resource: candidate
+    operation: get
+
+  - method: POST
+    path: /v1/candidates
+    resource: candidate
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v1/applications
+    resource: application
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /v1/applications/{id}
+    resource: application
+    operation: get
+
+  - method: GET
+    path: /v1/jobs
+    resource: job
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /v1/jobs/{id}
+    resource: job
+    operation: get
+
+webhooks:
+  events:
+    - candidate_has_been_created
+    - application_updated
+    - candidate_stage_change
+    - candidate_hired
+    - candidate_rejected
+    - job_created
+  signing:
+    scheme: hmac-sha256
+    header: Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "10"
+
+  authentication_error:
+    status: 401
+    message: Invalid Basic Auth credentials
+
+  resource_missing:
+    status: 404
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    message: "{detail} is required"
+
+  # The write-only requirement. The refusal names the header, not the
+  # permission, so the first read of it sends people looking at scopes.
+  missing_on_behalf_of:
+    status: 403
+    message: You must specify a valid On-Behalf-Of header for this request
+
+  # Greenhouse refuses a candidate whose email already belongs to somebody
+  # else, which is what stops an import halfway through.
+  duplicate_candidate:
+    status: 422
+    message: A candidate with that email address already exists
+
+  # A stage that does not belong to the job's interview plan is refused, and
+  # that happens as soon as a recruiter reorders the plan behind an
+  # integration's back.
+  invalid_stage:
+    status: 422
+    message: The stage does not belong to this job's interview plan
+
+fixtures:
+  empty: {}
+
+  small-org:
+    job:
+      - id: "400"
+        name: Backend Engineer
+        status: open
+        # Two openings. Filling it once leaves it open, and a report that
+        # closes a requisition on first hire closes it too early.
+        openings: 2
+        opened_at: "2026-01-02T09:00:00Z"
+      - id: "401"
+        name: Head of Operations
+        # Closed, and still holding a live application, because closing a job
+        # does not reject the people in it.
+        status: closed
+        openings: 1
+        opened_at: "2025-11-01T09:00:00Z"
+        closed_at: "2026-01-09T17:00:00Z"
+
+    candidate:
+      - id: "9001"
+        first_name: Ada
+        last_name: Lovelace
+        company: Analytical Engines
+        title: Principal Engineer
+        last_activity: "2026-01-14T16:00:00Z"
+      - id: "9002"
+        first_name: Grace
+        last_name: Hopper
+        company: Compiler Works
+        # A sourcing lead. Never applied to anything, and counted as an
+        # applicant by any funnel that reads this list.
+        is_prospect: true
+        last_activity: "2026-01-13T11:00:00Z"
+
+    application:
+      # One person, two applications, two outcomes. There is no such thing as
+      # this candidate's status.
+      - id: "5001"
+        candidate_id: 9001
+        job_id: 400
+        status: hired
+        current_stage: Offer
+        source: Referral
+        applied_at: "2026-01-03T10:00:00Z"
+      - id: "5002"
+        candidate_id: 9001
+        job_id: 401
+        # Rejected, and still returned by a plain list and still attached to
+        # the candidate. Rejection is not deletion.
+        status: rejected
+        current_stage: Phone Interview
+        source: Referral
+        applied_at: "2025-11-04T10:00:00Z"
+        rejected_at: "2025-11-20T15:00:00Z"
+        # They withdrew. A report that treats every rejection as a decision
+        # the company made reads this backwards.
+        rejection_reason_name: Candidate withdrew
+        rejection_reason_type: They rejected us
+      - id: "5003"
+        candidate_id: 9002
+        # No job. A prospect has not applied to anything until somebody
+        # converts them, and grouping by job_id drops this row on the floor.
+        status: active
+        prospect: true
+        source: Outbound
+        applied_at: "2026-01-13T11:00:00Z"
+
+# Conformance cases, read from Greenhouse's Harvest API reference rather than
+# observed against a live organisation. The verify report says so.
+conformance:
+  - name: one candidate holds two applications with different outcomes
+    source: https://developers.greenhouse.io/harvest.html#applications
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/applications
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        '[0]':
+          candidate_id: 9001
+          status: hired
+        # Same person, other job, opposite outcome. "The candidate's status"
+        # is not a thing that exists.
+        '[1]':
+          candidate_id: 9001
+          status: rejected
+
+  - name: a rejected application is still listed
+    source: https://developers.greenhouse.io/harvest.html#applications
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/applications/5002
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # Rejection is not deletion. A pipeline count that does not filter
+        # includes everybody ever turned down.
+        status: rejected
+        rejected_at: "2025-11-20T15:00:00Z"
+        current_stage: Phone Interview
+
+  - name: the rejection reason is nested under a type
+    source: https://developers.greenhouse.io/harvest.html#rejection-reasons
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/applications/5002
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        rejection_reason:
+          # They withdrew. A report that treats every rejection as a decision
+          # the company made reads this backwards.
+          rejection_reason_name: Candidate withdrew
+          rejection_reason_type: They rejected us
+      absent:
+        - rejection_reason_name
+
+  - name: a prospect has an application with no job
+    source: https://developers.greenhouse.io/harvest.html#candidates
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/applications/5003
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # Active, and never applied to anything. Grouping by job_id drops this
+        # row, and counting it as an application overstates the funnel.
+        prospect: true
+        status: active
+      absent:
+        - job_id
+
+  - name: an active application is not marked a prospect
+    source: https://developers.greenhouse.io/harvest.html#applications
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/applications/5001
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        prospect: false
+        job_id: 400
+      absent:
+        - rejected_at
+
+  - name: a closed job still holds a live application
+    source: https://developers.greenhouse.io/harvest.html#jobs
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/jobs
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        '[0]':
+          status: open
+          # Two openings. Filling it once leaves it open.
+          openings: 2
+        '[1]':
+          status: closed
+          closed_at: "2026-01-09T17:00:00Z"
+
+  - name: a write without On-Behalf-Of is refused and a read is not
+    source: https://developers.greenhouse.io/harvest.html#authentication
+    fixture: small-org
+    request:
+      method: POST
+      path: /v1/candidates
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+      json:
+        first_name: Katherine
+        last_name: Johnson
+    expect:
+      status: 403
+      matches:
+        # The refusal names the header rather than the permission, which sends
+        # people looking at scopes.
+        message: 'On-Behalf-Of'
+
+  - name: the same read works without the header
+    source: https://developers.greenhouse.io/harvest.html#authentication
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/candidates/9001
+      headers:
+        Authorization: Basic Y2F1bGRyb25faGFydmVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        first_name: Ada
+        is_prospect: false
+      absent:
+        - status
+        - applications
+
+  - name: the key is the Basic username, not a bearer token
+    source: https://developers.greenhouse.io/harvest.html#authentication
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/candidates
+      headers:
+        Authorization: Bearer cauldron_harvest_key
+    expect:
+      status: 401
+      body:
+        message: Invalid Basic Auth credentials
+      absent:
+        - errors
+        - error

@@ -33,7 +33,7 @@ type Recipe struct {
 	// name to raise when one is missing. Forgetting Notion-Version is the
 	// classic Notion integration bug, and a fake that does not enforce it lets
 	// code ship that fails on the first real call.
-	RequiredHeaders map[string]string `yaml:"required_headers"`
+	RequiredHeaders map[string]RequiredHeader `yaml:"required_headers"`
 	// Conformance is the evidence that this Recipe resembles the real provider.
 	Conformance []Case `yaml:"conformance"`
 }
@@ -101,6 +101,46 @@ type Expectation struct {
 type Upstream struct {
 	API  string `yaml:"api"`
 	Docs string `yaml:"docs"`
+}
+
+// RequiredHeader is one header a request must carry.
+//
+// It reads from YAML either as a bare error name, meaning every request needs
+// the header, or as a mapping with a methods list, meaning only those methods
+// do. The second form exists because Greenhouse only wants On-Behalf-Of on a
+// write: reads work without it, so an integration passes every test it has and
+// then gets a 403 the first time it tries to change something.
+type RequiredHeader struct {
+	// Error names the error to raise when the header is missing.
+	Error string `yaml:"error"`
+	// Methods limits the requirement to those HTTP methods. Empty means all.
+	Methods []string `yaml:"methods"`
+}
+
+// UnmarshalYAML accepts either a bare error name or the full mapping.
+func (h *RequiredHeader) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		return value.Decode(&h.Error)
+	}
+
+	type plain RequiredHeader
+
+	return value.Decode((*plain)(h))
+}
+
+// Applies reports whether the header is required for this HTTP method.
+func (h RequiredHeader) Applies(method string) bool {
+	if len(h.Methods) == 0 {
+		return true
+	}
+
+	for _, m := range h.Methods {
+		if strings.EqualFold(m, method) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Auth describes how the provider authenticates callers.
@@ -418,6 +458,11 @@ var (
 	// The types Cauldron fills in from the sandbox clock, and therefore the
 	// only ones a stamped declaration can affect.
 	timeFieldTypes = []string{"timestamp", "timestamp_ms", "datetime"}
+
+	knownMethods = map[string]bool{
+		"GET": true, "POST": true, "PUT": true, "PATCH": true,
+		"DELETE": true, "HEAD": true, "OPTIONS": true,
+	}
 )
 
 // Load reads and validates a Recipe from a YAML file.
@@ -667,9 +712,17 @@ func (r *Recipe) Validate() error {
 	}
 
 	for _, header := range sortedKeys(r.RequiredHeaders) {
-		if name := r.RequiredHeaders[header]; name != "" {
+		required := r.RequiredHeaders[header]
+
+		if name := required.Error; name != "" {
 			if _, ok := r.Errors[name]; !ok {
 				add("required_headers[%s] names error %q, which is not declared", header, name)
+			}
+		}
+
+		for _, method := range required.Methods {
+			if !knownMethods[strings.ToUpper(method)] {
+				add("required_headers[%s] limits to method %q, which is not an HTTP method", header, method)
 			}
 		}
 	}
