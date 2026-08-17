@@ -94,6 +94,15 @@ type Expectation struct {
 	// Absent lists fields that must not appear. Providers are as specific about
 	// what they omit as what they send.
 	Absent []string `yaml:"absent"`
+	// NoBody asserts the response body is empty.
+	//
+	// This is a positive claim, not the absence of one. Salesforce answers an
+	// update with 204 and nothing at all, so a client calling .json() on it
+	// throws rather than seeing that the update worked, and an emulator that
+	// helpfully returned an object would hide that. An `absent` list cannot
+	// express it: absences are vacuously true against an empty body, so a case
+	// built from them would pass whatever the emulator sent.
+	NoBody bool `yaml:"no_body"`
 }
 
 // Upstream records which real API version this Recipe targets. Without it, a
@@ -226,7 +235,10 @@ type ErrorResponse struct {
 	Style string `yaml:"style"`
 	// Key is the property holding the array when the style is list. A dotted
 	// name nests, which QuickBooks needs: its failures arrive under
-	// Fault.Error rather than at the top level.
+	// Fault.Error rather than at the top level. "-" removes the envelope
+	// entirely, which Salesforce needs: its failures are a bare top-level
+	// array, so a client reading .message off the response finds undefined and
+	// has to index before it can read anything at all.
 	Key string `yaml:"key"`
 	// MessageField names the property carrying the human-readable message when
 	// the style is flat. Empty means "message". Set it to "-" to omit the
@@ -294,6 +306,14 @@ type ListResponse struct {
 	// envelope style always sends has_more because Stripe does; other styles
 	// send one only when the Recipe says so.
 	HasMoreField string `yaml:"has_more_field"`
+	// CompleteField names a boolean saying the opposite: that no pages remain.
+	//
+	// Salesforce sends done, and false is the interesting value. Modelling it
+	// as a negated has_more would be a lie about the field's name, and
+	// modelling it as has_more would invert its meaning, so a query that
+	// matched more rows than it returned would claim to be finished. Code that
+	// ignores done processes a prefix of its own result set and is never told.
+	CompleteField string `yaml:"complete_field"`
 	// Fields are constants added to a list response only. Notion stamps
 	// {"object": "list"} on a collection and {"object": "page"} on a single
 	// page, so the two cannot share one set of envelope constants.
@@ -702,6 +722,28 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	for i, c := range r.Conformance {
+		if !c.Expect.NoBody {
+			continue
+		}
+
+		if len(c.Expect.Body) > 0 || len(c.Expect.Matches) > 0 || len(c.Expect.Absent) > 0 {
+			add("conformance[%d] %q: expect.no_body claims the response is empty, so there is nothing for body, matches or absent to look at", i, c.Name)
+		}
+	}
+
+	if r.Responses.List.HasMoreField != "" && r.Responses.List.CompleteField != "" {
+		add("responses.list declares both has_more_field and complete_field, which are the same flag with opposite senses")
+	}
+
+	if r.Responses.Error.Key == "-" && r.Responses.Error.Style != "list" {
+		add("responses.error.key is \"-\", which removes the envelope, but that only means anything for the list style")
+	}
+
+	if r.Responses.Error.Key == "-" && len(r.Responses.Error.Fields) > 0 {
+		add("responses.error.key is \"-\", so there is no envelope for responses.error.fields to sit beside")
+	}
+
 	if !contains(validCodeTypes, r.Responses.Error.CodeType) {
 		add("responses.error.code_type %q must be one of %s", r.Responses.Error.CodeType, strings.Join(validCodeTypes[1:], ", "))
 	}
@@ -827,7 +869,7 @@ func (r *Recipe) Validate() error {
 		// An absence is a claim too: "another project's issues are not visible"
 		// is exactly the kind of thing worth asserting, and it has no positive
 		// half. Leaving it out of this check rejected real cases.
-		if c.Expect.Status < 400 && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
+		if c.Expect.Status < 400 && !c.Expect.NoBody && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
 			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
 		}

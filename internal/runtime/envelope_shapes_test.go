@@ -245,3 +245,70 @@ func TestErrorsCanBeAnArrayOfBareStrings(t *testing.T) {
 		t.Errorf("errors[0] = %q", message)
 	}
 }
+
+// A route's declared status and empty_body used to be read on creates alone, so
+// a Recipe could say its provider answers an update with 204 and nothing at all
+// and be quietly ignored. Salesforce does exactly that on PATCH and DELETE, and
+// a client calling .json() on the real response throws — the bug an emulator
+// that helpfully returned the updated record would hide.
+func TestAnUpdateAndDeleteHonourTheDeclaredStatusAndEmptyBody(t *testing.T) {
+	r, err := recipe.Open("salesforce")
+	if err != nil {
+		t.Fatalf("open salesforce: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-org"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	call := func(method, target, body string) *httptest.ResponseRecorder {
+		t.Helper()
+
+		var req *http.Request
+		if body != "" {
+			req = httptest.NewRequest(method, target, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(method, target, nil)
+		}
+
+		req.Header.Set("Authorization", "Bearer 00Dcauldron!AQEAQCauldronAccessToken")
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	const account = "/services/data/v60.0/sobjects/Account/001cauldron000001A"
+
+	updated := call(http.MethodPatch, account, `{"Industry":"Software"}`)
+	if updated.Code != http.StatusNoContent {
+		t.Errorf("update status = %d, want 204\n%s", updated.Code, updated.Body)
+	}
+
+	if body := strings.TrimSpace(updated.Body.String()); body != "" {
+		t.Errorf("an update should answer with nothing at all, got %q", body)
+	}
+
+	// The update still happened, which is the half a 204 makes impossible to
+	// see from the response.
+	after := decode(t, call(http.MethodGet, account, ""))
+	if after["Industry"] != "Software" {
+		t.Errorf("Industry = %v, want the update to have landed", after["Industry"])
+	}
+
+	removed := call(http.MethodDelete, account, "")
+	if removed.Code != http.StatusNoContent {
+		t.Errorf("delete status = %d, want 204", removed.Code)
+	}
+
+	if body := strings.TrimSpace(removed.Body.String()); body != "" {
+		t.Errorf("a delete should answer with nothing at all, got %q", body)
+	}
+}
