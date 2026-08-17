@@ -64,7 +64,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 710 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 734 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -252,7 +252,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 710 cases, none yet run against a live account. Documentation-derived
+Recipe: 734 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -398,6 +398,14 @@ These are the decisions the project intends to be held to.
 **Detection never guesses.** Package-to-Recipe mapping is an explicit table. A wrong guess is worse than no guess, because booting the wrong fake sends someone chasing a bug that doesn't exist. Anything unrecognised is reported, never silently faked.
 
 **Determinism is enforced at the boundary, not requested politely.** Time comes from a movable sandbox clock and identifiers from a seeded generator. A Recipe has no access to the wall clock or to unseeded randomness. The same fixture and seed produce the same IDs on every machine, and a reset sandbox is indistinguishable from a fresh one.
+
+**A name the Recipe chooses must be asserted where the value exists.** A
+Recipe declaring `cursor_field: next_page_token` and only ever asserting that
+the cursor is *absent* on a last page has claimed nothing: the absence holds
+whatever the field is called. Twenty-one of these shipped before anything
+checked, across twenty Recipes, and two of them turned out to have no
+successful list case at all. The validator now refuses a declared paging name
+that no case pins down.
 
 **A conformance case must claim something the emulator decides.** A case that
 posts `{"name": "Ada"}` and asserts `{"name": "Ada"}` is testing that the

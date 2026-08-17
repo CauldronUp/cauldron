@@ -467,3 +467,48 @@ func TestAnEchoIsCaughtAcrossFormEncoding(t *testing.T) {
 		t.Error("a form string and a body number are the same claim")
 	}
 }
+
+// A field name the Recipe chooses is only a claim if a case asserts it where
+// the value exists. Asserting its absence on a last page holds whatever the
+// field happens to be called, so a Recipe could declare a cursor, have it
+// renamed to anything at all, and no case would notice.
+//
+// Twenty-one of these shipped before anything checked. The check is loose on
+// purpose: a nested claim pins a name as well as a dotted one does, and what
+// it refuses is silence.
+func TestADeclaredFieldNameMustBeAsserted(t *testing.T) {
+	// A dotted path in matches.
+	dotted := []Case{{Expect: Expectation{Matches: map[string]string{"meta.next_page": "."}}}}
+	if !assertsName(dotted, "meta.next_page") {
+		t.Error("a dotted matches path should pin the name")
+	}
+
+	// The same claim written as nested maps in body.
+	nested := []Case{{Expect: Expectation{Body: map[string]any{
+		"meta": map[string]any{"pagination": map[string]any{"next": "abc"}},
+	}}}}
+	if !assertsName(nested, "meta.pagination.next") {
+		t.Error("a nested body claim should pin the name too")
+	}
+
+	// An index in the path must not hide the field.
+	indexed := []Case{{Expect: Expectation{Body: map[string]any{"items[0].next_cursor": "abc"}}}}
+	if !assertsName(indexed, "next_cursor") {
+		t.Error("an indexed path should still pin the name")
+	}
+
+	// The bug this exists for: only an absence, which holds whatever the
+	// field is called.
+	absenceOnly := []Case{{Expect: Expectation{
+		Body:   map[string]any{"id": "1"},
+		Absent: []string{"next_cursor"},
+	}}}
+	if assertsName(absenceOnly, "next_cursor") {
+		t.Error("an absence does not pin a name, because it holds under any name")
+	}
+
+	// And a Recipe with no cases at all cannot have pinned anything.
+	if assertsName(nil, "next_cursor") {
+		t.Error("no cases cannot assert a name")
+	}
+}
