@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 215 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 236 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 31: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful |
+| Recipes shipped | 34: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 215 cases, none yet run against a live account. Documentation-derived
+Recipe: 236 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -238,8 +238,14 @@ Miro nests coordinates under `position`, so code reading `item.x` gets nothing
 and the item silently lands at the origin. Contentful keeps the identifier at
 `sys.id`.
 
-Nine of the last sixteen needed no format change at all, which is the sign the
-format has stopped being Stripe-shaped underneath.
+Webflow found a bug that had already shipped: every timestamp field was filled
+in automatically, so a site that had never been published still carried a
+`lastPublished`, and a Typeform response somebody abandoned still carried a
+`submitted_at`. The emulator was claiming events that never happened, which no
+test written against it could catch.
+
+Eleven of the last nineteen needed no format change at all, which is the sign
+the format has stopped being Stripe-shaped underneath.
 
 Not every provider fits. Linear is GraphQL: a single endpoint where the request
 body decides the response shape. A Recipe that ignored the query and returned
