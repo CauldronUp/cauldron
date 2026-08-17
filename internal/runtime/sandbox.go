@@ -245,6 +245,11 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 			continue
 		}
 
+		// A field whose absence means something is left absent.
+		if field.Stamped != nil && !*field.Stamped {
+			continue
+		}
+
 		switch field.Type {
 		case "timestamp":
 			record[name] = s.clock.Unix()

@@ -261,3 +261,52 @@ func TestTheIdentifierCanBeRenamedIntoANestedObject(t *testing.T) {
 		t.Error("a dotted field name should nest, not become a literal key")
 	}
 }
+
+// A timestamp field whose absence is the meaningful state must stay absent.
+// Stamping it makes the emulator claim an event happened that did not, and no
+// test written against the fake can ever catch that.
+func TestAFieldCanOptOutOfAutomaticStamping(t *testing.T) {
+	r, err := recipe.Open("webflow")
+	if err != nil {
+		t.Fatalf("open webflow: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-site"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	fetch := func(id string) map[string]any {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodGet, "/v2/sites/"+id, nil)
+		req.Header.Set("Authorization", "Bearer cauldron_webflow_token")
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		return decode(t, rec)
+	}
+
+	// This site has never been published, so it has no lastPublished at all.
+	never := fetch("000000000000000000000002")
+	if _, present := never["lastPublished"]; present {
+		t.Errorf("lastPublished should be absent, got %v", never["lastPublished"])
+	}
+
+	// A field that does not opt out is still stamped, so the opt-out is
+	// narrow rather than a blanket change of behaviour.
+	if never["createdOn"] == nil {
+		t.Error("createdOn should still be stamped automatically")
+	}
+
+	// And a supplied value is still kept.
+	published := fetch("000000000000000000000001")
+	if published["createdOn"] == nil {
+		t.Error("createdOn missing on the published site")
+	}
+}
