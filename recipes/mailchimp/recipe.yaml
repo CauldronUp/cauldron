@@ -1,0 +1,399 @@
+# Mailchimp Recipe for Cauldron
+#
+# Mailchimp has no sandbox. An account is an account, an audience is a real
+# audience, and a test that adds a subscriber can trigger a real welcome
+# automation to a real address. The free tier also counts test contacts against
+# the plan limit, so a CI suite that adds a member per run eventually starts
+# failing for billing reasons rather than code reasons.
+#
+# Two things worth modelling exactly:
+#
+#   1. Failures follow RFC 7807: type, title, status and detail, with no code
+#      field anywhere. Code written for a provider-specific error shape has
+#      nothing to read, and the human-readable part is "detail", not "message".
+#   2. A member is addressed by the MD5 of their lower-cased email, not by an
+#      opaque id. Integrations that store the id Mailchimp returned work fine
+#      until someone changes their email address.
+#
+# Authentication here is the OAuth bearer form. Mailchimp also accepts HTTP
+# Basic with the API key as the password, which Cauldron does not model.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: mailchimp
+version: 0.1.0
+
+upstream:
+  api: "3.0"
+  docs: https://mailchimp.com/developer/marketing/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-oauth-token
+
+responses:
+  list:
+    style: wrapped
+    count_field: total_items
+  # RFC 7807. No code, and the prose lives in "detail".
+  error:
+    style: flat
+    type_field: type
+    code_field: title
+    message_field: detail
+    status_field: status
+    fields:
+      instance: cauldron00000000-0000-4000-8000-000000000000
+
+resources:
+  member:
+    collection: members
+    id:
+      # The MD5 of the lower-cased email address. Stored as an opaque hex
+      # string here, because what matters is that it is derived from the
+      # email rather than minted independently.
+      style: hex
+      length: 32
+    fields:
+      list_id:
+        type: string
+      email_address:
+        type: string
+        required: true
+      # Mailchimp's own vocabulary. "pending" means double opt-in has been
+      # sent but not confirmed, and a member in that state receives nothing.
+      status:
+        type: string
+        default: subscribed
+      email_type:
+        type: string
+        default: html
+      unique_email_id:
+        type: string
+      web_id:
+        type: integer
+      timestamp_signup:
+        type: datetime
+      last_changed:
+        type: datetime
+
+  audience:
+    collection: lists
+    id:
+      style: hex
+      length: 10
+    fields:
+      name:
+        type: string
+        required: true
+      permission_reminder:
+        type: string
+      double_optin:
+        type: boolean
+        default: false
+      member_count:
+        type: integer
+        default: 0
+      date_created:
+        type: datetime
+
+  campaign:
+    collection: campaigns
+    id:
+      style: hex
+      length: 10
+    fields:
+      type:
+        type: string
+        default: regular
+      status:
+        type: string
+        default: save
+      emails_sent:
+        type: integer
+        default: 0
+      subject_line:
+        type: string
+      create_time:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /3.0/lists
+    resource: audience
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+
+  - method: POST
+    path: /3.0/lists
+    resource: audience
+    operation: create
+
+  - method: GET
+    path: /3.0/lists/{id}
+    resource: audience
+    operation: get
+
+  - method: GET
+    path: /3.0/lists/{list_id}/members
+    resource: member
+    operation: list
+    scope: [list_id]
+    pagination:
+      style: offset
+      limit: 10
+
+  - method: POST
+    path: /3.0/lists/{list_id}/members
+    resource: member
+    operation: create
+    scope: [list_id]
+
+  - method: GET
+    path: /3.0/lists/{list_id}/members/{id}
+    resource: member
+    operation: get
+    scope: [list_id]
+
+  - method: PATCH
+    path: /3.0/lists/{list_id}/members/{id}
+    resource: member
+    operation: update
+    scope: [list_id]
+
+  - method: DELETE
+    path: /3.0/lists/{list_id}/members/{id}
+    resource: member
+    operation: delete
+    scope: [list_id]
+
+  - method: GET
+    path: /3.0/campaigns
+    resource: campaign
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+
+webhooks:
+  events:
+    - subscribe
+    - unsubscribe
+    - profile
+    - cleaned
+    - upemail
+    - campaign
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: Too Many Requests
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: You have exceeded the limit of 10 simultaneous connections.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: API Key Invalid
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: Your API key may be invalid, or you have attempted to access the wrong datacenter.
+
+  resource_missing:
+    status: 404
+    code: Resource Not Found
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: "The requested resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: Invalid Resource
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: "The resource submitted could not be validated: {detail} is required"
+
+  # The one every list import meets, and the one whose wording matters because
+  # support teams paste it verbatim.
+  member_exists:
+    status: 400
+    code: Member Exists
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: The contact is already a list member.
+
+  # Mailchimp permanently refuses a previously unsubscribed address, which
+  # surprises anyone re-importing an old list.
+  forgotten_email:
+    status: 400
+    code: Forgotten Email Not Subscribed
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: The contact must re-subscribe to be added to this audience.
+
+  # A compliance state that cannot be undone through the API at all.
+  compliance_related:
+    status: 400
+    code: Member In Compliance State
+    type: https://mailchimp.com/developer/marketing/docs/errors/
+    message: The contact is in a compliance state due to unsubscribe, bounce, or compliance review.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    audience:
+      - id: a1b2c3d4e5
+        name: Product announcements
+        permission_reminder: You signed up on our website.
+        double_optin: true
+        member_count: 2
+    member:
+      - id: "0000000000000000000000000000ada1"
+        list_id: a1b2c3d4e5
+        email_address: ada@example.com
+        status: subscribed
+        email_type: html
+      - id: "0000000000000000000000000000grc2"
+        list_id: a1b2c3d4e5
+        email_address: grace@example.com
+        # Double opt-in sent but not confirmed. A member in this state
+        # receives nothing, and code that counts them as reachable overstates
+        # every audience metric it computes.
+        status: pending
+    campaign:
+      - id: c1a2m3p4g5
+        type: regular
+        status: sent
+        emails_sent: 2
+        subject_line: What shipped in January
+
+# Conformance cases, read from Mailchimp's Marketing API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: failures follow RFC 7807, with detail rather than message
+    source: https://mailchimp.com/developer/marketing/docs/errors/
+    fixture: small-account
+    request:
+      method: GET
+      path: /3.0/lists/a1b2c3d4e5/members/ffffffffffffffffffffffffffffffff
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+    expect:
+      status: 404
+      body:
+        title: Resource Not Found
+        status: 404
+        type: https://mailchimp.com/developer/marketing/docs/errors/
+      matches:
+        detail: 'could not be found'
+      # No code field anywhere, and the prose is not in "message".
+      absent:
+        - code
+        - message
+        - error
+        - errors
+
+  - name: a collection is wrapped with a total separate from the page
+    source: https://mailchimp.com/developer/marketing/api/list-members/list-members-info/
+    fixture: small-account
+    request:
+      method: GET
+      path: /3.0/lists/a1b2c3d4e5/members
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+    expect:
+      status: 200
+      body:
+        total_items: 2
+        members[0].email_address: ada@example.com
+        members[0].status: subscribed
+      absent:
+        - members[1]
+        - data
+
+  - name: a pending member is not a subscribed one
+    source: https://mailchimp.com/developer/marketing/docs/marketing-api-basics/
+    fixture: small-account
+    request:
+      method: GET
+      path: /3.0/lists/a1b2c3d4e5/members/0000000000000000000000000000grc2
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+    expect:
+      status: 200
+      body:
+        # Double opt-in sent, never confirmed. This member receives nothing,
+        # and counting them as reachable overstates every audience metric.
+        status: pending
+        email_address: grace@example.com
+
+  - name: a member is addressed by a hex hash, not an opaque id
+    source: https://mailchimp.com/developer/marketing/api/list-members/
+    fixture: empty
+    request:
+      method: POST
+      path: /3.0/lists/a1b2c3d4e5/members
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+      json:
+        email_address: alan@example.com
+    expect:
+      status: 200
+      body:
+        email_address: alan@example.com
+        status: subscribed
+        email_type: html
+        list_id: a1b2c3d4e5
+      matches:
+        id: '^[0-9a-f]{32}$'
+
+  - name: another audience's members are not visible
+    source: https://mailchimp.com/developer/marketing/api/list-members/list-members-info/
+    fixture: small-account
+    request:
+      method: GET
+      path: /3.0/lists/ffffffffff/members
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+    expect:
+      status: 200
+      body:
+        total_items: 0
+      absent:
+        - members[0]
+
+  - name: a bad token names the datacenter as a possible cause
+    source: https://mailchimp.com/developer/marketing/guides/quick-start/
+    request:
+      method: GET
+      path: /3.0/lists
+    expect:
+      status: 401
+      body:
+        title: API Key Invalid
+        status: 401
+      matches:
+        # The wrong-datacenter mistake is common enough that Mailchimp names
+        # it in the message, and support teams look for exactly this wording.
+        detail: 'wrong datacenter'
+
+  - name: audiences and campaigns use the same envelope as members
+    source: https://mailchimp.com/developer/marketing/api/lists/
+    fixture: small-account
+    request:
+      method: GET
+      path: /3.0/lists
+      headers:
+        Authorization: Bearer cauldron-oauth-token
+    expect:
+      status: 200
+      body:
+        total_items: 1
+        lists[0].name: Product announcements
+        lists[0].double_optin: true
