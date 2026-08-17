@@ -186,6 +186,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Provider | Why |
 |---|---|
 | ~~Cloudinary~~ | Shipped. url against secure_url, 200-with-not-found, moderation |
+| ~~Ghost~~ | Shipped. Plural-wrapped singles, sent-not-published, Lexical |
 | Imgix | Image transformations and delivery |
 | ~~Mux~~ | Shipped. Asset against playback id, preparing state, array messages |
 | Vimeo | Uploads, videos, privacy |
