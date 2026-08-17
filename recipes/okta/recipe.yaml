@@ -1,0 +1,426 @@
+# Okta Recipe for Cauldron
+#
+# Okta gives you a free developer org, and it is a real identity provider: real
+# users, real emails, real password policies, and a rate limit that a test
+# suite trips within minutes. Deactivating a user is a two-step dance and
+# deleting one is permanent. Worse, the states that matter most are the ones a
+# developer org never naturally reaches, because you cannot make a real user
+# sit in PASSWORD_EXPIRED or LOCKED_OUT on demand.
+#
+# Two things worth modelling exactly:
+#
+#   1. A user's status is a lifecycle, not a boolean. STAGED, PROVISIONED,
+#      ACTIVE, LOCKED_OUT, PASSWORD_EXPIRED, SUSPENDED and DEPROVISIONED are
+#      seven different answers to "can this person sign in", and only one of
+#      them is yes. Code that checks for the absence of DEPROVISIONED lets a
+#      suspended user through.
+#   2. The user's own attributes live under profile, and the credential
+#      material under credentials. Code that reads user.email finds nothing.
+#
+# Known fidelity gap, stated rather than hidden: Okta pages with a Link
+# header, which Cauldron does not model, so cursor paging is not exercised.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: okta
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.okta.com/docs/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Okta's own scheme for an API token. Not Bearer.
+  prefix: "SSWS "
+  keys:
+    - cauldron_okta_token
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    code_field: errorCode
+    message_field: errorSummary
+    fields:
+      errorId: cauldron00000000000001
+      errorCauses: []
+
+resources:
+  user:
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # Seven answers to "can this person sign in", and only ACTIVE is yes.
+      # Checking for the absence of DEPROVISIONED lets a suspended user
+      # through, and a STAGED one has never had a password at all.
+      status:
+        type: string
+        default: STAGED
+      firstName:
+        type: string
+        in: profile
+      lastName:
+        type: string
+        in: profile
+      email:
+        type: string
+        required: true
+        in: profile
+      login:
+        type: string
+        in: profile
+      mobilePhone:
+        type: string
+        in: profile
+      created:
+        type: datetime
+      # Set only when the person has actually signed in. A user who never has
+      # is a different thing from one who signed in long ago.
+      lastLogin:
+        type: datetime
+        stamped: false
+      statusChanged:
+        type: datetime
+        stamped: false
+      passwordChanged:
+        type: datetime
+        stamped: false
+
+  group:
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # An OKTA_GROUP can be edited; an APP_GROUP is owned by an application
+      # and writes to it are refused.
+      type:
+        type: string
+        default: OKTA_GROUP
+      name:
+        type: string
+        required: true
+        in: profile
+      description:
+        type: string
+        in: profile
+      created:
+        type: datetime
+
+  application:
+    id:
+      style: opaque
+      length: 20
+    fields:
+      name:
+        type: string
+        required: true
+      label:
+        type: string
+      status:
+        type: string
+        default: ACTIVE
+      signOnMode:
+        type: string
+        default: SAML_2_0
+      created:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v1/users
+    resource: user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 200
+
+  - method: POST
+    path: /api/v1/users
+    resource: user
+    operation: create
+
+  - method: GET
+    path: /api/v1/users/{id}
+    resource: user
+    operation: get
+
+  - method: POST
+    path: /api/v1/users/{id}
+    resource: user
+    operation: update
+
+  - method: DELETE
+    path: /api/v1/users/{id}
+    resource: user
+    operation: delete
+
+  - method: GET
+    path: /api/v1/groups
+    resource: group
+    operation: list
+    pagination:
+      style: cursor
+      limit: 200
+
+  - method: GET
+    path: /api/v1/groups/{id}
+    resource: group
+    operation: get
+
+  - method: GET
+    path: /api/v1/apps
+    resource: application
+    operation: list
+    pagination:
+      style: cursor
+      limit: 200
+
+webhooks:
+  # Okta calls these event hooks.
+  events:
+    - user.lifecycle.create
+    - user.lifecycle.activate
+    - user.lifecycle.suspend
+    - user.lifecycle.deactivate
+    - user.account.lock
+    - user.session.start
+    - group.user_membership.add
+  signing:
+    scheme: hmac-sha256
+    header: x-okta-verification-challenge
+    secret: cauldron-event-hook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: E0000047
+    message: "API call exceeded rate limit due to too many requests."
+    headers:
+      Retry-After: "60"
+      X-Rate-Limit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: E0000011
+    message: Invalid token provided
+
+  resource_missing:
+    status: 404
+    code: E0000007
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: E0000003
+    message: "The request body was not well-formed: {detail} is required"
+
+  # The failures a developer org will not produce for you on demand, and the
+  # ones sign-in code has to handle correctly.
+  password_policy_violation:
+    status: 400
+    code: E0000080
+    message: The password does not meet the complexity requirements of the current password policy.
+
+  user_locked_out:
+    status: 403
+    code: E0000085
+    message: The user account is locked, too many failed sign-in attempts.
+
+  # An API token scoped below what the call needs, which reads like a missing
+  # resource until you read the code.
+  insufficient_permission:
+    status: 403
+    code: E0000006
+    message: You do not have permission to perform the requested action
+
+fixtures:
+  empty: {}
+
+  small-org:
+    group:
+      - id: cauldronGroup0000001
+        type: OKTA_GROUP
+        name: Everyone
+        description: All users in the org
+      - id: cauldronGroup0000002
+        # Owned by an application. Writes to it are refused, which surprises
+        # anyone syncing groups from an external directory.
+        type: APP_GROUP
+        name: Salesforce Users
+    user:
+      - id: cauldronUser00000001
+        status: ACTIVE
+        firstName: Ada
+        lastName: Lovelace
+        email: ada@example.com
+        login: ada@example.com
+        lastLogin: "2026-01-14T09:12:00Z"
+      - id: cauldronUser00000002
+        # Created but never activated. Has never had a password, and cannot
+        # sign in. Code checking "not DEPROVISIONED" lets this through.
+        status: STAGED
+        firstName: Grace
+        lastName: Hopper
+        email: grace@example.com
+        login: grace@example.com
+      - id: cauldronUser00000003
+        # Was active, now suspended. Also not DEPROVISIONED.
+        status: SUSPENDED
+        firstName: Alan
+        lastName: Turing
+        email: alan@example.com
+        login: alan@example.com
+        lastLogin: "2025-11-02T16:40:00Z"
+    application:
+      - id: cauldronApp000000001
+        name: salesforce
+        label: Salesforce
+        status: ACTIVE
+        signOnMode: SAML_2_0
+
+# Conformance cases, read from Okta's API reference rather than observed
+# against a live org. The verify report says so.
+conformance:
+  - name: user attributes live under profile
+    source: https://developer.okta.com/docs/reference/api/users/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/users/cauldronUser00000001
+      headers:
+        Authorization: SSWS cauldron_okta_token
+    expect:
+      status: 200
+      body:
+        status: ACTIVE
+        profile:
+          email: ada@example.com
+          firstName: Ada
+          login: ada@example.com
+      # Code reading user.email finds nothing.
+      absent:
+        - email
+        - firstName
+
+  - name: status is a lifecycle, not a boolean
+    source: https://developer.okta.com/docs/reference/api/users/#user-status
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/users
+      headers:
+        Authorization: SSWS cauldron_okta_token
+    expect:
+      status: 200
+      body:
+        # Three users, three different answers to "can this person sign in",
+        # and only the first is yes. None of them is DEPROVISIONED, so code
+        # that checks for the absence of that lets the other two through.
+        '[0]':
+          status: ACTIVE
+        '[1]':
+          status: STAGED
+        '[2]':
+          status: SUSPENDED
+
+  - name: a user who has never signed in has no lastLogin
+    source: https://developer.okta.com/docs/reference/api/users/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/users/cauldronUser00000002
+      headers:
+        Authorization: SSWS cauldron_okta_token
+    expect:
+      status: 200
+      body:
+        status: STAGED
+      # Never activated, never had a password, never signed in. Stamping any
+      # of these would claim events that did not happen.
+      absent:
+        - lastLogin
+        - passwordChanged
+
+  - name: the credential scheme is SSWS, not Bearer
+    source: https://developer.okta.com/docs/reference/core-okta-api/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/users
+      headers:
+        Authorization: Bearer cauldron_okta_token
+    expect:
+      status: 401
+      body:
+        errorCode: E0000011
+        errorSummary: Invalid token provided
+
+  - name: the error carries a code, a summary and a causes array
+    source: https://developer.okta.com/docs/reference/error-codes/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/users/doesnotexist00000000
+      headers:
+        Authorization: SSWS cauldron_okta_token
+    expect:
+      status: 404
+      body:
+        errorCode: E0000007
+        errorCauses: []
+      matches:
+        errorSummary: 'Not found'
+        errorId: '^cauldron[0-9]+$'
+      absent:
+        - error
+        - message
+
+  - name: a collection is a bare array
+    source: https://developer.okta.com/docs/reference/api/users/#list-users
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/groups
+      headers:
+        Authorization: SSWS cauldron_okta_token
+    expect:
+      status: 200
+      body:
+        '[0]':
+          type: OKTA_GROUP
+          profile:
+            name: Everyone
+        # Owned by an application, and writes to it are refused.
+        '[1]':
+          type: APP_GROUP
+      absent:
+        - data
+        - items
+
+  - name: a created user starts STAGED, not active
+    source: https://developer.okta.com/docs/reference/api/users/#create-user
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/users
+      headers:
+        Authorization: SSWS cauldron_okta_token
+      json:
+        profile:
+          email: alan@example.com
+          firstName: Alan
+          login: alan@example.com
+    expect:
+      status: 200
+      body:
+        # Created is not activated. A user in this state cannot sign in, and
+        # code that creates a user and assumes they can is wrong every time.
+        status: STAGED
+        profile:
+          email: alan@example.com
+      matches:
+        id: '^[A-Za-z0-9]{20}$'
