@@ -1,0 +1,318 @@
+# Postmark Recipe for Cauldron
+#
+# Postmark is the transactional sender people reach for when deliverability
+# matters, and testing against it has the same problem as any email provider:
+# a send goes somewhere. Postmark's sandbox is a separate server token that
+# teams forget to swap, so test runs bill against the real one.
+#
+# The shape worth modelling exactly is the success envelope. A successful send
+# carries ErrorCode 0 and Message "OK", so a client cannot tell success from
+# failure by the presence of an error field. It has to read the code. Plenty of
+# integrations check for the absence of an error and get it right by accident.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: postmark
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://postmarkapp.com/developer/api/overview
+
+auth:
+  scheme: header
+  header: X-Postmark-Server-Token
+  keys:
+    - cauldron-server-token
+
+responses:
+  list:
+    style: wrapped
+    key: Messages
+  # Postmark's failures are flat and PascalCase, and the code is a number.
+  error:
+    style: flat
+    code_field: ErrorCode
+    message_field: Message
+
+resources:
+  email:
+    id:
+      style: uuid
+      field: MessageID
+    # A successful send still carries an ErrorCode. It is zero, and that is the
+    # only thing distinguishing it from a failure.
+    constants:
+      ErrorCode: 0
+      Message: OK
+    fields:
+      To:
+        type: string
+        required: true
+      From:
+        type: string
+        required: true
+      Subject:
+        type: string
+      HtmlBody:
+        type: string
+      TextBody:
+        type: string
+      SubmittedAt:
+        type: datetime
+
+  outbound_message:
+    collection: Messages
+    id:
+      style: uuid
+      field: MessageID
+    fields:
+      Recipients:
+        type: string
+      Subject:
+        type: string
+      Status:
+        type: string
+        default: Sent
+      ReceivedAt:
+        type: datetime
+
+  bounce:
+    collection: Bounces
+    id:
+      style: numeric
+    fields:
+      Type:
+        type: string
+        default: HardBounce
+      TypeCode:
+        type: integer
+        default: 1
+      Email:
+        type: string
+        required: true
+      Description:
+        type: string
+      Inactive:
+        type: boolean
+        default: true
+      CanActivate:
+        type: boolean
+        default: true
+      BouncedAt:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /email
+    resource: email
+    operation: create
+
+  - method: GET
+    path: /messages/outbound
+    resource: outbound_message
+    operation: list
+    pagination:
+      style: offset
+      limit: 50
+
+  - method: GET
+    path: /messages/outbound/{id}
+    resource: outbound_message
+    operation: get
+
+  - method: GET
+    path: /bounces
+    resource: bounce
+    operation: list
+    pagination:
+      style: offset
+      limit: 50
+
+  - method: GET
+    path: /bounces/{id}
+    resource: bounce
+    operation: get
+
+webhooks:
+  events:
+    - Delivery
+    - Bounce
+    - SpamComplaint
+    - Open
+    - Click
+    - SubscriptionChange
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: "10"
+    message: Your request did not submit the correct API token in the correct header.
+
+  resource_missing:
+    status: 404
+    code: "701"
+    message: "The message could not be found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: "300"
+    message: "Invalid request: {detail} is required."
+
+  # The failure that only appears once you are live: the recipient is on the
+  # suppression list because they bounced or complained earlier.
+  inactive_recipient:
+    status: 422
+    code: "406"
+    message: You tried to send to recipient(s) that have been marked as inactive.
+
+  # Postmark refuses to send from an unconfirmed address, which is the first
+  # wall a new integration hits.
+  sender_signature_not_confirmed:
+    status: 422
+    code: "400"
+    message: You are trying to send email with a From address that has no confirmed Sender Signature.
+
+fixtures:
+  empty: {}
+
+  small-server:
+    outbound_message:
+      - id: aaaaaaaa-1111-4111-8111-111111111111
+        Recipients: ada@example.com
+        Subject: Your receipt
+        Status: Sent
+      - id: bbbbbbbb-2222-4222-8222-222222222222
+        Recipients: grace@example.com
+        Subject: Password reset
+        Status: Sent
+    bounce:
+      - id: "1"
+        Type: HardBounce
+        TypeCode: 1
+        Email: bounced@example.com
+        Description: The server was unable to deliver your message
+        Inactive: true
+
+# Conformance cases, read from Postmark's developer reference rather than
+# observed against a live server. The verify report says so.
+conformance:
+  - name: a successful send carries ErrorCode zero
+    source: https://postmarkapp.com/developer/api/email-api
+    fixture: empty
+    request:
+      method: POST
+      path: /email
+      headers:
+        X-Postmark-Server-Token: cauldron-server-token
+      json:
+        To: ada@example.com
+        From: billing@example.com
+        Subject: Your receipt
+    expect:
+      status: 200
+      body:
+        # The only thing separating success from failure. A client checking for
+        # the absence of an error field cannot tell them apart.
+        ErrorCode: 0
+        Message: OK
+        To: ada@example.com
+      matches:
+        MessageID: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      absent:
+        - id
+
+  - name: a failure uses the same two fields with a non-zero code
+    source: https://postmarkapp.com/developer/api/overview
+    fixture: empty
+    request:
+      method: POST
+      path: /email
+      headers:
+        X-Postmark-Server-Token: cauldron-server-token
+      json:
+        From: billing@example.com
+        Subject: No recipient
+    expect:
+      status: 422
+      body:
+        ErrorCode: 300
+      matches:
+        Message: 'To'
+      # Same shape as a success, different code. Nothing nested, nothing added.
+      absent:
+        - error
+        - errors
+
+  - name: a bad server token is refused with Postmark's own code
+    source: https://postmarkapp.com/developer/api/overview
+    request:
+      method: POST
+      path: /email
+      json:
+        To: ada@example.com
+        From: billing@example.com
+    expect:
+      status: 401
+      body:
+        ErrorCode: 10
+      matches:
+        Message: 'API token'
+
+  - name: outbound messages are wrapped under Messages
+    source: https://postmarkapp.com/developer/api/messages-api
+    fixture: small-server
+    request:
+      method: GET
+      path: /messages/outbound
+      headers:
+        X-Postmark-Server-Token: cauldron-server-token
+    expect:
+      status: 200
+      body:
+        Messages[0].Subject: Your receipt
+        Messages[0].Status: Sent
+      absent:
+        - data
+        - results
+
+  - name: the message identifier is called MessageID, not id
+    source: https://postmarkapp.com/developer/api/messages-api
+    fixture: small-server
+    request:
+      method: GET
+      path: /messages/outbound/aaaaaaaa-1111-4111-8111-111111111111
+      headers:
+        X-Postmark-Server-Token: cauldron-server-token
+    expect:
+      status: 200
+      body:
+        MessageID: aaaaaaaa-1111-4111-8111-111111111111
+        Recipients: ada@example.com
+      absent:
+        - id
+
+  - name: a bounce carries the flags that decide whether to retry
+    source: https://postmarkapp.com/developer/api/bounce-api
+    fixture: small-server
+    request:
+      method: GET
+      path: /bounces
+      headers:
+        X-Postmark-Server-Token: cauldron-server-token
+    expect:
+      status: 200
+      body:
+        Bounces[0].Type: HardBounce
+        Bounces[0].Email: bounced@example.com
+        Bounces[0].Inactive: true
+        Bounces[0].CanActivate: true
