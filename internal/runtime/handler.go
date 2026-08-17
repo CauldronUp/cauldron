@@ -272,12 +272,18 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 }
 
 // missingHeader reports the first required header a request does not carry.
+//
+// A header may be required only for some methods, because that is how several
+// providers behave: Greenhouse wants On-Behalf-Of on a write and ignores it on
+// a read, so an integration that only ever reads in its tests meets the
+// requirement for the first time in production.
 func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok bool) {
-	for name, raise := range s.recipe.RequiredHeaders {
-		if r.Header.Get(name) != "" {
+	for name, required := range s.recipe.RequiredHeaders {
+		if r.Header.Get(name) != "" || !required.Applies(r.Method) {
 			continue
 		}
 
+		raise := required.Error
 		if raise == "" {
 			raise = "parameter_missing"
 		}
