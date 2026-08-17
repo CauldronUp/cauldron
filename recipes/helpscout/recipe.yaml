@@ -1,0 +1,497 @@
+# Help Scout Recipe for Cauldron
+#
+# Help Scout has no sandbox. A token reaches the real mailbox, and the objects
+# in it are conversations with actual customers. A test that creates one puts a
+# fictional customer in a support queue where somebody will try to answer it; a
+# test that replies to one sends an email. There is no undo on a sent reply,
+# and deleting a conversation afterwards does not unsend it.
+#
+# Three things worth modelling exactly:
+#
+#   1. A thread of type "note" is internal. It is never shown to the customer,
+#      and it sits in the same array as the replies that were. Code that
+#      renders every thread into a customer-facing view publishes whatever a
+#      support agent wrote about that customer in private. This is the most
+#      expensive mistake available in this API, and no amount of testing
+#      against a hand-rolled fake surfaces it, because a fake returns the
+#      threads somebody thought to write.
+#   2. The response is HAL. Collections live under _embedded, keyed by the
+#      resource name, with paging under a page object and the cursor as a URL
+#      inside _links. A client reading data, or results, or a top-level array,
+#      finds nothing at any of them.
+#   3. status has four values and closed is only one of them. "pending" is a
+#      conversation somebody has picked up and not answered, and "spam" is one
+#      that still exists, still belongs to the customer, and still comes back
+#      from a plain list. Treating anything not closed as open miscounts both.
+#
+# Known fidelity gap, stated rather than hidden: Help Scout pages with
+# _links.next.href holding a full URL with a page parameter. Cauldron emits the
+# cursor there but does not model following it, so a case can assert the link
+# exists and its shape rather than that it resolves.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: helpscout
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.helpscout.com/mailbox-api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-helpscout-token
+
+responses:
+  list:
+    style: wrapped
+    # HAL. The collection is two levels down and keyed by the resource name,
+    # so each resource declares its own path below.
+    count_field: page.totalElements
+    cursor_field: _links.next.href
+    fields:
+      page:
+        size: 25
+        number: 1
+  resource:
+    style: bare
+  # HAL again, and the failures are embedded the same way the collections are.
+  error:
+    style: list
+    key: _embedded.errors
+    message_field: message
+    code_field: "-"
+    fields:
+      # Help Scout's own correlation id. It is the only thing their support
+      # can act on, and it is not in any of the error entries.
+      logRef: cauldron-log-reference
+
+resources:
+  conversation:
+    collection: _embedded.conversations
+    id:
+      style: numeric
+    fields:
+      # active, pending, closed, spam. Treating anything not closed as open
+      # miscounts the pending queue and the spam folder both.
+      status:
+        type: string
+        default: active
+      subject:
+        type: string
+      mailboxId:
+        type: integer
+      # Help Scout omits the assignee entirely when nobody has taken the
+      # conversation. A client reading assignee.email on an unassigned one
+      # throws rather than reporting it is unassigned.
+      assignee_id:
+        type: integer
+        in: assignee
+      assignee_email:
+        type: string
+        in: assignee
+      primaryCustomer_id:
+        type: integer
+        in: primaryCustomer
+      primaryCustomer_email:
+        type: string
+        in: primaryCustomer
+      # How many threads, including the internal notes. A client showing this
+      # as "messages" counts private annotations as correspondence.
+      threads:
+        type: integer
+        default: 0
+      # The clock an SLA runs on. It is null once somebody has replied, and a
+      # dashboard that treats null as zero reports every answered
+      # conversation as breaching instantly.
+      customerWaitingSince_time:
+        type: datetime
+        stamped: false
+        in: customerWaitingSince
+      createdAt:
+        type: datetime
+      closedAt:
+        type: datetime
+        stamped: false
+
+  thread:
+    collection: _embedded.threads
+    id:
+      style: numeric
+    fields:
+      conversationId:
+        type: integer
+      # customer, message, note, lineitem, phone, chat. A note is internal and
+      # was never sent anywhere. It sits in this same array.
+      type:
+        type: string
+        default: message
+      body:
+        type: string
+      # Help Scout says who wrote it and which side they are on. A note from a
+      # user and a reply from a user are indistinguishable without the type
+      # above.
+      createdBy_type:
+        type: string
+        in: createdBy
+      createdBy_email:
+        type: string
+        in: createdBy
+      # published, draft, hidden. A draft reply has not been sent, and it is
+      # returned by the same call as the ones that were.
+      state:
+        type: string
+        default: published
+      createdAt:
+        type: datetime
+
+  mailbox:
+    collection: _embedded.mailboxes
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+      slug:
+        type: string
+      createdAt:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/conversations
+    resource: conversation
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v2/conversations/{id}
+    resource: conversation
+    operation: get
+
+  - method: POST
+    path: /v2/conversations
+    resource: conversation
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/conversations/{conversationId}/threads
+    resource: thread
+    operation: list
+    scope: [conversationId]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v2/mailboxes
+    resource: mailbox
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v2/mailboxes/{id}
+    resource: mailbox
+    operation: get
+
+webhooks:
+  events:
+    - convo.created
+    - convo.assigned
+    - convo.status
+    - convo.agent.reply.created
+    - convo.customer.reply.created
+    - convo.note.created
+    - convo.deleted
+  signing:
+    scheme: hmac-sha256
+    header: X-HelpScout-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+    headers:
+      # Help Scout's own header, not Retry-After. A client honouring the
+      # standard one waits zero seconds and is refused again.
+      X-RateLimit-Retry-After: "10"
+
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # Help Scout refuses a reply to a conversation that has been deleted, which
+  # is what an integration retrying after a timeout runs into.
+  conversation_deleted:
+    status: 404
+    message: The conversation has been deleted and cannot be replied to
+
+  # A token scoped to one mailbox cannot see another's conversations, and the
+  # failure looks like a missing conversation rather than a permission
+  # problem.
+  forbidden:
+    status: 403
+    message: The token does not have access to this mailbox
+
+  # Sending a reply with no text is refused, and this is the failure an
+  # integration hits when its template renders empty.
+  empty_reply:
+    status: 400
+    message: A reply must have a body
+
+fixtures:
+  empty: {}
+
+  small-mailbox:
+    mailbox:
+      - id: "100"
+        name: Support
+        email: support@example.com
+        slug: support
+
+    conversation:
+      - id: "2001"
+        mailboxId: 100
+        subject: Cauldron will not season
+        status: active
+        threads: 3
+        assignee_id: 500
+        assignee_email: agent@example.com
+        primaryCustomer_id: 900
+        primaryCustomer_email: ada@example.com
+        # Nobody has replied yet, so the SLA clock is running.
+        customerWaitingSince_time: "2026-01-14T09:00:00Z"
+      - id: "2002"
+        mailboxId: 100
+        subject: Delivery question
+        # Somebody has picked it up and not answered. Treating anything not
+        # closed as open counts this in the wrong queue.
+        status: pending
+        threads: 1
+        primaryCustomer_id: 901
+        primaryCustomer_email: grace@example.com
+        # Unassigned, so there is no assignee key at all. A client reading
+        # assignee.email throws rather than reporting it is unassigned.
+      - id: "2003"
+        mailboxId: 100
+        subject: Free cauldrons click here
+        # Still exists, still belongs to the customer, still returned by a
+        # plain list.
+        status: spam
+        threads: 1
+        primaryCustomer_id: 902
+        primaryCustomer_email: nobody@example.invalid
+      - id: "2004"
+        mailboxId: 100
+        subject: Resolved last week
+        status: closed
+        threads: 4
+        assignee_id: 500
+        assignee_email: agent@example.com
+        primaryCustomer_id: 900
+        primaryCustomer_email: ada@example.com
+        closedAt: "2026-01-09T16:00:00Z"
+
+    thread:
+      - id: "3001"
+        conversationId: 2001
+        type: customer
+        body: The seasoning keeps coming off.
+        createdBy_type: customer
+        createdBy_email: ada@example.com
+      # Internal. Never sent anywhere, sitting in the same array as the reply
+      # below, and distinguishable only by its type.
+      - id: "3002"
+        conversationId: 2001
+        type: note
+        body: Third time this month. Check whether we shipped the bad batch.
+        createdBy_type: user
+        createdBy_email: agent@example.com
+      - id: "3003"
+        conversationId: 2001
+        # A reply that was actually sent, by the same person who wrote the
+        # note above.
+        type: message
+        body: Sorry about that. Let us send a replacement.
+        createdBy_type: user
+        createdBy_email: agent@example.com
+        state: draft
+
+# Conformance cases, read from Help Scout's Mailbox API v2 reference rather
+# than observed against a live mailbox. The verify report says so.
+conformance:
+  - name: an internal note sits in the same array as a sent reply
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/threads/list/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/2001/threads
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        _embedded.threads[0].type: customer
+        # Internal, and written by the same person as the reply below it.
+        # Rendering every thread into a customer-facing view publishes what a
+        # support agent wrote about that customer in private.
+        _embedded.threads[1].type: note
+        _embedded.threads[2].type: message
+      absent:
+        - threads
+        - data
+
+  - name: a note and a reply are told apart only by type
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/threads/list/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/2001/threads
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        # Same author, same side, same shape. Nothing but the type says one
+        # of these was never sent.
+        _embedded.threads[1].createdBy.createdBy_type: user
+        _embedded.threads[2].createdBy.createdBy_type: user
+        _embedded.threads[1].body: Third time this month. Check whether we shipped the bad batch.
+
+  - name: a draft reply is returned alongside the ones that were sent
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/threads/list/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/2001/threads
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        _embedded.threads[0].state: published
+        # Never sent. A transcript that renders every thread shows the
+        # customer a reply nobody approved.
+        _embedded.threads[2].state: draft
+
+  - name: status has four values and closed is one of them
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/list/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        _embedded.conversations[0].status: active
+        # Picked up and not answered.
+        _embedded.conversations[1].status: pending
+        # Still exists, still returned by a plain list.
+        _embedded.conversations[2].status: spam
+        _embedded.conversations[3].status: closed
+
+  - name: an unassigned conversation has no assignee at all
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/get/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/2002
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        status: pending
+        primaryCustomer:
+          primaryCustomer_email: grace@example.com
+      # Not null, not an empty object. A client reading assignee.email throws
+      # rather than reporting the conversation is unassigned.
+      absent:
+        - assignee
+
+  - name: the SLA clock is absent once somebody has replied
+    source: https://developer.helpscout.com/mailbox-api/endpoints/conversations/get/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/2004
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        status: closed
+        closedAt: "2026-01-09T16:00:00Z"
+      # A dashboard treating a missing value as zero reports every answered
+      # conversation as breaching instantly.
+      absent:
+        - customerWaitingSince
+
+  - name: paging sits in a page object and the cursor is a URL
+    source: https://developer.helpscout.com/mailbox-api/overview/pagination/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 200
+      body:
+        page:
+          # How many matched, not how many were sent.
+          totalElements: 4
+          number: 1
+      matches:
+        # A URL rather than an opaque token, so a client storing "the cursor"
+        # is storing something it has to fetch rather than pass.
+        _links.next.href: '.'
+      absent:
+        - _embedded.conversations[2]
+        - totalElements
+        - has_more
+
+  - name: failures are embedded the same way collections are
+    source: https://developer.helpscout.com/mailbox-api/overview/errors/
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /v2/conversations/9999
+      headers:
+        Authorization: Bearer cauldron-helpscout-token
+    expect:
+      status: 404
+      body:
+        # Help Scout's own correlation id, and the only thing their support
+        # can act on. It sits beside the array rather than inside an entry.
+        logRef: cauldron-log-reference
+      matches:
+        _embedded.errors[0].message: 'Not Found'
+      absent:
+        - message
+        - errors
+        - error
