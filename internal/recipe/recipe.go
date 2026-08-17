@@ -81,6 +81,11 @@ type Expectation struct {
 	// Matches holds dotted field paths to regular expressions, for values that
 	// are correct in shape rather than exact, such as generated identifiers.
 	Matches map[string]string `yaml:"matches"`
+	// HeaderMatches holds response header names to regular expressions, for
+	// headers that carry a generated value. A plain `headers` entry compares
+	// substrings, which cannot assert that a header is merely present and
+	// well-formed.
+	HeaderMatches map[string]string `yaml:"header_matches"`
 	// Absent lists fields that must not appear. Providers are as specific about
 	// what they omit as what they send.
 	Absent []string `yaml:"absent"`
@@ -144,8 +149,12 @@ type ResourceResponse struct {
 // with a message and a documentation link. Code that unwraps one and receives
 // the other does not report a helpful failure, it panics.
 type ErrorResponse struct {
-	// Style is nested (Stripe, the default) or flat (GitHub).
+	// Style is nested (Stripe, the default), flat (GitHub) or list (SendGrid,
+	// which sends {"errors": [{...}]} because one request can fail several
+	// ways at once).
 	Style string `yaml:"style"`
+	// Key is the property holding the array when the style is list.
+	Key string `yaml:"key"`
 	// MessageField names the property carrying the human-readable message when
 	// the style is flat. Empty means "message". Set it to "-" to omit the
 	// message entirely, which Slack does: its errors are a code and nothing
@@ -202,8 +211,9 @@ type Resource struct {
 // ID describes how the provider mints identifiers. Getting this right matters
 // more than it looks: applications routinely parse or prefix-match IDs.
 type ID struct {
-	// Style is one of: prefixed (cus_abc123), numeric (1, 2, 3) or timestamp
-	// (1767225600.000100, which is how Slack identifies a message).
+	// Style is one of: prefixed (cus_abc123), numeric (1, 2, 3), timestamp
+	// (1767225600.000100, which is how Slack identifies a message) or opaque
+	// (a bare random string, which is what SendGrid returns as a message id).
 	// Empty means prefixed.
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
@@ -254,8 +264,16 @@ type Route struct {
 	// parameter: "query:channel" or "body:channel". Slack and every other
 	// RPC-shaped API put it in the query string or the body, and without this
 	// the format could only describe APIs that happen to be RESTful.
-	IDFrom     string     `yaml:"id_from"`
-	Pagination Pagination `yaml:"pagination"`
+	IDFrom string `yaml:"id_from"`
+	// EmptyBody sends no body at all. SendGrid accepts a send with 202 and
+	// nothing else, and a client that calls .json() on that response throws.
+	// An emulator that helpfully returns an object hides the bug.
+	EmptyBody bool `yaml:"empty_body"`
+	// Headers are response headers this route sets. "{id}" is replaced with
+	// the record's identifier, which is how SendGrid hands back the message id
+	// a client needs to correlate a later event with the send.
+	Headers    map[string]string `yaml:"headers"`
+	Pagination Pagination        `yaml:"pagination"`
 }
 
 // Pagination describes how a list endpoint pages.
@@ -305,7 +323,7 @@ var (
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
-	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp"}
+	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "datetime"}
 )
 
@@ -387,11 +405,15 @@ func (r *Recipe) Validate() error {
 		resource := r.Resources[name]
 
 		if !contains(validIDStyles, resource.ID.Style) {
-			add("resource %q has id.style %q, which must be prefixed, numeric or timestamp", name, resource.ID.Style)
+			add("resource %q has id.style %q, which must be one of %s", name, resource.ID.Style, strings.Join(validIDStyles[1:], ", "))
 		}
 
-		if resource.ID.Style != "numeric" && resource.ID.Style != "timestamp" && resource.ID.Prefix == "" {
-			add("resource %q must declare an id.prefix. Applications routinely prefix-match identifiers", name)
+		// A prefix is required for the prefixed style precisely because
+		// applications prefix-match identifiers. Providers whose ids carry no
+		// prefix say so by declaring the opaque style, rather than leaving it
+		// ambiguous whether the omission was deliberate.
+		if (resource.ID.Style == "" || resource.ID.Style == "prefixed") && resource.ID.Prefix == "" {
+			add("resource %q must declare an id.prefix, or use id.style opaque if the provider's identifiers have none", name)
 		}
 
 		if len(resource.Fields) == 0 {
@@ -571,7 +593,14 @@ func (r *Recipe) Validate() error {
 			}
 		}
 
-		if c.Expect.Status < 400 && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 && len(c.Expect.Headers) == 0 {
+		for header, pattern := range c.Expect.HeaderMatches {
+			if _, err := regexp.Compile(pattern); err != nil {
+				add("%s: expect.header_matches[%s] is not a valid regular expression: %v", where, header, err)
+			}
+		}
+
+		if c.Expect.Status < 400 && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
+			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
 		}
 	}

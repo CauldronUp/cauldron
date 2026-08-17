@@ -16,9 +16,10 @@ const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 // shape describes how one resource's identifiers look.
 type shape struct {
-	// style is prefixed (Stripe object ids), numeric (GitHub issue numbers) or
-	// timestamp (Slack message ts). Providers genuinely differ, applications
-	// parse all three, so the emulator has to match.
+	// style is prefixed (Stripe object ids), numeric (GitHub issue numbers),
+	// timestamp (Slack message ts) or opaque (SendGrid message ids, which
+	// carry no prefix at all). Providers genuinely differ, applications parse
+	// all of them, so the emulator has to match.
 	style  string
 	prefix string
 	length int

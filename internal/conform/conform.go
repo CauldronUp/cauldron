@@ -12,6 +12,7 @@
 package conform
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -204,7 +205,42 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 		}
 	}
 
+	for _, name := range sortedKeys(expect.HeaderMatches) {
+		pattern := expect.HeaderMatches[name]
+
+		got := response.Header.Get(name)
+		if got == "" {
+			failures = append(failures, fmt.Sprintf("header %s: expected a value matching %s, but the header is absent", name, pattern))
+			continue
+		}
+
+		compiled, err := regexp.Compile(pattern)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("header %s: %v", name, err))
+			continue
+		}
+
+		if !compiled.MatchString(got) {
+			failures = append(failures, fmt.Sprintf("header %s: %q does not match %s", name, got, pattern))
+		}
+	}
+
 	if len(expect.Body) == 0 && len(expect.Matches) == 0 && len(expect.Absent) == 0 {
+		return failures
+	}
+
+	// An empty body is a real answer, not a parse failure: SendGrid accepts a
+	// send with 202 and nothing else. Every field is absent, so absence
+	// assertions hold and any positive claim fails with a useful reason.
+	if len(bytes.TrimSpace(body)) == 0 {
+		for _, path := range sortedKeys(expect.Body) {
+			failures = append(failures, fmt.Sprintf("%s: the response has no body", path))
+		}
+
+		for _, path := range sortedKeys(expect.Matches) {
+			failures = append(failures, fmt.Sprintf("%s: the response has no body", path))
+		}
+
 		return failures
 	}
 

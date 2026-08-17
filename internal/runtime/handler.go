@@ -111,6 +111,13 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 		status = http.StatusOK
 	}
 
+	s.writeRouteHeaders(w, matched, created)
+
+	if matched.spec.EmptyBody {
+		w.WriteHeader(status)
+		return status
+	}
+
 	writeJSON(w, status, s.resourceBody(matched.spec.Resource, created))
 
 	return status
@@ -252,6 +259,18 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource, r.URL.Path))
 
 	return http.StatusOK
+}
+
+// writeRouteHeaders sets the response headers a route declares, substituting
+// the record's identifier for {id}.
+func (s *Sandbox) writeRouteHeaders(w http.ResponseWriter, matched route, record store.Record) {
+	for name, value := range matched.spec.Headers {
+		if id, ok := record["id"].(string); ok {
+			value = strings.ReplaceAll(value, "{id}", id)
+		}
+
+		w.Header().Set(name, value)
+	}
 }
 
 // present renames the identifier to the property the provider actually uses.
@@ -622,7 +641,7 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 func (s *Sandbox) errorBody(category, code, message string, status int) map[string]any {
 	spec := s.recipe.Responses.Error
 
-	if spec.Style != "flat" {
+	if spec.Style != "flat" && spec.Style != "list" {
 		return map[string]any{
 			"error": map[string]any{
 				"type":    category,
@@ -653,7 +672,21 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		setPath(body, spec.StatusField, status)
 	}
 
-	return withFields(body, spec.Fields)
+	body = withFields(body, spec.Fields)
+
+	if spec.Style == "list" {
+		key := spec.Key
+		if key == "" {
+			key = "errors"
+		}
+
+		// One request can fail several ways at once, which is why SendGrid
+		// sends an array. The emulator reports one, in the shape a client
+		// already has to loop over.
+		return map[string]any{key: []any{body}}
+	}
+
+	return body
 }
 
 // numberOrString keeps an all-digit code a number, because Twilio's error codes

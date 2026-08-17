@@ -1,0 +1,327 @@
+# SendGrid Recipe for Cauldron
+#
+# Transactional email is the dependency nobody wants to exercise for real. A
+# send costs nothing but goes somewhere: a colleague's inbox, a spam trap, a
+# reputation score. Most teams stub the client and never find out that their
+# error handling reads a field the provider does not send.
+#
+# Two things here are unusual enough to be worth modelling exactly:
+#
+#   1. A successful send returns 202 with an empty body and the message id in
+#      a header. A client that calls .json() on that response throws, and an
+#      emulator that helpfully returns an object hides the bug entirely.
+#   2. Failures come back as an array, because one request can be wrong in
+#      several ways at once. Code written for a single error object breaks on
+#      the first request that has two problems.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: sendgrid
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://www.twilio.com/docs/sendgrid/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - SG.cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: result
+  error:
+    style: list
+    key: errors
+    message_field: message
+
+resources:
+  mail:
+    collection: result
+    id:
+      # A SendGrid message id carries no prefix. Declared explicitly so the
+      # omission reads as a decision rather than an oversight.
+      style: opaque
+      length: 22
+    fields:
+      # SendGrid takes a personalizations array; the Recipe models the single
+      # recipient case, which is what almost every transactional send is.
+      subject:
+        type: string
+        required: true
+      from:
+        type: string
+        required: true
+      personalizations:
+        type: string
+      template_id:
+        type: string
+      status:
+        type: string
+        default: queued
+
+  template:
+    collection: result
+    id:
+      prefix: d-
+      length: 32
+    fields:
+      name:
+        type: string
+        required: true
+      generation:
+        type: string
+        default: dynamic
+      updated_at:
+        type: datetime
+
+  suppression:
+    collection: result
+    id:
+      style: numeric
+    fields:
+      email:
+        type: string
+        required: true
+      reason:
+        type: string
+        default: Bounced Address
+      status:
+        type: string
+        default: "5.1.1"
+      created:
+        type: timestamp
+
+routes:
+  # The one that matters. 202, no body, message id in a header.
+  - method: POST
+    path: /v3/mail/send
+    resource: mail
+    operation: create
+    status: 202
+    empty_body: true
+    headers:
+      X-Message-Id: "{id}"
+
+  - method: GET
+    path: /v3/templates
+    resource: template
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: POST
+    path: /v3/templates
+    resource: template
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v3/templates/{id}
+    resource: template
+    operation: get
+
+  - method: GET
+    path: /v3/suppression/bounces
+    resource: suppression
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: DELETE
+    path: /v3/suppression/bounces/{id}
+    resource: suppression
+    operation: delete
+
+webhooks:
+  # SendGrid's Event Webhook. These are the deliverability outcomes an
+  # application should handle and almost never gets to rehearse.
+  events:
+    - processed
+    - delivered
+    - deferred
+    - bounce
+    - dropped
+    - spamreport
+    - unsubscribe
+    - open
+    - click
+  signing:
+    scheme: hmac-sha256
+    header: X-Twilio-Email-Event-Webhook-Signature
+    secret: cauldron-event-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too many requests
+    message: too many requests
+    headers:
+      X-RateLimit-Remaining: "0"
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: authorization required
+    message: "The provided authorization grant is invalid, expired, or revoked"
+
+  resource_missing:
+    status: 404
+    code: not found
+    message: "resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: bad request
+    message: "The {detail} field is required."
+
+  # The failure that only shows up in production: a recipient on the
+  # suppression list is accepted and then silently dropped.
+  dropped:
+    status: 400
+    code: dropped
+    message: The recipient is on a suppression list.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    template:
+      - id: d-00000000000000000000000000000001
+        name: Password reset
+        generation: dynamic
+      - id: d-00000000000000000000000000000002
+        name: Receipt
+        generation: dynamic
+    suppression:
+      - id: "1"
+        email: bounced@example.com
+        reason: "550 5.1.1 The email account that you tried to reach does not exist"
+        status: "5.1.1"
+
+# Conformance cases, read from SendGrid's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a successful send is 202 with no body at all
+    source: https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3/mail/send
+      headers:
+        Authorization: Bearer SG.cauldron
+      json:
+        subject: Your receipt
+        from: billing@example.com
+    expect:
+      # A client calling .json() on this throws. An emulator that returns an
+      # object would hide that until the code met the real API.
+      status: 202
+      header_matches:
+        X-Message-Id: "^[A-Za-z0-9]{22}$"
+
+  - name: the message id comes back in a header, not the body
+    source: https://www.twilio.com/docs/sendgrid/for-developers/tracking-events/event
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3/mail/send
+      headers:
+        Authorization: Bearer SG.cauldron
+      json:
+        subject: Correlate me
+        from: billing@example.com
+    expect:
+      status: 202
+      header_matches:
+        X-Message-Id: "^[A-Za-z0-9]+$"
+      # Nothing in the body to correlate with, which is the point: the id
+      # is only ever in the header.
+      absent:
+        - id
+
+  - name: a failure is an array, because a request can be wrong twice
+    source: https://www.twilio.com/docs/sendgrid/api-reference/how-to-use-the-sendgrid-v3-api/responses
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3/mail/send
+      headers:
+        Authorization: Bearer SG.cauldron
+      json:
+        from: billing@example.com
+    expect:
+      status: 400
+      matches:
+        errors[0].message: 'subject'
+      absent:
+        - error
+        - message
+
+  - name: a bad key is rejected before anything is sent
+    source: https://www.twilio.com/docs/sendgrid/api-reference/how-to-use-the-sendgrid-v3-api/authentication
+    request:
+      method: POST
+      path: /v3/mail/send
+      json:
+        subject: Should not send
+        from: billing@example.com
+    expect:
+      status: 401
+      matches:
+        errors[0].message: 'authorization grant is invalid'
+
+  - name: templates come back under result, not data
+    source: https://www.twilio.com/docs/sendgrid/api-reference/transactional-templates
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/templates
+      headers:
+        Authorization: Bearer SG.cauldron
+    expect:
+      status: 200
+      body:
+        result[0].name: Password reset
+        result[0].generation: dynamic
+      absent:
+        - data
+        - has_more
+
+  - name: a dynamic template id keeps its d- prefix
+    source: https://www.twilio.com/docs/sendgrid/api-reference/transactional-templates
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/templates
+      headers:
+        Authorization: Bearer SG.cauldron
+      json:
+        name: Invoice overdue
+    expect:
+      status: 201
+      body:
+        name: Invoice overdue
+        generation: dynamic
+      matches:
+        id: '^d-[A-Za-z0-9]{32}$'
+
+  - name: a bounce carries the SMTP status a retry decision depends on
+    source: https://www.twilio.com/docs/sendgrid/api-reference/bounces-api
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/suppression/bounces
+      headers:
+        Authorization: Bearer SG.cauldron
+    expect:
+      status: 200
+      body:
+        result[0].email: bounced@example.com
+        result[0].status: "5.1.1"
