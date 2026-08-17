@@ -121,3 +121,53 @@ func TestAnEmptyBodyClaimIsCheckedInBothDirections(t *testing.T) {
 		t.Error("a body should not satisfy a claim that there is no body")
 	}
 }
+
+// Three states, not two. A field can be absent, present and null, or present
+// and empty, and providers mean different things by each.
+//
+// AssemblyAI sends text: null on a queued transcript and utterances: null on
+// a completed one that did not ask for speaker labels. Neither is an absence
+// and neither is an empty value: the key is there and unusable, so a check for
+// the key passes and the value cannot be used. A checker that collapsed any of
+// these into the others would let a Recipe claim the wrong one.
+func TestNullIsNeitherAbsentNorEmpty(t *testing.T) {
+	document := map[string]any{
+		"text":       nil,
+		"utterances": nil,
+		"empty":      "",
+		"list":       []any{},
+	}
+
+	// Present and null is found, so an absence claim about it must fail.
+	if _, ok := lookup(document, "text"); !ok {
+		t.Error("a present null should be found, or absent would wrongly match it")
+	}
+
+	if _, ok := lookup(document, "never"); ok {
+		t.Error("an absent key should not be found")
+	}
+
+	// Null is not the empty string.
+	if failures := compare("text", "", document); len(failures) == 0 {
+		t.Error(`null should not match ""`)
+	}
+
+	// Nor an empty list.
+	if failures := compare("utterances", []any{}, document); len(failures) == 0 {
+		t.Error("null should not match an empty array")
+	}
+
+	// And the empty forms are not null either, in the other direction.
+	if failures := compare("empty", nil, document); len(failures) == 0 {
+		t.Error(`"" should not match null`)
+	}
+
+	if failures := compare("list", nil, document); len(failures) == 0 {
+		t.Error("an empty array should not match null")
+	}
+
+	// An absence claim is not satisfied by a present null.
+	if failures := check(recipe.Expectation{Absent: []string{"text"}}, nil, []byte(`{"text":null}`)); len(failures) == 0 {
+		t.Error("absent should not be satisfied by a present null")
+	}
+}

@@ -119,7 +119,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Hugging Face | Inference endpoints and model responses |
 | ElevenLabs | Speech generation, voices, async jobs |
 | Deepgram | Transcription and streaming |
-| AssemblyAI | Asynchronous transcription lifecycle |
+| ~~AssemblyAI~~ | Shipped. Failure at HTTP 200, present-and-null fields, ms against s |
 
 Streaming is the open question here. Cauldron serves whole responses, and
 server-sent events are a different shape. Whether that is modelled, or stated

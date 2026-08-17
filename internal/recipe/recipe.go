@@ -957,14 +957,20 @@ func (r *Recipe) Validate() error {
 			// A list field declared as one and then seeded with a scalar would
 			// serve the scalar and pass every case written about it, so the
 			// declaration has to mean something.
+			//
+			// An explicit null is allowed, because several providers send one
+			// and it is a distinct state from both an absent field and an
+			// empty array. AssemblyAI sends utterances: null on a transcript
+			// that succeeded without speaker labels, so a rule that refused
+			// null would block a true claim.
 			for i, record := range r.Fixtures[fixtureName][resourceName] {
 				for _, field := range sortedKeys(record) {
-					if resource.Fields[field].Type != "list" {
+					if resource.Fields[field].Type != "list" || record[field] == nil {
 						continue
 					}
 
 					if _, isList := record[field].([]any); !isList {
-						add("fixture %q record %d of %q sets list field %q to something that is not a sequence",
+						add("fixture %q record %d of %q sets list field %q to something that is neither a sequence nor null",
 							fixtureName, i, resourceName, field)
 					}
 				}
