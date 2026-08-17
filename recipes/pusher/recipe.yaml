@@ -1,0 +1,341 @@
+# Pusher Channels Recipe for Cauldron
+#
+# Pusher has no sandbox. A free app is a real app on a real cluster, and every
+# message a test publishes goes out to whatever is connected, which on a shared
+# development app is somebody else's browser. The free tier is metered at
+# 200,000 messages a day and 100 concurrent connections, so a suite that
+# publishes in a loop is spending a shared budget.
+#
+# The deeper problem is that publishing tells you nothing. There is no delivery
+# receipt, no message id, and no way to ask whether anybody received it, so a
+# test against the real service can only assert that the request was accepted.
+# That is exactly as much as a fake can assert, which makes the real service
+# worth nothing here and the emulator worth having.
+#
+# Four things worth modelling exactly:
+#
+#   1. Publishing answers with an empty object. Not an id, not a count, not a
+#      status: {}. There is nothing to correlate a later event with, and code
+#      that reads response.id gets undefined from a successful call.
+#   2. The channel list is a map keyed by channel name, not an array. Looping
+#      over it as a list finds nothing, and a channel with no occupants is
+#      absent from the map entirely rather than present with a zero.
+#   3. user_count and subscription_count are different numbers. One browser
+#      with three tabs is one user and three subscriptions, so a dashboard
+#      reading the wrong one is wrong by however many tabs people keep open.
+#      user_count exists only on presence channels.
+#   4. Failures are plain text, not JSON. Calling .json() on one throws rather
+#      than reporting the problem, which is the same trap Trello has and is
+#      worth reproducing for the same reason: a helpful emulator hides it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The auth_signature is an HMAC of the request and Cauldron does not
+#     verify it. The auth_key is checked, which catches an unconfigured or
+#     wrong app, and a request with a valid key and a wrong signature is
+#     accepted. Stated here rather than left to be discovered.
+#   - Cauldron serves no WebSocket. Channels are modelled as the state the
+#     HTTP API reports, not as a connection anything can subscribe to.
+#   - Webhooks from Pusher are signed with X-Pusher-Signature over the body,
+#     which is modelled, but channel_occupied and channel_vacated do not fire
+#     on their own: they are events a test emits.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: pusher
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://pusher.com/docs/channels/library_auth_reference/rest-api/
+
+auth:
+  # In the query string, like Trello. Reproducing that precisely is the point:
+  # the key ends up in access logs and browser history, and a header-based
+  # emulator would hide it.
+  scheme: query
+  param: auth_key
+  keys:
+    - cauldronappkey
+
+responses:
+  list:
+    # An object keyed by channel name, not an array. Looping over it as a
+    # list finds nothing, and a channel with no occupants is absent from the
+    # object entirely rather than present with a zero.
+    style: map
+    key: channels
+  resource:
+    style: bare
+  # Plain text. A client calling .json() on a failure throws rather than
+  # reporting it.
+  error:
+    style: text
+
+resources:
+  channel:
+    collection: channels
+    id:
+      style: opaque
+      length: 12
+    fields:
+      # True while anybody is connected. A channel nobody is on is absent
+      # from the list entirely rather than present with occupied false.
+      occupied:
+        type: boolean
+        default: true
+      # Distinct people, and only on a presence channel. Asking for it on any
+      # other kind is an error rather than a zero.
+      user_count:
+        type: integer
+      # Connections. One browser with three tabs is one user and three of
+      # these, so a dashboard reading the wrong one is wrong by however many
+      # tabs people keep open.
+      subscription_count:
+        type: integer
+
+  # Publishing. The response is an empty object, which is the whole point.
+  event:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      name:
+        type: string
+      channel:
+        type: string
+
+routes:
+  - method: POST
+    path: /apps/{app}/events
+    resource: event
+    operation: create
+    status: 200
+    # {} and nothing else. Not an id, not a count, not a status.
+    empty_body: true
+
+  - method: GET
+    path: /apps/{app}/channels
+    resource: channel
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /apps/{app}/channels/{id}
+    resource: channel
+    operation: get
+
+webhooks:
+  events:
+    - channel_occupied
+    - channel_vacated
+    - member_added
+    - member_removed
+    - client_event
+  signing:
+    scheme: hmac-sha256
+    header: X-Pusher-Signature
+    secret: cauldron-app-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    message: "Invalid signature: Expected HMAC SHA256 hex digest of the request, got a different one"
+
+  resource_missing:
+    status: 404
+    message: "Channel not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "Missing required parameter: {detail}"
+
+  # Asking for user_count on a channel that is not a presence channel. It is
+  # a 400 rather than a zero, so a dashboard that requests it for every
+  # channel fails on the first ordinary one.
+  user_count_unavailable:
+    status: 400
+    message: "Cannot retrieve the user count unless the channel is a presence channel"
+
+  # A message over 10KB is refused. The limit is on the body, so a payload
+  # that grew gradually fails at a size nobody chose.
+  message_too_large:
+    status: 413
+    message: "The data content of this event exceeds the allowed maximum (10240 bytes)"
+
+  # The app is over its daily message quota. Existing connections stay up and
+  # nothing new is delivered, so the application looks connected and silent.
+  quota_exceeded:
+    status: 403
+    message: "The app has exceeded its daily message quota"
+
+fixtures:
+  empty: {}
+
+  small-app:
+    channel:
+      # A presence channel. It has both counts, and they differ.
+      - id: presence-orders
+        occupied: true
+        # Four distinct people.
+        user_count: 4
+        # Seven connections, because three of them have two tabs open. A
+        # dashboard reading the wrong number is wrong by however many tabs
+        # people keep open.
+        subscription_count: 7
+      # A private channel. No user_count at all: asking for it is a 400
+      # rather than a zero.
+      - id: private-user-900
+        occupied: true
+        subscription_count: 2
+      # An ordinary public channel.
+      - id: notifications
+        occupied: true
+        subscription_count: 12
+
+# Conformance cases, read from Pusher's REST API reference rather than
+# observed against a live app. The verify report says so.
+conformance:
+  - name: publishing answers with an empty object
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#post-event-trigger-an-event
+    fixture: small-app
+    request:
+      method: POST
+      path: /apps/cauldron/events
+      query:
+        auth_key: cauldronappkey
+      json:
+        name: order-created
+        channel: notifications
+    expect:
+      # Accepted, and that is all anybody learns. There is no id to correlate
+      # a later event with, no delivery count, and no way to ask whether
+      # anybody received it.
+      status: 200
+      no_body: true
+
+  - name: the channel list is a map keyed by name
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#get-channels-fetch-info-for-multiple-channels
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels
+      query:
+        auth_key: cauldronappkey
+    expect:
+      status: 200
+      body:
+        # Keyed by channel name rather than an array of objects. Looping over
+        # it as a list finds nothing.
+        channels.presence-orders.user_count: 4
+        channels.notifications.subscription_count: 12
+      absent:
+        - channels[0]
+
+  - name: user_count and subscription_count are different numbers
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#get-channel-fetch-info-for-one-channel
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels/presence-orders
+      query:
+        auth_key: cauldronappkey
+    expect:
+      status: 200
+      body:
+        # Four people, seven connections. Three of them have two tabs open,
+        # and a dashboard reading the wrong number is wrong by exactly that.
+        user_count: 4
+        subscription_count: 7
+        occupied: true
+
+  - name: a non-presence channel has no user count at all
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#get-channel-fetch-info-for-one-channel
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels/private-user-900
+      query:
+        auth_key: cauldronappkey
+    expect:
+      status: 200
+      body:
+        subscription_count: 2
+      # Absent rather than zero. Asking Pusher for it explicitly is a 400, so
+      # a dashboard requesting it for every channel fails on the first
+      # ordinary one.
+      absent:
+        - user_count
+
+  - name: an empty channel is absent from the map rather than present
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#get-channels-fetch-info-for-multiple-channels
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels
+      query:
+        auth_key: cauldronappkey
+    expect:
+      status: 200
+      body:
+        channels.presence-orders.occupied: true
+      # Never occupied, so it is not in the map at all. Code that reads
+      # channels["quiet"].subscription_count throws rather than seeing zero.
+      absent:
+        - channels.quiet
+
+  - name: a failure is plain text rather than JSON
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels/never-existed
+      query:
+        auth_key: cauldronappkey
+    expect:
+      status: 404
+      # Not JSON at all. Calling .json() on this throws rather than reporting
+      # the problem, which is the same trap Trello has and is reproduced for
+      # the same reason.
+      #
+      # Both halves are asserted on purpose. body_matches alone would pass
+      # against a JSON body that happened to contain the same words, so the
+      # Content-Type is what actually pins down that this is text.
+      headers:
+        Content-Type: text/plain
+      body_matches: 'Channel not found'
+
+  - name: the credential travels in the query string
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#authentication
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels
+      headers:
+        # A header gets nowhere. Pusher wants the key in the URL, which is
+        # the exposure worth reproducing: it ends up in access logs and
+        # browser history.
+        Authorization: Bearer cauldronappkey
+    expect:
+      status: 401
+      body_matches: 'Invalid signature'
+
+  - name: a wrong key in the right place is still refused
+    source: https://pusher.com/docs/channels/library_auth_reference/rest-api/#authentication
+    fixture: small-app
+    request:
+      method: GET
+      path: /apps/cauldron/channels
+      query:
+        auth_key: not-the-app-key
+    expect:
+      status: 401
+      body_matches: 'Invalid signature'

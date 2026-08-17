@@ -148,7 +148,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Resend~~ | Shipped. last_event as the only history, restricted keys |
 | Amazon Pinpoint | Messaging and delivery events |
 | OneSignal | Push notifications, users, subscriptions |
-| Pusher | Channels, events, authentication |
+| ~~Pusher~~ | Shipped. Keyed channel map, empty publish response, text errors |
 | Ably | Realtime channels, presence, history |
 | Bird | SMS, WhatsApp, conversations |
 | Sinch | SMS, verification, messaging |

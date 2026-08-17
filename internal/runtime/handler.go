@@ -551,6 +551,37 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 	}
 
 	switch spec.Style {
+	case "map":
+		// Keyed by identifier rather than ordered. Pusher answers with an
+		// object of channel names, so looping over it as a list finds
+		// nothing, and a channel nobody is on is absent from the object
+		// entirely rather than present with a zero. The key is the
+		// identifier, so it does not repeat inside the value.
+		keyed := map[string]any{}
+
+		for _, record := range page.Records {
+			name, _ := record["id"].(string)
+			if name == "" {
+				continue
+			}
+
+			value := map[string]any{}
+
+			for field, held := range record {
+				if field == "id" {
+					continue
+				}
+
+				value[field] = held
+			}
+
+			keyed[name] = value
+		}
+
+		body := map[string]any{}
+		setPath(body, s.collectionName(resource, spec.Key), keyed)
+
+		return withFields(body, spec.Fields)
 	case "bare":
 		// GitHub and friends return the array itself, with paging in headers.
 		// A caller doing json.Unmarshal into a slice must not receive an object.

@@ -225,6 +225,20 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 		}
 	}
 
+	// Applied to the raw bytes, before anything tries to parse them. A
+	// provider whose failures are plain text has no assertable body
+	// otherwise, so the only claim available was its Content-Type.
+	if expect.BodyMatches != "" {
+		compiled, err := regexp.Compile(expect.BodyMatches)
+		switch {
+		case err != nil:
+			failures = append(failures, fmt.Sprintf("body_matches: %v", err))
+		case !compiled.Match(body):
+			failures = append(failures, fmt.Sprintf("body_matches: %q does not match %s",
+				strings.TrimSpace(string(body)), expect.BodyMatches))
+		}
+	}
+
 	// Checked before the early return below, and in both directions. A case
 	// claiming an empty body asserts nothing in body, matches or absent — it
 	// has nothing to assert them against — so leaving it until after that
