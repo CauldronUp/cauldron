@@ -366,3 +366,49 @@ func TestImportClearsRecordsTheSnapshotDoesNotHave(t *testing.T) {
 		t.Errorf("restoring an empty snapshot left %d records", s.Count("customer"))
 	}
 }
+
+func TestPageReportsTheTotalBeforePaging(t *testing.T) {
+	s := New(1)
+	s.Declare("ticket", "tkt_", 8)
+
+	for i := 0; i < 5; i++ {
+		if _, err := s.Create("ticket", Record{"subject": "one of five"}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+
+	page, err := s.List("ticket", "", 2)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if len(page.Records) != 2 {
+		t.Fatalf("page has %d records, want 2", len(page.Records))
+	}
+
+	// The total is what matched, not what fitted. A pagination UI cannot be
+	// built from the page length alone.
+	if page.Total != 5 {
+		t.Errorf("Total = %d, want 5", page.Total)
+	}
+}
+
+func TestTotalCountsTheFilteredViewOnly(t *testing.T) {
+	s := New(1)
+	s.Declare("ticket", "tkt_", 8)
+
+	for _, status := range []string{"open", "open", "solved"} {
+		if _, err := s.Create("ticket", Record{"status": status}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+
+	page, err := s.ListWhere("ticket", map[string]any{"status": "open"}, "", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if page.Total != 2 {
+		t.Errorf("Total = %d, want only the matching records", page.Total)
+	}
+}

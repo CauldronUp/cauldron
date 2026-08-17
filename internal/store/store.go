@@ -205,6 +205,10 @@ type Page struct {
 	HasMore bool
 	// NextCursor is the identifier to start the following page after.
 	NextCursor string
+	// Total is how many records matched before paging. Zendesk and Salesforce
+	// both report it, and a pagination UI written against one cannot be built
+	// from the page length alone.
+	Total int
 }
 
 // List returns up to limit records, starting after the given cursor. An empty
@@ -260,7 +264,7 @@ func (s *Store) ListWhere(resource string, where map[string]any, after string, l
 		}
 	}
 
-	page := Page{Records: []Record{}}
+	page := Page{Records: []Record{}, Total: len(matching)}
 
 	for i := start; i < len(matching) && len(page.Records) < limit; i++ {
 		page.Records = append(page.Records, c.records[matching[i]].Clone())

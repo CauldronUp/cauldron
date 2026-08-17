@@ -1,0 +1,373 @@
+# Zendesk Recipe for Cauldron
+#
+# Zendesk gives you a sandbox only on the higher plans, and a trial expires
+# while you are still building. Most integrations end up tested against the
+# production help desk, which means real tickets, real triggers, and real
+# emails to real customers if a test posts a public comment by mistake.
+#
+# Two things worth getting exactly right:
+#
+#   1. The error envelope reuses "error" as the code, not as an object. A
+#      response is {"error": "RecordNotFound", "description": "..."}, so code
+#      that reads error.message finds a string where it expected an object and
+#      usually throws on the property access rather than reporting the failure.
+#   2. A collection reports a total count separate from the page length. A
+#      pagination UI cannot be built from the page alone.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: zendesk
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.zendesk.com/api-reference/ticketing/introduction
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_oauth_token
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+    cursor_field: next_page
+  resource:
+    style: wrapped
+  # "error" carries the code, and the prose lives in "description". This trips
+  # up anyone who assumed the Stripe shape.
+  error:
+    style: flat
+    code_field: error
+    message_field: description
+
+resources:
+  ticket:
+    collection: tickets
+    id:
+      style: numeric
+    fields:
+      subject:
+        type: string
+        required: true
+      description:
+        type: string
+      # Zendesk's real lifecycle. Applications branch on every one of these.
+      status:
+        type: string
+        default: new
+      priority:
+        type: string
+        default: normal
+      type:
+        type: string
+        default: question
+      requester_id:
+        type: integer
+      assignee_id:
+        type: integer
+      tags:
+        type: string
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  user:
+    collection: users
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+      role:
+        type: string
+        default: end-user
+      verified:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+
+  organization:
+    collection: organizations
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      domain_names:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v2/tickets.json
+    resource: ticket
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /api/v2/tickets.json
+    resource: ticket
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/tickets/{id}.json
+    resource: ticket
+    operation: get
+
+  - method: PUT
+    path: /api/v2/tickets/{id}.json
+    resource: ticket
+    operation: update
+
+  - method: DELETE
+    path: /api/v2/tickets/{id}.json
+    resource: ticket
+    operation: delete
+
+  - method: GET
+    path: /api/v2/users.json
+    resource: user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /api/v2/users.json
+    resource: user
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/users/{id}.json
+    resource: user
+    operation: get
+
+  - method: GET
+    path: /api/v2/organizations.json
+    resource: organization
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+webhooks:
+  events:
+    - ticket.created
+    - ticket.updated
+    - ticket.solved
+    - user.created
+    - organization.created
+  signing:
+    scheme: hmac-sha256
+    header: X-Zendesk-Webhook-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: RateLimited
+    message: Number of allowed API requests per minute exceeded
+    headers:
+      Retry-After: "93"
+      X-Rate-Limit: "700"
+
+  authentication_error:
+    status: 401
+    code: Couldn't authenticate you
+    message: Couldn't authenticate you
+
+  resource_missing:
+    status: 404
+    code: RecordNotFound
+    message: Not found
+
+  parameter_missing:
+    status: 422
+    code: RecordInvalid
+    message: "Record validation errors: {detail} cannot be blank"
+
+  # Zendesk's own name for the state that surprises everyone: the account is
+  # over its plan limit and writes start failing while reads keep working.
+  too_many_records:
+    status: 422
+    code: TooManyValues
+    message: The account has reached its limit
+
+fixtures:
+  empty: {}
+
+  small-helpdesk:
+    ticket:
+      - id: "1"
+        subject: Cannot log in after password reset
+        description: The reset link says it has expired.
+        status: open
+        priority: high
+        requester_id: 100
+      - id: "2"
+        subject: Invoice query
+        description: The VAT line looks wrong.
+        status: pending
+        priority: normal
+        requester_id: 101
+      - id: "3"
+        subject: Feature request, dark mode
+        status: solved
+        priority: low
+        requester_id: 100
+    user:
+      - id: "100"
+        name: Ada Lovelace
+        email: ada@example.com
+        role: end-user
+        verified: true
+      - id: "101"
+        name: Grace Hopper
+        email: grace@example.com
+        role: end-user
+        verified: true
+    organization:
+      - id: "200"
+        name: Analytical Engines
+        domain_names: example.com
+
+# Conformance cases, read from Zendesk's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a single ticket is wrapped under its resource name
+    source: https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/#show-ticket
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets/1.json
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+    expect:
+      status: 200
+      body:
+        ticket:
+          id: "1"
+          status: open
+          priority: high
+      absent:
+        - id
+        - status
+
+  - name: a collection reports a total count, not just a page
+    source: https://developer.zendesk.com/api-reference/introduction/pagination/
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets.json
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+    expect:
+      status: 200
+      body:
+        # Two on this page, three in total. A pagination UI needs both.
+        count: 3
+        tickets[0].id: "1"
+        tickets[1].id: "2"
+      absent:
+        - tickets[2]
+        - data
+
+  - name: the error code lives in error, and the prose in description
+    source: https://developer.zendesk.com/api-reference/introduction/requests/#response-format
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/tickets/999999.json
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+    expect:
+      status: 404
+      body:
+        error: RecordNotFound
+        description: Not found
+      # Code reading error.message finds a string where it expected an object.
+      absent:
+        - error.message
+        - message
+
+  - name: creating a ticket answers 201 and wraps the new object
+    source: https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/#create-ticket
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v2/tickets.json
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+      json:
+        subject: Printer on fire
+        description: It is quite on fire.
+    expect:
+      status: 201
+      body:
+        ticket:
+          subject: Printer on fire
+          status: new
+          priority: normal
+          type: question
+      matches:
+        ticket.id: '^[0-9]+$'
+        ticket.created_at: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+
+  - name: a ticket without a subject is a 422 naming the field
+    source: https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/#create-ticket
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v2/tickets.json
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+      json:
+        description: No subject given
+    expect:
+      status: 422
+      body:
+        error: RecordInvalid
+      matches:
+        description: 'subject'
+
+  - name: a bad token is refused before any ticket is read
+    source: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+    request:
+      method: GET
+      path: /api/v2/tickets.json
+    expect:
+      status: 401
+      body:
+        error: Couldn't authenticate you
+
+  - name: users and organizations use the same envelope as tickets
+    source: https://developer.zendesk.com/api-reference/ticketing/users/users/
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/v2/users.json
+      headers:
+        Authorization: Bearer cauldron_oauth_token
+    expect:
+      status: 200
+      body:
+        count: 2
+        users[0].name: Ada Lovelace
+        users[0].role: end-user
