@@ -1,0 +1,427 @@
+# GitLab Recipe for Cauldron
+#
+# GitLab.com has no sandbox, and a self-managed instance for testing is a whole
+# deployment to keep alive. A token reaches real projects, and a test that
+# opens a merge request notifies reviewers, triggers pipelines that consume CI
+# minutes, and leaves a trail nobody wants in the history of a real repository.
+#
+# Three things worth modelling exactly, and the first two are the ones people
+# get wrong after working with GitHub:
+#
+#   1. A merge request that is "closed" was not merged. GitLab uses separate
+#      states, and closed means somebody rejected it. Code that treats
+#      anything terminal as merged ships changes that were declined.
+#   2. Project visibility has three values, not two. "internal" means visible
+#      to any signed-in user on the instance, which has no GitHub equivalent
+#      and is the setting that leaks a repository to a whole company.
+#   3. A pipeline can be "manual" or "skipped", neither of which is a pass or
+#      a failure. Treating "not success" as failure blocks a deploy on a
+#      pipeline that was never meant to run.
+#
+# Known fidelity gap, stated rather than hidden: GitLab pages with Link and
+# X-Total headers, which Cauldron does not model.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: gitlab
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://docs.gitlab.com/ee/api/rest/
+
+auth:
+  # GitLab's own header for a personal or project access token.
+  scheme: header
+  header: PRIVATE-TOKEN
+  keys:
+    - glpat-cauldron
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  project:
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      path_with_namespace:
+        type: string
+      description:
+        type: string
+      # Three values, not two. "internal" means visible to any signed-in user
+      # on the instance, which has no GitHub equivalent and is the setting
+      # that quietly exposes a repository to a whole company.
+      visibility:
+        type: string
+        default: private
+      default_branch:
+        type: string
+        default: main
+      # An archived project is read only and still returned by a listing.
+      archived:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+
+  merge_request:
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      # GitLab numbers merge requests per project, so iid is what appears in
+      # the URL and id is global. Using one where the other is expected finds
+      # a different merge request rather than nothing.
+      iid:
+        type: integer
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+      # opened, closed, merged, locked. Closed means rejected, not merged.
+      state:
+        type: string
+        default: opened
+      source_branch:
+        type: string
+      target_branch:
+        type: string
+        default: main
+      draft:
+        type: boolean
+        default: false
+      # Set only when it was actually merged. Absent on a closed one, which
+      # is how the two are told apart.
+      merged_at:
+        type: datetime
+        stamped: false
+      closed_at:
+        type: datetime
+        stamped: false
+      created_at:
+        type: datetime
+
+  pipeline:
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      ref:
+        type: string
+        default: main
+      sha:
+        type: string
+      # created, waiting_for_resource, preparing, pending, running, success,
+      # failed, canceled, skipped, manual, scheduled. Neither manual nor
+      # skipped is a pass or a failure.
+      status:
+        type: string
+        default: pending
+      source:
+        type: string
+        default: push
+      web_url:
+        type: string
+      created_at:
+        type: datetime
+      finished_at:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /api/v4/projects
+    resource: project
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /api/v4/projects/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /api/v4/projects/{project_id}/merge_requests
+    resource: merge_request
+    operation: list
+    scope: [project_id]
+    pagination:
+      style: page
+      limit: 20
+
+  - method: POST
+    path: /api/v4/projects/{project_id}/merge_requests
+    resource: merge_request
+    operation: create
+    scope: [project_id]
+    status: 201
+
+  - method: GET
+    path: /api/v4/projects/{project_id}/merge_requests/{id}
+    resource: merge_request
+    operation: get
+    scope: [project_id]
+
+  - method: PUT
+    path: /api/v4/projects/{project_id}/merge_requests/{id}
+    resource: merge_request
+    operation: update
+    scope: [project_id]
+
+  - method: GET
+    path: /api/v4/projects/{project_id}/pipelines
+    resource: pipeline
+    operation: list
+    scope: [project_id]
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /api/v4/projects/{project_id}/pipelines/{id}
+    resource: pipeline
+    operation: get
+    scope: [project_id]
+
+webhooks:
+  events:
+    - push
+    - merge_request
+    - pipeline
+    - issue
+    - note
+    - tag_push
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Retry later
+    headers:
+      Retry-After: "60"
+      RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    message: 401 Unauthorized
+
+  # GitLab puts the status code in the message, which support threads and log
+  # searches both rely on.
+  resource_missing:
+    status: 404
+    message: "404 {detail} Not Found"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is missing"
+
+  # A token without the right scope reads as a missing project, because
+  # GitLab deliberately does not confirm that a private project exists.
+  insufficient_scope:
+    status: 403
+    message: 403 Forbidden - Your account does not have the required permission
+
+  # GitLab refuses a merge request whose source and target are the same
+  # branch, which is what a badly configured automation produces.
+  same_branch:
+    status: 409
+    message: 409 Conflict - Source and target branch must differ
+
+fixtures:
+  empty: {}
+
+  small-instance:
+    project:
+      - id: "101"
+        name: cauldron
+        path_with_namespace: engineering/cauldron
+        visibility: private
+        default_branch: main
+      - id: "102"
+        name: handbook
+        path_with_namespace: engineering/handbook
+        # Visible to every signed-in user on the instance. No GitHub
+        # equivalent, and the setting that exposes a repository company-wide.
+        visibility: internal
+      - id: "103"
+        name: legacy
+        path_with_namespace: engineering/legacy
+        visibility: private
+        # Read only, and still returned by a listing.
+        archived: true
+    merge_request:
+      - id: "1001"
+        project_id: "101"
+        iid: 1
+        title: Add the conformance suite
+        state: merged
+        source_branch: conformance
+        merged_at: "2026-01-12T10:00:00Z"
+      - id: "1002"
+        project_id: "101"
+        iid: 2
+        title: Rejected approach
+        # Closed is not merged. Somebody said no.
+        state: closed
+        source_branch: other-approach
+        closed_at: "2026-01-13T15:30:00Z"
+      - id: "1003"
+        project_id: "101"
+        iid: 3
+        title: Draft, not ready
+        state: opened
+        draft: true
+        source_branch: wip
+    pipeline:
+      - id: "5001"
+        project_id: "101"
+        ref: main
+        status: success
+        finished_at: "2026-01-12T10:05:00Z"
+      - id: "5002"
+        project_id: "101"
+        ref: main
+        # Waiting for somebody to press the button. Not a pass, not a
+        # failure, and blocking a deploy on it is wrong.
+        status: manual
+      - id: "5003"
+        project_id: "101"
+        ref: docs-only
+        # Nothing to run. Also not a failure.
+        status: skipped
+
+# Conformance cases, read from GitLab's REST API documentation rather than
+# observed against a live instance. The verify report says so.
+conformance:
+  - name: a closed merge request was not merged
+    source: https://docs.gitlab.com/ee/api/merge_requests.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects/101/merge_requests/1002
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 200
+      body:
+        # Somebody said no. Code that treats anything terminal as merged
+        # ships changes that were declined.
+        state: closed
+        closed_at: "2026-01-13T15:30:00Z"
+      absent:
+        - merged_at
+
+  - name: a merged one has a merge date and no close date
+    source: https://docs.gitlab.com/ee/api/merge_requests.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects/101/merge_requests/1001
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 200
+      body:
+        state: merged
+        merged_at: "2026-01-12T10:00:00Z"
+      absent:
+        - closed_at
+
+  - name: visibility has three values, not two
+    source: https://docs.gitlab.com/ee/api/projects.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          visibility: private
+        # Visible to every signed-in user on the instance. Treating this as
+        # private is how a repository leaks company-wide.
+        '[1]':
+          visibility: internal
+        '[2]':
+          archived: true
+
+  - name: manual and skipped are neither passes nor failures
+    source: https://docs.gitlab.com/ee/api/pipelines.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects/101/pipelines
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          status: success
+        # Waiting for somebody to press the button.
+        '[1]':
+          status: manual
+        # Nothing to run.
+        '[2]':
+          status: skipped
+
+  - name: a pipeline that has not finished has no finish time
+    source: https://docs.gitlab.com/ee/api/pipelines.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects/101/pipelines/5002
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 200
+      body:
+        status: manual
+      absent:
+        - finished_at
+
+  - name: the error message carries the status code in it
+    source: https://docs.gitlab.com/ee/api/rest/
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects/999
+      headers:
+        PRIVATE-TOKEN: glpat-cauldron
+    expect:
+      status: 404
+      matches:
+        # Support threads and log searches both rely on this wording.
+        message: '^404 '
+      absent:
+        - error
+        - errors
+
+  - name: the token header is PRIVATE-TOKEN, not Authorization
+    source: https://docs.gitlab.com/ee/api/rest/authentication.html
+    fixture: small-instance
+    request:
+      method: GET
+      path: /api/v4/projects
+      headers:
+        Authorization: Bearer glpat-cauldron
+    expect:
+      status: 401
+      body:
+        message: 401 Unauthorized
