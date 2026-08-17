@@ -457,3 +457,51 @@ func TestACredentialCanBeCheckedByShape(t *testing.T) {
 		t.Errorf("a half-formed signature should be refused, got %d", code)
 	}
 }
+
+// Mux sends messages, plural, as an array: error.message is undefined and
+// error.messages[0] is the sentence, which is backwards from every other
+// provider in the collection. Writing the sentence into a field called
+// "messages" as a bare string would look right in a diff and be wrong on the
+// wire, so the Recipe says which it is with a [] marker.
+//
+// The nested style also used to drop responses.error.fields entirely, so a
+// Recipe could declare a constant on every error and have it ignored. Both are
+// checked here because both are about a declaration meaning what it says.
+func TestAnErrorMessageCanBeAnArray(t *testing.T) {
+	r, err := recipe.Open("mux")
+	if err != nil {
+		t.Fatalf("open mux: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/video/v1/assets/doesnotexist", nil)
+	req.SetBasicAuth("cauldron-token-id", "cauldron-mux-secret-key")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404\n%s", rec.Code, rec.Body)
+	}
+
+	failure, _ := decode(t, rec)["error"].(map[string]any)
+
+	messages, isList := failure["messages"].([]any)
+	if !isList || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want a one-element array", failure["messages"])
+	}
+
+	if text, ok := messages[0].(string); !ok || !strings.Contains(text, "Not Found") {
+		t.Errorf("messages[0] = %#v, want the sentence", messages[0])
+	}
+
+	// The singular must not be there beside it, or a client finds both shapes
+	// and picks whichever it was written for.
+	if _, present := failure["message"]; present {
+		t.Error("Mux sends no error.message, only error.messages")
+	}
+}
