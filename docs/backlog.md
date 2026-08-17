@@ -1,0 +1,195 @@
+# Provider backlog
+
+The providers queued for Recipes, roughly in the order they are worth doing.
+This is a working list, not a promise, and it exists so the queue survives
+between sessions rather than living in somebody's head.
+
+Two rules apply to everything here:
+
+1. **A Recipe has to earn its place.** The test is whether the provider has
+   behaviour worth reproducing — a third state nobody branches on, a shape that
+   breaks a client, an asynchronous outcome, a failure that only exists in
+   production. Linear and Attio were assessed and left out rather than
+   approximated, and that stays the standard. A thin Recipe that raises the
+   count is worse than an honest gap.
+2. **Every modelling limit gets stated in the Recipe header**, not discovered
+   later. Cauldron does not execute SOQL, GROQ or Algolia's search, and each of
+   those Recipes says so.
+
+## Cloud infrastructure
+
+| Provider | Why |
+|---|---|
+| AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
+| AWS SQS | Visibility timeout, retries, duplicate delivery, dead-letter queues |
+| AWS SNS | Topics, subscriptions, delivery failures |
+| AWS SES | Sending, bounces, complaints, the suppression list |
+| AWS DynamoDB | Conditional writes, pagination, typed attributes |
+| AWS Secrets Manager | Versions, rotation, missing secrets |
+| Google Cloud Storage | Objects, signed URLs, permissions |
+| Google Pub/Sub | Ack deadlines, redelivery, ordering |
+| Azure Blob Storage | Containers, blobs, SAS and auth behaviour |
+| Cloudflare R2 | Sits beside the existing Cloudflare Recipe |
+| Vultr | Instances, block storage, the async provisioning lifecycle |
+
+The queueing ones are the most valuable and the least like anything shipped so
+far: at-least-once delivery, a message that comes back after a visibility
+timeout, and a dead-letter queue are behaviours no fake reproduces by accident.
+
+## Payments and money
+
+| Provider | Why |
+|---|---|
+| PayPal | Payments, captures, refunds, disputes, webhooks |
+| Braintree | Transactions, customers, payment methods |
+| Mollie | Payment lifecycle and asynchronous states |
+| Wise Business | Transfers, recipients, balances, settlement states |
+| GoCardless | Mandates, direct debit, failed collections |
+| Brex | Cards, expenses, transactions |
+| Ramp | Cards, reimbursements, expenses |
+| Mercury | Accounts, transactions, transfers |
+
+## Commerce
+
+| Provider | Why |
+|---|---|
+| Shopify GraphQL Admin API | Separate from the REST Shopify Recipe, not a replacement |
+| BigCommerce | Orders, products, customers, webhooks |
+| Magento / Adobe Commerce | Carts, orders, inventory, customers |
+| Etsy | Listings, orders, receipts, inventory |
+| eBay | Listings, fulfilment, orders |
+| Amazon Selling Partner API | Orders, inventory, reports, throttling. Very large |
+
+## Shipping and logistics
+
+| Provider | Why |
+|---|---|
+| ShipStation | Shipments, labels, carriers, tracking |
+| EasyPost | Rates, shipments, labels, trackers |
+| ShipEngine | Rates, labels, tracking, carrier errors |
+| AfterShip | Tracking states, checkpoints, carrier behaviour |
+| Easyship | Rates, shipments, labels |
+| USPS | Addresses, rates, tracking |
+| UPS | Rating, labels, tracking |
+| FedEx | Rating, shipping, tracking |
+| DHL | Shipment lifecycle and international customs states |
+
+## Productivity and identity
+
+| Provider | Why |
+|---|---|
+| Microsoft Graph | Mail, calendars, users, files. Enormous surface area |
+| Google Calendar | Events, attendees, recurrence, cancellations |
+| Gmail | Threads, labels, drafts, messages |
+| Google Drive | Files, permissions, revisions, shared drives |
+| Microsoft OneDrive | Files, sharing, async operations |
+| Microsoft Teams | Channels, messages, members |
+| GitHub Actions | Could extend the GitHub Recipe, probably its own |
+| WorkOS | SSO, directory sync, audit logs |
+| Stytch | Authentication, sessions, organisations |
+| Descope | Authentication flows and identities |
+| FusionAuth | Users, tenants, applications |
+| Keycloak | Realms, users, clients, tokens |
+
+## Analytics and flags
+
+| Provider | Why |
+|---|---|
+| LaunchDarkly | Flags, environments, targeting, variations |
+| PostHog | Events, persons, feature flags |
+| Mixpanel | Events, profiles, exports |
+| Amplitude | Events, cohorts, user properties |
+
+## Models and inference
+
+| Provider | Why |
+|---|---|
+| OpenAI | Responses, streaming, tool calls, rate limits, structured output |
+| Anthropic | Messages, content blocks, tool use, streaming |
+| Google Gemini | Generation, multimodal requests, safety responses |
+| Pinecone | Indexes, namespaces, vectors, metadata filtering |
+| Replicate | Predictions, async jobs, failures |
+| Hugging Face | Inference endpoints and model responses |
+| ElevenLabs | Speech generation, voices, async jobs |
+| Deepgram | Transcription and streaming |
+| AssemblyAI | Asynchronous transcription lifecycle |
+
+Streaming is the open question here. Cauldron serves whole responses, and
+server-sent events are a different shape. Whether that is modelled, or stated
+as a gap, needs deciding before the first of these ships rather than after.
+
+## Data and messaging platforms
+
+| Provider | Why |
+|---|---|
+| Supabase | Auth, storage, database REST and realtime |
+| Redis Cloud | Keys, TTLs, streams, pub/sub |
+| Upstash | Redis REST, queues, rate limits |
+| MongoDB Atlas | Clusters, users, projects, the data API |
+| Neon | Branches, databases, endpoints |
+| PlanetScale | Databases, branches, deploy requests |
+| CockroachDB Cloud | Clusters, SQL users, operations |
+| Turso | Databases, replicas, tokens |
+| Confluent Cloud | Kafka topics, schemas, consumers |
+| Aiven | Managed databases, Kafka, service lifecycle |
+| CloudAMQP | RabbitMQ instances and queues |
+
+## Messaging and notifications
+
+| Provider | Why |
+|---|---|
+| Resend | Transactional email, domains, bounces, webhooks |
+| Amazon Pinpoint | Messaging and delivery events |
+| OneSignal | Push notifications, users, subscriptions |
+| Pusher | Channels, events, authentication |
+| Ably | Realtime channels, presence, history |
+| Bird | SMS, WhatsApp, conversations |
+| Sinch | SMS, verification, messaging |
+| Telnyx | SMS, voice, numbers |
+| Infobip | SMS, WhatsApp, verification |
+| WhatsApp Business Platform | Messages, templates, delivery states |
+
+## Documents and signatures
+
+| Provider | Why |
+|---|---|
+| Documenso | Signatures and document workflows |
+| Dropbox Sign | Signature requests and callbacks |
+| Adobe Acrobat Sign | Agreements and the signing lifecycle |
+| Ironclad | Contracts and approval workflows |
+| DocSpring | PDF generation and templates |
+
+## Tax, accounting and payroll
+
+| Provider | Why |
+|---|---|
+| TaxJar | Tax calculations, nexus, transactions |
+| Avalara | Sales tax calculations and filings |
+| Stripe Tax | Probably a specialised extension of the Stripe Recipe |
+| FreshBooks | Invoices, clients, expenses |
+| Sage | Accounting, contacts, invoices |
+| Zoho Books | Invoices, payments, contacts |
+| Wave | Accounting and invoicing |
+| Bill.com | Accounts payable and receivable, vendors, payments |
+| Gusto | Payroll, employees, contractors |
+| Deel | Workers, contracts, payroll |
+
+## Media
+
+| Provider | Why |
+|---|---|
+| Cloudinary | Assets, transformations, uploads |
+| Imgix | Image transformations and delivery |
+| Mux | Video assets, playback, processing states |
+| Vimeo | Uploads, videos, privacy |
+| YouTube Data API | Videos, playlists, channels |
+
+## Assessed and deliberately not done
+
+| Provider | Why not |
+|---|---|
+| Linear | GraphQL-only. A REST-shaped Recipe would be an approximation of a different API, and saying so is more useful than shipping one |
+| Attio | Same reason |
+
+Monday.com belongs here too, on the same grounds, unless the format grows a way
+to describe a GraphQL surface honestly.

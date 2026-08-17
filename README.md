@@ -401,6 +401,11 @@ These are the decisions the project intends to be held to.
 
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
+**More providers are queued.** [docs/backlog.md](docs/backlog.md) lists them,
+roughly in order, along with the two that were assessed and deliberately left
+out. A Recipe has to earn its place: the test is whether the provider has
+behaviour worth reproducing, not whether adding it raises the count.
+
 **Fidelity will be measured, not claimed.** The intent is that every Recipe carries a conformance suite run against the real provider, and that divergence is published rather than hidden. This is not built yet. The Recipes here are hand-modelled and unverified, and the status table says so.
 
 ## Contributing
