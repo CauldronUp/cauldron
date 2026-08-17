@@ -1,0 +1,404 @@
+# PagerDuty Recipe for Cauldron
+#
+# PagerDuty has no sandbox, and the thing you most want to test is the thing
+# you least want to trigger: an incident wakes somebody up. A free developer
+# account still pages whoever is on the schedule, so integrations get tested by
+# creating incidents and resolving them quickly, or not at all. Escalation
+# behaviour, which is the whole point of the product, is never exercised.
+#
+# Two things worth modelling exactly:
+#
+#   1. Authentication is not a bearer token. The header is
+#      "Token token=<key>", and sending "Bearer <key>" fails in a way that
+#      looks like a bad key rather than a bad scheme.
+#   2. The error is nested with a code and a message and an array of detail
+#      strings, and the code is PagerDuty's own numbering rather than the HTTP
+#      status. Code that reads error.type finds nothing.
+#
+# Known fidelity gap, stated rather than hidden: PagerDuty identifiers are
+# upper-case alphanumeric. Cauldron mints mixed case, so the shape is right and
+# the character set is not.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: pagerduty
+version: 0.1.0
+
+upstream:
+  api: "2"
+  docs: https://developer.pagerduty.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Not "Bearer ". Sending the wrong scheme reads like a bad key.
+  prefix: "Token token="
+  keys:
+    - cauldron_api_key
+
+responses:
+  list:
+    style: wrapped
+    count_field: total
+    has_more_field: more
+    cursor_field: offset
+  resource:
+    style: wrapped
+  error:
+    style: nested
+    # PagerDuty sends a code and a message. No type.
+    type_field: "-"
+
+resources:
+  incident:
+    collection: incidents
+    constants:
+      type: incident
+      self: https://api.pagerduty.com/incidents
+    id:
+      prefix: P
+      length: 6
+    fields:
+      incident_number:
+        type: integer
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+      # The lifecycle that matters. An acknowledged incident has stopped
+      # escalating; a triggered one has not, and code that treats the two the
+      # same lets a page keep climbing the rota.
+      status:
+        type: string
+        default: triggered
+      urgency:
+        type: string
+        default: high
+      service_id:
+        type: string
+      escalation_policy_id:
+        type: string
+      incident_key:
+        type: string
+      created_at:
+        type: datetime
+      last_status_change_at:
+        type: datetime
+
+  service:
+    collection: services
+    constants:
+      type: service
+    id:
+      prefix: P
+      length: 6
+    fields:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      status:
+        type: string
+        default: active
+      escalation_policy_id:
+        type: string
+      auto_resolve_timeout:
+        type: integer
+      acknowledgement_timeout:
+        type: integer
+      created_at:
+        type: datetime
+
+  escalation_policy:
+    collection: escalation_policies
+    constants:
+      type: escalation_policy
+    id:
+      prefix: P
+      length: 6
+    fields:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      num_loops:
+        type: integer
+        default: 2
+      on_call_handoff_notifications:
+        type: string
+        default: if_has_services
+
+routes:
+  - method: GET
+    path: /incidents
+    resource: incident
+    operation: list
+    pagination:
+      style: offset
+      limit: 25
+
+  - method: POST
+    path: /incidents
+    resource: incident
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /incidents/{id}
+    resource: incident
+    operation: get
+
+  - method: PUT
+    path: /incidents/{id}
+    resource: incident
+    operation: update
+
+  - method: GET
+    path: /services
+    resource: service
+    operation: list
+    pagination:
+      style: offset
+      limit: 25
+
+  - method: GET
+    path: /services/{id}
+    resource: service
+    operation: get
+
+  - method: GET
+    path: /escalation_policies
+    resource: escalation_policy
+    operation: list
+    pagination:
+      style: offset
+      limit: 25
+
+webhooks:
+  events:
+    - incident.triggered
+    - incident.acknowledged
+    - incident.resolved
+    - incident.escalated
+    - incident.reassigned
+    - incident.annotated
+  signing:
+    scheme: hmac-sha256
+    header: X-PagerDuty-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "2020"
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "30"
+
+  authentication_error:
+    status: 401
+    code: "2006"
+    message: Caller did not supply credentials or did not provide the correct credentials
+
+  resource_missing:
+    status: 404
+    code: "2100"
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "2001"
+    message: "Invalid Input Provided: {detail} is required"
+
+  # The From header is required to act on an incident as a person, and
+  # omitting it is the first wall an automation hits.
+  missing_from_header:
+    status: 400
+    code: "2001"
+    message: Requester User Not Found. The From header must contain a valid user email.
+
+  # PagerDuty deduplicates on incident_key, which is what stops a flapping
+  # monitor paging a hundred times and what an integration must get right.
+  duplicate_incident_key:
+    status: 400
+    code: "2002"
+    message: An incident with this incident_key already exists and is not resolved.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    escalation_policy:
+      - id: PPOLICY
+        name: Platform on-call
+        num_loops: 2
+    service:
+      - id: PSVC001
+        name: Checkout API
+        status: active
+        escalation_policy_id: PPOLICY
+        auto_resolve_timeout: 14400
+    incident:
+      - id: PINC001
+        incident_number: 1
+        title: Checkout latency above threshold
+        # Still escalating. Nobody has picked it up.
+        status: triggered
+        urgency: high
+        service_id: PSVC001
+        incident_key: checkout-latency
+      - id: PINC002
+        incident_number: 2
+        title: Disk usage warning
+        # Somebody is on it, so escalation has stopped.
+        status: acknowledged
+        urgency: low
+        service_id: PSVC001
+      - id: PINC003
+        incident_number: 3
+        title: Certificate expiring
+        status: resolved
+        urgency: low
+        service_id: PSVC001
+
+# Conformance cases, read from PagerDuty's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: the credential scheme is Token, not Bearer
+    source: https://developer.pagerduty.com/docs/authentication
+    fixture: small-account
+    request:
+      method: GET
+      path: /incidents
+      headers:
+        Authorization: Bearer cauldron_api_key
+    expect:
+      # Sending Bearer fails in a way that reads like a bad key rather than a
+      # bad scheme, which is exactly why it is worth reproducing.
+      status: 401
+      body:
+        error:
+          code: 2006
+      matches:
+        error.message: 'did not supply credentials'
+
+  - name: a single incident is wrapped under its resource name
+    source: https://developer.pagerduty.com/api-reference/9d0b4b12e36f9-get-an-incident
+    fixture: small-account
+    request:
+      method: GET
+      path: /incidents/PINC001
+      headers:
+        Authorization: Token token=cauldron_api_key
+    expect:
+      status: 200
+      body:
+        incident:
+          title: Checkout latency above threshold
+          status: triggered
+          urgency: high
+          type: incident
+      absent:
+        - id
+        - status
+
+  - name: an acknowledged incident has stopped escalating
+    source: https://developer.pagerduty.com/docs/incident-lifecycle
+    fixture: small-account
+    request:
+      method: GET
+      path: /incidents/PINC002
+      headers:
+        Authorization: Token token=cauldron_api_key
+    expect:
+      status: 200
+      body:
+        # Code that treats acknowledged and triggered the same lets a page
+        # keep climbing the rota after somebody has already picked it up.
+        incident:
+          status: acknowledged
+          urgency: low
+
+  - name: a collection reports a total and whether more remain
+    source: https://developer.pagerduty.com/docs/pagination
+    fixture: small-account
+    request:
+      method: GET
+      path: /incidents
+      query:
+        limit: "2"
+      headers:
+        Authorization: Token token=cauldron_api_key
+    expect:
+      status: 200
+      body:
+        total: 3
+        more: true
+        incidents[0].incident_number: 1
+        incidents[1].status: acknowledged
+      absent:
+        - incidents[2]
+        - data
+
+  - name: the error is nested with a code and a message and no type
+    source: https://developer.pagerduty.com/docs/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /incidents/PNOPE00
+      headers:
+        Authorization: Token token=cauldron_api_key
+    expect:
+      status: 404
+      body:
+        error:
+          code: 2100
+      matches:
+        error.message: 'Not Found'
+      # PagerDuty's code is its own numbering, not the HTTP status, and there
+      # is no type field at all.
+      absent:
+        - error.type
+        - message
+        - errors
+
+  - name: creating an incident answers 201 and starts it triggered
+    source: https://developer.pagerduty.com/api-reference/a7d81b0e9200f-create-an-incident
+    fixture: empty
+    request:
+      method: POST
+      path: /incidents
+      headers:
+        Authorization: Token token=cauldron_api_key
+      json:
+        title: Database connection pool exhausted
+        service_id: PSVC001
+    expect:
+      status: 201
+      body:
+        incident:
+          title: Database connection pool exhausted
+          # A new incident is escalating from the moment it exists.
+          status: triggered
+          urgency: high
+          type: incident
+      matches:
+        incident.id: '^P[A-Za-z0-9]{6}$'
+
+  - name: services carry the escalation policy that decides who is paged
+    source: https://developer.pagerduty.com/api-reference/f1d7b0b8d6b1c-list-services
+    fixture: small-account
+    request:
+      method: GET
+      path: /services
+      headers:
+        Authorization: Token token=cauldron_api_key
+    expect:
+      status: 200
+      body:
+        services[0].name: Checkout API
+        services[0].escalation_policy_id: PPOLICY
+        services[0].status: active
