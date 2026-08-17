@@ -149,7 +149,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Amazon Pinpoint | Messaging and delivery events |
 | OneSignal | Push notifications, users, subscriptions |
 | ~~Pusher~~ | Shipped. Keyed channel map, empty publish response, text errors |
-| Ably | Realtime channels, presence, history |
+| ~~Ably~~ | Shipped. 204 publish, newest-first history, capability as a string |
 | Bird | SMS, WhatsApp, conversations |
 | Sinch | SMS, verification, messaging |
 | Telnyx | SMS, voice, numbers |
