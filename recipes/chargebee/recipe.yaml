@@ -1,0 +1,426 @@
+# Chargebee Recipe for Cauldron
+#
+# Chargebee gives every account a test site, and it is a separate site with its
+# own plans, coupons and webhook endpoints that drift from live the moment
+# anybody edits either. The states worth exercising are the ones time produces:
+# a renewal, a dunning cycle running to its end, a trial converting. A test
+# site will not fast-forward, so those get tested by waiting or not at all.
+#
+# Two things worth modelling exactly:
+#
+#   1. Every item in a list is wrapped under its own resource name. A
+#      subscription list is {"list": [{"subscription": {...}}]}, so a client
+#      reads list[0].subscription.id and anyone indexing straight into the
+#      item finds nothing. Nothing else in this collection does that.
+#   2. A subscription in "non_renewing" is still serving. It will not renew,
+#      and it has not stopped, so code that revokes on anything other than
+#      "active" cuts off a customer who has paid through the period.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: chargebee
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://apidocs.chargebee.com/docs/api
+
+auth:
+  # Chargebee sends the API key as the Basic username with an empty password.
+  scheme: basic
+  keys:
+    - cauldron_test_key
+
+responses:
+  list:
+    style: wrapped
+    key: list
+    # Each item wrapped under its own resource name.
+    entry_style: wrapped
+    cursor_field: next_offset
+  error:
+    style: flat
+    type_field: type
+    code_field: api_error_code
+    message_field: message
+    fields:
+      # Chargebee's numeric code, kept alongside the string one for older
+      # clients that switched on it.
+      http_status_code: 400
+
+resources:
+  subscription:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      customer_id:
+        type: string
+      plan_id:
+        type: string
+        required: true
+      # future, in_trial, active, non_renewing, paused, cancelled.
+      # non_renewing is still serving; cancelled is not.
+      status:
+        type: string
+        default: active
+      plan_quantity:
+        type: integer
+        default: 1
+      # Minor units, as an integer, with the currency beside it.
+      plan_unit_price:
+        type: integer
+        default: 0
+      currency_code:
+        type: string
+        default: GBP
+      current_term_start:
+        type: timestamp
+      current_term_end:
+        type: timestamp
+      # Set only when it actually stops.
+      cancelled_at:
+        type: timestamp
+        stamped: false
+      trial_end:
+        type: timestamp
+        stamped: false
+
+  customer:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      first_name:
+        type: string
+      last_name:
+        type: string
+      email:
+        type: string
+      company:
+        type: string
+      # Whether Chargebee holds a usable payment method. Without one a
+      # renewal fails, and the customer looks healthy right up until it does.
+      auto_collection:
+        type: string
+        default: "on"
+      # excess_payments and promotional_credits are held in minor units too.
+      excess_payments:
+        type: integer
+        default: 0
+      created_at:
+        type: timestamp
+
+  invoice:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      customer_id:
+        type: string
+      subscription_id:
+        type: string
+      # paid, posted, payment_due, not_paid, voided, pending. payment_due is
+      # the one dunning is running against.
+      status:
+        type: string
+        default: payment_due
+      total:
+        type: integer
+        default: 0
+      amount_paid:
+        type: integer
+        default: 0
+      amount_due:
+        type: integer
+        default: 0
+      currency_code:
+        type: string
+        default: GBP
+      date:
+        type: timestamp
+      paid_at:
+        type: timestamp
+        stamped: false
+
+routes:
+  - method: GET
+    path: /api/v2/subscriptions
+    resource: subscription
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+
+  - method: GET
+    path: /api/v2/subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: GET
+    path: /api/v2/customers
+    resource: customer
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+
+  - method: GET
+    path: /api/v2/customers/{id}
+    resource: customer
+    operation: get
+
+  - method: POST
+    path: /api/v2/customers
+    resource: customer
+    operation: create
+
+  - method: GET
+    path: /api/v2/invoices
+    resource: invoice
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+
+  - method: GET
+    path: /api/v2/invoices/{id}
+    resource: invoice
+    operation: get
+
+webhooks:
+  events:
+    - subscription_created
+    - subscription_renewed
+    - subscription_cancelled
+    - subscription_changed
+    - payment_succeeded
+    - payment_failed
+    - invoice_generated
+    - dunning_started
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: api_request_limit_exceeded
+    type: operation_failed
+    message: Too many requests. Please retry later.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: api_authentication_failed
+    type: invalid_request
+    message: The API key is incorrect
+
+  resource_missing:
+    status: 404
+    code: resource_not_found
+    type: invalid_request
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: param_wrong_value
+    type: invalid_request
+    message: "{detail} is not present"
+
+  # The failures a test site will not produce for you on request.
+  payment_processing_failed:
+    status: 400
+    code: payment_processing_failed
+    type: payment
+    message: The payment could not be processed by the gateway
+
+  # Chargebee refuses to change a plan in a way that would produce a negative
+  # invoice, which is what a naive downgrade flow runs into.
+  invalid_state_for_request:
+    status: 400
+    code: invalid_state_for_request
+    type: invalid_request
+    message: The subscription is not in a state that allows this operation
+
+  # A duplicate id on create, which breaks a retried import halfway through.
+  duplicate_entry:
+    status: 400
+    code: duplicate_entry
+    type: invalid_request
+    message: The id is already present
+
+fixtures:
+  empty: {}
+
+  small-site:
+    customer:
+      - id: cus_cauldron1
+        first_name: Ada
+        last_name: Lovelace
+        email: ada@example.com
+        auto_collection: "on"
+      - id: cus_cauldron2
+        first_name: Grace
+        last_name: Hopper
+        email: grace@example.com
+        # No usable payment method. The next renewal fails, and nothing about
+        # this customer looks wrong until it does.
+        auto_collection: "off"
+    subscription:
+      - id: sub_active001
+        customer_id: cus_cauldron1
+        plan_id: pro-monthly
+        status: active
+        plan_unit_price: 2400
+        currency_code: GBP
+      - id: sub_nonrenew1
+        customer_id: cus_cauldron1
+        plan_id: pro-monthly
+        # Will not renew, and has not stopped. Revoking now cuts off a
+        # customer who has paid through the period.
+        status: non_renewing
+        plan_unit_price: 2400
+      - id: sub_cancelled
+        customer_id: cus_cauldron2
+        plan_id: starter
+        status: cancelled
+        plan_unit_price: 900
+        cancelled_at: 1767225600
+    invoice:
+      - id: inv_paid00001
+        customer_id: cus_cauldron1
+        subscription_id: sub_active001
+        status: paid
+        total: 2400
+        amount_paid: 2400
+        amount_due: 0
+        paid_at: 1767225600
+      - id: inv_duenow001
+        customer_id: cus_cauldron2
+        subscription_id: sub_cancelled
+        # Dunning is running against this one.
+        status: payment_due
+        total: 900
+        amount_paid: 0
+        amount_due: 900
+
+# Conformance cases, read from Chargebee's API reference rather than observed
+# against a live site. The verify report says so.
+conformance:
+  - name: every list item is wrapped under its resource name
+    source: https://apidocs.chargebee.com/docs/api/subscriptions
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/subscriptions
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # A client reads list[0].subscription.id. Anyone indexing straight
+        # into the item finds nothing, and nothing else in this collection
+        # of Recipes does it this way.
+        list[0].subscription.id: sub_active001
+        list[0].subscription.status: active
+        list[1].subscription.status: non_renewing
+      absent:
+        - list[0].id
+        - data
+
+  - name: non_renewing is still serving
+    source: https://apidocs.chargebee.com/docs/api/subscriptions
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/subscriptions/sub_nonrenew1
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # It will not renew, and it has not stopped. Revoking on anything
+        # other than active cuts off a customer who has paid through the
+        # period.
+        status: non_renewing
+      absent:
+        - cancelled_at
+
+  - name: a cancelled subscription has a cancellation time
+    source: https://apidocs.chargebee.com/docs/api/subscriptions
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/subscriptions/sub_cancelled
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        status: cancelled
+        cancelled_at: 1767225600
+
+  - name: a customer with auto collection off will fail at renewal
+    source: https://apidocs.chargebee.com/docs/api/customers
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/customers/cus_cauldron2
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # Nothing about this customer looks wrong until the renewal fails.
+        auto_collection: "off"
+        email: grace@example.com
+
+  - name: money is an integer in minor units
+    source: https://apidocs.chargebee.com/docs/api
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/invoices/inv_duenow001
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 200
+      body:
+        # Nine pounds. Treating it as pounds is out by a hundred.
+        total: 900
+        amount_due: 900
+        amount_paid: 0
+        status: payment_due
+      absent:
+        - paid_at
+
+  - name: the error carries both a type and a string code
+    source: https://apidocs.chargebee.com/docs/api/error-handling
+    fixture: small-site
+    request:
+      method: GET
+      path: /api/v2/subscriptions/sub_nosuch000
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXk6
+    expect:
+      status: 404
+      body:
+        type: invalid_request
+        api_error_code: resource_not_found
+      matches:
+        message: 'Resource not found'
+      absent:
+        - error
+        - errors
+
+  - name: a bad key is refused before any subscription is read
+    source: https://apidocs.chargebee.com/docs/api/auth
+    request:
+      method: GET
+      path: /api/v2/subscriptions
+    expect:
+      status: 401
+      body:
+        api_error_code: api_authentication_failed
+        type: invalid_request

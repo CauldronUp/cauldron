@@ -242,6 +242,12 @@ type ListResponse struct {
 	// {"object": "list"} on a collection and {"object": "page"} on a single
 	// page, so the two cannot share one set of envelope constants.
 	Fields map[string]any `yaml:"fields"`
+	// EntryStyle wraps each item in the collection under the resource's own
+	// name when set to "wrapped". Chargebee answers a subscription list with
+	// {"list": [{"subscription": {...}}]}, so a client reads
+	// list[0].subscription.id and anyone indexing straight into the item
+	// finds nothing.
+	EntryStyle string `yaml:"entry_style"`
 }
 
 // Resource is an object type the provider exposes.
@@ -612,6 +618,10 @@ func (r *Recipe) Validate() error {
 
 	if !contains(validErrStyles, r.Responses.Error.Style) {
 		add("responses.error.style %q must be one of %s", r.Responses.Error.Style, strings.Join(validErrStyles[1:], ", "))
+	}
+
+	if r.Responses.List.EntryStyle != "" && r.Responses.List.EntryStyle != "wrapped" {
+		add("responses.list.entry_style %q must be wrapped", r.Responses.List.EntryStyle)
 	}
 
 	if !contains(validListStyles, r.Responses.List.Style) {

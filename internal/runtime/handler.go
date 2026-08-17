@@ -504,13 +504,28 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 	spec := s.recipe.Responses.List
 	page.Records = s.presentAll(resource, page.Records)
 
+	// Chargebee wraps every item under the resource's own name, so a client
+	// reads list[0].subscription.id. Anyone indexing straight into the item
+	// finds nothing at all.
+	var items any = page.Records
+
+	if spec.EntryStyle == "wrapped" {
+		wrapped := make([]any, 0, len(page.Records))
+
+		for _, record := range page.Records {
+			wrapped = append(wrapped, map[string]any{resource: record})
+		}
+
+		items = wrapped
+	}
+
 	switch spec.Style {
 	case "bare":
 		// GitHub and friends return the array itself, with paging in headers.
 		// A caller doing json.Unmarshal into a slice must not receive an object.
-		return page.Records
+		return items
 	case "wrapped":
-		body := map[string]any{s.collectionName(resource, spec.Key): page.Records}
+		body := map[string]any{s.collectionName(resource, spec.Key): items}
 
 		if spec.CursorField != "" && page.NextCursor != "" {
 			setPath(body, spec.CursorField, page.NextCursor)
@@ -530,7 +545,7 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 	default:
 		body := map[string]any{
 			"object":   "list",
-			"data":     page.Records,
+			"data":     items,
 			"has_more": page.HasMore,
 		}
 
