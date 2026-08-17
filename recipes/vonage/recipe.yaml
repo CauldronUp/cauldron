@@ -1,0 +1,339 @@
+# Vonage Recipe for Cauldron
+#
+# Vonage sends real messages to real handsets and charges for every one. There
+# is no test mode on the SMS API: a test suite either spends money on each run
+# or never exercises the send path at all. The failures that matter, an
+# unroutable number, a spent balance, a message rejected by a carrier, arrive
+# only in production and only on somebody else's network.
+#
+# Two things worth modelling exactly, and both are the kind of thing a
+# well-behaved fake would tidy away:
+#
+#   1. Success is status "0", a string. In JavaScript and PHP that value is
+#      falsy, so `if (message.status)` treats every successful send as a
+#      failure and every failure as a success. Reproducing the string is the
+#      whole point.
+#   2. The field names are hyphenated: message-count, message-id,
+#      remaining-balance. They cannot be reached with dot notation in most
+#      languages, which is exactly the sort of thing a hand-written fake
+#      silently renames.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: vonage
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://developer.vonage.com/en/api/sms
+
+auth:
+  scheme: query
+  param: api_key
+  keys:
+    - cauldron-api-key
+
+responses:
+  list:
+    style: wrapped
+    key: messages
+    count_field: message-count
+  error:
+    style: flat
+    code_field: status
+    message_field: error-text
+
+resources:
+  message:
+    collection: messages
+    id:
+      style: hex
+      field: message-id
+      length: 16
+    fields:
+      to:
+        type: string
+        required: true
+      # A string zero. In JavaScript and PHP that is falsy, so
+      # `if (message.status)` gets it exactly backwards on every send.
+      status:
+        type: string
+        default: "0"
+      # Money as a decimal string. Adding two of these as floats is how a
+      # spend report drifts.
+      remaining-balance:
+        type: string
+        default: "10.00000000"
+      message-price:
+        type: string
+        default: "0.03330000"
+      network:
+        type: string
+      # Only present when something went wrong, which is how a client can
+      # tell a real failure from a status it did not recognise.
+      error-text:
+        type: string
+
+  number:
+    collection: numbers
+    id:
+      style: digits
+      field: msisdn
+      length: 12
+    fields:
+      country:
+        type: string
+        default: GB
+      type:
+        type: string
+        default: mobile-lvn
+      # Which features the number supports. Sending SMS from a voice-only
+      # number fails at send time and nothing earlier says so.
+      features:
+        type: string
+        default: SMS
+      cost:
+        type: string
+        default: "1.00"
+
+routes:
+  - method: POST
+    path: /sms/json
+    resource: message
+    operation: create
+
+  - method: GET
+    path: /account/numbers
+    resource: number
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /search/message
+    resource: message
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  # Vonage calls these delivery receipts and inbound message callbacks.
+  events:
+    - delivered
+    - expired
+    - failed
+    - rejected
+    - accepted
+    - buffered
+  signing:
+    scheme: hmac-sha256
+    header: Authorization
+    secret: cauldron-signature-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "1"
+    message: Throttled
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: "4"
+    message: Invalid credentials
+
+  resource_missing:
+    status: 404
+    code: "8"
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "2"
+    message: "Missing mandatory parameter: {detail}"
+
+  # The failures that only exist once a message reaches a real network, and
+  # that a paid send is the only other way to see.
+  insufficient_balance:
+    status: 402
+    code: "9"
+    message: Partner quota violation
+
+  illegal_number:
+    status: 400
+    code: "15"
+    message: Illegal Sender Address, rejected by the destination network
+
+  unroutable:
+    status: 400
+    code: "6"
+    message: The number is unroutable on this network
+
+  # A number that cannot send SMS at all, which fails at send time and
+  # nothing earlier warns about.
+  invalid_message_class:
+    status: 400
+    code: "12"
+    message: The number does not support this message type
+
+fixtures:
+  empty: {}
+
+  small-account:
+    number:
+      - id: "447700900001"
+        country: GB
+        type: mobile-lvn
+        features: SMS
+        cost: "1.00"
+      - id: "447700900002"
+        country: GB
+        type: landline
+        # Voice only. Sending SMS from this fails at send time and nothing
+        # earlier says so.
+        features: VOICE
+        cost: "1.00"
+    message:
+      - id: "0a00000000000001"
+        to: "447700900123"
+        # Success. A string zero, which is falsy in JavaScript and PHP.
+        status: "0"
+        network: "23410"
+        message-price: "0.03330000"
+        remaining-balance: "9.96670000"
+      - id: "0a00000000000002"
+        to: "447700900999"
+        # Failure. The code is a different string, and error-text is present
+        # only here.
+        status: "6"
+        error-text: The number is unroutable on this network
+        remaining-balance: "9.96670000"
+
+# Conformance cases, read from Vonage's SMS API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: success is the string zero
+    source: https://developer.vonage.com/en/api/sms
+    fixture: small-account
+    request:
+      method: GET
+      path: /search/message
+      query:
+        api_key: cauldron-api-key
+    expect:
+      status: 200
+      body:
+        # A string, and zero. `if (message.status)` treats this successful
+        # send as a failure and the failed one below as a success.
+        messages[0].status: "0"
+        messages[1].status: "6"
+
+  - name: only a failed message carries error text
+    source: https://developer.vonage.com/en/api/sms
+    fixture: small-account
+    request:
+      method: GET
+      path: /search/message
+      query:
+        api_key: cauldron-api-key
+    expect:
+      status: 200
+      body:
+        messages[1].error-text: The number is unroutable on this network
+      # Its presence is how a client tells a real failure from a status it
+      # did not recognise, so stamping one on the success would remove the
+      # only reliable signal.
+      absent:
+        - messages[0].error-text
+
+  - name: the field names are hyphenated
+    source: https://developer.vonage.com/en/api/sms
+    fixture: small-account
+    request:
+      method: GET
+      path: /search/message
+      query:
+        api_key: cauldron-api-key
+    expect:
+      status: 200
+      body:
+        # Not reachable with dot notation in most languages, which is exactly
+        # what a hand-written fake silently renames.
+        message-count: 2
+        messages[0].message-id: "0a00000000000001"
+        messages[0].remaining-balance: "9.96670000"
+      absent:
+        - messages[0].id
+        - message_count
+
+  - name: money is a decimal string
+    source: https://developer.vonage.com/en/api/sms
+    fixture: small-account
+    request:
+      method: GET
+      path: /search/message
+      query:
+        api_key: cauldron-api-key
+    expect:
+      status: 200
+      body:
+        # Adding two of these as floats is how a spend report drifts.
+        messages[0].message-price: "0.03330000"
+        messages[0].remaining-balance: "9.96670000"
+
+  - name: a voice-only number cannot send SMS
+    source: https://developer.vonage.com/en/api/numbers
+    fixture: small-account
+    request:
+      method: GET
+      path: /account/numbers
+      query:
+        api_key: cauldron-api-key
+    expect:
+      status: 200
+      body:
+        numbers[0].features: SMS
+        # Sending from this one fails at send time, and nothing earlier in
+        # the flow warns about it.
+        numbers[1].features: VOICE
+        numbers[1].msisdn: "447700900002"
+      absent:
+        - numbers[1].id
+
+  - name: the credential travels in the query string
+    source: https://developer.vonage.com/en/getting-started/concepts/authentication
+    fixture: small-account
+    request:
+      method: GET
+      path: /account/numbers
+    expect:
+      # Vonage puts the key in the URL, so it ends up in access logs. A
+      # header-based fake would hide that.
+      status: 401
+      body:
+        status: 4
+      matches:
+        error-text: 'Invalid credentials'
+
+  - name: a send answers with the same message shape
+    source: https://developer.vonage.com/en/api/sms
+    fixture: empty
+    request:
+      method: POST
+      path: /sms/json
+      query:
+        api_key: cauldron-api-key
+      form:
+        to: "447700900123"
+    expect:
+      status: 200
+      body:
+        status: "0"
+      matches:
+        message-id: '^[0-9a-f]{16}$'
+      absent:
+        - error-text
+        - id
