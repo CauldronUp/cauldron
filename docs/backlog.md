@@ -152,7 +152,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Ably~~ | Shipped. 204 publish, newest-first history, capability as a string |
 | Bird | SMS, WhatsApp, conversations |
 | Sinch | SMS, verification, messaging |
-| Telnyx | SMS, voice, numbers |
+| ~~Telnyx~~ | Shipped. Per-recipient status, cost after the fact, silent MMS |
 | Infobip | SMS, WhatsApp, verification |
 | WhatsApp Business Platform | Messages, templates, delivery states |
 

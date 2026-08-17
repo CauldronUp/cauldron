@@ -1,0 +1,454 @@
+# Telnyx Recipe for Cauldron
+#
+# Telnyx has no sandbox. A test key does not exist: there are test numbers you
+# can send to, and sending to them still costs money and still goes through
+# the real network. Sending to a wrong number sends a real message to a real
+# person, and there is no undo on an SMS.
+#
+# It is the second SMS provider in this collection after Twilio, and the two
+# disagree in ways worth having side by side. Twilio's error codes are
+# integers and its status field is called status; Telnyx nests everything
+# under data, uses a per-recipient status array, and its errors are objects
+# with string codes in a list. Code moved between them finds nothing at any
+# level.
+#
+# Four things worth modelling exactly:
+#
+#   1. A message has no single status. It has one per recipient, under a to
+#      array, so a message sent to three numbers can be delivered to two and
+#      undelivered to the third. Reading a top-level status finds nothing.
+#   2. Accepted is not delivered, and it is not even sent. The initial status
+#      is queued, and delivery_failed arrives minutes later on a webhook, so
+#      a 200 from the send is a receipt for the request.
+#   3. Cost is absent until the message is finished, so reading it after a
+#      send gives undefined rather than zero. A spend tracker that sums it
+#      at send time sums nothing.
+#   4. A number that cannot receive SMS still accepts a send. Telnyx reports
+#      it as undelivered afterwards with a code, which means validation of
+#      the destination happens after the money is spent rather than before.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is sent here, and delivery status arrives by webhook in the
+#     real thing. The events are declared, but a message does not progress on
+#     its own: which status it holds is what a fixture puts there.
+#   - Telnyx has both a v2 REST API and a legacy v1. This targets v2.
+#   - Number ordering, porting and the voice APIs are not modelled.
+#
+# Keys and numbers below are fixtures. The numbers are in the ranges reserved
+# for documentation and cannot be dialled.
+
+recipe: telnyx
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.telnyx.com/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - KEYcauldron00000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: meta.total_results
+    cursor_field: meta.next_page
+  resource:
+    style: wrapped
+    key: data
+  # A list of objects, each with a string code and a title, under errors.
+  # Twilio sends one integer code at the top level, which is why code moved
+  # between the two finds nothing.
+  error:
+    style: list
+    key: errors
+    code_field: code
+    code_type: string
+    message_field: detail
+    type_field: title
+
+resources:
+  message:
+    collection: data
+    constants:
+      record_type: message
+    id:
+      style: uuid
+    fields:
+      # Per recipient, under a to array. A message to three numbers can be
+      # delivered to two and undelivered to the third, and there is no single
+      # answer to "did it arrive".
+      to:
+        type: list
+      from_phone_number:
+        type: string
+        in: from
+        as: phone_number
+      from_carrier:
+        type: string
+        in: from
+        as: carrier
+      text:
+        type: string
+      # SMS or MMS. Telnyx picks it from the content, so a message with an
+      # emoji or a long body silently becomes a different product at a
+      # different price.
+      type:
+        type: string
+        default: SMS
+      # How many segments the body was split into. Billing is per segment,
+      # so a message that looks like one costs three.
+      parts:
+        type: integer
+        default: 1
+      # Absent until the message is finished. Reading it after a send gives
+      # undefined rather than zero, so a spend tracker that sums at send time
+      # sums nothing.
+      cost_amount:
+        type: string
+        in: cost
+        as: amount
+      cost_currency:
+        type: string
+        in: cost
+        as: currency
+      # When Telnyx accepted it, which is not when anybody received it.
+      received_at:
+        type: string
+      sent_at:
+        type: string
+      completed_at:
+        type: string
+
+  phone_number:
+    collection: data
+    constants:
+      record_type: phone_number
+    id:
+      style: uuid
+    fields:
+      phone_number:
+        type: string
+        required: true
+      # active, pending, port-pending, deleted. A number in pending exists,
+      # is listed, is billed, and cannot send.
+      status:
+        type: string
+        default: pending
+      # What the number can actually do. A voice-only number accepts an SMS
+      # send request and the message is undelivered afterwards.
+      messaging_profile_id:
+        type: string
+      connection_id:
+        type: string
+      purchased_at:
+        type: string
+
+routes:
+  - method: POST
+    path: /v2/messages
+    resource: message
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v2/messages/{id}
+    resource: message
+    operation: get
+
+  - method: GET
+    path: /v2/phone_numbers
+    resource: phone_number
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /v2/phone_numbers/{id}
+    resource: phone_number
+    operation: get
+
+webhooks:
+  events:
+    - message.sent
+    - message.finalized
+    - message.received
+  signing:
+    scheme: hmac-sha256
+    header: telnyx-signature-ed25519
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "10008"
+    type: Too many requests
+    message: The request rate limit has been exceeded.
+
+  authentication_error:
+    status: 401
+    code: "10009"
+    type: Authentication failed
+    message: "The API key is invalid."
+
+  resource_missing:
+    status: 404
+    code: "10005"
+    type: Resource not found
+    message: "The requested resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: "10002"
+    type: Invalid parameters
+    message: "{detail} is required"
+
+  # A number the account does not own. It reads as a validation failure and
+  # is a permissions one, which sends people looking at the number format.
+  number_not_owned:
+    status: 403
+    code: "40300"
+    type: Forbidden
+    message: The from number does not belong to this account.
+
+  # The destination is on a do-not-contact list. Telnyx refuses this one up
+  # front, unlike an unreachable number, which it accepts and reports later.
+  blocked_destination:
+    status: 422
+    code: "40001"
+    type: Invalid parameters
+    message: The destination number is blocked for this account.
+
+  # The account is out of credit. Sends stop and everything already accepted
+  # carries on, so the queue drains and nothing new joins it.
+  insufficient_balance:
+    status: 403
+    code: "40004"
+    type: Forbidden
+    message: The account balance is insufficient to send this message.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    phone_number:
+      - id: 11111111-1111-4111-8111-111111111111
+        phone_number: "+15005550001"
+        status: active
+        messaging_profile_id: 40017777-0000-4000-8000-000000000001
+        purchased_at: "2026-01-02T09:00:00Z"
+      # Bought and not yet usable. Listed, billed, and it cannot send.
+      - id: 22222222-2222-4222-8222-222222222222
+        phone_number: "+15005550002"
+        status: pending
+      # Voice only, so it has no messaging profile. A send from it is
+      # accepted and the message is undelivered afterwards.
+      - id: 33333333-3333-4333-8333-333333333333
+        phone_number: "+15005550003"
+        status: active
+        connection_id: "1234567890"
+
+    message:
+      # Sent to three numbers with three different outcomes. There is no
+      # single answer to "did it arrive".
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        from_phone_number: "+15005550001"
+        from_carrier: Telnyx
+        text: Your order has shipped.
+        type: SMS
+        parts: 1
+        to:
+          - phone_number: "+15005550100"
+            status: delivered
+            carrier: Example Mobile
+          - phone_number: "+15005550101"
+            status: sending_failed
+            carrier: Example Mobile
+          - phone_number: "+15005550102"
+            # Accepted, and nothing has happened yet. Not a failure.
+            status: queued
+        cost_amount: "0.0120"
+        cost_currency: USD
+        received_at: "2026-01-15T09:00:00Z"
+        sent_at: "2026-01-15T09:00:01Z"
+        completed_at: "2026-01-15T09:00:04Z"
+      # Just accepted. No cost yet, because the message has not finished, so
+      # reading it now gives undefined rather than zero.
+      - id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+        from_phone_number: "+15005550001"
+        text: A second message.
+        type: SMS
+        parts: 1
+        to:
+          - phone_number: "+15005550100"
+            status: queued
+        received_at: "2026-01-15T09:05:00Z"
+      # A long body with an emoji. Telnyx made it an MMS across three
+      # segments, so it looks like one message and costs three of a different
+      # product.
+      - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+        from_phone_number: "+15005550001"
+        text: A much longer body than the others, long enough to be split, with an emoji in it.
+        type: MMS
+        parts: 3
+        to:
+          - phone_number: "+15005550100"
+            status: delivered
+        cost_amount: "0.0360"
+        cost_currency: USD
+        completed_at: "2026-01-15T09:10:00Z"
+
+# Conformance cases, read from the Telnyx v2 API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a message has one status per recipient
+    source: https://developers.telnyx.com/api/messaging/retrieve-message
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Delivered, failed and still queued, on one message. There is no
+        # single answer to "did it arrive", and a top-level status does not
+        # exist to read.
+        data.to[0].status: delivered
+        data.to[1].status: sending_failed
+        data.to[2].status: queued
+      absent:
+        - data.status
+        - status
+
+  - name: an accepted message has no cost yet
+    source: https://developers.telnyx.com/api/messaging/retrieve-message
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        data.to[0].status: queued
+      # Absent until the message finishes, so a spend tracker that sums cost
+      # at send time sums nothing and reports zero spend.
+      absent:
+        - data.cost
+        - data.completed_at
+
+  - name: a finished message reports cost as a string
+    source: https://developers.telnyx.com/api/messaging/retrieve-message
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Four decimal places, as text. Adding two of these in JavaScript
+        # concatenates, and rounding to two loses the fractions that make up
+        # a monthly bill.
+        data.cost.amount: "0.0120"
+        data.cost.currency: USD
+
+  - name: a long message silently becomes a different product
+    source: https://developers.telnyx.com/api/messaging/send-message
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/cccccccc-cccc-4ccc-8ccc-cccccccccccc
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        # One message to one recipient, billed as three segments of MMS. The
+        # caller asked for none of that and nothing warned them.
+        data.type: MMS
+        data.parts: 3
+        data.cost.amount: "0.0360"
+
+  - name: an ordinary message is one segment of SMS
+    source: https://developers.telnyx.com/api/messaging/send-message
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The same shape as the one above, and the only difference is what
+        # the body happened to contain.
+        data.type: SMS
+        data.parts: 1
+
+  - name: a pending number is listed and cannot send
+    source: https://developers.telnyx.com/api/numbers/list-phone-numbers
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/phone_numbers
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].status: active
+        # Bought, listed, billed, and unusable.
+        data[1].status: pending
+
+  - name: a voice only number has no messaging profile
+    source: https://developers.telnyx.com/api/numbers/retrieve-phone-number
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/phone_numbers/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Active, and it cannot send an SMS. A send from it is accepted and
+        # the message is undelivered afterwards, so the destination is
+        # validated after the money is spent rather than before.
+        data.status: active
+        data.connection_id: "1234567890"
+      absent:
+        - data.messaging_profile_id
+
+  - name: failures are objects in a list with string codes
+    source: https://developers.telnyx.com/api/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/messages/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer KEYcauldron00000000000000000000000
+    expect:
+      status: 404
+      body:
+        # A string code and a title, in an array. Twilio sends one integer
+        # code at the top level, so code moved between the two finds nothing
+        # at any level.
+        errors[0].code: "10005"
+        errors[0].title: Resource not found
+      matches:
+        errors[0].detail: 'could not be found'
+      absent:
+        - code
+        - message
+        - error
