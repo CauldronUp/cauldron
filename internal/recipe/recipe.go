@@ -234,6 +234,10 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// CountAsString sends the counts as strings. Docusign does, and code that
+	// compares totalSetSize to a number never matches, so emitting a number
+	// here would quietly fix a bug the caller has to handle.
+	CountAsString bool `yaml:"count_as_string"`
 	// HasMoreField names a boolean saying whether more pages remain. The
 	// envelope style always sends has_more because Stripe does; other styles
 	// send one only when the Recipe says so.

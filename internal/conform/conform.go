@@ -337,8 +337,19 @@ func compareValue(path string, want, got any) []string {
 		return failures
 
 	default:
-		// YAML and JSON disagree about number types (int64 against float64),
-		// and a case author should not have to care. Compare the rendered form.
+		// A string "0" is not the number 0, and telling them apart is the
+		// whole point of several Recipes: Vonage says a send succeeded with
+		// the string "0", and Docusign counts with strings. Comparing only
+		// the rendered form let those cases pass either way.
+		//
+		// Within a kind the rendering is still what counts, because YAML and
+		// JSON disagree about integer and float types and a case author
+		// should not have to care.
+		if kindOf(want) != kindOf(got) {
+			return []string{fmt.Sprintf("%s: want %s %s, got %s %s",
+				path, kindOf(want), text(want), kindOf(got), text(got))}
+		}
+
 		if text(want) != text(got) {
 			return []string{fmt.Sprintf("%s: want %s, got %s", path, text(want), text(got))}
 		}
@@ -456,6 +467,25 @@ func text(value any) string {
 		}
 
 		return string(encoded)
+	}
+}
+
+// kindOf collapses a value to the distinction that matters on the wire:
+// whether it is text, a number, a boolean or null. Integer and float are the
+// same kind, because JSON and YAML disagree about which one a literal is and
+// no provider distinguishes them.
+func kindOf(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "the string"
+	case bool:
+		return "the boolean"
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "the number"
+	default:
+		return "the value"
 	}
 }
 

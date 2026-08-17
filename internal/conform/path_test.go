@@ -59,3 +59,38 @@ func TestLookupFindsAFieldNamedWithALeadingDot(t *testing.T) {
 		t.Error("an unescaped leading dot should not resolve")
 	}
 }
+
+// A string "0" is not the number 0, and telling them apart is the whole point
+// of several Recipes: Vonage reports a successful send with the string "0" and
+// Docusign counts with strings. Comparing only the rendered form let those
+// cases pass whichever the emulator sent.
+func TestScalarsCompareByKindAsWellAsValue(t *testing.T) {
+	document := map[string]any{
+		"stringZero": "0",
+		"numberZero": float64(0),
+		"count":      "4",
+	}
+
+	if failures := compare("stringZero", "0", document); len(failures) != 0 {
+		t.Errorf("a string against a string should match: %v", failures)
+	}
+
+	// The bug this test exists for: without a kind check these pass.
+	if failures := compare("stringZero", float64(0), document); len(failures) == 0 {
+		t.Error("the number 0 should not match the string \"0\"")
+	}
+
+	if failures := compare("numberZero", "0", document); len(failures) == 0 {
+		t.Error("the string \"0\" should not match the number 0")
+	}
+
+	if failures := compare("count", 4, document); len(failures) == 0 {
+		t.Error("the number 4 should not match the string \"4\"")
+	}
+
+	// Integer and float are the same kind, because YAML and JSON disagree
+	// about which one a literal is and no provider distinguishes them.
+	if failures := compare("numberZero", 0, document); len(failures) != 0 {
+		t.Errorf("an int should match a float of the same value: %v", failures)
+	}
+}
