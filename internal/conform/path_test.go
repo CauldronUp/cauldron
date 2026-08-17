@@ -1,6 +1,11 @@
 package conform
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+
+	"github.com/CauldronUp/cauldron/internal/recipe"
+)
 
 // Dropbox names a field ".tag", where the leading dot is part of the name
 // rather than a separator. Without an escape there is no way to assert on it,
@@ -92,5 +97,27 @@ func TestScalarsCompareByKindAsWellAsValue(t *testing.T) {
 	// about which one a literal is and no provider distinguishes them.
 	if failures := compare("numberZero", 0, document); len(failures) != 0 {
 		t.Errorf("an int should match a float of the same value: %v", failures)
+	}
+}
+
+// Salesforce answers an update with 204 and nothing at all, so a client calling
+// .json() on the response throws rather than seeing that the update worked. A
+// case claiming that has nothing to put in body, matches or absent — there is
+// no body to put a claim against — and check returned early whenever all three
+// were empty, so the claim was never checked. The case passed whatever the
+// emulator sent, including a full record.
+func TestAnEmptyBodyClaimIsCheckedInBothDirections(t *testing.T) {
+	response := &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{}}
+	expect := recipe.Expectation{Status: http.StatusNoContent, NoBody: true}
+
+	if failures := check(expect, response, nil); len(failures) != 0 {
+		t.Errorf("an empty body should satisfy the claim: %v", failures)
+	}
+
+	// The bug this test exists for: without the check moved above the early
+	// return, this passes.
+	failures := check(expect, response, []byte(`{"Id":"001cauldron000001A"}`))
+	if len(failures) == 0 {
+		t.Error("a body should not satisfy a claim that there is no body")
 	}
 }

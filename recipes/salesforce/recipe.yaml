@@ -1,0 +1,554 @@
+# Salesforce Recipe for Cauldron
+#
+# Salesforce gives you scratch orgs and sandboxes, and they are the most
+# expensive test environment in this collection to keep honest. A sandbox is a
+# copy of production taken at a moment in time, and refreshing one takes hours
+# and throws away everything the tests put there. A scratch org expires after
+# thirty days, starts empty, and has to be rebuilt from a definition file and a
+# pile of metadata before a single test can run. Both are rate limited by API
+# call count per twenty-four hours, shared across everything the org does, so a
+# CI suite competes with the integration it is testing.
+#
+# Five things worth modelling exactly:
+#
+#   1. Every record carries an attributes object holding its type and its own
+#      URL. Code that iterates a record's keys and treats each one as a field
+#      hits attributes first, and code that diffs two records finds them
+#      different because their URLs differ.
+#   2. Field names are capitalised, and custom fields end in __c. A client
+#      reading record.id or record.name finds nothing, because they are Id and
+#      Name.
+#   3. A query answers with totalSize, done and records. When done is false
+#      there is a nextRecordsUrl that has to be followed, and a query that
+#      matches more than the batch size silently returns a prefix to anybody
+#      who ignores it. Salesforce does not warn; it just stops.
+#   4. Creating a record answers with a lower-case id, while reading one
+#      answers with Id. The same identifier, two spellings, in the same API.
+#   5. Failures are a bare top-level array. Reading .message off the response
+#      finds undefined; a client has to index first.
+#
+# Known fidelity gap, stated rather than hidden: Cauldron does not execute
+# SOQL. A query returns the records in the org rather than the ones the query
+# selects, so WHERE clauses, joins and aggregate functions are not modelled.
+# The response shape, the paging contract and the failure modes are.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: salesforce
+version: 0.1.0
+
+upstream:
+  api: v60.0
+  docs: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - 00Dcauldron!AQEAQCauldronAccessToken
+
+responses:
+  list:
+    style: wrapped
+    key: records
+    # Salesforce reports how many records matched, not how many it sent.
+    count_field: totalSize
+    # done is the paging contract. False means there is more, and the cursor
+    # is a URL rather than a token.
+    complete_field: done
+    cursor_field: nextRecordsUrl
+  resource:
+    style: bare
+  # A bare top-level array. There is no envelope at all, so a client reading
+  # .message off the response finds undefined.
+  error:
+    style: list
+    key: "-"
+    message_field: message
+    code_field: errorCode
+    code_type: string
+
+resources:
+  Account:
+    id:
+      # Eighteen characters, and the last three are a case-safe checksum. A
+      # system that stores the fifteen-character form and compares it against
+      # the eighteen never matches.
+      style: opaque
+      field: Id
+      length: 18
+    fields:
+      # Every record says what it is. Code that iterates a record's keys and
+      # treats each one as a field hits this before it reaches any of them.
+      # The field is named type because the field's own name is the key inside
+      # the sub-object.
+      type:
+        type: string
+        default: Account
+        in: attributes
+      Name:
+        type: string
+        required: true
+      # Capitalised, like everything else. A client reading record.type finds
+      # nothing.
+      Type:
+        type: string
+      Industry:
+        type: string
+      AnnualRevenue:
+        type: number
+      # A custom field. The __c suffix is not decoration: it is how Salesforce
+      # separates them from the standard fields, and an integration that
+      # strips it addresses a field that does not exist.
+      Account_Tier__c:
+        type: string
+      # A deleted record goes to the Recycle Bin rather than away. query does
+      # not return it and queryAll does, so a reconciliation that uses the
+      # wrong one silently loses rows.
+      IsDeleted:
+        type: boolean
+        default: false
+      CreatedDate:
+        type: datetime
+      LastModifiedDate:
+        type: datetime
+
+  Contact:
+    id:
+      style: opaque
+      field: Id
+      length: 18
+    fields:
+      # Every record says what it is. Code that iterates a record's keys and
+      # treats each one as a field hits this before it reaches any of them.
+      # The field is named type because the field's own name is the key inside
+      # the sub-object.
+      type:
+        type: string
+        default: Contact
+        in: attributes
+      # The relationship field. It is AccountId, not account_id, and the
+      # related object hangs off Account rather than off this.
+      AccountId:
+        type: string
+      FirstName:
+        type: string
+      LastName:
+        type: string
+        required: true
+      Email:
+        type: string
+      # Salesforce composes this from the name parts and refuses to let you
+      # write it. An integration that maps a full name onto it is rejected.
+      Name:
+        type: string
+      IsDeleted:
+        type: boolean
+        default: false
+      CreatedDate:
+        type: datetime
+
+  Opportunity:
+    id:
+      style: opaque
+      field: Id
+      length: 18
+    fields:
+      # Every record says what it is. Code that iterates a record's keys and
+      # treats each one as a field hits this before it reaches any of them.
+      # The field is named type because the field's own name is the key inside
+      # the sub-object.
+      type:
+        type: string
+        default: Opportunity
+        in: attributes
+      Name:
+        type: string
+        required: true
+      AccountId:
+        type: string
+      # The stage is a picklist an administrator defines and renames. What
+      # code should branch on is IsClosed and IsWon, which Salesforce derives
+      # from the stage and keeps stable.
+      StageName:
+        type: string
+        default: Prospecting
+      # Derived. Closed and not won is a lost deal, and closed and won is a
+      # sale, and there is no third field saying which.
+      IsClosed:
+        type: boolean
+        default: false
+      IsWon:
+        type: boolean
+        default: false
+      Amount:
+        type: number
+      CloseDate:
+        type: string
+      Probability:
+        type: integer
+        default: 10
+      IsDeleted:
+        type: boolean
+        default: false
+      CreatedDate:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /services/data/v60.0/query
+    resource: Account
+    operation: list
+    pagination:
+      style: page
+      limit: 2
+
+  - method: GET
+    path: /services/data/v60.0/sobjects/Account/{id}
+    resource: Account
+    operation: get
+
+  - method: POST
+    path: /services/data/v60.0/sobjects/Account
+    resource: Account
+    operation: create
+    status: 201
+
+  # Salesforce answers an update with 204 and nothing at all. A client that
+  # calls .json() on the response throws rather than seeing it worked.
+  - method: PATCH
+    path: /services/data/v60.0/sobjects/Account/{id}
+    resource: Account
+    operation: update
+    status: 204
+    empty_body: true
+
+  - method: DELETE
+    path: /services/data/v60.0/sobjects/Account/{id}
+    resource: Account
+    operation: delete
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /services/data/v60.0/sobjects/Contact/{id}
+    resource: Contact
+    operation: get
+
+  - method: GET
+    path: /services/data/v60.0/sobjects/Opportunity/{id}
+    resource: Opportunity
+    operation: get
+
+  - method: GET
+    path: /services/data/v60.0/sobjects/Account/{AccountId}/Opportunities
+    resource: Opportunity
+    operation: list
+    scope: [AccountId]
+    pagination:
+      style: page
+      limit: 200
+
+webhooks:
+  events:
+    - AccountChangeEvent
+    - ContactChangeEvent
+    - OpportunityChangeEvent
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 403
+    code: REQUEST_LIMIT_EXCEEDED
+    message: TotalRequests Limit exceeded.
+
+  authentication_error:
+    status: 401
+    code: INVALID_SESSION_ID
+    message: Session expired or invalid
+
+  resource_missing:
+    status: 404
+    code: NOT_FOUND
+    message: "The requested resource does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: REQUIRED_FIELD_MISSING
+    message: "Required fields are missing: [{detail}]"
+
+  # A validation rule an administrator wrote. It is the most common failure in
+  # a real org and the one no sandbox reproduces, because the rules are part of
+  # the metadata rather than the data.
+  validation_rule:
+    status: 400
+    code: FIELD_CUSTOM_VALIDATION_EXCEPTION
+    message: An account in this tier must have an industry
+
+  # Row-level security. The record exists, the user cannot see it, and the
+  # failure does not say which.
+  insufficient_access:
+    status: 403
+    code: INSUFFICIENT_ACCESS_OR_READONLY
+    message: insufficient access rights on object id
+
+  # Salesforce locks a row while a related record is being written, and a
+  # parallel import hits this constantly.
+  row_locked:
+    status: 400
+    code: UNABLE_TO_LOCK_ROW
+    message: "unable to obtain exclusive access to this record or 1 records: retry the operation"
+
+  # Writing to a field Salesforce composes is refused, which is what happens to
+  # an integration that maps a full name onto Contact.Name.
+  not_writeable:
+    status: 400
+    code: INVALID_FIELD_FOR_INSERT_UPDATE
+    message: "Unable to create/update fields: Name."
+
+fixtures:
+  empty: {}
+
+  small-org:
+    Account:
+      - id: 001cauldron000001A
+        Name: Analytical Engines Ltd
+        Type: Customer
+        Industry: Manufacturing
+        AnnualRevenue: 4200000
+        Account_Tier__c: Gold
+      - id: 001cauldron000002A
+        Name: Compiler Works
+        Type: Prospect
+        Industry: Software
+        Account_Tier__c: Silver
+      # Deleted, and still in the Recycle Bin rather than gone. query does not
+      # return it and queryAll does, so a reconciliation using the wrong one
+      # loses the row without saying anything.
+      - id: 001cauldron000003A
+        Name: Dissolved Partnership
+        IsDeleted: true
+
+    Contact:
+      - id: 003cauldron000001A
+        AccountId: 001cauldron000001A
+        FirstName: Ada
+        LastName: Lovelace
+        # Composed by Salesforce from the parts above. Writing to it is
+        # refused, and an integration that maps a full name here is rejected.
+        Name: Ada Lovelace
+        Email: ada@example.com
+
+    Opportunity:
+      - id: 006cauldron000001A
+        AccountId: 001cauldron000001A
+        Name: Engine renewal
+        # The stage name is a picklist an administrator renames at will.
+        StageName: Closed Won
+        # These two are what to branch on, and they are derived rather than
+        # set.
+        IsClosed: true
+        IsWon: true
+        Amount: 120000
+        CloseDate: "2026-01-10"
+        Probability: 100
+      - id: 006cauldron000002A
+        AccountId: 001cauldron000001A
+        Name: Punch card supply
+        # Closed and not won. There is no third field saying "lost", so code
+        # that reads IsClosed as success books a deal that never happened.
+        StageName: Closed Lost
+        IsClosed: true
+        IsWon: false
+        Amount: 8000
+        CloseDate: "2026-01-08"
+        Probability: 0
+      - id: 006cauldron000003A
+        AccountId: 001cauldron000001A
+        Name: Difference engine upgrade
+        StageName: Negotiation
+        Amount: 45000
+        CloseDate: "2026-03-01"
+        Probability: 70
+
+# Conformance cases, read from Salesforce's REST API developer guide rather
+# than observed against a live org. The verify report says so.
+conformance:
+  - name: every record carries an attributes object
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_sobject_retrieve.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Account/001cauldron000001A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        attributes:
+          # Code that iterates a record's keys and treats each as a field hits
+          # this first.
+          type: Account
+        # Capitalised. A client reading record.name finds nothing.
+        Name: Analytical Engines Ltd
+        Industry: Manufacturing
+      absent:
+        - name
+        - id
+
+  - name: a custom field keeps its suffix
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_sobject_describe.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Account/001cauldron000001A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        # The __c is how Salesforce separates a custom field from a standard
+        # one. An integration that strips it addresses a field that does not
+        # exist.
+        Account_Tier__c: Gold
+      absent:
+        - Account_Tier
+        - account_tier__c
+
+  - name: a query reports its own completeness
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_query.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/query
+      query:
+        q: SELECT Id, Name FROM Account
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        # Three matched, two sent. done is false and there is a
+        # nextRecordsUrl, and a client that ignores both silently processes a
+        # prefix. Salesforce does not warn; it just stops.
+        totalSize: 3
+        done: false
+        records[0].Name: Analytical Engines Ltd
+        records[1].Name: Compiler Works
+      matches:
+        nextRecordsUrl: '.'
+      absent:
+        - records[2]
+        - data
+
+  - name: closed and won are separate, and there is no lost flag
+    source: https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/sforce_api_objects_opportunity.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Opportunity/006cauldron000002A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        # Closed and not won is a lost deal. Reading IsClosed as success books
+        # a sale that never happened, and the stage name beside it is a
+        # picklist an administrator can rename.
+        IsClosed: true
+        IsWon: false
+        StageName: Closed Lost
+        Probability: 0
+
+  - name: an open opportunity is neither closed nor won
+    source: https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/sforce_api_objects_opportunity.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Opportunity/006cauldron000003A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        IsClosed: false
+        IsWon: false
+        StageName: Negotiation
+
+  - name: a create answers with a lower-case id
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_sobject_create.htm
+    fixture: small-org
+    request:
+      method: POST
+      path: /services/data/v60.0/sobjects/Account
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+      json:
+        Name: New Account
+        Industry: Software
+    expect:
+      status: 201
+      body:
+        Name: New Account
+      matches:
+        # Reading one answers with Id. The same identifier, two spellings, in
+        # the same API.
+        Id: '^[A-Za-z0-9]{18}$'
+
+  - name: an update answers with nothing at all
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_update_fields.htm
+    fixture: small-org
+    request:
+      method: PATCH
+      path: /services/data/v60.0/sobjects/Account/001cauldron000001A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+      json:
+        Industry: Software
+    expect:
+      # 204 and no body. A client calling .json() on this throws rather than
+      # seeing that it worked, and an emulator that helpfully returned the
+      # updated record would hide that.
+      status: 204
+      no_body: true
+
+  - name: a deleted record is still in the org
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_queryall.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Account/001cauldron000003A
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 200
+      body:
+        # In the Recycle Bin rather than gone. query does not return it and
+        # queryAll does, so a reconciliation using the wrong one loses the row
+        # without saying anything.
+        IsDeleted: true
+        Name: Dissolved Partnership
+
+  - name: a failure is a bare array with no envelope
+    source: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
+    fixture: small-org
+    request:
+      method: GET
+      path: /services/data/v60.0/sobjects/Account/001doesnotexist000
+      headers:
+        Authorization: Bearer 00Dcauldron!AQEAQCauldronAccessToken
+    expect:
+      status: 404
+      body:
+        # No envelope at all. Reading .message off the response finds
+        # undefined, and a client has to index before it can read anything.
+        '[0]':
+          errorCode: NOT_FOUND
+      matches:
+        '[0].message': 'does not exist'
+      absent:
+        - message
+        - errors
+        - error

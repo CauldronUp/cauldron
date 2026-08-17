@@ -225,6 +225,21 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 		}
 	}
 
+	// Checked before the early return below, and in both directions. A case
+	// claiming an empty body asserts nothing in body, matches or absent — it
+	// has nothing to assert them against — so leaving it until after that
+	// return meant the claim was never checked at all. Salesforce answers an
+	// update with 204 and nothing whatsoever, and an emulator that helpfully
+	// returned the updated record would hide that a client calling .json() on
+	// the real response throws.
+	if expect.NoBody {
+		if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 {
+			return append(failures, fmt.Sprintf("the response should have no body at all, but it sent %s", trimmed))
+		}
+
+		return failures
+	}
+
 	if len(expect.Body) == 0 && len(expect.Matches) == 0 && len(expect.Absent) == 0 {
 		return failures
 	}

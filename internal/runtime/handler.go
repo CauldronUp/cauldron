@@ -116,19 +116,32 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "created", created)
 
+	s.writeRouteHeaders(w, matched, created)
+
+	return s.writeRecord(w, matched, created)
+}
+
+// writeRecord answers with a record, honouring the route's declared status and
+// empty_body.
+//
+// Both used to be read on creates alone, so a Recipe could declare that its
+// provider answers an update with 204 and nothing at all, and be quietly
+// ignored. Salesforce does exactly that on PATCH and DELETE, and a client
+// calling .json() on the real response throws — which is precisely the bug an
+// emulator that helpfully returned the updated record would hide.
+func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store.Record) int {
 	status := matched.spec.Status
 	if status == 0 {
 		status = http.StatusOK
 	}
 
-	s.writeRouteHeaders(w, matched, created)
-
 	if matched.spec.EmptyBody {
 		w.WriteHeader(status)
+
 		return status
 	}
 
-	writeJSON(w, status, s.resourceBody(matched.spec.Resource, created))
+	writeJSON(w, status, s.resourceBody(matched.spec.Resource, record))
 
 	return status
 }
@@ -210,9 +223,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "updated", updated)
 
-	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, updated))
-
-	return http.StatusOK
+	return s.writeRecord(w, matched, updated)
 }
 
 func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
@@ -235,13 +246,11 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "deleted", record)
 
-	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, store.Record{
+	return s.writeRecord(w, matched, store.Record{
 		"id":      id,
 		"object":  matched.spec.Resource,
 		"deleted": true,
-	}))
-
-	return http.StatusOK
+	})
 }
 
 func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
@@ -551,6 +560,15 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 			setPath(body, spec.CursorField, page.NextCursor)
 		}
 
+		// Salesforce's done is has_more with the sense reversed, and false is
+		// its interesting value: a query that matched more rows than it
+		// returned says done: false and expects the caller to follow
+		// nextRecordsUrl. Sending true would tell a client its partial result
+		// set was the whole thing.
+		if spec.CompleteField != "" {
+			setPath(body, spec.CompleteField, !page.HasMore)
+		}
+
 		if spec.HasMoreField != "" {
 			setPath(body, spec.HasMoreField, page.HasMore)
 		}
@@ -782,7 +800,11 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 }
 
 // errorBody shapes a failure according to the Recipe's declared error style.
-func (s *Sandbox) errorBody(category, code, message string, status int, extra map[string]any) map[string]any {
+//
+// The return type is any rather than a map because Salesforce's failures are a
+// bare top-level array with no envelope at all. A client reading .message off
+// the response finds undefined, and has to index before it can read anything.
+func (s *Sandbox) errorBody(category, code, message string, status int, extra map[string]any) any {
 	spec := s.recipe.Responses.Error
 
 	if spec.Style == "string_list" {
@@ -854,6 +876,14 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		key := spec.Key
 		if key == "" {
 			key = "errors"
+		}
+
+		// "-" means there is no envelope: the array is the whole body, which
+		// is what Salesforce sends. Reading .message off that response finds
+		// undefined, and any declared fields have nowhere to go, so a Recipe
+		// that wants both has to choose the shape the provider actually uses.
+		if key == "-" {
+			return []any{withFields(body, extra)}
 		}
 
 		// One request can fail several ways at once, which is why SendGrid and
