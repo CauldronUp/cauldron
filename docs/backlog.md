@@ -92,7 +92,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Microsoft OneDrive | Files, sharing, async operations |
 | Microsoft Teams | Channels, messages, members |
 | GitHub Actions | Could extend the GitHub Recipe, probably its own |
-| WorkOS | SSO, directory sync, audit logs |
+| ~~WorkOS~~ | Shipped. Inactive-but-present users, per-IdP raw attributes, draft connections |
 | Stytch | Authentication, sessions, organisations |
 | Descope | Authentication flows and identities |
 | FusionAuth | Users, tenants, applications |

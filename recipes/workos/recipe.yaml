@@ -1,0 +1,527 @@
+# WorkOS Recipe for Cauldron
+#
+# WorkOS has a sandbox environment and test API keys, and for SSO they are
+# genuinely useful: there is a hosted test IdP you can log into. The header
+# says so rather than inventing a grievance.
+#
+# What the sandbox cannot give you is a real directory. Directory Sync is
+# driven by whatever Okta, Azure AD or Google actually pushes, on their
+# schedule, in their shape. The states that break a provisioning integration
+# are a user deactivated in the IdP, a directory that has stopped syncing, and
+# a connection somebody left in draft, and none of those can be arranged on
+# demand. They also arrive as webhooks minutes or hours later, so a test that
+# waits for one is not a test.
+#
+# Four things worth modelling exactly:
+#
+#   1. An inactive directory user is still returned. Deprovisioning in the IdP
+#      sets state to inactive; it does not remove the user. An integration
+#      that syncs everything it is given re-creates accounts for people who
+#      have left, which is the failure that matters most here and the one a
+#      fake full of active users never produces.
+#   2. emails is an array with a primary flag, not a string, and the primary
+#      one is not necessarily first. Reading emails[0].value is right most of
+#      the time, which is the worst way for something to be wrong.
+#   3. raw_attributes is the IdP's own payload and its shape differs per
+#      provider. The normalised fields beside it are the only portable ones,
+#      and they are thin, so an integration written against one directory's
+#      raw attributes breaks on the next customer.
+#   4. A connection in draft exists, is listed, and authenticates nobody. It
+#      looks configured from every angle except logging in.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not run an IdP or a SAML flow. This Recipe covers the
+#     WorkOS API surface and the state it exposes, not the authentication
+#     round trip.
+#   - Directory sync events arrive as webhooks in the real thing. The events
+#     are declared and their payload shape is modelled, but nothing here
+#     changes state on its own: a deactivated user is a fixture.
+#   - Audit log exports are asynchronous and are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: workos
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://workos.com/docs/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk_test_cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # The cursor lives under list_metadata rather than at the top level, and
+    # it is null rather than absent when there is no next page.
+    cursor_field: list_metadata.after
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    code_type: string
+    type_field: "-"
+
+resources:
+  directory_user:
+    collection: data
+    constants:
+      object: directory_user
+    id:
+      style: opaque
+      prefix: directory_user_
+      length: 26
+    fields:
+      # The identifier in the IdP, not in WorkOS. They are different strings
+      # and an integration that stores the wrong one cannot correlate a later
+      # webhook.
+      idp_id:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # An array of objects with a primary flag, not a string, and the
+      # primary one is not necessarily first. Reading emails[0].value is
+      # right most of the time.
+      emails:
+        type: list
+      # active or inactive. Deprovisioning in the IdP sets this; it does not
+      # remove the user, so an integration that syncs everything it is given
+      # re-creates accounts for people who have left.
+      state:
+        type: string
+        default: active
+      # The IdP's own payload, unnormalised, and shaped differently by every
+      # provider. An integration written against one directory's raw
+      # attributes breaks on the next customer.
+      raw_attributes:
+        type: list
+      directory_id:
+        type: string
+      # Which groups the IdP says they are in. Absent rather than empty when
+      # the directory does not push groups at all, which several do not.
+      groups:
+        type: list
+      created_at:
+        type: string
+      updated_at:
+        type: string
+
+  connection:
+    collection: data
+    constants:
+      object: connection
+    id:
+      style: opaque
+      prefix: conn_
+      length: 26
+    fields:
+      name:
+        type: string
+        required: true
+      # OktaSAML, AzureSAML, GoogleOAuth and a dozen more. The type decides
+      # which attributes arrive, so it is the field an integration has to
+      # branch on and the one most likely to change per customer.
+      connection_type:
+        type: string
+        default: OktaSAML
+      # draft, active, inactive, validating. A draft connection exists, is
+      # listed, and authenticates nobody.
+      state:
+        type: string
+        default: draft
+      organization_id:
+        type: string
+      created_at:
+        type: string
+
+  directory:
+    collection: data
+    constants:
+      object: directory
+    id:
+      style: opaque
+      prefix: directory_
+      length: 26
+    fields:
+      name:
+        type: string
+        required: true
+      # okta scim v2.0, azure scim v2.0, gsuite directory. Each pushes a
+      # different shape, which is why raw_attributes is not portable.
+      type:
+        type: string
+        default: "okta scim v2.0"
+      domain:
+        type: string
+      # linking, active, inactive, invalid_credentials. A directory whose
+      # token expired sits in invalid_credentials and stops pushing, while
+      # every user it already pushed stays exactly as it left them.
+      state:
+        type: string
+        default: active
+      organization_id:
+        type: string
+
+routes:
+  - method: GET
+    path: /directory_users
+    resource: directory_user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: GET
+    path: /directory_users/{id}
+    resource: directory_user
+    operation: get
+
+  - method: GET
+    path: /connections
+    resource: connection
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: GET
+    path: /connections/{id}
+    resource: connection
+    operation: get
+
+  - method: GET
+    path: /directories
+    resource: directory
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: GET
+    path: /directories/{id}
+    resource: directory
+    operation: get
+
+webhooks:
+  events:
+    - dsync.user.created
+    - dsync.user.updated
+    - dsync.user.deleted
+    - dsync.group.user_added
+    - dsync.group.user_removed
+    - connection.activated
+    - connection.deactivated
+  signing:
+    scheme: hmac-sha256
+    header: WorkOS-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "Unauthorized"
+
+  resource_missing:
+    status: 404
+    code: entity_not_found
+    message: "Entity not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: validation_error
+    message: "Validation failed: {detail} is required"
+
+  # The directory's credentials expired. It stops pushing and every user it
+  # already pushed stays exactly as it left them, so the integration sees a
+  # directory that has quietly stopped being true.
+  directory_invalid_credentials:
+    status: 422
+    code: invalid_credentials
+    message: The directory's credentials are no longer valid and syncing has stopped.
+
+  # A connection that is not active cannot start a login, and the failure
+  # names the connection rather than its state.
+  connection_not_active:
+    status: 422
+    code: connection_unlinked
+    message: The connection is not active and cannot be used to authenticate.
+
+  # A test key against production data, or the reverse. WorkOS separates the
+  # environments and the failure looks like a bad key.
+  wrong_environment:
+    status: 404
+    code: entity_not_found
+    message: "Entity not found: the object may belong to a different environment"
+
+fixtures:
+  empty: {}
+
+  small-org:
+    directory:
+      - id: directory_cauldron0000000001
+        name: Analytical Engines Okta
+        type: "okta scim v2.0"
+        domain: example.com
+        state: active
+        organization_id: org_cauldron0000000000000001
+      - id: directory_cauldron0000000002
+        name: Compiler Works Azure
+        type: "azure scim v2.0"
+        domain: compiler.example
+        # The token expired. It has stopped pushing, and every user it
+        # already pushed is frozen exactly as it left them.
+        state: invalid_credentials
+        organization_id: org_cauldron0000000000000002
+
+    connection:
+      - id: conn_cauldron00000000000001
+        name: Analytical Engines SSO
+        connection_type: OktaSAML
+        state: active
+        organization_id: org_cauldron0000000000000001
+      - id: conn_cauldron00000000000002
+        name: Compiler Works SSO
+        connection_type: AzureSAML
+        # Set up and never finished. It exists, it is listed, and it
+        # authenticates nobody.
+        state: draft
+        organization_id: org_cauldron0000000000000002
+
+    directory_user:
+      - id: directory_user_cauldron00001
+        # The IdP's identifier, which is not the WorkOS id above. Storing the
+        # wrong one means a later webhook cannot be correlated.
+        idp_id: "00u1a2b3c4d5e6f7g8h9"
+        first_name: Ada
+        last_name: Lovelace
+        state: active
+        directory_id: directory_cauldron0000000001
+        # An array, and the primary one is second. Reading emails[0].value is
+        # right most of the time, which is the worst way to be wrong.
+        emails:
+          - value: a.lovelace@example.com
+            type: work
+            primary: false
+          - value: ada@example.com
+            type: work
+            primary: true
+        raw_attributes:
+          - userName: ada@example.com
+            department: Engineering
+        groups:
+          - id: directory_group_cauldron01
+            name: Engineers
+      # Deprovisioned in the IdP and still here. An integration that syncs
+      # everything it is given re-creates an account for somebody who left.
+      - id: directory_user_cauldron00002
+        idp_id: "00u9z8y7x6w5v4u3t2s1"
+        first_name: Former
+        last_name: Employee
+        state: inactive
+        directory_id: directory_cauldron0000000001
+        emails:
+          - value: former@example.com
+            type: work
+            primary: true
+        raw_attributes:
+          - userName: former@example.com
+      # From the Azure directory, whose raw attributes are shaped differently
+      # and which pushes no groups at all.
+      - id: directory_user_cauldron00003
+        idp_id: "8c5f1e2d-3a4b-5c6d-7e8f-9a0b1c2d3e4f"
+        first_name: Grace
+        last_name: Hopper
+        state: active
+        directory_id: directory_cauldron0000000002
+        emails:
+          - value: grace@compiler.example
+            type: work
+            primary: true
+        raw_attributes:
+          - userPrincipalName: grace@compiler.example
+            jobTitle: Rear Admiral
+
+# Conformance cases, read from the WorkOS API reference rather than observed
+# against a live environment. The verify report says so.
+conformance:
+  - name: a deprovisioned user is still in the directory
+    source: https://workos.com/docs/reference/directory-sync/directory-user
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users/directory_user_cauldron00002
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        # Deactivated in the IdP, not removed. An integration that syncs
+        # everything it is given re-creates an account for somebody who left,
+        # which a fake full of active users never produces.
+        state: inactive
+        object: directory_user
+        first_name: Former
+
+  - name: the primary email is not necessarily first
+    source: https://workos.com/docs/reference/directory-sync/directory-user
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users/directory_user_cauldron00001
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        # Reading emails[0].value gives the wrong address here and the right
+        # one for most users, which is the worst way for something to be
+        # wrong.
+        emails[0].primary: false
+        emails[0].value: a.lovelace@example.com
+        emails[1].primary: true
+        emails[1].value: ada@example.com
+
+  - name: raw attributes are shaped by the IdP rather than by WorkOS
+    source: https://workos.com/docs/reference/directory-sync/directory-user
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users/directory_user_cauldron00003
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        # Azure sends userPrincipalName where Okta sends userName. The
+        # normalised fields beside these are the only portable ones, and an
+        # integration written against one customer's raw attributes breaks on
+        # the next.
+        raw_attributes[0].userPrincipalName: grace@compiler.example
+        raw_attributes[0].jobTitle: Rear Admiral
+
+  - name: a directory that pushes no groups omits them entirely
+    source: https://workos.com/docs/reference/directory-sync/directory-user
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users/directory_user_cauldron00003
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        first_name: Grace
+      # Absent rather than empty. Several directories push no groups at all,
+      # so code that maps over them throws rather than seeing nobody.
+      absent:
+        - groups
+
+  - name: the IdP id is not the WorkOS id
+    source: https://workos.com/docs/reference/directory-sync/directory-user
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users/directory_user_cauldron00001
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        # Two different strings for the same person. Storing the wrong one
+        # means a later webhook cannot be correlated with anything.
+        id: directory_user_cauldron00001
+        idp_id: "00u1a2b3c4d5e6f7g8h9"
+
+  - name: a draft connection is listed and authenticates nobody
+    source: https://workos.com/docs/reference/sso/connection
+    fixture: small-org
+    request:
+      method: GET
+      path: /connections
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        data[0].state: active
+        # Set up and never finished. It looks configured from every angle
+        # except logging in.
+        data[1].state: draft
+        data[1].connection_type: AzureSAML
+
+  - name: a directory can stop syncing and keep its users
+    source: https://workos.com/docs/reference/directory-sync/directory
+    fixture: small-org
+    request:
+      method: GET
+      path: /directories/directory_cauldron0000000002
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        # The token expired. Everything it already pushed is frozen exactly
+        # as it left it, so the integration sees a directory that has quietly
+        # stopped being true.
+        state: invalid_credentials
+        type: "azure scim v2.0"
+
+  - name: the cursor lives under list_metadata
+    source: https://workos.com/docs/reference/pagination
+    fixture: small-org
+    request:
+      method: GET
+      path: /directory_users
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 200
+      body:
+        data[0].id: directory_user_cauldron00001
+      matches:
+        # Not at the top level. A client reading response.after finds nothing
+        # and stops after one page.
+        list_metadata.after: '.'
+      absent:
+        - after
+        - data[2]
+
+  - name: the failure is flat with a code and no errors array
+    source: https://workos.com/docs/reference/errors
+    fixture: small-org
+    request:
+      method: GET
+      path: /connections/conn_doesnotexist
+      headers:
+        Authorization: Bearer sk_test_cauldron
+    expect:
+      status: 404
+      body:
+        code: entity_not_found
+      matches:
+        message: 'Entity not found'
+      absent:
+        - errors
+        - error
+        - "-"
