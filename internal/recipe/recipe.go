@@ -251,10 +251,13 @@ type ID struct {
 
 // Field is a single attribute on a resource.
 type Field struct {
-	// Type is string, integer, boolean, timestamp (a Unix integer, which is
-	// what Stripe and Twilio send) or datetime (an RFC 3339 string, which is
-	// what GitHub, HubSpot and most newer APIs send). The difference is not
-	// cosmetic: one parses as a number and the other does not.
+	// Type is string, integer, boolean, timestamp (a Unix integer in seconds,
+	// which is what Stripe and Twilio send), timestamp_ms (milliseconds, which
+	// is what Clerk and most JavaScript-first APIs send) or datetime (an RFC
+	// 3339 string, which is what GitHub, HubSpot and most newer APIs send).
+	// The difference is not cosmetic: one parses as a number and the other
+	// does not, and a factor of a thousand puts a date in 1970 or in the year
+	// 55000.
 	Type     string `yaml:"type"`
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
@@ -349,7 +352,7 @@ var (
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid"}
-	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "datetime"}
+	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
 )
 
 // Load reads and validates a Recipe from a YAML file.

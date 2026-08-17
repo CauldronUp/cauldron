@@ -248,6 +248,11 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 		switch field.Type {
 		case "timestamp":
 			record[name] = s.clock.Unix()
+		case "timestamp_ms":
+			// Milliseconds. Code that divides by a thousand when it should not,
+			// or fails to when it should, lands in 1970 or the year 55000, and
+			// a seconds-only emulator makes both mistakes look fine.
+			record[name] = s.clock.Unix() * 1000
 		case "datetime":
 			// RFC 3339, from the sandbox clock. GitHub, HubSpot and most newer
 			// APIs send a string here, and a client parsing one does not
