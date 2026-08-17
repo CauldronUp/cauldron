@@ -118,7 +118,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Replicate | Predictions, async jobs, failures |
 | Hugging Face | Inference endpoints and model responses |
 | ElevenLabs | Speech generation, voices, async jobs |
-| Deepgram | Transcription and streaming |
+| ~~Deepgram~~ | Shipped. Four-level nesting, seconds against milliseconds, err_code |
 | ~~AssemblyAI~~ | Shipped. Failure at HTTP 200, present-and-null fields, ms against s |
 
 Streaming is the open question here. Cauldron serves whole responses, and
