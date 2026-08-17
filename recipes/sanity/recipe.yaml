@@ -1,0 +1,345 @@
+# Sanity Recipe for Cauldron
+#
+# Sanity bills by API request, bandwidth and document count, and a dataset is
+# the closest thing it has to an environment. Teams either share the production
+# dataset, so a test that writes a document publishes it to the live site, or
+# copy it to a staging dataset that drifts from the schema the moment somebody
+# edits a type.
+#
+# Two things worth modelling exactly:
+#
+#   1. A draft is the same document with a "drafts." prefix on its id. The
+#      published version and the draft are two documents, and a query that
+#      does not filter finds both, so a site can render the draft of a page
+#      alongside its published self. Code that strips or ignores the prefix
+#      shows unpublished content.
+#   2. The system fields are underscore-prefixed: _id, _type, _rev,
+#      _createdAt. A client reading document.id or document.type finds
+#      nothing, and _rev is what an optimistic write needs.
+#
+# Known fidelity gap, stated rather than hidden: Cauldron does not execute
+# GROQ. A query returns the documents in the dataset rather than the ones the
+# query selects, so filtering, projections and joins are not modelled. The
+# response shape and the failure modes are.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: sanity
+version: 0.1.0
+
+upstream:
+  api: v2021-06-07
+  docs: https://www.sanity.io/docs/http-api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - skCauldron
+
+responses:
+  list:
+    style: wrapped
+    key: result
+    fields:
+      # Sanity reports how long the query took, and a dashboard reads it.
+      ms: 1
+  error:
+    style: nested
+    # Sanity nests a description and a type, and no code.
+    code_field: "-"
+
+resources:
+  document:
+    collection: result
+    id:
+      style: opaque
+      field: _id
+      length: 12
+    fields:
+      # Underscore-prefixed system fields. A client reading document.type
+      # finds nothing.
+      _type:
+        type: string
+        required: true
+      # The revision. An optimistic write sends it back, and writing without
+      # it is how two editors silently overwrite each other.
+      _rev:
+        type: string
+      _createdAt:
+        type: datetime
+      _updatedAt:
+        type: datetime
+      title:
+        type: string
+      slug:
+        type: string
+      body:
+        type: string
+      # Sanity has no publish flag. Whether a document is a draft is encoded
+      # in its id, which is why the fixture below carries both versions of
+      # the same page.
+      publishedAt:
+        type: datetime
+        stamped: false
+
+  dataset:
+    collection: result
+    id:
+      style: opaque
+      length: 12
+    fields:
+      name:
+        type: string
+        required: true
+      # A public dataset is readable without a token at all, which is the
+      # setting that exposes unpublished drafts to anybody who guesses the
+      # project id.
+      aclMode:
+        type: string
+        default: private
+
+routes:
+  - method: GET
+    path: /v2021-06-07/data/query/{dataset}
+    resource: document
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /v2021-06-07/data/doc/{dataset}/{id}
+    resource: document
+    operation: get
+
+  - method: GET
+    path: /v2021-06-07/projects/{project}/datasets
+    resource: dataset
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  events:
+    - create
+    - update
+    - delete
+  signing:
+    scheme: hmac-sha256
+    header: sanity-webhook-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    type: rateLimitError
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    type: unauthorized
+    message: Unauthorized, session not found
+
+  resource_missing:
+    status: 404
+    type: notFound
+    message: "The document could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    type: queryParseError
+    message: "The query is missing a required parameter: {detail}"
+
+  # A malformed GROQ query is rejected with the offending position, which is
+  # the only useful thing about it and the reason people log the whole error.
+  query_parse_error:
+    status: 400
+    type: queryParseError
+    message: "expected '}' following object body"
+
+  # Sanity refuses a write whose revision does not match, which is how it
+  # stops two editors overwriting each other.
+  mutation_conflict:
+    status: 409
+    type: mutationError
+    message: The document was modified by somebody else, revision mismatch
+
+  # The plan wall. A project over its request quota stops serving reads.
+  quota_exceeded:
+    status: 402
+    type: quotaExceeded
+    message: The project has exceeded its request quota
+
+fixtures:
+  empty: {}
+
+  small-dataset:
+    dataset:
+      - id: production
+        name: production
+        aclMode: private
+      - id: preview
+        name: preview
+        # Readable without a token. Anybody who guesses the project id can
+        # read every draft in it.
+        aclMode: public
+    document:
+      - id: page-seasoning
+        _type: page
+        _rev: rev0000000001
+        title: Seasoning cast iron
+        slug: seasoning-cast-iron
+        body: Heat, oil, repeat.
+        publishedAt: "2026-01-10T09:00:00Z"
+      # The same document, unpublished. Two documents, and a query that does
+      # not filter finds both.
+      - id: drafts.page-seasoning
+        _type: page
+        _rev: rev0000000002
+        title: Seasoning cast iron (revised)
+        slug: seasoning-cast-iron
+        body: Heat, oil, repeat, and never use soap.
+      - id: page-choosing
+        _type: page
+        _rev: rev0000000003
+        title: Choosing a cauldron
+        slug: choosing-a-cauldron
+        publishedAt: "2026-01-12T11:00:00Z"
+
+# Conformance cases, read from Sanity's HTTP API documentation rather than
+# observed against a live project. The verify report says so.
+conformance:
+  - name: a draft is the same document with a prefixed id
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/doc/production/drafts.page-seasoning
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        # Same slug as the published version, different id and different
+        # body. Code that strips or ignores the prefix shows unpublished
+        # content on a live site.
+        _id: drafts.page-seasoning
+        slug: seasoning-cast-iron
+        title: Seasoning cast iron (revised)
+      absent:
+        - publishedAt
+        - id
+
+  - name: the published version is a separate document
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/doc/production/page-seasoning
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        _id: page-seasoning
+        title: Seasoning cast iron
+        publishedAt: "2026-01-10T09:00:00Z"
+
+  - name: an unfiltered query finds both versions
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/query/production
+      query:
+        query: "*[_type == 'page']"
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        # Three documents for two pages, because one of them has a draft. A
+        # site that renders everything it gets back shows the draft too.
+        result[0]._id: page-seasoning
+        result[1]._id: drafts.page-seasoning
+        result[2]._id: page-choosing
+
+  - name: the system fields are underscore-prefixed
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/doc/production/page-choosing
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        _type: page
+        _rev: rev0000000003
+      matches:
+        _createdAt: '^\d{4}-\d{2}-\d{2}T'
+      # A client reading document.type or document.id finds nothing, and
+      # _rev is what an optimistic write needs.
+      absent:
+        - type
+        - id
+
+  - name: a query response reports how long it took
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/query/production
+      query:
+        query: "*"
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        ms: 1
+      absent:
+        - data
+        - items
+
+  - name: a public dataset is readable by anybody
+    source: https://www.sanity.io/docs/access-control
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/projects/cauldron/datasets
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 200
+      body:
+        result[0].aclMode: private
+        # Anybody who guesses the project id can read every draft in this
+        # one, including the unpublished page above.
+        result[1].aclMode: public
+        result[1].name: preview
+
+  - name: the error is nested with a type and no code
+    source: https://www.sanity.io/docs/http-api
+    fixture: small-dataset
+    request:
+      method: GET
+      path: /v2021-06-07/data/doc/production/doesnotexist
+      headers:
+        Authorization: Bearer skCauldron
+    expect:
+      status: 404
+      body:
+        error:
+          type: notFound
+      matches:
+        error.message: 'could not be found'
+      absent:
+        - error.code
+        - message
