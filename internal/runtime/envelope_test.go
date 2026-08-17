@@ -194,3 +194,50 @@ func TestTwoRecipesCoexistWithDifferentShapes(t *testing.T) {
 		t.Errorf("stripe envelope changed: %v", asObject["object"])
 	}
 }
+
+// Cloudflare wraps every single object under "result" regardless of what the
+// object is, so the wrapper name has to be declarable rather than derived from
+// the resource.
+func TestASingleResourceCanBeWrappedUnderADeclaredKey(t *testing.T) {
+	r, err := recipe.Open("cloudflare")
+	if err != nil {
+		t.Fatalf("open cloudflare: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-account"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/client/v4/zones/00000000000000000000000000000001/dns_records/0000000000000000000000000000000a", nil)
+	req.Header.Set("Authorization", "Bearer cauldron-api-token")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	result, _ := body["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("no result in %v", body)
+	}
+
+	if result["name"] != "example.com" {
+		t.Errorf("result.name = %v", result["name"])
+	}
+
+	// Not under the resource's own name, which is what an underived wrapper
+	// would have produced.
+	if _, wrong := body["dns_record"]; wrong {
+		t.Error("the object should not also appear under its resource name")
+	}
+
+	if body["success"] != true {
+		t.Errorf("success = %v, want the declared envelope flag", body["success"])
+	}
+}

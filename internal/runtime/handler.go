@@ -429,7 +429,12 @@ func (s *Sandbox) resourceBody(resource string, record store.Record) any {
 		return withFields(out, success)
 	}
 
-	return withFields(map[string]any{resource: record}, success)
+	key := s.recipe.Responses.Resource.Key
+	if key == "" {
+		key = resource
+	}
+
+	return withFields(map[string]any{key: record}, success)
 }
 
 // withFields stamps a provider's constant envelope fields onto a body. A dotted
