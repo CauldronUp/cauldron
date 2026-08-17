@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 236 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 257 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 34: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom |
+| Recipes shipped | 37: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 236 cases, none yet run against a live account. Documentation-derived
+Recipe: 257 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -244,8 +244,15 @@ in automatically, so a site that had never been published still carried a
 `submitted_at`. The emulator was claiming events that never happened, which no
 test written against it could catch.
 
-Eleven of the last nineteen needed no format change at all, which is the sign
-the format has stopped being Stripe-shaped underneath.
+Mailgun found the worst one. Basic authentication only ever compared the
+username, which is right for Twilio, where the account SID is the username, and
+wrong for Mailgun, whose username is the constant `api` and whose key is the
+password. A request with the correct username and a completely wrong key
+returned 200, so the failure path a test most wants to exercise could not be
+reached at all.
+
+Thirteen of the last twenty-two needed no format change at all, which is the
+sign the format has stopped being Stripe-shaped underneath.
 
 Not every provider fits. Linear is GraphQL: a single endpoint where the request
 body decides the response shape. A Recipe that ignored the query and returned
