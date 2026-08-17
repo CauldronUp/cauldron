@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 390 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 404 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 56: Stripe, GitHub, GitLab, Bitbucket, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Chargebee, Vonage, Rollbar, Docusign |
+| Recipes shipped | 58: Stripe, GitHub, GitLab, Bitbucket, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 390 cases, none yet run against a live account. Documentation-derived
+Recipe: 404 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -282,11 +282,13 @@ Scalars now compare kind as well as value, which immediately turned up a real
 inconsistency: the nested error style was sending PagerDuty's numeric codes as
 text.
 
-Not every provider fits. Linear is GraphQL: a single endpoint where the request
-body decides the response shape. A Recipe that ignored the query and returned
-fixed data would let you ship a query with wrong field names and still pass,
-which is worse than having no Recipe at all. It is left out deliberately rather
-than faked.
+Not every provider fits, and two are left out deliberately rather than faked.
+Linear is GraphQL: a single endpoint where the request body decides the
+response shape, so a Recipe that ignored the query and returned fixed data
+would let you ship a query with wrong field names and still pass. Attio stores
+every attribute as an array of historical values, and a client reads
+`record.values.name[0].value`; modelling those as scalars would teach a shape
+that does not exist. In both cases no Recipe is better than a misleading one.
 
 The earlier round found real bugs rather than confirming what the code did:
 routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
