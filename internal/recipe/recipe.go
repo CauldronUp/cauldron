@@ -94,6 +94,15 @@ type Expectation struct {
 	// Absent lists fields that must not appear. Providers are as specific about
 	// what they omit as what they send.
 	Absent []string `yaml:"absent"`
+	// BodyMatches is a regular expression applied to the raw response body,
+	// without parsing it.
+	//
+	// A provider whose failures are plain text has no assertable body
+	// otherwise: matches walks a decoded document, so the only thing Trello's
+	// text-error case could pin down was its Content-Type. The prose is the
+	// part support threads quote and the part a client ends up regex-matching
+	// in anger, so it is worth being able to claim.
+	BodyMatches string `yaml:"body_matches"`
 	// NoBody asserts the response body is empty.
 	//
 	// This is a positive claim, not the absence of one. Salesforce answers an
@@ -289,7 +298,11 @@ type ErrorResponse struct {
 
 // ListResponse describes how a collection is returned.
 type ListResponse struct {
-	// Style is one of: envelope (Stripe), bare (GitHub), wrapped (Shopify).
+	// Style is one of: envelope (Stripe), bare (GitHub), wrapped (Shopify),
+	// map (Pusher, whose channels arrive as an object keyed by channel name
+	// rather than an array, so looping over it as a list finds nothing and a
+	// channel with no occupants is absent from the object entirely rather
+	// than present with a zero).
 	// Empty means envelope, which keeps existing Recipes working.
 	Style string `yaml:"style"`
 	// Key is the wrapping property name, required when style is wrapped. A
@@ -552,7 +565,7 @@ var (
 	validOperations = []string{"create", "get", "list", "update", "delete"}
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
-	validListStyles = []string{"", "envelope", "bare", "wrapped"}
+	validListStyles = []string{"", "envelope", "bare", "wrapped", "map"}
 	validErrStyles  = []string{"", "nested", "flat", "list", "string_list", "text"}
 	validCodeTypes  = []string{"", "string", "number"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
@@ -964,10 +977,17 @@ func (r *Recipe) Validate() error {
 			}
 		}
 
+		if c.Expect.BodyMatches != "" {
+			if _, err := regexp.Compile(c.Expect.BodyMatches); err != nil {
+				add("%s: expect.body_matches is not a valid regular expression: %v", where, err)
+			}
+		}
+
 		// An absence is a claim too: "another project's issues are not visible"
 		// is exactly the kind of thing worth asserting, and it has no positive
 		// half. Leaving it out of this check rejected real cases.
-		if c.Expect.Status < 400 && !c.Expect.NoBody && len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
+		if c.Expect.Status < 400 && !c.Expect.NoBody && c.Expect.BodyMatches == "" &&
+			len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
 			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
 		}
