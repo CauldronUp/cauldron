@@ -58,7 +58,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Detection engine (Composer, npm, Go modules) | Working |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working |
-| Webhooks (lifecycle events, signing, delivery) | Working |
+| Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe; Recipes that declare none fall back to Stripe's shape, which is a default rather than a claim about that provider |
 | Fault injection, clock control, request log | Working |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
 | `doctor`, `logs`, `open` | Working |
@@ -344,7 +344,7 @@ A **Recipe** defines how Cauldron emulates an external dependency. It is not a m
 | Resources | Schemas, ID formats, relationships between objects |
 | Routes | Paths, pagination and cursors, filtering, sorting |
 | Behaviour | State transitions and side effects, so an order decrements inventory |
-| Webhooks | Event catalogue, signing, delivery order, retries, duplicates |
+| Webhooks | Event catalogue, payload envelope, signing, delivery order, retries, duplicates |
 | Errors | The provider's real error taxonomy and rate-limit shape |
 | Fixtures | Named seed data: `empty`, `small-shop`, `enterprise` |
 | Conformance | The suite that proves the Recipe still matches the real API |

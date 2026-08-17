@@ -425,6 +425,92 @@ func TestEmitRejectsAnUndeclaredEvent(t *testing.T) {
 	}
 }
 
+// Every webhook used to leave in Stripe's envelope, whatever the provider. That
+// was true while Stripe was the only Recipe and became a quiet lie as the
+// collection grew: nobody else sends {id, type, created, data.object}.
+//
+// Adyen is the case that makes it matter. Its notification is an array of
+// NotificationRequestItem, the payment's fields sit beside eventCode rather
+// than under it, and success is the string "true" — so the obvious truth test
+// on it is also true for "false", and every failed payment reads as
+// successful. Emitting Stripe's shape here would hide the single most
+// expensive thing about integrating with Adyen.
+func TestADeclaredWebhookEnvelopeIsUsed(t *testing.T) {
+	r, err := recipe.Open("adyen")
+	if err != nil {
+		t.Fatalf("open adyen: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	delivery, err := s.Webhooks().Emit("AUTHORISATION", store.Record{
+		"pspReference":      "8836183744AAAAAA",
+		"merchantReference": "order-1001",
+	})
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	// Stripe's envelope must not be there at all, or a client written against
+	// the real Adyen finds two shapes and picks the wrong one.
+	for _, absent := range []string{"id", "type", "created", "data"} {
+		if _, present := delivery.Payload[absent]; present {
+			t.Errorf("Adyen sends no top-level %q", absent)
+		}
+	}
+
+	items, _ := delivery.Payload["notificationItems"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("notificationItems = %v, want one entry", delivery.Payload["notificationItems"])
+	}
+
+	wrapper, _ := items[0].(map[string]any)
+	item, _ := wrapper["NotificationRequestItem"].(map[string]any)
+
+	if item["eventCode"] != "AUTHORISATION" {
+		t.Errorf("eventCode = %v", item["eventCode"])
+	}
+
+	// The string, not the boolean. A client writing if (item.success) is also
+	// inside the branch for "false".
+	if success, isString := item["success"].(string); !isString || success != "true" {
+		t.Errorf("success = %#v, want the string \"true\"", item["success"])
+	}
+
+	// The record is spliced in beside eventCode, not nested under it.
+	if item["merchantReference"] != "order-1001" {
+		t.Errorf("merchantReference = %v, want the record merged in", item["merchantReference"])
+	}
+
+	if live, isString := delivery.Payload["live"].(string); !isString || live != "false" {
+		t.Errorf("live = %#v, want the string \"false\"", delivery.Payload["live"])
+	}
+}
+
+// Recipes written before envelopes were declarable keep the shape they had.
+func TestAnUndeclaredWebhookEnvelopeStaysTheDefault(t *testing.T) {
+	s := stripe(t)
+
+	delivery, err := s.Webhooks().Emit("customer.created", store.Record{"id": "cus_cauldron"})
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	if delivery.Payload["type"] != "customer.created" {
+		t.Errorf("type = %v", delivery.Payload["type"])
+	}
+
+	data, _ := delivery.Payload["data"].(map[string]any)
+	object, _ := data["object"].(map[string]any)
+
+	if object["id"] != "cus_cauldron" {
+		t.Errorf("data.object = %v, want the record", data["object"])
+	}
+}
+
 func TestSeedLoadsAFixture(t *testing.T) {
 	s := stripe(t)
 
