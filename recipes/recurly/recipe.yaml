@@ -1,0 +1,444 @@
+# Recurly Recipe for Cauldron
+#
+# Recurly gives you a sandbox site, and it is the wrong shape for testing
+# subscriptions: the thing you actually need to exercise is time passing. A
+# renewal, a dunning cycle, a trial ending, a plan change taking effect at the
+# period boundary. A sandbox will not fast-forward for you, so those paths get
+# tested by waiting a month or not at all.
+#
+# Two things worth modelling exactly:
+#
+#   1. A canceled subscription is not an expired one. Cancelling stops the
+#      renewal and the customer keeps their access until the period ends, so
+#      code that revokes on cancellation takes away something the customer has
+#      already paid for.
+#   2. Money is an integer in minor units with the currency beside it, and the
+#      amount on the subscription is not the amount on the invoice once a
+#      discount or a proration is involved.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: recurly
+version: 0.1.0
+
+upstream:
+  api: v2021-02-25
+  docs: https://recurly.com/developers/api/v2021-02-25/
+
+auth:
+  # Recurly sends the API key as the Basic username with an empty password.
+  scheme: basic
+  keys:
+    - cauldron-recurly-key
+
+responses:
+  list:
+    style: envelope
+    cursor_field: next
+  error:
+    style: nested
+    # Recurly sends a type and a message, and no code.
+    code_field: "-"
+
+resources:
+  subscription:
+    constants:
+      object: subscription
+    id:
+      style: opaque
+      length: 12
+    fields:
+      account_id:
+        type: string
+      plan_code:
+        type: string
+        required: true
+      # Recurly's real states. "canceled" still serves until the period ends;
+      # only "expired" has actually stopped.
+      state:
+        type: string
+        default: active
+      quantity:
+        type: integer
+        default: 1
+      # Minor units with the currency beside it, and not necessarily what the
+      # invoice says once a discount or proration is involved.
+      unit_amount:
+        type: integer
+        default: 0
+      currency:
+        type: string
+        default: GBP
+      current_period_started_at:
+        type: datetime
+      current_period_ends_at:
+        type: datetime
+      # Set when the customer cancels, while access continues. Absent on an
+      # active subscription.
+      canceled_at:
+        type: datetime
+        stamped: false
+      # Set only when access actually stops.
+      expires_at:
+        type: datetime
+        stamped: false
+      trial_ends_at:
+        type: datetime
+        stamped: false
+
+  account:
+    constants:
+      object: account
+    id:
+      style: opaque
+      length: 12
+    fields:
+      code:
+        type: string
+        required: true
+      email:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # A closed account keeps its history and cannot be billed again.
+      state:
+        type: string
+        default: active
+      # Whether Recurly has a usable payment method on file. Without one a
+      # renewal fails, and the account looks perfectly healthy until it does.
+      has_active_subscription:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+
+  invoice:
+    constants:
+      object: invoice
+    id:
+      style: opaque
+      length: 12
+    fields:
+      account_id:
+        type: string
+      number:
+        type: string
+      # past_due is the one that matters: the invoice exists, is unpaid, and
+      # dunning is running.
+      state:
+        type: string
+        default: pending
+      total:
+        type: integer
+        default: 0
+      paid:
+        type: integer
+        default: 0
+      balance:
+        type: integer
+        default: 0
+      currency:
+        type: string
+        default: GBP
+      created_at:
+        type: datetime
+      closed_at:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /subscriptions
+    resource: subscription
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: POST
+    path: /subscriptions
+    resource: subscription
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: PUT
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: update
+
+  - method: GET
+    path: /accounts
+    resource: account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /accounts/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /invoices
+    resource: invoice
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+
+  - method: GET
+    path: /invoices/{id}
+    resource: invoice
+    operation: get
+
+webhooks:
+  events:
+    - new_subscription_notification
+    - canceled_subscription_notification
+    - expired_subscription_notification
+    - renewed_subscription_notification
+    - failed_payment_notification
+    - past_due_invoice_notification
+  signing:
+    scheme: hmac-sha256
+    header: Recurly-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    type: rate_limited
+    message: You have exceeded the rate limit for this endpoint.
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    type: unauthorized
+    message: Your API key is not authorized to perform this request.
+
+  resource_missing:
+    status: 404
+    type: not_found
+    message: "Couldn't find the resource: {detail}"
+
+  parameter_missing:
+    status: 422
+    type: validation
+    message: "{detail} can't be blank"
+
+  # The failures a subscription integration has to survive and a sandbox will
+  # not produce on request.
+  declined:
+    status: 422
+    type: transaction
+    message: The transaction was declined. Please use a different card.
+
+  # Recurly refuses to change a plan mid-term in ways that would produce a
+  # negative invoice, which is what a naive upgrade flow runs into.
+  invalid_plan_change:
+    status: 422
+    type: validation
+    message: The plan change would produce a credit larger than the balance.
+
+  # A subscription already canceled cannot be canceled again, and a retried
+  # request after a timeout hits exactly this.
+  invalid_state:
+    status: 422
+    type: validation
+    message: The subscription is not in a state that allows this action.
+
+fixtures:
+  empty: {}
+
+  small-site:
+    account:
+      - id: acctcauldron
+        code: ada
+        email: ada@example.com
+        first_name: Ada
+        last_name: Lovelace
+        state: active
+        has_active_subscription: true
+      - id: acctclosed01
+        code: former
+        email: former@example.com
+        # Closed. Keeps its history and cannot be billed again.
+        state: closed
+    subscription:
+      - id: subactive001
+        account_id: acctcauldron
+        plan_code: pro-monthly
+        state: active
+        unit_amount: 2400
+        currency: GBP
+        current_period_ends_at: "2026-02-01T00:00:00Z"
+      - id: subcanceled1
+        account_id: acctcauldron
+        plan_code: pro-monthly
+        # Cancelled, and the customer still has access until the period ends.
+        # Revoking now takes away something they have paid for.
+        state: canceled
+        unit_amount: 2400
+        canceled_at: "2026-01-10T12:00:00Z"
+        current_period_ends_at: "2026-02-01T00:00:00Z"
+      - id: subexpired01
+        account_id: acctclosed01
+        plan_code: starter
+        # Actually stopped.
+        state: expired
+        unit_amount: 900
+        expires_at: "2025-12-01T00:00:00Z"
+    invoice:
+      - id: invpaid00001
+        account_id: acctcauldron
+        number: "1001"
+        state: paid
+        total: 2400
+        paid: 2400
+        balance: 0
+      - id: invpastdue01
+        account_id: acctcauldron
+        number: "1002"
+        # Unpaid and dunning is running. The account still looks healthy.
+        state: past_due
+        total: 2400
+        paid: 0
+        balance: 2400
+
+# Conformance cases, read from Recurly's API reference rather than observed
+# against a live site. The verify report says so.
+conformance:
+  - name: a canceled subscription is not an expired one
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions/subcanceled1
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Cancelling stops the renewal. The customer keeps access until the
+        # period ends, so code that revokes here takes away something they
+        # have already paid for.
+        state: canceled
+        canceled_at: "2026-01-10T12:00:00Z"
+        current_period_ends_at: "2026-02-01T00:00:00Z"
+      absent:
+        - expires_at
+
+  - name: an expired subscription has actually stopped
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions/subexpired01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        state: expired
+        expires_at: "2025-12-01T00:00:00Z"
+
+  - name: an active subscription has no cancellation date
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions/subactive001
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        state: active
+        object: subscription
+      # Stamping either of these would claim an event that has not happened.
+      absent:
+        - canceled_at
+        - expires_at
+        - trial_ends_at
+
+  - name: money is minor units with the currency beside it
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions/subactive001
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Twenty-four pounds. Treating this as pounds is out by a hundred.
+        unit_amount: 2400
+        currency: GBP
+
+  - name: a past due invoice still has a balance
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /invoices/invpastdue01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Unpaid, dunning running, and the account it belongs to still reads
+        # as active.
+        state: past_due
+        balance: 2400
+        paid: 0
+
+  - name: the error is nested with a type and no code
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions/doesnotexist
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 404
+      body:
+        error:
+          type: not_found
+      matches:
+        error.message: "Couldn't find the resource"
+      # Recurly sends a type and a message. Inventing a code would give
+      # clients a field the real API never sends.
+      absent:
+        - error.code
+        - message
+
+  - name: a collection is an envelope with a data array
+    source: https://recurly.com/developers/api/v2021-02-25/
+    fixture: small-site
+    request:
+      method: GET
+      path: /subscriptions
+      headers:
+        Authorization: Basic Y2F1bGRyb24tcmVjdXJseS1rZXk6
+    expect:
+      status: 200
+      body:
+        object: list
+        has_more: false
+        data[0].state: active
+        data[1].state: canceled
+      absent:
+        - items
+        - results
