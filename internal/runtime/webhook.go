@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +124,107 @@ func (q *webhookQueue) Events() []string {
 	return out
 }
 
+// payload builds the envelope the Recipe declares, or Cauldron's default.
+//
+// The default is Stripe's shape, which was the only shape that existed while
+// Stripe was the only Recipe. Keeping it as the fallback means every Recipe
+// written before envelopes were declarable behaves exactly as it did; it is
+// not a claim that the provider in question sends that shape, and a Recipe
+// that knows its provider's envelope should say so.
+func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record) map[string]any {
+	template := q.recipe.Webhooks.Payload
+
+	if len(template) == 0 {
+		return map[string]any{
+			"id":      id,
+			"type":    event,
+			"created": at.Unix(),
+			"data": map[string]any{
+				"object": map[string]any(data),
+			},
+		}
+	}
+
+	filled, _ := expand(template, substitutions{
+		event: event, id: id, at: at, record: map[string]any(data),
+	}).(map[string]any)
+
+	return filled
+}
+
+// substitutions are the values a payload template can refer to.
+type substitutions struct {
+	event  string
+	id     string
+	at     time.Time
+	record map[string]any
+}
+
+// objectKey marks the place a record's own fields are merged into. Adyen needs
+// it: its notification item carries the payment's fields beside eventCode and
+// success rather than nested under them, so splicing is the only faithful
+// rendering.
+const objectKey = "{object}"
+
+// expand walks a payload template, substituting placeholders.
+func expand(node any, with substitutions) any {
+	switch typed := node.(type) {
+	case map[string]any:
+		out := map[string]any{}
+
+		for key, value := range typed {
+			if key == objectKey {
+				for name, field := range with.record {
+					out[name] = field
+				}
+
+				continue
+			}
+
+			out[key] = expand(value, with)
+		}
+
+		return out
+
+	case []any:
+		out := make([]any, len(typed))
+		for i, value := range typed {
+			out[i] = expand(value, with)
+		}
+
+		return out
+
+	case string:
+		return expandString(typed, with)
+	}
+
+	return node
+}
+
+// expandString substitutes into one scalar.
+//
+// A value of exactly "{object}" becomes the record itself rather than text, and
+// "{created}" alone becomes a number, because a provider that sends a Unix
+// timestamp sends a number and a client parsing it as a string would be
+// exercising a shape nobody serves.
+func expandString(value string, with substitutions) any {
+	switch value {
+	case objectKey:
+		return with.record
+	case "{created}":
+		return with.at.Unix()
+	}
+
+	replaced := strings.NewReplacer(
+		"{event}", with.event,
+		"{id}", with.id,
+		"{created}", strconv.FormatInt(with.at.Unix(), 10),
+		"{created_iso}", with.at.UTC().Format(time.RFC3339),
+	).Replace(value)
+
+	return replaced
+}
+
 // Emit builds, signs and delivers a webhook.
 //
 // Unknown events are refused. A typo in an event name should fail loudly here
@@ -136,18 +238,14 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 
 	q.seq++
 
+	id := fmt.Sprintf("evt_%011d", q.seq)
+	at := q.clock.Now()
+
 	delivery := Delivery{
-		ID:    fmt.Sprintf("evt_%011d", q.seq),
-		Event: event,
-		At:    q.clock.Now(),
-		Payload: map[string]any{
-			"id":      fmt.Sprintf("evt_%011d", q.seq),
-			"type":    event,
-			"created": q.clock.Unix(),
-			"data": map[string]any{
-				"object": map[string]any(data),
-			},
-		},
+		ID:      id,
+		Event:   event,
+		At:      at,
+		Payload: q.payload(event, id, at, data),
 	}
 
 	endpoints := make([]string, len(q.endpoints))
