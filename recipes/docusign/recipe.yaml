@@ -1,0 +1,369 @@
+# Docusign Recipe for Cauldron
+#
+# Docusign is the clearest case in this collection for not testing against the
+# real thing. Sending an envelope emails a real person and asks them to sign a
+# document. The developer sandbox is free and still sends those emails, still
+# requires every recipient to have a real address, and still cannot be made to
+# produce the states that matter: a recipient who declines, one who opens and
+# never signs, an envelope voided after partial completion.
+#
+# Two things worth modelling exactly:
+#
+#   1. "delivered" does not mean signed. It means the recipient opened the
+#      envelope. The sequence is sent, delivered, completed, and code that
+#      treats delivered as done files an unsigned document.
+#   2. The counts in a listing are strings. resultSetSize and totalSetSize
+#      come back as "2", not 2, so code comparing them to a number never
+#      matches. Emitting a number here would quietly fix a bug the caller has
+#      to handle.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: docusign
+version: 0.1.0
+
+upstream:
+  api: v2.1
+  docs: https://developers.docusign.com/docs/esign-rest-api/reference/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_docusign_token
+
+responses:
+  list:
+    style: wrapped
+    key: envelopes
+    count_field: totalSetSize
+    # Docusign sends its counts as strings.
+    count_as_string: true
+    fields:
+      startPosition: "0"
+  error:
+    style: flat
+    code_field: errorCode
+    message_field: message
+
+resources:
+  envelope:
+    collection: envelopes
+    id:
+      style: uuid
+      field: envelopeId
+    fields:
+      # created, sent, delivered, signed, completed, declined, voided.
+      # delivered means opened, not signed.
+      status:
+        type: string
+        default: created
+      emailSubject:
+        type: string
+        required: true
+      documentsUri:
+        type: string
+      recipientsUri:
+        type: string
+      # A draft envelope has been created and not sent. Nobody has been
+      # emailed, and sending is a separate call.
+      sentDateTime:
+        type: datetime
+        stamped: false
+      # Set only when every recipient has finished.
+      completedDateTime:
+        type: datetime
+        stamped: false
+      voidedReason:
+        type: string
+      createdDateTime:
+        type: datetime
+
+  recipient:
+    collection: signers
+    id:
+      style: numeric
+      field: recipientId
+    fields:
+      envelope_id:
+        type: string
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+        required: true
+      # created, sent, delivered, signed, completed, declined, autoresponded.
+      # A recipient can decline, which ends the envelope for everybody.
+      status:
+        type: string
+        default: created
+      # Routing order decides who is asked first. A recipient later in the
+      # order has not been emailed yet, and their status says created rather
+      # than anything about failure.
+      routingOrder:
+        type: string
+        default: "1"
+      declinedReason:
+        type: string
+      signedDateTime:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /restapi/v2.1/accounts/{account_id}/envelopes
+    resource: envelope
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /restapi/v2.1/accounts/{account_id}/envelopes
+    resource: envelope
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /restapi/v2.1/accounts/{account_id}/envelopes/{id}
+    resource: envelope
+    operation: get
+
+  - method: PUT
+    path: /restapi/v2.1/accounts/{account_id}/envelopes/{id}
+    resource: envelope
+    operation: update
+
+  - method: GET
+    path: /restapi/v2.1/accounts/{account_id}/envelopes/{envelope_id}/recipients
+    resource: recipient
+    operation: list
+    scope: [envelope_id]
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  # Docusign calls these Connect events.
+  events:
+    - envelope-sent
+    - envelope-delivered
+    - envelope-completed
+    - envelope-declined
+    - envelope-voided
+    - recipient-completed
+  signing:
+    scheme: hmac-sha256
+    header: X-DocuSign-Signature-1
+    secret: cauldron-connect-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: HOURLY_APIINVOCATION_LIMIT_EXCEEDED
+    message: The maximum number of hourly API invocations has been exceeded.
+    headers:
+      Retry-After: "3600"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: AUTHORIZATION_INVALID_TOKEN
+    message: The access token provided is expired, revoked or malformed.
+
+  resource_missing:
+    status: 404
+    code: ENVELOPE_DOES_NOT_EXIST
+    message: "The envelope could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: INVALID_REQUEST_PARAMETER
+    message: "The request contained at least one invalid parameter: {detail} is required"
+
+  # The failures a sandbox will not produce for you, and the ones an
+  # e-signature integration has to survive.
+  envelope_already_complete:
+    status: 400
+    code: ENVELOPE_INVALID_STATUS
+    message: The envelope status is completed and cannot be modified.
+
+  recipient_declined:
+    status: 400
+    code: RECIPIENT_HAS_DECLINED
+    message: A recipient has declined the envelope, which ends it for everybody.
+
+  # Docusign refuses a recipient with no email, and the message names the
+  # index rather than the person.
+  invalid_recipient:
+    status: 400
+    code: INVALID_EMAIL_ADDRESS
+    message: The email address for one or more recipients is invalid.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    envelope:
+      - id: 11111111-1111-4111-8111-111111111111
+        emailSubject: Supplier agreement
+        # Opened, not signed. Code that treats this as done files an
+        # unsigned document.
+        status: delivered
+        sentDateTime: "2026-01-12T09:00:00Z"
+      - id: 22222222-2222-4222-8222-222222222222
+        emailSubject: Signed last week
+        status: completed
+        sentDateTime: "2026-01-05T09:00:00Z"
+        completedDateTime: "2026-01-06T14:20:00Z"
+      - id: 33333333-3333-4333-8333-333333333333
+        emailSubject: Draft, never sent
+        # Created and not sent. Nobody has been emailed, and sending is a
+        # separate call.
+        status: created
+      - id: 44444444-4444-4444-8444-444444444444
+        emailSubject: Declined by the counterparty
+        status: declined
+        sentDateTime: "2026-01-08T11:00:00Z"
+    recipient:
+      - id: "1"
+        envelope_id: 11111111-1111-4111-8111-111111111111
+        name: Ada Lovelace
+        email: ada@example.com
+        # Opened it and has not signed.
+        status: delivered
+        routingOrder: "1"
+      - id: "2"
+        envelope_id: 11111111-1111-4111-8111-111111111111
+        name: Grace Hopper
+        email: grace@example.com
+        # Second in the routing order, so not emailed yet. "created" here
+        # says nothing about failure.
+        status: created
+        routingOrder: "2"
+
+# Conformance cases, read from Docusign's eSignature REST reference rather
+# than observed against a live account. The verify report says so.
+conformance:
+  - name: delivered means opened, not signed
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/get/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        # The sequence is sent, delivered, completed. Code that treats
+        # delivered as done files an unsigned document.
+        status: delivered
+        sentDateTime: "2026-01-12T09:00:00Z"
+      absent:
+        - completedDateTime
+
+  - name: completed is the one with a completion time
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/get/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        status: completed
+        completedDateTime: "2026-01-06T14:20:00Z"
+
+  - name: a draft envelope has emailed nobody
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/create/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        status: created
+      # Sending is a separate call. Counting this as sent overstates what
+      # anybody has been asked to do.
+      absent:
+        - sentDateTime
+        - completedDateTime
+
+  - name: the counts in a listing are strings
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/liststatuschanges/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        # "4", not 4. Code comparing totalSetSize to a number never matches,
+        # and emitting a number here would quietly fix a bug the caller has
+        # to handle.
+        totalSetSize: "4"
+        startPosition: "0"
+        envelopes[0].emailSubject: Supplier agreement
+
+  - name: the identifier is envelopeId
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/get/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        envelopeId: 22222222-2222-4222-8222-222222222222
+      absent:
+        - id
+
+  - name: a recipient later in the routing order has not been asked yet
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/enveloperecipients/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/11111111-1111-4111-8111-111111111111/recipients
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 200
+      body:
+        signers[0].status: delivered
+        signers[0].routingOrder: "1"
+        # Not emailed yet. "created" here says nothing about failure, and
+        # treating it as a problem chases somebody who has not been asked.
+        signers[1].status: created
+        signers[1].routingOrder: "2"
+      absent:
+        - signers[1].signedDateTime
+
+  - name: an unknown envelope names Docusign's own code
+    source: https://developers.docusign.com/docs/esign-rest-api/reference/
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v2.1/accounts/cauldron/envelopes/99999999-9999-4999-8999-999999999999
+      headers:
+        Authorization: Bearer cauldron_docusign_token
+    expect:
+      status: 404
+      body:
+        errorCode: ENVELOPE_DOES_NOT_EXIST
+      matches:
+        message: 'could not be found'
+      absent:
+        - error
+        - errors

@@ -342,3 +342,39 @@ func TestListEntriesCanBeWrappedIndividually(t *testing.T) {
 		t.Error("the record should not also be readable straight off the entry")
 	}
 }
+
+// Docusign sends its listing counts as strings. Emitting a number would
+// quietly fix a bug the caller has to handle: code comparing totalSetSize to
+// a number never matches against the real API.
+func TestAListCountCanBeSentAsAString(t *testing.T) {
+	r, err := recipe.Open("docusign")
+	if err != nil {
+		t.Fatalf("open docusign: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-account"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/restapi/v2.1/accounts/cauldron/envelopes", nil)
+	req.Header.Set("Authorization", "Bearer cauldron_docusign_token")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	total, isString := body["totalSetSize"].(string)
+	if !isString {
+		t.Fatalf("totalSetSize is %T, want a string", body["totalSetSize"])
+	}
+
+	if total != "4" {
+		t.Errorf("totalSetSize = %q, want the count as text", total)
+	}
+}

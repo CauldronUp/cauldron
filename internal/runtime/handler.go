@@ -407,6 +407,17 @@ func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Re
 	return out
 }
 
+// countValue renders a total as the provider sends it. Docusign sends its
+// counts as strings, and emitting a number would quietly fix a bug the caller
+// has to handle for themselves.
+func (s *Sandbox) countValue(spec recipe.ListResponse, total int) any {
+	if spec.CountAsString {
+		return strconv.Itoa(total)
+	}
+
+	return total
+}
+
 // resourceBody shapes a single object according to the Recipe's declared style.
 // Shopify nests it under the singular resource name; most providers return the
 // object itself, and a client written for one shape breaks on the other.
@@ -536,7 +547,7 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		}
 
 		if spec.CountField != "" {
-			setPath(body, spec.CountField, page.Total)
+			setPath(body, spec.CountField, s.countValue(spec, page.Total))
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)
@@ -785,7 +796,10 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		// the omission keeps the emulator from inventing a field a client
 		// could come to depend on and then lose.
 		if spec.CodeField != "-" {
-			nested["code"] = code
+			// The same numeric conversion the flat style applies. PagerDuty's
+			// codes really are numbers, and sending "2006" as text meant a
+			// client switching on the code never matched.
+			nested["code"] = numberOrString(code)
 		}
 
 		if spec.TypeField != "-" {
