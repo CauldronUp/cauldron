@@ -102,7 +102,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 | Provider | Why |
 |---|---|
-| LaunchDarkly | Flags, environments, targeting, variations |
+| ~~LaunchDarkly~~ | Shipped. Per-environment state, variations as indices |
 | PostHog | Events, persons, feature flags |
 | Mixpanel | Events, profiles, exports |
 | Amplitude | Events, cohorts, user properties |
