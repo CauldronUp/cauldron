@@ -1,0 +1,456 @@
+# Ramp Recipe for Cauldron
+#
+# Ramp has a sandbox, and it is behind a partner application rather than a
+# signup form: you ask, and somebody decides. Once in, it is a shared demo
+# business whose state is whatever the last person left, and it does not carry
+# the card lifecycle that matters, because a card in a demo business is not a
+# card anybody swiped.
+#
+# The thing that makes this API awkward to test against is the same thing that
+# makes it useful: it reports spending that already happened. A transaction
+# arrives after somebody bought something, in a currency Ramp chose, at a
+# time nobody controls. There is no way to make one appear, so a suite that
+# needs a declined transaction, or a pending one that later settles, or a
+# refund against a card that has since been terminated, cannot get any of them.
+#
+# Four things worth modelling exactly:
+#
+#   1. Amounts are integers in cents, and Ramp does not say so anywhere in the
+#      field name. A transaction of 4250 is forty-two pounds fifty, and code
+#      that renders it directly shows a bill four thousand times too large.
+#   2. A pending transaction has no settlement and can still change. Its
+#      amount is an authorisation hold, which is often not the final figure:
+#      a restaurant adds a tip, a hotel adjusts, and the settled amount
+#      differs from the one already written to a ledger.
+#   3. A terminated card still has transactions, and they still arrive after
+#      termination for a while. Filtering a report by active cards loses real
+#      spending, and the card's own state says nothing about whether its
+#      history is complete.
+#   4. A declined transaction is a transaction. It appears in the list with a
+#      state of DECLINED and an amount, and code that sums the list without
+#      filtering counts money nobody spent.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is spent here. Which state a transaction is in, and whether it
+#     settled for its authorised amount, is what a fixture puts there.
+#   - Ramp's OAuth flow, scopes and token refresh are not modelled; the
+#     Recipe checks a bearer token.
+#   - The accounting integrations and receipt matching are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: ramp
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.ramp.com/developer-api/v1/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ramp_tok_cauldron000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # The cursor is a URL under page, not a token at the top level. A client
+    # reading response.next finds nothing and stops after one page.
+    cursor_field: page.next
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_v2.message
+    code_field: error_v2.title
+    code_type: string
+    type_field: "-"
+
+resources:
+  transaction:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      # Cents, as an integer, and nothing in the name says so. 4250 is
+      # forty-two fifty, and rendering it directly shows a bill four thousand
+      # times too large.
+      amount:
+        type: integer
+      currency_code:
+        type: string
+        default: USD
+      # CLEARED, PENDING, DECLINED. A declined transaction is still a
+      # transaction in this list with an amount on it.
+      state:
+        type: string
+        default: PENDING
+      card_id:
+        type: string
+      merchant_name:
+        type: string
+      # The category Ramp assigned, which is a guess. A transaction can be
+      # recategorised later, so a report run twice gives two answers.
+      sk_category_name:
+        type: string
+      # Set only once the transaction settled. Absent while pending, so its
+      # presence is the reliable signal rather than the state beside it.
+      settlement_date:
+        type: string
+      user_transaction_time:
+        type: string
+      # Why it was declined, and only present on a declined transaction. The
+      # reason is the useful half: a limit breach and a blocked category look
+      # identical without it.
+      decline_details:
+        type: list
+
+  card:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      display_name:
+        type: string
+      last_four:
+        type: string
+      # ACTIVE, SUSPENDED, TERMINATED. A terminated card still has
+      # transactions, and more can still arrive for a while afterwards.
+      state:
+        type: string
+        default: ACTIVE
+      cardholder_id:
+        type: string
+      # Whether it is a virtual card. A physical card that has not been
+      # activated is ACTIVE in the API and declines everything, which is a
+      # state nothing else on the object reveals.
+      is_physical:
+        type: boolean
+        default: false
+      # The limit in cents, like everything else. Null on a card with no
+      # limit of its own, which inherits the programme's.
+      spending_restrictions_amount:
+        type: integer
+        in: spending_restrictions
+        as: amount
+      spending_restrictions_interval:
+        type: string
+        in: spending_restrictions
+        as: interval
+
+routes:
+  - method: GET
+    path: /developer/v1/transactions
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /developer/v1/transactions/{id}
+    resource: transaction
+    operation: get
+
+  - method: GET
+    path: /developer/v1/cards
+    resource: card
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /developer/v1/cards/{id}
+    resource: card
+    operation: get
+
+webhooks:
+  events:
+    - transaction.created
+    - transaction.updated
+    - card.created
+    - card.terminated
+  signing:
+    scheme: hmac-sha256
+    header: X-Ramp-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: Too Many Requests
+    message: The rate limit for this endpoint has been exceeded.
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: "The access token is invalid or has expired."
+
+  resource_missing:
+    status: 404
+    code: Not Found
+    message: "The requested resource does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: Bad Request
+    message: "{detail} is required"
+
+  # A token without the scope for this endpoint. Ramp scopes finely, so a
+  # token that reads transactions cannot read cards, and the failure names
+  # neither the scope nor the token.
+  insufficient_scope:
+    status: 403
+    code: Forbidden
+    message: The access token does not have the required scope for this resource.
+
+  # A card that has been terminated cannot be modified. Its transactions are
+  # still readable, which is the asymmetry worth knowing.
+  card_terminated:
+    status: 422
+    code: Unprocessable Entity
+    message: The card has been terminated and can no longer be modified.
+
+fixtures:
+  empty: {}
+
+  small-business:
+    card:
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        display_name: Engineering virtual
+        last_four: "4242"
+        state: ACTIVE
+        cardholder_id: 11111111-1111-4111-8111-111111111111
+        is_physical: false
+        # Cents. Five thousand pounds a month, written as five hundred
+        # thousand.
+        spending_restrictions_amount: 500000
+        spending_restrictions_interval: MONTHLY
+      # Terminated, and its transactions are still readable. More can arrive
+      # for a while yet, so filtering a report by active cards loses real
+      # spending.
+      - id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+        display_name: Former contractor
+        last_four: "1881"
+        state: TERMINATED
+        cardholder_id: 22222222-2222-4222-8222-222222222222
+        is_physical: true
+
+    transaction:
+      # Settled. The amount is final and the settlement date is set.
+      - id: 11111111-1111-4111-8111-111111111111
+        amount: 4250
+        currency_code: USD
+        state: CLEARED
+        card_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        merchant_name: Cast Iron Supplies
+        sk_category_name: Office Supplies
+        settlement_date: "2026-01-14"
+        user_transaction_time: "2026-01-13T19:22:00Z"
+      # Pending. The amount is an authorisation hold and the final figure can
+      # differ, which is what a tip or a hotel adjustment does to it.
+      - id: 22222222-2222-4222-8222-222222222222
+        amount: 8000
+        currency_code: USD
+        state: PENDING
+        card_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        merchant_name: The Seasoned Pan
+        sk_category_name: Restaurants
+        user_transaction_time: "2026-01-15T12:40:00Z"
+      # Declined, and still in the list with an amount. Summing the list
+      # without filtering counts money nobody spent.
+      - id: 33333333-3333-4333-8333-333333333333
+        amount: 120000
+        currency_code: USD
+        state: DECLINED
+        card_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        merchant_name: Very Large Purchase
+        user_transaction_time: "2026-01-15T14:00:00Z"
+        decline_details:
+          - reason: LIMIT_EXCEEDED
+      # On the terminated card, and it arrived the day after termination.
+      - id: 44444444-4444-4444-8444-444444444444
+        amount: 1599
+        currency_code: USD
+        state: CLEARED
+        card_id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+        merchant_name: Late Arriving Charge
+        settlement_date: "2026-01-12"
+        user_transaction_time: "2026-01-11T08:00:00Z"
+
+# Conformance cases, read from the Ramp developer API reference rather than
+# observed against a live business. The verify report says so.
+conformance:
+  - name: amounts are integers in cents
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # Forty-two fifty. Nothing in the field name says cents, and
+        # rendering it directly shows a bill four thousand times too large.
+        amount: 4250
+        currency_code: USD
+        state: CLEARED
+
+  - name: a pending transaction has no settlement
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # An authorisation hold rather than a final figure. A tip or a hotel
+        # adjustment changes it, so writing this to a ledger writes a number
+        # that is about to be wrong.
+        state: PENDING
+        amount: 8000
+      # Absent, and its absence is the reliable signal rather than the state
+      # beside it.
+      absent:
+        - settlement_date
+
+  - name: a declined transaction is still in the list with an amount
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # Twelve hundred pounds nobody spent. Summing the list without
+        # filtering on state counts it.
+        state: DECLINED
+        amount: 120000
+        decline_details[0].reason: LIMIT_EXCEEDED
+
+  - name: a cleared transaction carries no decline details
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        settlement_date: "2026-01-14"
+      # Absent rather than empty, so a presence check is the right test and
+      # a length check on a missing array throws.
+      absent:
+        - decline_details
+
+  - name: a terminated card still has transactions
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions/44444444-4444-4444-8444-444444444444
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # On the terminated card below, cleared, and real. Filtering a report
+        # by active cards loses this spending entirely.
+        card_id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+        state: CLEARED
+        amount: 1599
+
+  - name: the card it belongs to is terminated
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/cards/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # Terminated, and readable. The card cannot be modified and its
+        # history is still growing, which is the asymmetry worth knowing.
+        state: TERMINATED
+        last_four: "1881"
+      # No limit of its own, so it inherited the programme's and nothing on
+      # the card says what that was.
+      absent:
+        - spending_restrictions
+
+  - name: a spending limit is in cents too
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/cards/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        # Five thousand a month, written as five hundred thousand. The same
+        # unit as the transaction amounts and the same silence about it.
+        spending_restrictions:
+          amount: 500000
+          interval: MONTHLY
+        state: ACTIVE
+
+  - name: the cursor is a URL under page
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/transactions
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].amount: 4250
+      matches:
+        # Not at the top level, and a URL rather than a token. A client
+        # reading response.next finds nothing and stops after one page.
+        page.next: '.'
+      absent:
+        - next
+        - data[2]
+
+  - name: the failure nests under error_v2
+    source: https://docs.ramp.com/developer-api/v1/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /developer/v1/cards/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer ramp_tok_cauldron000000000000000000
+    expect:
+      status: 404
+      body:
+        error_v2:
+          title: Not Found
+      matches:
+        error_v2.message: 'does not exist'
+      absent:
+        - error
+        - message
+        - code

@@ -53,7 +53,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Wise Business | Transfers, recipients, balances, settlement states |
 | GoCardless | Mandates, direct debit, failed collections |
 | Brex | Cards, expenses, transactions |
-| Ramp | Cards, reimbursements, expenses |
+| ~~Ramp~~ | Shipped. Cents without saying so, pending holds, declines in the list |
 | Mercury | Accounts, transactions, transfers |
 
 ## Commerce
