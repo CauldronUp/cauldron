@@ -718,21 +718,22 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		setPath(body, spec.StatusField, status)
 	}
 
-	body = withFields(body, spec.Fields)
-
 	if spec.Style == "list" {
 		key := spec.Key
 		if key == "" {
 			key = "errors"
 		}
 
-		// One request can fail several ways at once, which is why SendGrid
-		// sends an array. The emulator reports one, in the shape a client
-		// already has to loop over.
-		return map[string]any{key: []any{body}}
+		// One request can fail several ways at once, which is why SendGrid and
+		// Clerk both send an array. The emulator reports one, in the shape a
+		// client already has to loop over.
+		//
+		// Declared fields sit beside the array rather than inside each entry:
+		// Clerk's trace id belongs to the response, not to one failure.
+		return withFields(map[string]any{key: []any{body}}, spec.Fields)
 	}
 
-	return body
+	return withFields(body, spec.Fields)
 }
 
 // numberOrString keeps an all-digit code a number, because Twilio's error codes
