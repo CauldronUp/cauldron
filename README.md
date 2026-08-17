@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 50 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 103 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid |
+| Recipes shipped | 15: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 50 cases, none yet run against a live account. Documentation-derived
+Recipe: 103 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -218,7 +218,16 @@ Cases run in process and need no credentials, so CI runs them on every push and
 a Recipe edit that drifts from the provider fails there rather than in an
 application months later.
 
-Writing them found real bugs rather than confirming what the code already did:
+Writing a Recipe is the format's stress test, and each new provider has found
+something. Slack's failures arrive with HTTP 200 and its identifier lives in a
+query parameter, so the router learned RPC shapes. HubSpot nests every business
+attribute under `properties`. Notion refuses a request with no version header.
+Plaid's error category is a separate field from its code. Intercom's paging
+state is nested, which exposed declared constants silently overwriting computed
+values. Discord's snowflakes are numeric strings long enough that minting small
+integers would let a rounding bug through.
+
+The earlier round found real bugs rather than confirming what the code did:
 routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
 single-object route on Shopify and Twilio answered 404; errors came back in
 Stripe's nested shape for providers that send a flat one; Twilio's identifier
