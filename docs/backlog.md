@@ -177,7 +177,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Sage | Accounting, contacts, invoices |
 | Zoho Books | Invoices, payments, contacts |
 | Wave | Accounting and invoicing |
-| Bill.com | Accounts payable and receivable, vendors, payments |
+| ~~Bill.com~~ | Shipped. Failure at HTTP 200, isActive as "1"/"2", scheduled payments |
 | ~~Gusto~~ | Shipped. Processed against paid, four dates, unpayable employees |
 | Deel | Workers, contracts, payroll |
 
