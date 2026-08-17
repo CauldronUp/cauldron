@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 166 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 187 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 24: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry |
+| Recipes shipped | 27: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 166 cases, none yet run against a live account. Documentation-derived
+Recipe: 187 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -231,8 +231,17 @@ client branching on the HTTP status is checking the wrong thing. Xero answers a
 request for one invoice with a list of one. PagerDuty authenticates with
 `Token token=`, not `Bearer`. Sentry's entire error body is one string.
 
-Four of the last nine needed no format change at all, which is the first real
-sign the format has stopped being Stripe-shaped underneath.
+Datadog sends its errors as an array of bare strings, so a client reading
+`.message` from each entry finds `undefined` on every one.
+
+Six of the last twelve needed no format change at all, which is the sign the
+format has stopped being Stripe-shaped underneath.
+
+Not every provider fits. Linear is GraphQL: a single endpoint where the request
+body decides the response shape. A Recipe that ignored the query and returned
+fixed data would let you ship a query with wrong field names and still pass,
+which is worse than having no Recipe at all. It is left out deliberately rather
+than faked.
 
 The earlier round found real bugs rather than confirming what the code did:
 routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
