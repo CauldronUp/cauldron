@@ -124,6 +124,11 @@ network, and that should not be something you find out from a charge.
 `cauldron up --headless` does the same and skips the containers, for a project
 whose services are already running.
 
+**[docs/headless.md](docs/headless.md)** covers dropping this into an
+environment that already exists: Docker Compose in both directions, CI, waiting
+for readiness without polling, and pointing each SDK at it. Every example there
+is exercised by the `headless` CI job on each push.
+
 Cauldron binds loopback by default. An application in its own container cannot
 reach the host's loopback, so `--host` changes that:
 
