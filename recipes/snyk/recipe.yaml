@@ -1,0 +1,391 @@
+# Snyk Recipe for Cauldron
+#
+# Snyk has no sandbox. A token reaches a real organisation, and the data it
+# returns is whatever vulnerabilities happen to exist in real projects on the
+# day you run the test. That makes it the worst possible fixture: a suite
+# asserting on a critical issue passes until the dependency is patched, and
+# then fails for a reason that has nothing to do with the code under test.
+#
+# Two things worth modelling exactly:
+#
+#   1. A vulnerability with no fix is the interesting one. Severity says how
+#      bad it is; isUpgradable and isPatchable say whether anything can be
+#      done about it today. A gate that fails on critical severity alone
+#      blocks every build until somebody upstream ships a release, which is
+#      why the fields exist separately.
+#   2. An ignored issue is still returned. Snyk records the ignore as a
+#      decision rather than removing the finding, so code that counts rows
+#      re-reports something a human already assessed.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: snyk
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.snyk.io/snyk-api
+
+auth:
+  # Snyk's own scheme. Not Bearer.
+  scheme: bearer
+  header: Authorization
+  prefix: "token "
+  keys:
+    - cauldron-snyk-token
+
+responses:
+  list:
+    style: wrapped
+    key: issues
+    count_field: total
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    fields:
+      # Snyk sends two messages: one for logs and one safe to show a person.
+      # An integration that surfaces the wrong one leaks internal detail.
+      userMessage: An error occurred. Please contact support if it persists.
+
+resources:
+  issue:
+    collection: issues
+    id:
+      style: opaque
+      length: 20
+    fields:
+      project_id:
+        type: string
+      title:
+        type: string
+        required: true
+      # low, medium, high, critical. On its own this says nothing about
+      # whether anything can be done today.
+      severity:
+        type: string
+        default: medium
+      package_name:
+        type: string
+      version:
+        type: string
+      # Whether a fix exists at all. A critical issue with both of these
+      # false cannot be resolved by this team today, and a gate that fails on
+      # severity alone blocks every build until somebody upstream ships.
+      isUpgradable:
+        type: boolean
+        default: false
+      isPatchable:
+        type: boolean
+        default: false
+      # An ignored issue is still returned. Snyk records the decision rather
+      # than removing the finding.
+      isIgnored:
+        type: boolean
+        default: false
+      cvssScore:
+        type: number
+        default: 0
+      identifiers_CVE:
+        type: string
+      disclosureTime:
+        type: datetime
+        stamped: false
+
+  project:
+    collection: projects
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      origin:
+        type: string
+        default: github
+      type:
+        type: string
+        default: npm
+      # A project that has never been tested reports no issues, which reads
+      # identically to a clean one.
+      totalDependencies:
+        type: integer
+        default: 0
+      lastTestedDate:
+        type: datetime
+        stamped: false
+      isMonitored:
+        type: boolean
+        default: true
+
+  org:
+    collection: orgs
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+      group_id:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1/org/{org_id}/projects
+    resource: project
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /v1/org/{org_id}/project/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /v1/org/{org_id}/project/{project_id}/issues
+    resource: issue
+    operation: list
+    scope: [project_id]
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /v1/orgs
+    resource: org
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+webhooks:
+  events:
+    - project_snapshot
+    - ping
+  signing:
+    scheme: hmac-sha256
+    header: X-Hub-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: "401"
+    message: Invalid auth token provided
+
+  resource_missing:
+    status: 404
+    code: "404"
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "400"
+    message: "{detail} is required"
+
+  # A token scoped to one organisation cannot read another's projects, and
+  # the failure names neither the organisation nor the scope.
+  forbidden:
+    status: 403
+    code: "403"
+    message: Access to this resource is forbidden
+
+  # Snyk refuses to test a project whose manifest it cannot parse, which is
+  # the failure a monorepo with an unusual layout produces.
+  unparseable_manifest:
+    status: 422
+    code: "422"
+    message: Could not parse the manifest file for this project
+
+fixtures:
+  empty: {}
+
+  small-org:
+    org:
+      - id: 11111111-1111-4111-8111-111111111111
+        name: Cauldron
+        slug: cauldron
+    project:
+      - id: 22222222-2222-4222-8222-222222222222
+        name: cauldron/engine:package.json
+        origin: github
+        type: npm
+        totalDependencies: 412
+        lastTestedDate: "2026-01-14T02:00:00Z"
+      - id: 33333333-3333-4333-8333-333333333333
+        name: cauldron/experiment:package.json
+        origin: github
+        type: npm
+        # Never tested. Reports no issues, which reads identically to a
+        # clean project and is not the same thing at all.
+        isMonitored: false
+    issue:
+      - id: SNYK-JS-CAULDRON-001
+        project_id: 22222222-2222-4222-8222-222222222222
+        title: Prototype Pollution
+        severity: critical
+        package_name: deep-merge
+        version: 1.2.0
+        # No fix exists. This team cannot resolve it today, and a gate that
+        # fails on critical severity alone blocks every build until somebody
+        # upstream ships a release.
+        isUpgradable: false
+        isPatchable: false
+        cvssScore: 9.8
+        identifiers_CVE: CVE-2026-00001
+      - id: SNYK-JS-CAULDRON-002
+        project_id: 22222222-2222-4222-8222-222222222222
+        title: Regular Expression Denial of Service
+        severity: high
+        package_name: parse-path
+        version: 4.0.1
+        # Fixable today by upgrading.
+        isUpgradable: true
+        cvssScore: 7.5
+      - id: SNYK-JS-CAULDRON-003
+        project_id: 22222222-2222-4222-8222-222222222222
+        title: Information Exposure
+        severity: medium
+        package_name: legacy-logger
+        version: 0.9.0
+        # A human already assessed this and chose to accept it. Counting
+        # rows re-reports it.
+        isIgnored: true
+        cvssScore: 5.3
+
+# Conformance cases, read from Snyk's API documentation rather than observed
+# against a live organisation. The verify report says so.
+conformance:
+  - name: severity says nothing about whether a fix exists
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222/issues
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 200
+      body:
+        # Critical, and neither upgradable nor patchable. A gate failing on
+        # severity alone blocks every build until somebody upstream ships.
+        issues[0].severity: critical
+        issues[0].isUpgradable: false
+        issues[0].isPatchable: false
+        # High, and fixable today.
+        issues[1].severity: high
+        issues[1].isUpgradable: true
+
+  - name: an ignored issue is still returned
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222/issues
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 200
+      body:
+        total: 3
+        # A human already assessed this one. Counting rows re-reports it.
+        issues[2].isIgnored: true
+        issues[0].isIgnored: false
+
+  - name: a project that has never been tested has no test date
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 200
+      body:
+        isMonitored: false
+        totalDependencies: 0
+      # Never tested reads identically to clean unless you check this, and
+      # stamping a date would make the difference invisible.
+      absent:
+        - lastTestedDate
+
+  - name: the credential scheme is token, not Bearer
+    source: https://docs.snyk.io/snyk-api/authentication-for-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/orgs
+      headers:
+        Authorization: Bearer cauldron-snyk-token
+    expect:
+      status: 401
+      body:
+        code: 401
+      matches:
+        message: 'Invalid auth token'
+
+  - name: the error carries a separate message for a person
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/44444444-4444-4444-8444-444444444444
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 404
+      body:
+        code: 404
+      matches:
+        # One message for logs and one safe to show a person. Surfacing the
+        # wrong one leaks internal detail.
+        message: 'Not found'
+        userMessage: 'contact support'
+      absent:
+        - error
+        - errors
+
+  - name: a collection is wrapped in issues with a total
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222/issues
+      query:
+        limit: "2"
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 200
+      body:
+        total: 3
+      absent:
+        - issues[2]
+        - data
+
+  - name: a CVSS score sits alongside the severity word
+    source: https://docs.snyk.io/snyk-api
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/org/11111111-1111-4111-8111-111111111111/project/22222222-2222-4222-8222-222222222222/issues
+      headers:
+        Authorization: token cauldron-snyk-token
+    expect:
+      status: 200
+      body:
+        issues[0].cvssScore: 9.8
+        issues[0].identifiers_CVE: CVE-2026-00001
+        issues[2].cvssScore: 5.3
