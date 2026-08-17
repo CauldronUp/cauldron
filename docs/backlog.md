@@ -187,7 +187,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 |---|---|
 | ~~Cloudinary~~ | Shipped. url against secure_url, 200-with-not-found, moderation |
 | Imgix | Image transformations and delivery |
-| Mux | Video assets, playback, processing states |
+| ~~Mux~~ | Shipped. Asset against playback id, preparing state, array messages |
 | Vimeo | Uploads, videos, privacy |
 | YouTube Data API | Videos, playlists, channels |
 

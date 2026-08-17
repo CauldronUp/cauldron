@@ -856,7 +856,7 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 				field = "message"
 			}
 
-			nested[field] = message
+			nested[listName(field)] = messageValue(field, message)
 		}
 
 		// Providers disagree about which of these they send. Stripe sends a
@@ -891,7 +891,10 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 			key = "error"
 		}
 
-		return withFields(map[string]any{key: nested}, extra)
+		// Declared fields apply here too. They were dropped for the nested
+		// style alone, so a Recipe could add a constant to every error and
+		// have it silently ignored.
+		return withFields(withFields(map[string]any{key: nested}, spec.Fields), extra)
 	}
 
 	body := map[string]any{}
@@ -906,7 +909,7 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 
 		// setPath, so a dotted name nests the same way code_field and
 		// status_field already do. Front puts all three under _error.
-		setPath(body, field, message)
+		setPath(body, listName(field), messageValue(field, message))
 	}
 
 	// "-" omits the field, exactly as it does for the message above and in the
@@ -956,6 +959,26 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 	}
 
 	return withFields(withFields(body, spec.Fields), extra)
+}
+
+// listName strips the array marker from a field name.
+func listName(field string) string {
+	return strings.TrimSuffix(field, "[]")
+}
+
+// messageValue wraps the message in an array when the Recipe asks for one.
+//
+// Mux sends messages, plural: error.message is undefined and
+// error.messages[0] is the sentence, which is backwards from every other
+// provider in the collection. Writing the sentence into a field called
+// "messages" as a bare string would look right in a diff and be wrong on the
+// wire, so the Recipe says which it is.
+func messageValue(field, message string) any {
+	if strings.HasSuffix(field, "[]") {
+		return []any{message}
+	}
+
+	return message
 }
 
 // codeValue renders an error code as the Recipe says the provider sends it.

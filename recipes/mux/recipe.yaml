@@ -1,0 +1,470 @@
+# Mux Recipe for Cauldron
+#
+# Mux has a test mode, and it is a reasonable one: test assets are free,
+# watermarked, capped at ten seconds and deleted after twenty-four hours. The
+# header says so rather than pretending otherwise.
+#
+# What it does not give you is the thing that breaks video integrations, which
+# is time. An asset is not ready when you create it. It is preparing, with no
+# duration, no aspect ratio and no playback ID, and it becomes ready seconds or
+# minutes later depending on the source. A test that creates an asset and then
+# reads its playback URL fails, and a test that sleeps long enough to pass is
+# slow and still flaky. Test mode has exactly the same timing, so it does not
+# help with the part that is hard.
+#
+# Four things worth modelling exactly:
+#
+#   1. The asset ID is not the playback ID. A playback URL is
+#      stream.mux.com/{PLAYBACK_ID}.m3u8, built from a separate object that
+#      lives inside the asset, and using the asset ID gives a 404 from a
+#      hostname that looks right. Both are opaque strings of similar length,
+#      so nothing about either says which is which.
+#   2. A preparing asset has no playback IDs at all, and no duration and no
+#      aspect ratio. Not empty, not null: absent. Code that reads
+#      asset.playback_ids[0].id straight after creating throws on undefined.
+#   3. A signed playback policy needs a JWT. The playback ID looks identical
+#      to a public one, and the URL built from it returns 403 rather than
+#      video. An integration developed against a public asset breaks the day
+#      somebody switches the policy.
+#   4. Failures carry messages, plural, as an array. error.message is
+#      undefined and error.messages[0] is the sentence, which is exactly
+#      backwards from every other API in this collection.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Assets do not become ready on their own. Which state an asset is in is
+#     what a fixture puts there, so "the asset is ready now" is something a
+#     test seeds rather than waits for. That is the point: the waiting is the
+#     part worth removing.
+#   - Cauldron serves no video and no manifests. stream.mux.com is a different
+#     host and a different protocol, and this Recipe covers the control API.
+#   - Signed playback tokens are not verified. The policy is modelled as
+#     state; the JWT is not checked.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: mux
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.mux.com/api-reference
+
+auth:
+  # The access token ID is the Basic username and the secret key is the
+  # password. The secret is the half that is actually secret.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-mux-secret-key
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: wrapped
+    key: data
+  # Nested, with an array of messages rather than a message, and a type.
+  error:
+    style: nested
+    key: error
+    # Plural, and an array. The [] says the message is wrapped rather than
+    # written as a bare string, so error.message is undefined and
+    # error.messages[0] is the sentence.
+    message_field: "messages[]"
+    code_field: "-"
+    type_field: type
+
+resources:
+  asset:
+    collection: data
+    id:
+      style: opaque
+      length: 24
+    fields:
+      # preparing, ready, errored. A newly created asset is preparing, and
+      # everything useful about it is absent until it is not.
+      status:
+        type: string
+        default: preparing
+      # Seconds, as a float, and absent while preparing. Reading it as an
+      # integer truncates, and reading it before ready is undefined.
+      duration:
+        type: number
+      aspect_ratio:
+        type: string
+      # The separate objects a playback URL is built from. An asset can have
+      # none, one, or several with different policies.
+      playback_ids:
+        type: list
+      max_stored_resolution:
+        type: string
+      max_stored_frame_rate:
+        type: number
+      # A test asset is watermarked, capped at ten seconds and deleted after
+      # twenty-four hours. It is otherwise a normal asset, and nothing in an
+      # integration notices the difference until the deletion.
+      test:
+        type: boolean
+        default: false
+      # Present only on an errored asset, and its messages are an array like
+      # the API's own errors.
+      errors_type:
+        type: string
+        in: errors
+        as: type
+      errors_messages:
+        type: list
+        in: errors
+        as: messages
+      created_at:
+        type: string
+
+  upload:
+    collection: data
+    id:
+      style: opaque
+      length: 24
+    fields:
+      # waiting, asset_created, errored, cancelled, timed_out. An upload is
+      # not an asset, and it has its own lifecycle that ends where the
+      # asset's begins.
+      status:
+        type: string
+        default: waiting
+      # The signed PUT target. It expires, and an upload that sat in a queue
+      # too long fails on a URL that looks fine.
+      url:
+        type: string
+      # Set only once the upload produced one. Until then there is no asset
+      # to poll, which is the gap an integration forgets exists.
+      asset_id:
+        type: string
+      timeout:
+        type: integer
+        default: 3600
+      test:
+        type: boolean
+        default: false
+
+routes:
+  - method: POST
+    path: /video/v1/assets
+    resource: asset
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /video/v1/assets
+    resource: asset
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /video/v1/assets/{id}
+    resource: asset
+    operation: get
+
+  - method: DELETE
+    path: /video/v1/assets/{id}
+    resource: asset
+    operation: delete
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /video/v1/uploads
+    resource: upload
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /video/v1/uploads/{id}
+    resource: upload
+    operation: get
+
+webhooks:
+  events:
+    - video.asset.created
+    - video.asset.ready
+    - video.asset.errored
+    - video.asset.deleted
+    - video.upload.asset_created
+    - video.upload.errored
+    - video.upload.cancelled
+  signing:
+    scheme: hmac-sha256
+    header: Mux-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    type: too_many_requests
+    message: Rate limit exceeded
+
+  authentication_error:
+    status: 401
+    type: unauthorized
+    message: Invalid credentials
+
+  resource_missing:
+    status: 404
+    type: not_found
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    type: invalid_parameters
+    message: "{detail} is required"
+
+  # The failure a signed playback ID produces when nobody minted a token. The
+  # playback ID is correct and the URL is correct and it still returns
+  # nothing.
+  playback_token_required:
+    status: 403
+    type: unauthorized
+    message: A playback token is required for this signed playback ID
+
+  # An input Mux cannot fetch or cannot decode. The asset is created first and
+  # fails afterwards, so the create succeeded and the video does not exist.
+  invalid_input:
+    status: 422
+    type: invalid_parameters
+    message: "Unable to download the source: 404 Not Found"
+
+  # A free plan that has run out of encoding minutes. Existing assets keep
+  # playing, so the site looks fine and nothing new can be uploaded.
+  quota_exceeded:
+    status: 403
+    type: forbidden
+    message: You have exceeded the free plan encoding minutes for this month
+
+fixtures:
+  empty: {}
+
+  small-account:
+    asset:
+      # Ready. Everything an integration wants is here, and this is the state
+      # a fake would return immediately.
+      - id: cauldronAsset0000000001
+        status: ready
+        # A float. Reading it as an integer truncates, and reading it before
+        # ready is undefined.
+        duration: 134.83
+        aspect_ratio: "16:9"
+        max_stored_resolution: HD
+        max_stored_frame_rate: 29.97
+        playback_ids:
+          # The playback URL is built from this, not from the asset ID above.
+          # Both are opaque strings of similar length and nothing says which
+          # is which.
+          - id: cauldronPlayback000001
+            policy: public
+        created_at: "1767225600"
+      # Preparing. No playback IDs, no duration, no aspect ratio. Not empty
+      # and not null: absent. This is the state an asset is in for the first
+      # seconds or minutes of its life, and the one a fake never has.
+      - id: cauldronAsset0000000002
+        status: preparing
+        created_at: "1767225700"
+      # Signed. The playback ID looks identical to the public one above, and
+      # the URL built from it returns 403 without a JWT.
+      - id: cauldronAsset0000000003
+        status: ready
+        duration: 42.5
+        aspect_ratio: "16:9"
+        playback_ids:
+          - id: cauldronPlayback000003
+            policy: signed
+        created_at: "1767225800"
+      # Errored. The create succeeded and the video does not exist, and the
+      # messages are an array.
+      - id: cauldronAsset0000000004
+        status: errored
+        errors_type: invalid_input
+        errors_messages:
+          - "Unable to download the source: 404 Not Found"
+        created_at: "1767225900"
+
+    upload:
+      - id: cauldronUpload000000001
+        status: waiting
+        url: https://storage.googleapis.com/video-storage-cauldron/upload
+        timeout: 3600
+      # Finished, and it produced an asset. Until this point there was no
+      # asset to poll at all, which is the gap an integration forgets exists.
+      - id: cauldronUpload000000002
+        status: asset_created
+        asset_id: cauldronAsset0000000001
+
+# Conformance cases, read from the Mux API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: the asset id is not the playback id
+    source: https://docs.mux.com/api-reference/video#operation/get-asset
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/cauldronAsset0000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        # Two different opaque strings of similar length. The playback URL is
+        # stream.mux.com/{playback_id}.m3u8, and using the asset id gives a
+        # 404 from a hostname that looks right.
+        data.id: cauldronAsset0000000001
+        data.playback_ids[0].id: cauldronPlayback000001
+        data.playback_ids[0].policy: public
+
+  - name: a preparing asset has no playback ids at all
+    source: https://docs.mux.com/api-reference/video#operation/get-asset
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/cauldronAsset0000000002
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        data.status: preparing
+      # Not empty, not null: absent. Reading
+      # asset.playback_ids[0].id straight after creating throws on undefined,
+      # and this is the state a fake never has.
+      absent:
+        - data.playback_ids
+        - data.duration
+        - data.aspect_ratio
+
+  - name: duration is a float and only exists once ready
+    source: https://docs.mux.com/api-reference/video#operation/get-asset
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/cauldronAsset0000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        # Seconds, with a fraction. Reading it as an integer truncates, and a
+        # progress bar built on the truncated value drifts.
+        data.duration: 134.83
+        data.max_stored_frame_rate: 29.97
+
+  - name: a signed playback id looks exactly like a public one
+    source: https://docs.mux.com/guides/secure-video-playback
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/cauldronAsset0000000003
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        # Same shape, same length, same everything except one word. The URL
+        # built from it returns 403 without a JWT, and an integration
+        # developed against a public asset breaks the day somebody switches.
+        data.playback_ids[0].policy: signed
+        data.status: ready
+
+  - name: an errored asset was created successfully first
+    source: https://docs.mux.com/api-reference/video#operation/get-asset
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/cauldronAsset0000000004
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        # The create returned 201 and the video does not exist. The messages
+        # are an array here too, matching the API's own error shape.
+        data.status: errored
+        data.errors.type: invalid_input
+      matches:
+        data.errors.messages[0]: 'Unable to download'
+      absent:
+        - data.errors.message
+        - data.playback_ids
+
+  - name: an upload is not an asset
+    source: https://docs.mux.com/api-reference/video#operation/get-direct-upload
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/uploads/cauldronUpload000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        # Waiting, with its own lifecycle and its own status vocabulary. There
+        # is no asset to poll yet, which is the gap an integration forgets
+        # exists.
+        data.status: waiting
+      absent:
+        - data.asset_id
+
+  - name: a finished upload names the asset it produced
+    source: https://docs.mux.com/api-reference/video#operation/get-direct-upload
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/uploads/cauldronUpload000000002
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        data.status: asset_created
+        # And the asset it names is still only preparing, in general. Two
+        # waits, not one.
+        data.asset_id: cauldronAsset0000000001
+
+  - name: a failure carries messages, plural, as an array
+    source: https://docs.mux.com/api-reference/video
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets/doesnotexist
+      headers:
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6Y2F1bGRyb24tbXV4LXNlY3JldC1rZXk=
+    expect:
+      status: 404
+      body:
+        error:
+          type: not_found
+      matches:
+        error.messages[0]: 'Not Found'
+      # error.message is undefined, which is exactly backwards from every
+      # other API in this collection.
+      absent:
+        - error.message
+        - error.code
+        - message
+
+  - name: the secret key is the half that is checked
+    source: https://docs.mux.com/api-reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /video/v1/assets
+      headers:
+        # The right token id, and a wrong secret.
+        Authorization: Basic Y2F1bGRyb24tdG9rZW4taWQ6d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        error:
+          type: unauthorized
