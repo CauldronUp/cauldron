@@ -1,0 +1,377 @@
+# Sentry Recipe for Cauldron
+#
+# Sentry has no sandbox and no test mode. An integration that reads issues
+# needs issues, and the only way to get them is to send real errors into a real
+# project, which then pollutes the alerting everyone else depends on. Teams
+# make a scratch project, forget to point alerts away from it, and page
+# somebody at three in the morning for a deliberately thrown exception.
+#
+# Two things worth modelling exactly:
+#
+#   1. Failures are a single "detail" string and nothing else. No code, no
+#      type, no nesting. Code written for almost any other provider has
+#      nothing to read, and the property it reaches for is undefined rather
+#      than absent, so it throws instead of reporting.
+#   2. Collections are bare arrays. The paging cursor lives in a Link header
+#      rather than the body, which is why an emulator returning an object with
+#      a next_cursor would teach the wrong thing entirely.
+#
+# Known fidelity gap, stated rather than hidden: Cauldron does not model the
+# Link header, so cursor paging is not exercised. Everything else about the
+# shape is.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: sentry
+version: 0.1.0
+
+upstream:
+  api: "0"
+  docs: https://docs.sentry.io/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sntrys_cauldron
+
+responses:
+  list:
+    style: bare
+  # A Sentry failure is one string called detail. Nothing else.
+  error:
+    style: flat
+    message_field: detail
+
+resources:
+  issue:
+    collection: issues
+    id:
+      style: digits
+      length: 10
+    fields:
+      project_slug:
+        type: string
+      shortId:
+        type: string
+      title:
+        type: string
+        required: true
+      culprit:
+        type: string
+      # Sentry's own lifecycle. An ignored issue still receives events and
+      # still counts against quota; it just stops alerting. Code that treats
+      # ignored as resolved reports a problem as fixed when it is not.
+      status:
+        type: string
+        default: unresolved
+      level:
+        type: string
+        default: error
+      # These are strings in the API, not numbers, which catches out anyone
+      # summing them without a parse.
+      count:
+        type: string
+        default: "1"
+      userCount:
+        type: integer
+        default: 0
+      isSubscribed:
+        type: boolean
+        default: false
+      firstSeen:
+        type: datetime
+      lastSeen:
+        type: datetime
+
+  project:
+    collection: projects
+    id:
+      style: digits
+      length: 7
+    fields:
+      slug:
+        type: string
+        required: true
+      name:
+        type: string
+        required: true
+      platform:
+        type: string
+      isPublic:
+        type: boolean
+        default: false
+      dateCreated:
+        type: datetime
+
+  release:
+    collection: releases
+    id:
+      style: digits
+      length: 10
+    fields:
+      version:
+        type: string
+        required: true
+      shortVersion:
+        type: string
+      ref:
+        type: string
+      dateCreated:
+        type: datetime
+      dateReleased:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/0/projects/{organization}/{project_slug}/issues/
+    resource: issue
+    operation: list
+    scope: [project_slug]
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /api/0/issues/{id}/
+    resource: issue
+    operation: get
+
+  - method: PUT
+    path: /api/0/issues/{id}/
+    resource: issue
+    operation: update
+
+  - method: DELETE
+    path: /api/0/issues/{id}/
+    resource: issue
+    operation: delete
+
+  - method: GET
+    path: /api/0/organizations/{organization}/projects/
+    resource: project
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /api/0/organizations/{organization}/releases/
+    resource: release
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: POST
+    path: /api/0/organizations/{organization}/releases/
+    resource: release
+    operation: create
+    status: 201
+
+webhooks:
+  events:
+    - issue.created
+    - issue.resolved
+    - issue.ignored
+    - issue.assigned
+    - error.created
+  signing:
+    scheme: hmac-sha256
+    header: Sentry-Hook-Signature
+    secret: cauldron-client-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: You are attempting to use this endpoint too frequently.
+    headers:
+      Retry-After: "40"
+      X-Sentry-Rate-Limit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    message: Authentication credentials were not provided.
+
+  resource_missing:
+    status: 404
+    message: The requested resource does not exist
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required."
+
+  # A token scoped to read events cannot resolve an issue, and the message
+  # does not say which scope is missing, which is worth reproducing exactly.
+  insufficient_scope:
+    status: 403
+    message: You do not have permission to perform this action.
+
+  # The state that ends a CI run and looks nothing like a code failure: the
+  # organisation is over its event quota and Sentry starts refusing.
+  quota_exceeded:
+    status: 429
+    message: Event limit exceeded for this organization.
+
+fixtures:
+  empty: {}
+
+  small-org:
+    project:
+      - id: "1000001"
+        slug: checkout
+        name: Checkout
+        platform: javascript-react
+    issue:
+      - id: "5000000001"
+        project_slug: checkout
+        shortId: CHECKOUT-1
+        title: "TypeError: Cannot read properties of undefined (reading 'total')"
+        culprit: app/cart/summary.tsx
+        status: unresolved
+        level: error
+        count: "412"
+        userCount: 97
+      - id: "5000000002"
+        project_slug: checkout
+        shortId: CHECKOUT-2
+        title: "NetworkError when attempting to fetch resource"
+        status: ignored
+        level: warning
+        count: "38"
+        userCount: 12
+      - id: "5000000003"
+        project_slug: checkout
+        shortId: CHECKOUT-3
+        title: "ReferenceError: analytics is not defined"
+        status: resolved
+        level: error
+        count: "7"
+    release:
+      - id: "6000000001"
+        version: checkout@2026.1.0
+        shortVersion: 2026.1.0
+
+# Conformance cases, read from Sentry's API reference rather than observed
+# against a live organisation. The verify report says so.
+conformance:
+  - name: a failure is one detail string and nothing else
+    source: https://docs.sentry.io/api/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/0/issues/9999999999/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+    expect:
+      status: 404
+      body:
+        detail: The requested resource does not exist
+      # Code written for almost any other provider reaches for a property
+      # that is undefined here and throws instead of reporting the failure.
+      absent:
+        - error
+        - errors
+        - message
+        - code
+
+  - name: an issue list is a bare array
+    source: https://docs.sentry.io/api/events/list-a-projects-issues/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/0/projects/cauldron/checkout/issues/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          shortId: CHECKOUT-1
+          status: unresolved
+        '[1]':
+          shortId: CHECKOUT-2
+      # A client unmarshalling into a slice must not receive an object, and
+      # the cursor is not in the body at all.
+      absent:
+        - data
+        - next_cursor
+        - '[3]'
+
+  - name: an ignored issue is not a resolved one
+    source: https://docs.sentry.io/product/issues/states-triage/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/0/issues/5000000002/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+    expect:
+      status: 200
+      body:
+        # An ignored issue still receives events and still counts against
+        # quota. It has just stopped alerting. Code that treats ignored as
+        # resolved reports a live problem as fixed.
+        status: ignored
+        level: warning
+        shortId: CHECKOUT-2
+
+  - name: event counts are strings, not numbers
+    source: https://docs.sentry.io/api/events/list-a-projects-issues/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/0/issues/5000000001/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+    expect:
+      status: 200
+      body:
+        # count is a string and userCount is a number, in the same object.
+        # Summing count without a parse concatenates instead of adding.
+        count: "412"
+        userCount: 97
+
+  - name: a missing token is refused with the same one-string shape
+    source: https://docs.sentry.io/api/auth/
+    request:
+      method: GET
+      path: /api/0/organizations/cauldron/projects/
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+      absent:
+        - error
+        - code
+
+  - name: another project's issues are not visible
+    source: https://docs.sentry.io/api/events/list-a-projects-issues/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/0/projects/cauldron/billing/issues/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+    expect:
+      status: 200
+      absent:
+        - '[0]'
+
+  - name: a release is created with a numeric string identifier
+    source: https://docs.sentry.io/api/releases/create-a-new-release-for-an-organization/
+    fixture: empty
+    request:
+      method: POST
+      path: /api/0/organizations/cauldron/releases/
+      headers:
+        Authorization: Bearer sntrys_cauldron
+      json:
+        version: checkout@2026.2.0
+    expect:
+      status: 201
+      body:
+        version: checkout@2026.2.0
+      matches:
+        id: '^[1-9][0-9]{9}$'
