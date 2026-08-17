@@ -1,0 +1,409 @@
+# Box Recipe for Cauldron
+#
+# Box has a developer sandbox, and it is a separate enterprise with its own
+# users, its own quota and its own OAuth app. Getting one is an approval
+# process, the token expires after an hour, and a JWT app needs a keypair that
+# nobody wants in a test runner. Most integrations end up tested against a real
+# corporate account, where a stray delete is a real document gone.
+#
+# Two things worth modelling exactly:
+#
+#   1. Every object declares a type, and the type is how you tell a file from a
+#      folder in a listing. They share an identifier space in appearance but
+#      not in fact: file 12345 and folder 12345 are different things, and code
+#      that ignores the type will happily fetch the wrong one.
+#   2. The error carries both an HTTP status and a code, and a request id
+#      beside them. Support asks for the request id, so an integration that
+#      logs only the message has nothing useful to hand over.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: box
+version: 0.1.0
+
+upstream:
+  api: "2.0"
+  docs: https://developer.box.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_box_token
+
+responses:
+  list:
+    style: wrapped
+    key: entries
+    count_field: total_count
+    fields:
+      offset: 0
+      limit: 100
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    status_field: status
+    fields:
+      # Box labels the error object itself, the same way it labels every
+      # other object it sends.
+      type: error
+      help_url: https://developer.box.com/guides/api-calls/permissions-and-errors/common-errors/
+      request_id: cauldron00000001
+
+resources:
+  file:
+    collection: entries
+    constants:
+      type: file
+    id:
+      style: digits
+      length: 12
+    fields:
+      parent_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # Box uses etag for optimistic concurrency, and an update without it can
+      # silently overwrite somebody else's change.
+      etag:
+        type: string
+        default: "0"
+      size:
+        type: integer
+        default: 0
+      sha1:
+        type: string
+      description:
+        type: string
+      item_status:
+        type: string
+        default: active
+      created_at:
+        type: datetime
+      modified_at:
+        type: datetime
+
+  folder:
+    collection: entries
+    constants:
+      type: folder
+    id:
+      style: digits
+      length: 12
+    fields:
+      parent_id:
+        type: string
+      name:
+        type: string
+        required: true
+      etag:
+        type: string
+        default: "0"
+      size:
+        type: integer
+        default: 0
+      item_status:
+        type: string
+        default: active
+      created_at:
+        type: datetime
+      modified_at:
+        type: datetime
+
+  collaboration:
+    collection: entries
+    constants:
+      type: collaboration
+    id:
+      style: digits
+      length: 12
+    fields:
+      item_id:
+        type: string
+      accessible_by_login:
+        type: string
+      # The role decides whether somebody can delete the thing. Getting it
+      # wrong is not visible until they do.
+      role:
+        type: string
+        default: viewer
+      status:
+        type: string
+        default: accepted
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /2.0/folders/{parent_id}/items
+    resource: file
+    operation: list
+    scope: [parent_id]
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /2.0/files/{id}
+    resource: file
+    operation: get
+
+  - method: PUT
+    path: /2.0/files/{id}
+    resource: file
+    operation: update
+
+  - method: DELETE
+    path: /2.0/files/{id}
+    resource: file
+    operation: delete
+
+  - method: GET
+    path: /2.0/folders/{id}
+    resource: folder
+    operation: get
+
+  - method: POST
+    path: /2.0/folders
+    resource: folder
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /2.0/collaborations
+    resource: collaboration
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+webhooks:
+  events:
+    - FILE.UPLOADED
+    - FILE.DOWNLOADED
+    - FILE.TRASHED
+    - FILE.DELETED
+    - FOLDER.CREATED
+    - COLLABORATION.CREATED
+    - COLLABORATION.ACCEPTED
+  signing:
+    scheme: hmac-sha256
+    header: BOX-SIGNATURE-PRIMARY
+    secret: cauldron-webhook-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: Request rate limit exceeded, please try again later
+    headers:
+      Retry-After: "3"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    message: "Bad Request: {detail} is required"
+
+  # The failure a corporate account produces and a fresh sandbox never will:
+  # the user can see the folder but not write to it.
+  access_denied_insufficient_permissions:
+    status: 403
+    code: access_denied_insufficient_permissions
+    message: Access denied, insufficient permission
+
+  # Optimistic concurrency. An update without a matching etag is refused
+  # rather than silently overwriting somebody else's change.
+  precondition_failed:
+    status: 412
+    code: precondition_failed
+    message: The resource has been modified. Please retrieve it again and retry.
+
+  # Box refuses a name that already exists in the same folder, which is what
+  # breaks a retried upload halfway through a batch.
+  item_name_in_use:
+    status: 409
+    code: item_name_in_use
+    message: Item with the same name already exists
+
+  storage_limit_exceeded:
+    status: 403
+    code: storage_limit_exceeded
+    message: The account storage limit has been reached
+
+fixtures:
+  empty: {}
+
+  small-account:
+    folder:
+      - id: "100000000001"
+        parent_id: "0"
+        name: Contracts
+        etag: "1"
+      - id: "100000000002"
+        parent_id: "100000000001"
+        name: Signed
+    file:
+      - id: "200000000001"
+        parent_id: "100000000001"
+        name: supplier-agreement.pdf
+        size: 184320
+        sha1: da39a3ee5e6b4b0d3255bfef95601890afd80709
+        etag: "3"
+      - id: "200000000002"
+        parent_id: "100000000001"
+        name: nda-template.docx
+        size: 24576
+        etag: "0"
+      - id: "200000000003"
+        parent_id: "999999999999"
+        name: should-not-appear.txt
+        size: 12
+    collaboration:
+      - id: "300000000001"
+        item_id: "100000000001"
+        accessible_by_login: ada@example.com
+        role: editor
+        status: accepted
+      - id: "300000000002"
+        item_id: "100000000001"
+        accessible_by_login: grace@example.com
+        # A pending collaboration grants nothing yet. Code that counts it as
+        # access shows the wrong sharing state.
+        role: viewer
+        status: pending
+
+# Conformance cases, read from Box's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: every object declares its type
+    source: https://developer.box.com/reference/resources/file/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/files/200000000001
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 200
+      body:
+        type: file
+        name: supplier-agreement.pdf
+        size: 184320
+        etag: "3"
+
+  - name: a folder is a different type in the same identifier space
+    source: https://developer.box.com/reference/resources/folder/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/folders/100000000001
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 200
+      body:
+        # Code that ignores the type will happily fetch a folder where it
+        # expected a file and read a size that means something else.
+        type: folder
+        name: Contracts
+
+  - name: a listing is wrapped in entries with a total count
+    source: https://developer.box.com/reference/get-folders-id-items/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/folders/100000000001/items
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 200
+      body:
+        total_count: 2
+        offset: 0
+        limit: 100
+        entries[0].name: supplier-agreement.pdf
+        entries[0].type: file
+      absent:
+        - data
+        - entries[2]
+
+  - name: another folder's items are not visible
+    source: https://developer.box.com/reference/get-folders-id-items/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/folders/999999999999/items
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 200
+      body:
+        total_count: 1
+        entries[0].name: should-not-appear.txt
+      absent:
+        - entries[1]
+
+  - name: the error carries a status, a code and a request id
+    source: https://developer.box.com/reference/resources/client-error/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/files/999999999999
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 404
+      body:
+        type: error
+        status: 404
+        code: not_found
+      matches:
+        # Support asks for this. An integration that logs only the message
+        # has nothing useful to hand over.
+        request_id: '^cauldron[0-9]+$'
+        message: 'Not Found'
+      absent:
+        - error
+        - errors
+
+  - name: a bad token is refused with the same flat shape
+    source: https://developer.box.com/guides/authentication/
+    request:
+      method: GET
+      path: /2.0/collaborations
+    expect:
+      status: 401
+      body:
+        type: error
+        status: 401
+        code: unauthorized
+
+  - name: a pending collaboration grants nothing yet
+    source: https://developer.box.com/reference/resources/collaboration/
+    fixture: small-account
+    request:
+      method: GET
+      path: /2.0/collaborations
+      headers:
+        Authorization: Bearer cauldron_box_token
+    expect:
+      status: 200
+      body:
+        entries[0].role: editor
+        entries[0].status: accepted
+        # Counting this as access shows the wrong sharing state.
+        entries[1].status: pending
+        entries[1].type: collaboration
