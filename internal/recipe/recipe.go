@@ -10,6 +10,7 @@ package recipe
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,6 +37,52 @@ type Recipe struct {
 	RequiredHeaders map[string]RequiredHeader `yaml:"required_headers"`
 	// Conformance is the evidence that this Recipe resembles the real provider.
 	Conformance []Case `yaml:"conformance"`
+}
+
+// echoesOnly reports whether a case's only claims repeat its own request.
+//
+// A create that sends {"name": "x"} and asserts {"name": "x"} is testing that
+// the request body survived the round trip, which every fake does by
+// construction. It reads as evidence and is not, and the failure is invisible
+// until somebody breaks the Recipe on purpose and watches the case pass.
+func echoesOnly(c Case) bool {
+	if len(c.Expect.Body) == 0 {
+		return false
+	}
+
+	// Either of these puts something under test that cannot be echoed.
+	if len(c.Expect.Matches) > 0 || len(c.Expect.Absent) > 0 {
+		return false
+	}
+
+	sent := map[string]any{}
+
+	for name, value := range c.Request.JSON {
+		sent[name] = value
+	}
+
+	for name, value := range c.Request.Form {
+		sent[name] = value
+	}
+
+	if len(sent) == 0 {
+		return false
+	}
+
+	for name, want := range c.Expect.Body {
+		value, present := sent[name]
+		if !present {
+			return false
+		}
+
+		// Form values arrive as text, so compare rendered forms rather than
+		// requiring the YAML types to match.
+		if !reflect.DeepEqual(value, want) && fmt.Sprint(value) != fmt.Sprint(want) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Case is one checkable claim about the provider's behaviour.
@@ -986,6 +1033,19 @@ func (r *Recipe) Validate() error {
 		// An absence is a claim too: "another project's issues are not visible"
 		// is exactly the kind of thing worth asserting, and it has no positive
 		// half. Leaving it out of this check rejected real cases.
+		// A case whose every body assertion repeats a value it sent proves
+		// nothing about the emulator: it asserts its own request came back.
+		// Four of these were written and only caught by deliberately breaking
+		// the Recipe and noticing the case still passed, so the check is here
+		// rather than in somebody's memory.
+		//
+		// One non-echoed claim is enough to clear it, because then something
+		// the emulator decided is under test. matches and absent count, since
+		// neither can be satisfied by echoing.
+		if echoesOnly(c) {
+			add("%s: every assertion repeats a value the request sent, so the case passes whatever the emulator does; assert something it decides, or add a matches or absent claim", where)
+		}
+
 		if c.Expect.Status < 400 && !c.Expect.NoBody && c.Expect.BodyMatches == "" &&
 			len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
 			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {

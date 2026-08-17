@@ -399,6 +399,15 @@ These are the decisions the project intends to be held to.
 
 **Determinism is enforced at the boundary, not requested politely.** Time comes from a movable sandbox clock and identifiers from a seeded generator. A Recipe has no access to the wall clock or to unseeded randomness. The same fixture and seed produce the same IDs on every machine, and a reset sandbox is indistinguishable from a fresh one.
 
+**A conformance case must claim something the emulator decides.** A case that
+posts `{"name": "Ada"}` and asserts `{"name": "Ada"}` is testing that the
+request survived the round trip, which every fake does by construction. It
+reads as evidence and is not, and it passes no matter how wrong the Recipe is.
+Four were written before anything checked, each found only by breaking the
+Recipe on purpose and noticing the case still passed; one could not be salvaged
+and was replaced. The validator now refuses a case whose every claim repeats a
+value it sent, and one non-echoed claim clears it.
+
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
 **More providers are queued.** [docs/backlog.md](docs/backlog.md) lists them,
