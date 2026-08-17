@@ -104,3 +104,51 @@ func TestListAndResourceCarryDifferentObjectTypes(t *testing.T) {
 		t.Errorf("page object = %v, want page", page["object"])
 	}
 }
+
+// Providers disagree about which half of a basic credential carries the
+// secret. Twilio puts the account SID in the username; Mailgun's username is
+// the constant "api" and the key is the password. Checking the wrong half
+// means a bad key is never rejected at all, so the failure path a test most
+// wants to exercise silently returns 200.
+func TestBasicAuthCanCheckThePasswordHalf(t *testing.T) {
+	r, err := recipe.Open("mailgun")
+	if err != nil {
+		t.Fatalf("open mailgun: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-domain"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	call := func(user, password string) int {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodGet, "/v3/mg.example.com/events", nil)
+		req.SetBasicAuth(user, password)
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		return rec.Code
+	}
+
+	if code := call("api", "cauldron-mailgun-key"); code != http.StatusOK {
+		t.Errorf("the right key should be accepted, got %d", code)
+	}
+
+	// The username is right and the key is not. Checking the username would
+	// let this through.
+	if code := call("api", "wrong-key"); code != http.StatusUnauthorized {
+		t.Errorf("a bad key should be refused, got %d", code)
+	}
+
+	// And the halves are not interchangeable.
+	if code := call("cauldron-mailgun-key", "api"); code != http.StatusUnauthorized {
+		t.Errorf("the key in the username half should not be accepted, got %d", code)
+	}
+}

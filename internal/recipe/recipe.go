@@ -111,6 +111,11 @@ type Auth struct {
 	Header string `yaml:"header"`
 	// Prefix is stripped from the credential before comparison, e.g. "Bearer ".
 	Prefix string `yaml:"prefix"`
+	// Credential says which half of a basic credential carries the secret:
+	// "username" (the default, which is what Twilio does with the account SID)
+	// or "password" (Mailgun, whose username is the constant "api"). Checking
+	// the wrong half means a bad key is never rejected at all.
+	Credential string `yaml:"credential"`
 	// Keys are the credentials the emulator accepts. Test keys only — a Recipe
 	// must never carry a real secret.
 	Keys []string `yaml:"keys"`
@@ -451,6 +456,14 @@ func (r *Recipe) Validate() error {
 
 	if r.Auth.Scheme != "" && !contains(validSchemes, r.Auth.Scheme) {
 		add("auth.scheme %q must be one of %s", r.Auth.Scheme, strings.Join(validSchemes, ", "))
+	}
+
+	if r.Auth.Credential != "" && r.Auth.Credential != "username" && r.Auth.Credential != "password" {
+		add("auth.credential %q must be username or password", r.Auth.Credential)
+	}
+
+	if r.Auth.Credential != "" && r.Auth.Scheme != "basic" {
+		add("auth.credential only applies to the basic scheme")
 	}
 
 	if len(r.Resources) == 0 {
