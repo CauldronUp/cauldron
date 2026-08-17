@@ -238,8 +238,10 @@ type ID struct {
 	// Style is one of: prefixed (cus_abc123), numeric (1, 2, 3), timestamp
 	// (1767225600.000100, which is how Slack identifies a message), opaque
 	// (a bare random string, which is what SendGrid returns as a message id)
-	// uuid (Notion, and most APIs designed after about 2015) or hex (Intercom,
-	// and anything whose identifiers came out of MongoDB).
+	// uuid (Notion, and most APIs designed after about 2015), hex (Intercom,
+	// and anything whose identifiers came out of MongoDB) or digits (Discord
+	// snowflakes, and any provider whose ids are long numeric strings that must
+	// not be parsed as numbers).
 	// Empty means prefixed.
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
@@ -352,7 +354,7 @@ var (
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
-	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex"}
+	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
 )
 
