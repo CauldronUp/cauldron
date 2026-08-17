@@ -1,0 +1,444 @@
+# Resend Recipe for Cauldron
+#
+# Resend has test addresses, and they are genuinely good: delivered@resend.dev,
+# bounced@resend.dev and complained@resend.dev do what their names say. This
+# Recipe is not claiming otherwise, and it is worth saying so plainly rather
+# than inventing a grievance.
+#
+# The reasons to emulate it anyway are narrower and real. The test addresses
+# need the network, so a suite that uses them does not run on a train or in a
+# sealed CI runner. They are rate limited at two requests a second by default,
+# which is slower than a test suite wants. And they cannot produce the states
+# that actually break integrations: a domain that verified last month and has
+# since failed, an API key with sending access trying to read domains, or an
+# event history that has moved on since the last time anybody looked.
+#
+# Three things worth modelling exactly:
+#
+#   1. last_event is the last one, not a history. A message that was delivered
+#      and then complained reads "complained", and the delivery is gone. A
+#      dashboard counting delivered messages by polling this undercounts
+#      permanently, and there is no other endpoint that remembers.
+#   2. A send returns an id and nothing else. It is accepted, not delivered,
+#      exactly as SES is, and the id is the only thing to correlate with
+#      later. Two providers, same shape, same mistake available.
+#   3. An API key has full_access or sending_access, and a sending key reading
+#      domains is refused with a message about permission rather than about
+#      the key. An integration built with a full-access key in development and
+#      deployed with a restricted one fails on the call nobody tested.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Events do not advance on their own. last_event is what the fixture puts
+#     there, so "this message has now bounced" is a state a test seeds.
+#   - Cauldron models one API key at a time, so the permission case is a
+#     separate key rather than two keys served at once.
+#   - Webhook signing is Svix, which Cauldron does not implement. The events
+#     are declared and the payload shape is modelled; the signature is not.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: resend
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://resend.com/docs/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - re_cauldron_FullAccessKey
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: bare
+  # A name rather than a code, and the HTTP status repeated in the body. There
+  # is no error or errors key anywhere.
+  error:
+    style: flat
+    code_field: name
+    code_type: string
+    message_field: message
+    status_field: statusCode
+    type_field: "-"
+
+resources:
+  email:
+    collection: data
+    constants:
+      object: email
+    id:
+      style: uuid
+    fields:
+      from:
+        type: string
+      to:
+        type: list
+      subject:
+        type: string
+      # The last event, and only the last. A message delivered and then
+      # complained about reads "complained": the delivery is gone, and no
+      # other endpoint remembers it.
+      last_event:
+        type: string
+        default: sent
+      created_at:
+        type: datetime
+      html:
+        type: string
+      text:
+        type: string
+      # Present only when the caller sent one. Resend deduplicates on it for
+      # 24 hours, so a retry after a timeout returns the original id rather
+      # than sending twice.
+      idempotency_key:
+        type: string
+
+  domain:
+    collection: data
+    constants:
+      object: domain
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      # not_started, pending, verified, failed, temporary_failure. A domain
+      # that verified last month and has since failed looks identical to one
+      # that never worked, from the application's point of view.
+      status:
+        type: string
+        default: not_started
+      # Domains are bound to a region, and a key from one region cannot send
+      # through a domain in another. Nothing in a send says which region it
+      # went to.
+      region:
+        type: string
+        default: us-east-1
+      created_at:
+        type: datetime
+
+  apiKey:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      # full_access or sending_access. A sending key reading domains is
+      # refused with a message about permission rather than about the key.
+      permission:
+        type: string
+        default: full_access
+      created_at:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /emails
+    resource: email
+    operation: create
+
+  - method: GET
+    path: /emails/{id}
+    resource: email
+    operation: get
+
+  - method: GET
+    path: /domains
+    resource: domain
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /domains/{id}
+    resource: domain
+    operation: get
+
+  - method: GET
+    path: /api-keys
+    resource: apiKey
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+webhooks:
+  events:
+    - email.sent
+    - email.delivered
+    - email.delivery_delayed
+    - email.complained
+    - email.bounced
+    - email.opened
+    - email.clicked
+  signing:
+    # Svix, which Cauldron does not implement. Declaring hmac-sha256 here
+    # would be claiming a signature scheme this is not.
+    scheme: none
+  payload:
+    type: "{event}"
+    created_at: "{created_iso}"
+    data:
+      "{object}": true
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: Too many requests. You can only make 2 requests per second.
+    headers:
+      # Lower case, and a retry-after beside them. A client reading the
+      # capitalised forms finds nothing.
+      ratelimit-limit: "2"
+      ratelimit-remaining: "0"
+      ratelimit-reset: "1"
+      retry-after: "1"
+
+  authentication_error:
+    status: 401
+    code: missing_api_key
+    message: "Missing API key in the authorization header. Include it as: Authorization: Bearer YOUR_API_KEY"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: validation_error
+    message: "{detail} is required"
+
+  # The one an integration meets on deployment rather than in development,
+  # because the development key had full access.
+  restricted_api_key:
+    status: 401
+    code: restricted_api_key
+    message: This API key is restricted to only send emails.
+
+  # Sending from a domain that is not verified. Every send fails, and the
+  # message names the domain rather than the verification step to fix.
+  domain_not_verified:
+    status: 403
+    code: validation_error
+    message: The example.com domain is not verified. Please verify your domain on the Resend dashboard.
+
+  # Resend's own guard against sending to a test address in production, which
+  # is exactly the mistake a suite that used them leaves behind.
+  testing_address:
+    status: 422
+    code: validation_error
+    message: You can only send testing emails to your own email address.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    apiKey:
+      - id: 11111111-1111-4111-8111-111111111111
+        name: Production
+        permission: full_access
+      - id: 22222222-2222-4222-8222-222222222222
+        name: Worker
+        # Sending only. Reading domains with this is refused, and an
+        # integration built against the full-access key above fails on the
+        # call nobody tested.
+        permission: sending_access
+
+    domain:
+      - id: 33333333-3333-4333-8333-333333333333
+        name: example.com
+        status: verified
+        region: us-east-1
+      - id: 44444444-4444-4444-8444-444444444444
+        name: mail.example.com
+        # Verified last month, failed since. From the application's point of
+        # view this is identical to a domain that never worked.
+        status: failed
+        # A different region. A key from one region cannot send through a
+        # domain in another, and nothing in a send says which region it used.
+        region: eu-west-1
+
+    email:
+      - id: 55555555-5555-4555-8555-555555555555
+        from: billing@example.com
+        to:
+          - ada@example.com
+        subject: Your receipt
+        # Delivered, then complained about. The delivery is gone: this field
+        # holds the last event and nothing remembers the others.
+        last_event: complained
+      - id: 66666666-6666-4666-8666-666666666666
+        from: billing@example.com
+        to:
+          - nobody@example.invalid
+        subject: Your receipt
+        last_event: bounced
+      - id: 77777777-7777-4777-8777-777777777777
+        from: billing@example.com
+        to:
+          - grace@example.com
+        subject: Welcome
+        # Accepted and nothing more has happened yet. Not a failure, not a
+        # delivery.
+        last_event: sent
+
+# Conformance cases, read from the Resend API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a send returns an id and nothing else
+    source: https://resend.com/docs/api-reference/emails/send-email
+    fixture: small-account
+    request:
+      method: POST
+      path: /emails
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+      json:
+        from: billing@example.com
+        subject: Your receipt
+    expect:
+      status: 200
+      matches:
+        # The only thing to correlate with later. Accepted, not delivered,
+        # exactly as SES is: two providers, same shape, same mistake
+        # available.
+        id: '^[0-9a-f-]{36}$'
+      absent:
+        - status
+        - delivered
+
+  - name: last_event is the last one, not a history
+    source: https://resend.com/docs/api-reference/emails/retrieve-email
+    fixture: small-account
+    request:
+      method: GET
+      path: /emails/55555555-5555-4555-8555-555555555555
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 200
+      body:
+        # This message was delivered and then complained about. The delivery
+        # is gone, and no other endpoint remembers it, so a dashboard
+        # counting deliveries by polling this undercounts permanently.
+        last_event: complained
+        object: email
+      absent:
+        - events
+        - history
+
+  - name: a bounce and a send are told apart only by that field
+    source: https://resend.com/docs/api-reference/emails/retrieve-email
+    fixture: small-account
+    request:
+      method: GET
+      path: /emails/66666666-6666-4666-8666-666666666666
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 200
+      body:
+        # Same shape as the accepted message below it in the fixture. Nothing
+        # else in the object says this one failed.
+        last_event: bounced
+        subject: Your receipt
+
+  - name: an accepted message is neither delivered nor failed
+    source: https://resend.com/docs/api-reference/emails/retrieve-email
+    fixture: small-account
+    request:
+      method: GET
+      path: /emails/77777777-7777-4777-8777-777777777777
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 200
+      body:
+        # Accepted and nothing more has happened. Treating anything that is
+        # not "delivered" as a failure loses every message still in flight.
+        last_event: sent
+
+  - name: a domain that failed looks like one that never worked
+    source: https://resend.com/docs/api-reference/domains/get-domain
+    fixture: small-account
+    request:
+      method: GET
+      path: /domains/44444444-4444-4444-8444-444444444444
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 200
+      body:
+        # Verified last month, failed since. From the application's point of
+        # view this is indistinguishable from never having been set up.
+        status: failed
+        # A different region from the verified domain. A key from one region
+        # cannot send through a domain in another, and nothing in a send says
+        # which region it used.
+        region: eu-west-1
+        object: domain
+
+  - name: an API key can be restricted to sending
+    source: https://resend.com/docs/api-reference/api-keys/list-api-keys
+    fixture: small-account
+    request:
+      method: GET
+      path: /api-keys
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 200
+      body:
+        data[0].permission: full_access
+        # Reading domains with this one is refused, and an integration built
+        # against the key above fails on the call nobody tested.
+        data[1].permission: sending_access
+
+  - name: the failure carries a name and repeats its status
+    source: https://resend.com/docs/api-reference/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /emails/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer re_cauldron_FullAccessKey
+    expect:
+      status: 404
+      body:
+        # A name, not a code, and the status repeated in the body. There is no
+        # error or errors key anywhere, so a client written for almost any
+        # other API in this collection finds nothing.
+        name: not_found
+        statusCode: 404
+      absent:
+        - code
+        - error
+        - errors
+
+  - name: the rate limit headers are lower case
+    source: https://resend.com/docs/api-reference/rate-limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /domains
+      headers:
+        Authorization: Bearer not-a-real-key
+    expect:
+      status: 401
+      body:
+        name: missing_api_key
+        statusCode: 401
+      matches:
+        message: 'Bearer'
