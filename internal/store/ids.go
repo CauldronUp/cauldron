@@ -14,6 +14,8 @@ import (
 // applications occasionally validate the shape, so the fakes have to match it.
 const hexDigits = "0123456789abcdef"
 
+const decimalDigits = "0123456789"
+
 const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 // shape describes how one resource's identifiers look.
@@ -96,6 +98,23 @@ func (g *Generator) Next(resource string) string {
 		g.shapes[resource] = s
 
 		return strconv.Itoa(s.seq)
+
+	case "digits":
+		// A long numeric string. Discord snowflakes exceed what a JavaScript
+		// number can hold, which is why they travel as strings and why an
+		// emulator minting small integers would let a rounding bug through.
+		g.shapes[resource] = s
+
+		var digits strings.Builder
+
+		// Never a leading zero: a snowflake is a number written as text.
+		digits.WriteByte(decimalDigits[1+g.rng.Intn(len(decimalDigits)-1)])
+
+		for i := 1; i < s.length; i++ {
+			digits.WriteByte(decimalDigits[g.rng.Intn(len(decimalDigits))])
+		}
+
+		return s.prefix + digits.String()
 
 	case "uuid":
 		// A version 4 UUID drawn from the seeded source, so it looks like the
