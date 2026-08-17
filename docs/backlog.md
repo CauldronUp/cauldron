@@ -178,7 +178,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Zoho Books | Invoices, payments, contacts |
 | Wave | Accounting and invoicing |
 | Bill.com | Accounts payable and receivable, vendors, payments |
-| Gusto | Payroll, employees, contractors |
+| ~~Gusto~~ | Shipped. Processed against paid, four dates, unpayable employees |
 | Deel | Workers, contracts, payroll |
 
 ## Media
