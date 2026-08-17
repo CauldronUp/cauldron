@@ -1,0 +1,441 @@
+# Mercury Recipe for Cauldron
+#
+# Mercury has no sandbox. An API token reaches the real bank account, and the
+# thing on the other end is a company's actual money. There is a read-only
+# token, which is the right thing to use and does not help a test that needs
+# to see what a failed transfer looks like.
+#
+# It is the third money-moving API here after Gusto and Bill.com, and the most
+# direct: this one is the bank. A send in the wrong direction is a wire
+# somebody has to phone about.
+#
+# Four things worth modelling exactly:
+#
+#   1. Amounts are floating point dollars, not integers in cents. Mercury is
+#      the opposite of Ramp on this, and both are in the same collection, so
+#      an amount of 42.5 here and 4250 there mean the same money. A shared
+#      ledger that assumes either is wrong for half its inputs.
+#   2. An outgoing transaction has a negative amount. The direction is in the
+#      sign rather than a field, so summing a statement without checking gives
+#      a net figure where somebody expected a total, and taking the absolute
+#      value loses the distinction entirely.
+#   3. A pending transaction has no posted date and can still fail. Its amount
+#      counts against the available balance and not the current one, which is
+#      why the two balances differ and why reading the wrong one authorises
+#      spending that is already committed.
+#   4. A failed transfer is a transaction. It sits in the list with a status
+#      of failed and a reason, and the money never left. Summing without
+#      filtering counts it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing moves. Which status a transaction holds is what a fixture puts
+#     there, and Cauldron computes no balances: the figures in a fixture are
+#     the figures returned.
+#   - Mercury's recipient and payment-creation endpoints are deliberately not
+#     modelled. This Recipe reads accounts and transactions, which is what an
+#     integration mostly does, and a Recipe that made sending look easy would
+#     be encouraging the thing this header warns about.
+#   - Statement generation and the treasury endpoints are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: mercury
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.mercury.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - secret-token:cauldron-000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: accounts
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: errors.message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  account:
+    collection: accounts
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      # The last four of the account number. Mercury does not return the
+      # full one, so an integration that needs it for a form has to get it
+      # from somewhere else.
+      accountNumber:
+        type: string
+      routingNumber:
+        type: string
+      # What is actually there. Floating point dollars, not cents.
+      currentBalance:
+        type: number
+      # What can be spent. Lower than the current balance when something is
+      # pending, and the one to read before authorising anything.
+      availableBalance:
+        type: number
+      # checking or savings. A savings account has transfer limits a checking
+      # account does not, and nothing else on the object says so.
+      kind:
+        type: string
+        default: checking
+      # active, deleted, archived. An archived account keeps its balance and
+      # its history and cannot be transacted on.
+      status:
+        type: string
+        default: active
+      createdAt:
+        type: string
+
+  transaction:
+    collection: transactions
+    id:
+      style: uuid
+    fields:
+      # Which account it belongs to. Mercury scopes transactions under an
+      # account rather than returning them globally, so there is no way to
+      # ask "what happened across the business" in one call.
+      accountId:
+        type: string
+      # Negative for money going out. The direction is in the sign rather
+      # than a field, so summing without checking gives a net figure where
+      # somebody expected a total.
+      amount:
+        type: number
+      # pending, sent, cancelled, failed. A failed transfer is still a
+      # transaction in this list.
+      status:
+        type: string
+        default: pending
+      counterpartyName:
+        type: string
+      # Set when the money actually moved. Absent while pending, so its
+      # presence is the reliable signal rather than the status.
+      postedAt:
+        type: string
+      createdAt:
+        type: string
+      # Why it failed, and only present on a failure. Without it a failed
+      # transfer and a cancelled one are indistinguishable.
+      failedAt:
+        type: string
+      # externalTransfer, internalTransfer, debitCardTransaction and more.
+      # The kind decides how quickly it settles, which nothing else says.
+      kind:
+        type: string
+        default: externalTransfer
+      bankDescription:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/accounts
+    resource: account
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /api/v1/account/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /api/v1/account/{accountId}/transactions
+    resource: transaction
+    operation: list
+    scope: [accountId]
+    pagination:
+      style: page
+      limit: 50
+
+  - method: GET
+    path: /api/v1/transaction/{id}
+    resource: transaction
+    operation: get
+
+webhooks:
+  # Mercury has no outbound webhooks on this API. Everything is polled, and
+  # claiming an event catalogue would be describing a feature it does not
+  # have.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    message: "Invalid or missing API token"
+
+  resource_missing:
+    status: 404
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # A read-only token asked to do something. It is the token most people
+  # should be using, and the failure names permissions rather than the token
+  # kind.
+  read_only_token:
+    status: 403
+    message: "This token does not have permission to perform write operations."
+
+  # An archived account cannot be transacted on. It keeps its balance and its
+  # history, so it looks usable from a read.
+  account_archived:
+    status: 422
+    message: "The account is archived and cannot be used for transfers."
+
+fixtures:
+  empty: {}
+
+  small-business:
+    account:
+      # The two balances differ by the pending transaction below. Reading the
+      # current one before authorising spending authorises money that is
+      # already committed.
+      - id: 11111111-1111-4111-8111-111111111111
+        name: Operating
+        accountNumber: "4321"
+        routingNumber: "021000021"
+        # Floating point dollars, not cents. Ramp is the opposite in the same
+        # collection, so a shared ledger is wrong for one of them.
+        currentBalance: 48210.55
+        availableBalance: 46410.55
+        kind: checking
+        status: active
+        createdAt: "2025-06-01T09:00:00Z"
+      # Archived. Keeps its balance and its history and cannot be transacted
+      # on, so it looks perfectly usable from a read.
+      - id: 22222222-2222-4222-8222-222222222222
+        name: Old savings
+        accountNumber: "8765"
+        currentBalance: 1200.00
+        availableBalance: 1200.00
+        kind: savings
+        status: archived
+
+    transaction:
+      # Money in. Positive.
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        accountId: 11111111-1111-4111-8111-111111111111
+        amount: 12500.00
+        status: sent
+        counterpartyName: Analytical Engines Ltd
+        kind: externalTransfer
+        bankDescription: INVOICE 1042
+        postedAt: "2026-01-12T14:00:00Z"
+        createdAt: "2026-01-12T09:00:00Z"
+      # Money out. Negative, and the sign is the only thing that says so.
+      - id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+        accountId: 11111111-1111-4111-8111-111111111111
+        amount: -3400.00
+        status: sent
+        counterpartyName: Cast Iron Supplies
+        kind: externalTransfer
+        postedAt: "2026-01-13T16:00:00Z"
+        createdAt: "2026-01-13T10:00:00Z"
+      # Pending, and it is the difference between the two balances above. It
+      # counts against available and not against current.
+      - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+        accountId: 11111111-1111-4111-8111-111111111111
+        amount: -1800.00
+        status: pending
+        counterpartyName: Monthly Rent
+        kind: externalTransfer
+        createdAt: "2026-01-15T08:00:00Z"
+      # Failed. Still in the list, with an amount, and the money never left.
+      - id: dddddddd-dddd-4ddd-8ddd-dddddddddddd
+        accountId: 11111111-1111-4111-8111-111111111111
+        amount: -750.00
+        status: failed
+        counterpartyName: Wrong Account Number
+        kind: externalTransfer
+        failedAt: "2026-01-14T11:00:00Z"
+        createdAt: "2026-01-14T09:00:00Z"
+
+# Conformance cases, read from the Mercury API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: an outgoing transaction is negative
+    source: https://docs.mercury.com/reference/get-transactions
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/transaction/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # The direction is in the sign and nowhere else. Summing a statement
+        # without checking gives a net figure where somebody expected a
+        # total, and taking the absolute value loses the distinction.
+        amount: -3400
+        status: sent
+        counterpartyName: Cast Iron Supplies
+
+  - name: an incoming transaction has the same shape
+    source: https://docs.mercury.com/reference/get-transactions
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/transaction/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # Identical in every respect except the sign, which is the point:
+        # nothing distinguishes a payment from a receipt but a minus.
+        amount: 12500
+        status: sent
+        kind: externalTransfer
+
+  - name: the two balances differ by what is pending
+    source: https://docs.mercury.com/reference/get-accounts
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/account/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # Eighteen hundred apart, which is the pending rent below. Reading
+        # the current balance before authorising spending authorises money
+        # that is already committed.
+        currentBalance: 48210.55
+        availableBalance: 46410.55
+
+  - name: a pending transaction has no posted date
+    source: https://docs.mercury.com/reference/get-transactions
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/transaction/cccccccc-cccc-4ccc-8ccc-cccccccccccc
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # The eighteen hundred separating the two balances. It can still
+        # fail, and nothing has moved yet.
+        status: pending
+        amount: -1800
+      absent:
+        - postedAt
+        - failedAt
+
+  - name: a failed transfer is still in the list
+    source: https://docs.mercury.com/reference/get-transactions
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/transaction/dddddddd-dddd-4ddd-8ddd-dddddddddddd
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # Seven hundred and fifty that never left, with an amount on it.
+        # Summing the list without filtering on status counts it as spent.
+        status: failed
+        amount: -750
+        failedAt: "2026-01-14T11:00:00Z"
+      # Never posted, so a report keyed on postedAt drops it and a report
+      # keyed on amount does not.
+      absent:
+        - postedAt
+
+  - name: an archived account keeps its balance
+    source: https://docs.mercury.com/reference/get-accounts
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/account/22222222-2222-4222-8222-222222222222
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # Archived, funded, and unusable. It looks perfectly fine from a
+        # read, and a transfer against it is refused.
+        status: archived
+        currentBalance: 1200
+        kind: savings
+
+  - name: only the last four of the account number is returned
+    source: https://docs.mercury.com/reference/get-accounts
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/account/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        # Four digits. An integration that needs the full number for a form
+        # has to get it from somewhere that is not this API.
+        accountNumber: "4321"
+        routingNumber: "021000021"
+
+  - name: accounts are wrapped and transactions are not
+    source: https://docs.mercury.com/reference/get-accounts
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/accounts
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 200
+      body:
+        accounts[0].name: Operating
+        accounts[1].status: archived
+      absent:
+        - data
+        - transactions
+
+  - name: the failure carries a message and nothing else
+    source: https://docs.mercury.com/reference
+    fixture: small-business
+    request:
+      method: GET
+      path: /api/v1/account/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer secret-token:cauldron-000000000000000000
+    expect:
+      status: 404
+      matches:
+        errors.message: 'Not found'
+      # No code and no type, so anything that needs to branch has to match on
+      # prose.
+      absent:
+        - errors.code
+        - code
+        - message

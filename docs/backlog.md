@@ -54,7 +54,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | GoCardless | Mandates, direct debit, failed collections |
 | Brex | Cards, expenses, transactions |
 | ~~Ramp~~ | Shipped. Cents without saying so, pending holds, declines in the list |
-| Mercury | Accounts, transactions, transfers |
+| ~~Mercury~~ | Shipped. Direction in the sign, two balances, failed transfers in the list |
 
 ## Commerce
 
