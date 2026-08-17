@@ -763,7 +763,9 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 			field = "message"
 		}
 
-		body[field] = message
+		// setPath, so a dotted name nests the same way code_field and
+		// status_field already do. Front puts all three under _error.
+		setPath(body, field, message)
 	}
 
 	if spec.CodeField != "" && code != "" {
