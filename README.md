@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 187 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 215 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 27: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog |
+| Recipes shipped | 31: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 187 cases, none yet run against a live account. Documentation-derived
+Recipe: 215 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -234,7 +234,11 @@ request for one invoice with a list of one. PagerDuty authenticates with
 Datadog sends its errors as an array of bare strings, so a client reading
 `.message` from each entry finds `undefined` on every one.
 
-Six of the last twelve needed no format change at all, which is the sign the
+Miro nests coordinates under `position`, so code reading `item.x` gets nothing
+and the item silently lands at the origin. Contentful keeps the identifier at
+`sys.id`.
+
+Nine of the last sixteen needed no format change at all, which is the sign the
 format has stopped being Stripe-shaped underneath.
 
 Not every provider fits. Linear is GraphQL: a single endpoint where the request
