@@ -150,6 +150,12 @@ type ResourceResponse struct {
 	// which is what Shopify does. Cloudflare wraps everything under "result"
 	// regardless of what the object is, so the name has to be declarable.
 	Key string `yaml:"key"`
+	// Array wraps the single object in a list. Xero answers a request for one
+	// invoice with {"Invoices": [{...}]}, so client code reads Invoices[0] and
+	// anyone expecting an object gets an array with no warning. With Array
+	// set, Key defaults to the resource's plural collection name rather than
+	// its singular one, because a list of one is still a collection.
+	Array bool `yaml:"array"`
 }
 
 // ErrorResponse describes the envelope a provider puts failures in.

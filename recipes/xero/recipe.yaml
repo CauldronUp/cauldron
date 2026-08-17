@@ -1,0 +1,443 @@
+# Xero Recipe for Cauldron
+#
+# Accounting is the worst case for testing against a live service. Xero's demo
+# company resets on a schedule and cannot be driven from CI, a trial
+# organisation expires, and a real organisation contains real books that a test
+# must never touch. Most integrations end up with a fixture file and no
+# exercise of the API's actual behaviour at all.
+#
+# Three things this Recipe insists on:
+#
+#   1. A request for one invoice returns a list of one. The response is
+#      {"Invoices": [{...}]}, so client code reads Invoices[0], and anyone
+#      expecting a single object gets an array with no warning.
+#   2. The Xero-tenant-id header is required. A token can reach several
+#      organisations and Xero will not guess which, so omitting it is a
+#      failure rather than a default.
+#   3. Everything is PascalCase, including the identifier. There is no "id"
+#      field anywhere in this API.
+#
+# Known fidelity gap, stated rather than hidden: some Xero date fields use the
+# .NET format, /Date(1518685950940+0000)/. Cauldron emits RFC 3339.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: xero
+version: 0.1.0
+
+upstream:
+  api: "2.0"
+  docs: https://developer.xero.com/documentation/api/accounting/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-xero-access-token
+
+# A token can reach several organisations. Xero will not guess which one.
+required_headers:
+  Xero-tenant-id: parameter_missing
+
+responses:
+  list:
+    style: wrapped
+  # A single object comes back as a list of one under the plural name.
+  resource:
+    style: wrapped
+    array: true
+  error:
+    style: flat
+    type_field: Type
+    code_field: ErrorNumber
+    message_field: Message
+
+resources:
+  invoice:
+    collection: Invoices
+    id:
+      style: uuid
+      field: InvoiceID
+    fields:
+      Type:
+        type: string
+        default: ACCREC
+      InvoiceNumber:
+        type: string
+      Reference:
+        type: string
+      # Xero's real lifecycle. An invoice in DRAFT has no effect on the books,
+      # and code that treats every invoice in the list as owed money
+      # overstates the ledger.
+      Status:
+        type: string
+        default: DRAFT
+      LineAmountTypes:
+        type: string
+        default: Exclusive
+      SubTotal:
+        type: number
+        default: 0
+      TotalTax:
+        type: number
+        default: 0
+      Total:
+        type: number
+        default: 0
+      AmountDue:
+        type: number
+        default: 0
+      AmountPaid:
+        type: number
+        default: 0
+      CurrencyCode:
+        type: string
+        default: GBP
+      DateString:
+        type: datetime
+      UpdatedDateUTC:
+        type: datetime
+
+  contact:
+    collection: Contacts
+    id:
+      style: uuid
+      field: ContactID
+    fields:
+      Name:
+        type: string
+        required: true
+      ContactNumber:
+        type: string
+      EmailAddress:
+        type: string
+      ContactStatus:
+        type: string
+        default: ACTIVE
+      IsSupplier:
+        type: boolean
+        default: false
+      IsCustomer:
+        type: boolean
+        default: false
+      UpdatedDateUTC:
+        type: datetime
+
+  account:
+    collection: Accounts
+    id:
+      style: uuid
+      field: AccountID
+    fields:
+      Code:
+        type: string
+        required: true
+      Name:
+        type: string
+        required: true
+      Type:
+        type: string
+        default: REVENUE
+      TaxType:
+        type: string
+        default: OUTPUT2
+      Class:
+        type: string
+        default: REVENUE
+      EnablePaymentsToAccount:
+        type: boolean
+        default: false
+      UpdatedDateUTC:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api.xro/2.0/Invoices
+    resource: invoice
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /api.xro/2.0/Invoices
+    resource: invoice
+    operation: create
+
+  - method: GET
+    path: /api.xro/2.0/Invoices/{id}
+    resource: invoice
+    operation: get
+
+  - method: POST
+    path: /api.xro/2.0/Invoices/{id}
+    resource: invoice
+    operation: update
+
+  - method: GET
+    path: /api.xro/2.0/Contacts
+    resource: contact
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /api.xro/2.0/Contacts
+    resource: contact
+    operation: create
+
+  - method: GET
+    path: /api.xro/2.0/Contacts/{id}
+    resource: contact
+    operation: get
+
+  - method: GET
+    path: /api.xro/2.0/Accounts
+    resource: account
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /api.xro/2.0/Accounts/{id}
+    resource: account
+    operation: get
+
+webhooks:
+  events:
+    - INVOICE.CREATE
+    - INVOICE.UPDATE
+    - CONTACT.CREATE
+    - CONTACT.UPDATE
+  signing:
+    scheme: hmac-sha256
+    header: x-xero-signature
+    secret: cauldron-webhook-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: "0"
+    type: RateLimitException
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "60"
+      X-Rate-Limit-Problem: minute
+
+  authentication_error:
+    status: 401
+    code: "0"
+    type: AuthenticationUnsuccessful
+    message: Token is invalid or has expired
+
+  resource_missing:
+    status: 404
+    code: "16"
+    type: NoDataProcessedException
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "10"
+    type: ValidationException
+    message: "A validation exception occurred: {detail} is required"
+
+  # The failures accounting integrations actually hit, and that a demo company
+  # cannot be made to produce on request.
+  account_code_not_valid:
+    status: 400
+    code: "10"
+    type: ValidationException
+    message: Account code must be specified and must be valid.
+
+  invoice_not_editable:
+    status: 400
+    code: "10"
+    type: ValidationException
+    message: Invoice not of valid status for modification. An invoice that has been paid cannot be edited.
+
+  # Xero refuses a duplicate invoice number outright, which is what breaks a
+  # retried import halfway through.
+  duplicate_invoice_number:
+    status: 400
+    code: "10"
+    type: ValidationException
+    message: Invoice # must be unique.
+
+fixtures:
+  empty: {}
+
+  small-org:
+    contact:
+      - id: 11111111-1111-4111-8111-111111111111
+        Name: Analytical Engines
+        ContactNumber: CUST-1001
+        EmailAddress: ada@example.com
+        IsCustomer: true
+      - id: 22222222-2222-4222-8222-222222222222
+        Name: Paper Supplies Ltd
+        IsSupplier: true
+    invoice:
+      - id: 33333333-3333-4333-8333-333333333333
+        Type: ACCREC
+        InvoiceNumber: INV-0001
+        Status: AUTHORISED
+        SubTotal: 1000
+        TotalTax: 200
+        Total: 1200
+        AmountDue: 1200
+        CurrencyCode: GBP
+      - id: 44444444-4444-4444-8444-444444444444
+        Type: ACCREC
+        InvoiceNumber: INV-0002
+        # A draft has no effect on the books. Code that treats every invoice
+        # in the list as owed money overstates the ledger.
+        Status: DRAFT
+        SubTotal: 500
+        Total: 500
+        AmountDue: 500
+      - id: 55555555-5555-4555-8555-555555555555
+        Type: ACCREC
+        InvoiceNumber: INV-0003
+        Status: PAID
+        Total: 300
+        AmountDue: 0
+        AmountPaid: 300
+    account:
+      - id: 66666666-6666-4666-8666-666666666666
+        Code: "200"
+        Name: Sales
+        Type: REVENUE
+        TaxType: OUTPUT2
+
+# Conformance cases, read from Xero's Accounting API reference rather than
+# observed against a live organisation. The verify report says so.
+conformance:
+  - name: a request for one invoice returns a list of one
+    source: https://developer.xero.com/documentation/api/accounting/invoices
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices/33333333-3333-4333-8333-333333333333
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 200
+      body:
+        # Invoices[0], not Invoice. Anyone expecting an object gets an array
+        # with no warning at all.
+        Invoices[0].InvoiceNumber: INV-0001
+        Invoices[0].Status: AUTHORISED
+        Invoices[0].AmountDue: 1200
+      absent:
+        - invoice
+        - Invoice
+        - Invoices[1]
+
+  - name: a request without the tenant header is refused
+    source: https://developer.xero.com/documentation/guides/how-to-guides/xero-oauth2-app/
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+    expect:
+      # A token can reach several organisations and Xero will not guess which.
+      status: 400
+      body:
+        Type: ValidationException
+        ErrorNumber: 10
+
+  - name: the identifier is InvoiceID, and there is no id anywhere
+    source: https://developer.xero.com/documentation/api/accounting/invoices
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 200
+      matches:
+        Invoices[0].InvoiceID: '^[0-9a-f-]{36}$'
+      absent:
+        - Invoices[0].id
+
+  - name: a draft invoice is not money owed
+    source: https://developer.xero.com/documentation/api/accounting/types
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices/44444444-4444-4444-8444-444444444444
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 200
+      body:
+        # Code that sums AmountDue across every invoice in the list without
+        # checking Status overstates the ledger by this much.
+        Invoices[0].Status: DRAFT
+        Invoices[0].AmountDue: 500
+
+  - name: a paid invoice owes nothing
+    source: https://developer.xero.com/documentation/api/accounting/types
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices/55555555-5555-4555-8555-555555555555
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 200
+      body:
+        Invoices[0].Status: PAID
+        Invoices[0].AmountDue: 0
+        Invoices[0].AmountPaid: 300
+
+  - name: a failure is flat and PascalCase, with a Type and an ErrorNumber
+    source: https://developer.xero.com/documentation/api/accounting/requests-and-responses
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Invoices/99999999-9999-4999-8999-999999999999
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 404
+      body:
+        Type: NoDataProcessedException
+        ErrorNumber: 16
+      matches:
+        Message: 'could not be found'
+      absent:
+        - error
+        - errors
+        - message
+
+  - name: contacts and accounts use the same list envelope
+    source: https://developer.xero.com/documentation/api/accounting/contacts
+    fixture: small-org
+    request:
+      method: GET
+      path: /api.xro/2.0/Contacts
+      headers:
+        Authorization: Bearer cauldron-xero-access-token
+        Xero-tenant-id: cauldron-tenant
+    expect:
+      status: 200
+      body:
+        Contacts[0].Name: Analytical Engines
+        Contacts[0].IsCustomer: true
+        Contacts[1].IsSupplier: true
+      absent:
+        - data
+        - Contacts[2]
