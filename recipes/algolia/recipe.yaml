@@ -1,0 +1,377 @@
+# Algolia Recipe for Cauldron
+#
+# Algolia bills by operation and by record. Every test run that indexes a
+# fixture set costs something, and a CI suite that reindexes on each build is a
+# line item. The free tier runs out, and when it does the build fails for
+# billing reasons rather than code reasons. Teams either share one index
+# between developers, so tests interfere, or mock the client entirely and never
+# find out that their result handling reads the wrong field.
+#
+# Two things worth modelling exactly:
+#
+#   1. Credentials are two headers, and they are not Authorization. Sending a
+#      bearer token gets nowhere, and forgetting the application id is a
+#      distinct failure from a bad key.
+#   2. The identifier is objectID, supplied by the caller rather than minted by
+#      Algolia, and hits carry it alongside the record's own fields. Code that
+#      reads hit.id finds nothing.
+#
+# Known fidelity gap, stated rather than hidden: Cauldron does not implement
+# search. A query returns the records in the index rather than the ones
+# matching the term, so relevance, ranking and highlighting are not modelled.
+# What is modelled is the response shape and the failure modes.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: algolia
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://www.algolia.com/doc/rest-api/search
+
+auth:
+  scheme: header
+  header: X-Algolia-API-Key
+  keys:
+    - cauldron-admin-key
+
+# The application id travels in its own header. Omitting it is a different
+# failure from a bad key, and the message says so.
+required_headers:
+  X-Algolia-Application-Id: application_id_missing
+
+responses:
+  list:
+    style: wrapped
+    key: hits
+    count_field: nbHits
+    # Algolia reports the page it served and how long it took, and client
+    # code and dashboards both read them.
+    fields:
+      page: 0
+      hitsPerPage: 20
+      processingTimeMS: 1
+      exhaustiveNbHits: true
+  error:
+    style: flat
+    message_field: message
+    status_field: status
+
+resources:
+  record:
+    collection: hits
+    id:
+      # Supplied by the caller in the real API. Cauldron mints one when the
+      # caller does not, which is what Algolia does too.
+      style: opaque
+      field: objectID
+      length: 16
+    fields:
+      index:
+        type: string
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      category:
+        type: string
+      price:
+        type: number
+      in_stock:
+        type: boolean
+        default: true
+
+  index_settings:
+    collection: items
+    id:
+      style: opaque
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      entries:
+        type: integer
+        default: 0
+      dataSize:
+        type: integer
+        default: 0
+      numberOfPendingTasks:
+        type: integer
+        default: 0
+
+routes:
+  # Search is a POST with the query in the body, which is why an API key can
+  # sit in a header rather than a URL a browser would cache.
+  - method: POST
+    path: /1/indexes/{index}/query
+    resource: record
+    operation: list
+    scope: [index]
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /1/indexes/{index}
+    resource: record
+    operation: list
+    scope: [index]
+    pagination:
+      style: page
+      limit: 20
+
+  - method: POST
+    path: /1/indexes/{index}
+    resource: record
+    operation: create
+    scope: [index]
+    status: 201
+
+  - method: GET
+    path: /1/indexes/{index}/{id}
+    resource: record
+    operation: get
+    scope: [index]
+
+  - method: PUT
+    path: /1/indexes/{index}/{id}
+    resource: record
+    operation: update
+    scope: [index]
+
+  - method: DELETE
+    path: /1/indexes/{index}/{id}
+    resource: record
+    operation: delete
+    scope: [index]
+
+  - method: GET
+    path: /1/indexes
+    resource: index_settings
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 403
+    code: "403"
+    message: Invalid Application-Id or API key
+
+  resource_missing:
+    status: 404
+    code: "404"
+    message: "ObjectID does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "400"
+    message: "Invalid body: {detail} is required"
+
+  application_id_missing:
+    status: 403
+    code: "403"
+    message: Missing Application-Id header
+
+  # The one that ends a CI run: the plan's record or operation quota is spent.
+  # Nothing about the request is wrong, and retrying does not help.
+  quota_exceeded:
+    status: 403
+    code: "403"
+    message: The record quota for your plan has been reached.
+
+  # An index that has never been written to does not exist, which surprises
+  # anyone whose test suite searches before it indexes.
+  index_missing:
+    status: 404
+    code: "404"
+    message: Index does not exist
+
+fixtures:
+  empty: {}
+
+  small-catalogue:
+    record:
+      - id: prod-0001
+        index: products
+        name: Cast iron cauldron
+        description: Twelve litres, seasoned
+        category: cookware
+        price: 89.5
+        in_stock: true
+      - id: prod-0002
+        index: products
+        name: Pewter goblet
+        category: tableware
+        price: 24
+        in_stock: false
+      # A second index, so scoping is exercised by the fixture rather than
+      # only by a hand-written test.
+      - id: post-0001
+        index: articles
+        name: Seasoning cast iron
+        category: guides
+    index_settings:
+      - id: products
+        name: products
+        entries: 2
+      - id: articles
+        name: articles
+        entries: 1
+
+# Conformance cases, read from Algolia's REST API reference rather than
+# observed against a live application. The verify report says so.
+conformance:
+  - name: a request without the application id header is refused
+    source: https://www.algolia.com/doc/rest-api/search
+    fixture: small-catalogue
+    request:
+      method: POST
+      path: /1/indexes/products/query
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+      json:
+        query: cauldron
+    expect:
+      # A different failure from a bad key, and the message says which.
+      status: 403
+      body:
+        status: 403
+        message: Missing Application-Id header
+
+  - name: a search answers with hits and a count, not data
+    source: https://www.algolia.com/doc/rest-api/search
+    fixture: small-catalogue
+    request:
+      method: POST
+      path: /1/indexes/products/query
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+        X-Algolia-Application-Id: CAULDRON01
+      json:
+        query: cauldron
+    expect:
+      status: 200
+      body:
+        nbHits: 2
+        page: 0
+        hitsPerPage: 20
+        exhaustiveNbHits: true
+        hits[0].name: Cast iron cauldron
+      absent:
+        - data
+        - results
+
+  - name: the identifier is objectID, not id
+    source: https://www.algolia.com/doc/guides/sending-and-managing-data/prepare-your-data/
+    fixture: small-catalogue
+    request:
+      method: GET
+      path: /1/indexes/products/prod-0001
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+        X-Algolia-Application-Id: CAULDRON01
+    expect:
+      status: 200
+      body:
+        objectID: prod-0001
+        name: Cast iron cauldron
+        price: 89.5
+      # Code reading hit.id finds nothing.
+      absent:
+        - id
+
+  - name: another index is not searched
+    source: https://www.algolia.com/doc/rest-api/search
+    fixture: small-catalogue
+    request:
+      method: POST
+      path: /1/indexes/articles/query
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+        X-Algolia-Application-Id: CAULDRON01
+      json:
+        query: seasoning
+    expect:
+      status: 200
+      body:
+        nbHits: 1
+        hits[0].name: Seasoning cast iron
+      absent:
+        - hits[1]
+
+  - name: a bad key is a 403, not a 401
+    source: https://www.algolia.com/doc/guides/security/api-keys/
+    fixture: small-catalogue
+    request:
+      method: POST
+      path: /1/indexes/products/query
+      headers:
+        X-Algolia-API-Key: wrong-key
+        X-Algolia-Application-Id: CAULDRON01
+      json:
+        query: cauldron
+    expect:
+      # Algolia answers 403 where most providers answer 401, so code checking
+      # for 401 to refresh a credential never fires.
+      status: 403
+      body:
+        status: 403
+      matches:
+        message: 'Invalid Application-Id or API key'
+
+  - name: an unknown objectID reports the id it could not find
+    source: https://www.algolia.com/doc/rest-api/search
+    fixture: small-catalogue
+    request:
+      method: GET
+      path: /1/indexes/products/prod-9999
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+        X-Algolia-Application-Id: CAULDRON01
+    expect:
+      status: 404
+      body:
+        status: 404
+      matches:
+        message: 'ObjectID does not exist'
+      absent:
+        - error
+        - errors
+
+  - name: indexing a record answers 201 and mints an objectID
+    source: https://www.algolia.com/doc/rest-api/search
+    fixture: empty
+    request:
+      method: POST
+      path: /1/indexes/products
+      headers:
+        X-Algolia-API-Key: cauldron-admin-key
+        X-Algolia-Application-Id: CAULDRON01
+      json:
+        name: Copper ladle
+        category: cookware
+    expect:
+      status: 201
+      body:
+        name: Copper ladle
+        in_stock: true
+        index: products
+      matches:
+        objectID: '^[A-Za-z0-9]{16}$'
