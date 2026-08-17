@@ -860,11 +860,18 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		setPath(body, field, message)
 	}
 
-	if spec.CodeField != "" && code != "" {
+	// "-" omits the field, exactly as it does for the message above and in the
+	// nested style. It used to be honoured only in the nested style here, so a
+	// flat Recipe declaring code_field: "-" or type_field: "-" got a literal
+	// "-" key in every error body instead of no field at all. Three shipped
+	// Recipes were doing that, and every case written about them passed,
+	// because a case asserts the fields it names and says nothing about a key
+	// nobody thought to look for.
+	if spec.CodeField != "" && spec.CodeField != "-" && code != "" {
 		setPath(body, spec.CodeField, codeValue(spec.CodeType, code))
 	}
 
-	if spec.TypeField != "" {
+	if spec.TypeField != "" && spec.TypeField != "-" {
 		setPath(body, spec.TypeField, category)
 	}
 

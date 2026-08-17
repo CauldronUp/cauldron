@@ -1,0 +1,632 @@
+# WordPress Recipe for Cauldron
+#
+# WordPress has no sandbox, because it is not a service. It is software on
+# somebody's hosting, and the test environment is a second install that has to
+# be kept in step with the live one's plugins and theme by hand. Teams point
+# tests at a staging site that drifts, or at production with a read-only
+# application password, and a test that publishes a post publishes it: on the
+# site, in the feed, and to whatever is subscribed to the feed.
+#
+# Four things worth modelling exactly:
+#
+#   1. title is an object, not a string. It is {"rendered": "..."}, and so are
+#      content, excerpt and guid. A template that prints post.title prints
+#      [object Object], and one that measures post.title.length measures the
+#      wrong thing without failing.
+#   2. status has five values and two of them look published from a distance.
+#      "future" is scheduled: it has a date that has not happened yet and is
+#      not on the site. "private" is published and visible only to people who
+#      are logged in. Treating anything that is not "draft" as live puts both
+#      in a feed.
+#   3. featured_media is 0 when there is no image, not null and not absent.
+#      Zero is a perfectly good-looking id, so code that passes it straight to
+#      /wp/v2/media/0 gets a 404 rather than a clear absence.
+#   4. categories and tags are arrays of term ids, not names. Rendering them
+#      shows numbers, and resolving them is a second request per post.
+#
+# The failure shape and the date pair are the same as the WooCommerce Recipe's,
+# and deliberately so: both are WordPress. WooCommerce did not invent
+# {"code","message","data":{"status"}}, it inherited WP_Error, and the
+# site-local date with a _gmt twin beside it is core behaviour that every
+# plugin exposing a REST route repeats.
+#
+# Known fidelity gaps, stated rather than hidden. WordPress reports totals in
+# X-WP-Total and X-WP-TotalPages headers, which Cauldron cannot compute per
+# request, so they are not sent rather than sent wrong. WordPress also hides
+# draft, private and future posts from an unauthenticated reader and shows them
+# to an editor; Cauldron does not vary a response by who is asking, so every
+# status is visible here and the statuses themselves are what the cases pin
+# down.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: wordpress
+version: 0.1.0
+
+upstream:
+  api: wp/v2
+  docs: https://developer.wordpress.org/rest-api/reference/
+
+auth:
+  # An application password, sent as HTTP Basic with the WordPress username.
+  # The password half is the secret, so that is the half checked here.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron app pass word here
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # WP_Error. WooCommerce, and every plugin with a REST route, answers the
+  # same way, because none of them invented it.
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    status_field: data.status
+    type_field: "-"
+
+resources:
+  post:
+    id:
+      style: numeric
+    fields:
+      # An object, not a string. A template printing post.title prints
+      # [object Object].
+      title_rendered:
+        type: string
+        in: title
+      content_rendered:
+        type: string
+        in: content
+      # True when the post is password protected, in which case rendered is
+      # empty rather than absent. A listing that checks for a missing body
+      # shows an empty card instead of skipping it.
+      content_protected:
+        type: boolean
+        in: content
+      excerpt_rendered:
+        type: string
+        in: excerpt
+      # publish, future, draft, pending, private. Two of them look published
+      # from a distance.
+      status:
+        type: string
+        default: publish
+      slug:
+        type: string
+      link:
+        type: string
+      # Site-local, with no timezone on it. Parsing it as UTC shifts the post
+      # by the site's offset, which is invisible on a site running on UTC.
+      date:
+        type: string
+      # The same instant in UTC, right beside it.
+      date_gmt:
+        type: string
+      modified:
+        type: string
+      # Zero when there is no image. Not null, not absent, and a perfectly
+      # good-looking id.
+      featured_media:
+        type: integer
+        default: 0
+      # Term ids, not names. Rendering them shows numbers.
+      categories:
+        type: list
+      tags:
+        type: list
+      # A sticky post is pinned to the top of the loop regardless of its date,
+      # so a "latest posts" list ordered by date is not what the site shows.
+      sticky:
+        type: boolean
+        default: false
+      author:
+        type: integer
+      # post, page, or any type a plugin registers. The same route shape
+      # serves all of them at different paths.
+      type:
+        type: string
+        default: post
+      # standard, aside, gallery, quote. A theme renders these differently,
+      # and a feed that ignores it publishes a one-line aside as an article.
+      format:
+        type: string
+        default: standard
+
+  page:
+    id:
+      style: numeric
+    fields:
+      title_rendered:
+        type: string
+        in: title
+      content_rendered:
+        type: string
+        in: content
+      status:
+        type: string
+        default: publish
+      slug:
+        type: string
+      # Pages nest, and a child page's parent is an id. Zero means top level,
+      # which is the same zero-is-not-a-thing problem as featured_media.
+      parent:
+        type: integer
+        default: 0
+      menu_order:
+        type: integer
+        default: 0
+      date:
+        type: string
+      date_gmt:
+        type: string
+
+  category:
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+      # How many published posts are in it. A category holding only drafts
+      # reports zero and still exists, so a menu built from categories with
+      # posts silently loses it.
+      count:
+        type: integer
+        default: 0
+      parent:
+        type: integer
+        default: 0
+      description:
+        type: string
+
+  media:
+    id:
+      style: numeric
+    fields:
+      title_rendered:
+        type: string
+        in: title
+      # The file itself. It is at the top level rather than inside a details
+      # object, unlike every size variant of it.
+      source_url:
+        type: string
+      # image, video, file. A PDF is a "file" and has no dimensions at all.
+      media_type:
+        type: string
+        default: image
+      mime_type:
+        type: string
+      # Empty on a media item nobody filled in, which is most of them. A
+      # theme using it for alt text ships an empty alt attribute.
+      alt_text:
+        type: string
+      date:
+        type: string
+      date_gmt:
+        type: string
+
+routes:
+  - method: GET
+    path: /wp-json/wp/v2/posts
+    resource: post
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wp/v2/posts/{id}
+    resource: post
+    operation: get
+
+  - method: POST
+    path: /wp-json/wp/v2/posts
+    resource: post
+    operation: create
+    status: 201
+
+  - method: POST
+    path: /wp-json/wp/v2/posts/{id}
+    resource: post
+    operation: update
+
+  - method: GET
+    path: /wp-json/wp/v2/pages
+    resource: page
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wp/v2/pages/{id}
+    resource: page
+    operation: get
+
+  - method: GET
+    path: /wp-json/wp/v2/categories
+    resource: category
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wp/v2/media
+    resource: media
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /wp-json/wp/v2/media/{id}
+    resource: media
+    operation: get
+
+webhooks:
+  # Core WordPress has no webhooks. Everything that looks like one is a plugin,
+  # so claiming an event catalogue here would be inventing a feature.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: Too many requests
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 401
+    code: rest_not_logged_in
+    message: You are not currently logged in.
+
+  resource_missing:
+    status: 404
+    code: rest_post_invalid_id
+    message: "Invalid post ID: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: rest_missing_callback_param
+    message: "Missing parameter(s): {detail}"
+
+  # An application password used over plain HTTP is refused outright, which is
+  # what a local development site without TLS runs into first.
+  no_https:
+    status: 401
+    code: rest_application_passwords_disabled
+    message: Application passwords are not available over non-HTTPS connections.
+
+  # The reader is authenticated and still cannot see it. This is what a draft
+  # or private post looks like to somebody without the capability, and it is
+  # not a 404.
+  forbidden:
+    status: 403
+    code: rest_forbidden_context
+    message: Sorry, you are not allowed to edit posts in this post type.
+
+  # A REST route a plugin has not registered. It is the failure an integration
+  # hits when the plugin it depends on is deactivated, and it says nothing
+  # about the plugin.
+  no_route:
+    status: 404
+    code: rest_no_route
+    message: No route was found matching the URL and request method.
+
+fixtures:
+  empty: {}
+
+  small-site:
+    category:
+      - id: "3"
+        name: Cauldrons
+        slug: cauldrons
+        count: 2
+      - id: "4"
+        name: Drafts corner
+        slug: drafts-corner
+        # Holds only unpublished posts, so it counts zero and still exists. A
+        # menu built from categories with posts silently loses it.
+        count: 0
+
+    media:
+      - id: "88"
+        title_rendered: Seasoned cauldron
+        source_url: https://example.com/wp-content/uploads/2026/01/cauldron.jpg
+        media_type: image
+        mime_type: image/jpeg
+        alt_text: A well seasoned cast iron cauldron
+        date: "2026-01-10T11:04:00"
+        date_gmt: "2026-01-10T10:04:00"
+
+    post:
+      - id: "101"
+        title_rendered: Seasoning cast iron
+        content_rendered: "<p>Heat, oil, repeat.</p>"
+        content_protected: false
+        excerpt_rendered: "<p>Heat, oil, repeat.</p>"
+        status: publish
+        slug: seasoning-cast-iron
+        link: https://example.com/seasoning-cast-iron/
+        # An hour apart, because the site is not on UTC.
+        date: "2026-01-14T11:22:31"
+        date_gmt: "2026-01-14T10:22:31"
+        modified: "2026-01-14T11:30:00"
+        featured_media: 88
+        # Term ids. Rendering them shows numbers.
+        categories: [3]
+        tags: [12, 15]
+        author: 1
+      - id: "102"
+        title_rendered: Choosing a cauldron
+        content_rendered: "<p>Size matters less than the lid.</p>"
+        content_protected: false
+        status: publish
+        slug: choosing-a-cauldron
+        date: "2026-01-12T09:00:00"
+        date_gmt: "2026-01-12T08:00:00"
+        # No image. Zero rather than null, and /wp/v2/media/0 is a 404 rather
+        # than a clear absence.
+        featured_media: 0
+        categories: [3]
+        tags: []
+        # Pinned to the top of the loop regardless of its date, so a "latest
+        # posts" list ordered by date is not what the site shows.
+        sticky: true
+        author: 1
+      - id: "103"
+        title_rendered: Announcing the winter range
+        content_rendered: "<p>Not yet.</p>"
+        status: future
+        slug: winter-range
+        # Scheduled. The date has not happened and the post is not on the
+        # site, but nothing about the word "future" says unpublished.
+        date: "2026-03-01T09:00:00"
+        date_gmt: "2026-03-01T09:00:00"
+        featured_media: 0
+        categories: [4]
+        tags: []
+        author: 1
+      - id: "104"
+        title_rendered: Members only
+        # Protected, so the body is empty rather than missing. A listing that
+        # checks for a missing body shows an empty card instead of skipping.
+        content_rendered: ""
+        content_protected: true
+        status: private
+        slug: members-only
+        date: "2026-01-11T14:00:00"
+        date_gmt: "2026-01-11T13:00:00"
+        featured_media: 0
+        categories: [3]
+        tags: []
+        author: 1
+        format: aside
+
+    page:
+      - id: "2"
+        title_rendered: About
+        content_rendered: "<p>We make cauldrons.</p>"
+        status: publish
+        slug: about
+        parent: 0
+        date: "2025-09-01T10:00:00"
+        date_gmt: "2025-09-01T09:00:00"
+      - id: "9"
+        title_rendered: Our workshop
+        content_rendered: "<p>In a shed.</p>"
+        status: publish
+        slug: workshop
+        # A child of About. Zero above means top level, which is the same
+        # zero-is-not-a-thing problem as featured_media.
+        parent: 2
+        menu_order: 1
+        date: "2025-09-02T10:00:00"
+        date_gmt: "2025-09-02T09:00:00"
+
+# Conformance cases, read from the WordPress REST API handbook rather than
+# observed against a live site. The verify report says so.
+conformance:
+  - name: title is an object rather than a string
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/101
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        title:
+          # A template printing post.title prints [object Object], and one
+          # measuring post.title.length measures the wrong thing without
+          # failing.
+          title_rendered: Seasoning cast iron
+        content:
+          content_rendered: "<p>Heat, oil, repeat.</p>"
+
+  - name: a protected post has an empty body rather than none
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/104
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        content:
+          # Empty, not missing. A listing that checks for a missing body shows
+          # an empty card instead of skipping it.
+          content_rendered: ""
+          content_protected: true
+        status: private
+
+  - name: a scheduled post looks published from its status alone
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/103
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        # The date has not happened and the post is not on the site. Nothing
+        # about the word "future" says unpublished, and treating anything that
+        # is not "draft" as live puts it in a feed.
+        status: future
+        date: "2026-03-01T09:00:00"
+        title:
+          title_rendered: Announcing the winter range
+
+  - name: featured_media is zero rather than absent
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/102
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        # Zero is a perfectly good-looking id. Passing it to /wp/v2/media/0
+        # gets a 404 rather than a clear absence.
+        featured_media: 0
+        # Pinned to the top of the loop regardless of its date, so a "latest
+        # posts" list ordered by date is not what the site shows.
+        sticky: true
+
+  - name: categories and tags are term ids
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/101
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        # Numbers, not names. Rendering them shows numbers, and resolving them
+        # is a second request per post.
+        categories[0]: 3
+        tags[0]: 12
+        tags[1]: 15
+        featured_media: 88
+
+  - name: the date pair is the same trap WooCommerce inherits
+    source: https://developer.wordpress.org/rest-api/reference/posts/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/101
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        # Site-local, with nothing saying so, and its UTC twin beside it. This
+        # is core behaviour rather than anything WooCommerce invented, which is
+        # why both Recipes carry it.
+        date: "2026-01-14T11:22:31"
+        date_gmt: "2026-01-14T10:22:31"
+
+  - name: a category holding only drafts counts zero and still exists
+    source: https://developer.wordpress.org/rest-api/reference/categories/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/categories
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        '[0]':
+          name: Cauldrons
+          count: 2
+        # Zero published posts, and still a category. A menu built from
+        # categories with posts silently loses it.
+        '[1]':
+          name: Drafts corner
+          count: 0
+      absent:
+        - data
+        - categories
+
+  - name: a child page names its parent by id
+    source: https://developer.wordpress.org/rest-api/reference/pages/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/pages/9
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 200
+      body:
+        # Zero on the parent above means top level, which is the same
+        # zero-is-not-a-thing problem as featured_media.
+        parent: 2
+        menu_order: 1
+        title:
+          title_rendered: Our workshop
+
+  - name: the failure is WP_Error, the same shape WooCommerce sends
+    source: https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts/9999
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl
+    expect:
+      status: 404
+      body:
+        code: rest_post_invalid_id
+        data:
+          # Nested, not top level. WooCommerce inherited this rather than
+          # inventing it.
+          status: 404
+      matches:
+        message: 'Invalid post ID'
+      absent:
+        # type_field: "-" means there is no category field, and asserting the
+        # marker's absence by name is what catches an emulator sending it as a
+        # key rather than honouring it.
+        - "-"
+        - status
+        - error
+        - errors
+
+  - name: the application password is the half that is checked
+    source: https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/
+    fixture: small-site
+    request:
+      method: GET
+      path: /wp-json/wp/v2/posts
+      headers:
+        # The right username, and a wrong application password.
+        Authorization: Basic Y2F1bGRyb246d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        code: rest_not_logged_in
+        data:
+          status: 401
