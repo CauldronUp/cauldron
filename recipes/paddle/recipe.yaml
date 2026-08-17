@@ -1,0 +1,449 @@
+# Paddle Recipe for Cauldron
+#
+# Paddle has a sandbox, and it is a separate account with its own products,
+# prices and webhook endpoints that drift from production the moment anybody
+# edits either. It also cannot produce the states that matter on demand: a
+# subscription that fails at renewal, one paused mid-term, one with a
+# cancellation already scheduled for the period end. Those arrive by waiting.
+#
+# Two things worth modelling exactly:
+#
+#   1. A subscription with a scheduled change is still active. Paddle records
+#      the intent to cancel separately from the state, so the status stays
+#      "active" while scheduled_change says it ends on a date. Code that reads
+#      only the status keeps billing somebody who has cancelled, and code that
+#      reads only the scheduled change cuts them off early.
+#   2. Money is a string in minor units with the currency beside it. It is a
+#      string because these amounts exceed what a float holds safely, so
+#      parsing it as a number is the bug the type was chosen to prevent.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: paddle
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.paddle.com/api-reference/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - pdl_sdbx_cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: meta.pagination.estimated_total
+    cursor_field: meta.pagination.next
+    has_more_field: meta.pagination.has_more
+    fields:
+      meta:
+        request_id: cauldron00000000-0000-4000-8000-000000000000
+        pagination:
+          per_page: 50
+  resource:
+    style: wrapped
+    key: data
+  # Everything under error, which the dotted names below put there.
+  error:
+    style: flat
+    type_field: error.type
+    code_field: error.code
+    message_field: error.detail
+    fields:
+      error:
+        documentation_url: https://developer.paddle.com/errors/overview
+      meta:
+        request_id: cauldron00000000-0000-4000-8000-000000000000
+
+resources:
+  subscription:
+    collection: data
+    id:
+      prefix: sub_
+      length: 26
+    fields:
+      customer_id:
+        type: string
+      # Paddle's real states. "trialing" bills nothing yet and "past_due" is
+      # still serving while dunning runs.
+      status:
+        type: string
+        default: active
+      currency_code:
+        type: string
+        default: GBP
+      collection_mode:
+        type: string
+        default: automatic
+      # The intent to cancel, recorded separately from the status. A
+      # subscription with one of these is still active until the date.
+      # The field name is the key inside the sub-object, so these are action
+      # and effective_at rather than a prefixed pair.
+      action:
+        type: string
+        in: scheduled_change
+      effective_at:
+        type: datetime
+        stamped: false
+        in: scheduled_change
+      started_at:
+        type: datetime
+      next_billed_at:
+        type: datetime
+        stamped: false
+      canceled_at:
+        type: datetime
+        stamped: false
+      paused_at:
+        type: datetime
+        stamped: false
+
+  price:
+    collection: data
+    id:
+      prefix: pri_
+      length: 26
+    fields:
+      product_id:
+        type: string
+      description:
+        type: string
+        required: true
+      # A string, in minor units. These exceed what a float holds safely,
+      # which is why the type is what it is.
+      amount:
+        type: string
+        required: true
+        in: unit_price
+      currency_code:
+        type: string
+        default: GBP
+        in: unit_price
+      interval:
+        type: string
+        in: billing_cycle
+      frequency:
+        type: integer
+        in: billing_cycle
+      status:
+        type: string
+        default: active
+
+  customer:
+    collection: data
+    id:
+      prefix: ctm_
+      length: 26
+    fields:
+      email:
+        type: string
+        required: true
+      name:
+        type: string
+      # An archived customer keeps their history and cannot be billed again.
+      status:
+        type: string
+        default: active
+      locale:
+        type: string
+        default: en
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /subscriptions
+    resource: subscription
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: PATCH
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: update
+
+  - method: GET
+    path: /prices
+    resource: price
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /prices/{id}
+    resource: price
+    operation: get
+
+  - method: GET
+    path: /customers
+    resource: customer
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: POST
+    path: /customers
+    resource: customer
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /customers/{id}
+    resource: customer
+    operation: get
+
+webhooks:
+  events:
+    - subscription.created
+    - subscription.updated
+    - subscription.canceled
+    - subscription.past_due
+    - transaction.completed
+    - transaction.payment_failed
+    - customer.created
+  signing:
+    scheme: hmac-sha256
+    header: Paddle-Signature
+    secret: cauldron-notification-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    type: request_error
+    message: Too many requests. Please retry after the reset time.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 403
+    code: forbidden
+    type: request_error
+    message: The API key is invalid or has been revoked.
+
+  resource_missing:
+    status: 404
+    code: entity_not_found
+    type: request_error
+    message: "Entity not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    type: request_error
+    message: "Invalid request: {detail} is required"
+
+  # The failures a sandbox will not produce for you, and the ones a billing
+  # integration has to survive.
+  subscription_update_when_canceled:
+    status: 400
+    code: subscription_update_when_canceled
+    type: request_error
+    message: A canceled subscription cannot be updated.
+
+  transaction_payment_declined:
+    status: 400
+    code: transaction_payment_declined
+    type: request_error
+    message: The payment was declined by the issuing bank.
+
+  # Paddle refuses to schedule a second change while one is pending, which is
+  # what a retried cancellation runs into.
+  subscription_change_already_scheduled:
+    status: 400
+    code: subscription_change_already_scheduled
+    type: request_error
+    message: A scheduled change already exists on this subscription.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    customer:
+      - id: ctm_cauldron00000000000001
+        email: ada@example.com
+        name: Ada Lovelace
+        status: active
+      - id: ctm_cauldron00000000000002
+        email: former@example.com
+        # Archived. Keeps their history and cannot be billed again.
+        status: archived
+    price:
+      - id: pri_cauldron00000000000001
+        product_id: pro_cauldron0000000000001
+        description: Pro monthly
+        amount: "2400"
+        currency_code: GBP
+        interval: month
+        frequency: 1
+    subscription:
+      - id: sub_cauldron00000000000001
+        customer_id: ctm_cauldron00000000000001
+        status: active
+        currency_code: GBP
+        next_billed_at: "2026-02-01T00:00:00Z"
+      - id: sub_cauldron00000000000002
+        customer_id: ctm_cauldron00000000000001
+        # Still active. The cancellation is scheduled, not applied, and the
+        # customer keeps their access until the date.
+        status: active
+        action: cancel
+        effective_at: "2026-02-01T00:00:00Z"
+        next_billed_at: "2026-02-01T00:00:00Z"
+      - id: sub_cauldron00000000000003
+        customer_id: ctm_cauldron00000000000002
+        # Dunning is running and the customer still has access.
+        status: past_due
+        next_billed_at: "2026-01-20T00:00:00Z"
+
+# Conformance cases, read from Paddle's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a subscription with a scheduled cancellation is still active
+    source: https://developer.paddle.com/api-reference/subscriptions/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /subscriptions/sub_cauldron00000000000002
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 200
+      body:
+        data:
+          # Reading only the status keeps billing somebody who has cancelled.
+          # Reading only the scheduled change cuts them off early.
+          status: active
+          scheduled_change:
+            action: cancel
+            effective_at: "2026-02-01T00:00:00Z"
+
+  - name: a plain active subscription has no scheduled change
+    source: https://developer.paddle.com/api-reference/subscriptions/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /subscriptions/sub_cauldron00000000000001
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 200
+      body:
+        data:
+          status: active
+      absent:
+        - data.scheduled_change
+        - data.canceled_at
+
+  - name: past due is still serving
+    source: https://developer.paddle.com/api-reference/subscriptions/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /subscriptions/sub_cauldron00000000000003
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 200
+      body:
+        data:
+          # Dunning is running and the customer still has access. Revoking
+          # here loses a customer who was about to pay.
+          status: past_due
+
+  - name: money is a string in minor units
+    source: https://developer.paddle.com/api-reference/prices/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /prices/pri_cauldron00000000000001
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 200
+      body:
+        data:
+          unit_price:
+            # A string, and minor units. Parsing it as a number is the bug
+            # the type was chosen to prevent.
+            amount: "2400"
+            currency_code: GBP
+          billing_cycle:
+            interval: month
+            frequency: 1
+      absent:
+        - data.amount
+
+  - name: a collection carries its paging under meta
+    source: https://developer.paddle.com/api-reference/about/pagination
+    fixture: small-account
+    request:
+      method: GET
+      path: /subscriptions
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 200
+      body:
+        meta:
+          pagination:
+            estimated_total: 3
+            per_page: 50
+            has_more: true
+      matches:
+        meta.request_id: '^cauldron[0-9a-f-]+$'
+      absent:
+        - data[2]
+        - pagination
+
+  - name: the error is nested under error with a detail, not a message
+    source: https://developer.paddle.com/errors/overview
+    fixture: small-account
+    request:
+      method: GET
+      path: /subscriptions/sub_doesnotexist
+      headers:
+        Authorization: Bearer pdl_sdbx_cauldron
+    expect:
+      status: 404
+      body:
+        error:
+          type: request_error
+          code: entity_not_found
+          documentation_url: https://developer.paddle.com/errors/overview
+      matches:
+        error.detail: 'Entity not found'
+      # Code reading error.message finds nothing.
+      absent:
+        - error.message
+        - message
+
+  - name: a bad key is a 403, not a 401
+    source: https://developer.paddle.com/api-reference/about/authentication
+    request:
+      method: GET
+      path: /customers
+    expect:
+      # Paddle answers 403 where most providers answer 401, so code checking
+      # for 401 to refresh a credential never fires.
+      status: 403
+      body:
+        error:
+          code: forbidden
+          type: request_error
