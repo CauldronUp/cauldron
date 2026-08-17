@@ -1,0 +1,425 @@
+# Pipedrive Recipe for Cauldron
+#
+# Pipedrive has a sandbox and it is a separate company account you apply for,
+# with its own users, its own pipeline configuration and its own data. Keeping
+# it in step with production is manual work nobody does, so it drifts and then
+# stops being evidence of anything. Most integrations end up pointed at the
+# real CRM, where a test that creates a deal puts it in somebody's forecast.
+#
+# Two things worth modelling exactly:
+#
+#   1. Every response carries a success boolean, and the HTTP status is not
+#      the whole story. A client that branches on the status alone can miss a
+#      failure, and one that reads data without checking success reads null.
+#   2. A deal's status and its stage are different things. A deal can sit in
+#      the final stage and still be open, and code that treats reaching the
+#      last stage as winning reports revenue that has not closed.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: pipedrive
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.pipedrive.com/docs/api/v1
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_pipedrive_token
+
+responses:
+  success:
+    fields:
+      success: true
+  list:
+    style: wrapped
+    key: data
+    cursor_field: additional_data.pagination.next_start
+    has_more_field: additional_data.pagination.more_items_in_collection
+    fields:
+      additional_data:
+        pagination:
+          start: 0
+          limit: 100
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: error
+    code_field: error_info
+    fields:
+      # The same envelope with the payload emptied out. A client reading data
+      # without checking success reads null.
+      success: false
+      data: null
+      additional_data: null
+
+resources:
+  deal:
+    collection: data
+    id:
+      style: numeric
+    fields:
+      title:
+        type: string
+        required: true
+      value:
+        type: number
+        default: 0
+      currency:
+        type: string
+        default: GBP
+      # Status and stage are independent. A deal in the last stage can still
+      # be open, and treating the last stage as won reports revenue that has
+      # not closed.
+      status:
+        type: string
+        default: open
+      stage_id:
+        type: integer
+        default: 1
+      pipeline_id:
+        type: integer
+        default: 1
+      person_id:
+        type: integer
+      org_id:
+        type: integer
+      probability:
+        type: integer
+      # Set only when the deal actually closes. Absent while it is open.
+      close_time:
+        type: datetime
+        stamped: false
+      add_time:
+        type: datetime
+
+  person:
+    collection: data
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      # Pipedrive keeps contact details as arrays of labelled values, and the
+      # primary one is flagged rather than first. Cauldron models the primary
+      # address only, which the Recipe states rather than implies.
+      email:
+        type: string
+      phone:
+        type: string
+      org_id:
+        type: integer
+      # A person marked inactive is still returned by a plain listing.
+      active_flag:
+        type: boolean
+        default: true
+      add_time:
+        type: datetime
+
+  organization:
+    collection: data
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      address:
+        type: string
+      people_count:
+        type: integer
+        default: 0
+      open_deals_count:
+        type: integer
+        default: 0
+      active_flag:
+        type: boolean
+        default: true
+      add_time:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/deals
+    resource: deal
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: POST
+    path: /v1/deals
+    resource: deal
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v1/deals/{id}
+    resource: deal
+    operation: get
+
+  - method: PUT
+    path: /v1/deals/{id}
+    resource: deal
+    operation: update
+
+  - method: DELETE
+    path: /v1/deals/{id}
+    resource: deal
+    operation: delete
+
+  - method: GET
+    path: /v1/persons
+    resource: person
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /v1/persons/{id}
+    resource: person
+    operation: get
+
+  - method: GET
+    path: /v1/organizations
+    resource: organization
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+webhooks:
+  events:
+    - added.deal
+    - updated.deal
+    - deleted.deal
+    - added.person
+    - updated.person
+    - added.organization
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit
+    message: Rate limit has been exceeded
+    headers:
+      Retry-After: "2"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: You need to be authorized to make this request.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "The requested item could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    message: "Bad request: {detail} is required"
+
+  # Pipedrive refuses to move a deal to a stage in a different pipeline, which
+  # is the failure a sync hits the first time somebody reconfigures a pipeline
+  # behind its back.
+  stage_pipeline_mismatch:
+    status: 400
+    code: invalid_stage
+    message: The stage does not belong to the pipeline of this deal.
+
+  # The plan wall. A company over its deal limit refuses writes while reads
+  # keep working.
+  quota_exceeded:
+    status: 403
+    code: quota_exceeded
+    message: The company has reached its plan limit.
+
+fixtures:
+  empty: {}
+
+  small-company:
+    organization:
+      - id: "1"
+        name: Analytical Engines
+        address: 12 Difference Street
+        people_count: 2
+        open_deals_count: 1
+    person:
+      - id: "1"
+        name: Ada Lovelace
+        email: ada@example.com
+        org_id: 1
+      - id: "2"
+        name: Grace Hopper
+        email: grace@example.com
+        org_id: 1
+        # Still returned by a plain listing. Counting every person as
+        # contactable includes this one.
+        active_flag: false
+    deal:
+      - id: "1"
+        title: Annual licence
+        value: 12000
+        currency: GBP
+        status: open
+        # Final stage and still open. Treating the last stage as won reports
+        # revenue that has not closed.
+        stage_id: 4
+        person_id: 1
+        org_id: 1
+        probability: 90
+      - id: "2"
+        title: Pilot project
+        value: 3000
+        status: won
+        stage_id: 4
+        person_id: 1
+        close_time: "2026-01-15T09:00:00Z"
+      - id: "3"
+        title: Lost to a competitor
+        value: 8000
+        status: lost
+        stage_id: 2
+        close_time: "2026-01-10T16:30:00Z"
+
+# Conformance cases, read from Pipedrive's API reference rather than observed
+# against a live company. The verify report says so.
+conformance:
+  - name: every response carries a success flag
+    source: https://developers.pipedrive.com/docs/api/v1
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/deals/1
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 200
+      body:
+        success: true
+        data:
+          title: Annual licence
+          status: open
+      absent:
+        - title
+
+  - name: a failure keeps the envelope and empties the payload
+    source: https://developers.pipedrive.com/docs/api/v1
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/deals/9999
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 404
+      body:
+        # A client reading data without checking success reads null rather
+        # than an object, and one branching on the HTTP status alone can miss
+        # the failure entirely.
+        success: false
+        data: null
+        additional_data: null
+      matches:
+        error: 'could not be found'
+
+  - name: the final stage is not the same as won
+    source: https://developers.pipedrive.com/docs/api/v1/Deals
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/deals
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 200
+      body:
+        # Both are in stage 4. Only one is won, and code that reads the stage
+        # to decide reports revenue that has not closed.
+        data[0].stage_id: 4
+        data[0].status: open
+        data[1].stage_id: 4
+        data[1].status: won
+
+  - name: an open deal has no close time
+    source: https://developers.pipedrive.com/docs/api/v1/Deals
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/deals/1
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 200
+      body:
+        data:
+          status: open
+      # Set only when the deal closes. Stamping it would claim a close that
+      # never happened.
+      absent:
+        - data.close_time
+
+  - name: paging lives under additional_data
+    source: https://developers.pipedrive.com/docs/api/v1
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/deals
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 200
+      body:
+        additional_data:
+          pagination:
+            start: 0
+            limit: 100
+            more_items_in_collection: true
+      matches:
+        additional_data.pagination.next_start: '^[0-9]+$'
+      absent:
+        - data[2]
+        - pagination
+
+  - name: an inactive person is still listed
+    source: https://developers.pipedrive.com/docs/api/v1/Persons
+    fixture: small-company
+    request:
+      method: GET
+      path: /v1/persons
+      headers:
+        Authorization: Bearer cauldron_pipedrive_token
+    expect:
+      status: 200
+      body:
+        data[0].active_flag: true
+        # Counting every person as contactable includes this one.
+        data[1].active_flag: false
+        data[1].name: Grace Hopper
+
+  - name: a bad token is refused with the same envelope
+    source: https://developers.pipedrive.com/docs/api/v1
+    request:
+      method: GET
+      path: /v1/deals
+    expect:
+      status: 401
+      body:
+        success: false
+        data: null
+      matches:
+        error: 'authorized'
