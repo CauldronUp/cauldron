@@ -25,7 +25,7 @@ Two rules apply to everything here:
 | AWS SNS | Topics, subscriptions, delivery failures |
 | AWS SES | Sending, bounces, complaints, the suppression list |
 | ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
-| AWS Secrets Manager | Versions, rotation, missing secrets |
+| ~~AWS Secrets Manager~~ | Shipped. Undeducible ARNs, rotation stages, scheduled deletion |
 | Google Cloud Storage | Objects, signed URLs, permissions |
 | ~~Google Pub/Sub~~ | Shipped. Base64 bodies, ack deadlines, delivery attempts |
 | Azure Blob Storage | Containers, blobs, SAS and auth behaviour |
