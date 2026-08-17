@@ -1,0 +1,342 @@
+# Notion Recipe for Cauldron
+#
+# Notion is easy to integrate against and easy to get subtly wrong, because
+# almost every mistake still returns something.
+#
+# Three things this Recipe insists on:
+#
+#   1. The Notion-Version header is mandatory. Forgetting it is the classic
+#      Notion integration bug: everything works against a hand-rolled fake and
+#      the first real call returns 400. Cauldron refuses it too.
+#   2. Every object says what it is. A list is {"object": "list"}, a page is
+#      {"object": "page"}, an error is {"object": "error"}. Client code
+#      switches on that field before reading anything else.
+#   3. Identifiers are UUIDs, not opaque strings. Code that string-matches a
+#      prefix has nothing to match.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: notion
+version: 0.1.0
+
+upstream:
+  api: "2022-06-28"
+  docs: https://developers.notion.com/reference/intro
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - secret_cauldron
+
+# Notion rejects a request with no version header, so the emulator does too.
+required_headers:
+  Notion-Version: missing_version
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    cursor_field: next_cursor
+    has_more_field: has_more
+    # A collection is an object in its own right, and it is not a page.
+    fields:
+      object: list
+      type: page_or_database
+  error:
+    style: flat
+    code_field: code
+    status_field: status
+    fields:
+      object: error
+
+resources:
+  page:
+    constants:
+      object: page
+      archived: false
+    id:
+      style: uuid
+    fields:
+      # Notion page properties are a rich structure; the Recipe models the
+      # flat title-and-status case that most integrations actually read.
+      title:
+        type: string
+        required: true
+        in: properties
+      status:
+        type: string
+        default: Not started
+        in: properties
+      url:
+        type: string
+      created_time:
+        type: datetime
+      last_edited_time:
+        type: datetime
+
+  database:
+    constants:
+      object: database
+    id:
+      style: uuid
+    fields:
+      title:
+        type: string
+        required: true
+      created_time:
+        type: datetime
+
+  user:
+    constants:
+      object: user
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      type:
+        type: string
+        default: person
+      avatar_url:
+        type: string
+
+routes:
+  - method: POST
+    path: /v1/pages
+    resource: page
+    operation: create
+
+  - method: GET
+    path: /v1/pages/{id}
+    resource: page
+    operation: get
+
+  - method: PATCH
+    path: /v1/pages/{id}
+    resource: page
+    operation: update
+
+  - method: GET
+    path: /v1/databases/{id}
+    resource: database
+    operation: get
+
+  - method: GET
+    path: /v1/users
+    resource: user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: GET
+    path: /v1/users/{id}
+    resource: user
+    operation: get
+
+webhooks:
+  events:
+    - page.created
+    - page.updated
+    - page.deleted
+    - database.updated
+  signing:
+    scheme: hmac-sha256
+    header: X-Notion-Signature
+    secret: cauldron-verification-token
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limited
+    message: You have been rate limited. Please try again later.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: API token is invalid.
+
+  resource_missing:
+    status: 404
+    code: object_not_found
+    message: "Could not find {detail}. Make sure the relevant pages and databases are shared with your integration."
+
+  parameter_missing:
+    status: 400
+    code: validation_error
+    message: "body failed validation: {detail} is required"
+
+  # The failure everybody meets first, and the reason required_headers exists.
+  missing_version:
+    status: 400
+    code: missing_version
+    message: Notion-Version header failed validation
+
+  # The second failure everybody meets: the integration was never given access
+  # to the page, which reads as a 404 rather than a 403.
+  restricted_resource:
+    status: 403
+    code: restricted_resource
+    message: Insufficient permissions for this endpoint.
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    page:
+      - id: 11111111-1111-4111-8111-111111111111
+        title: Conformance suite design
+        status: In progress
+        url: https://www.notion.so/conformance-suite-design
+      - id: 22222222-2222-4222-8222-222222222222
+        title: Recipe format notes
+        status: Done
+        url: https://www.notion.so/recipe-format-notes
+    database:
+      - id: 33333333-3333-4333-8333-333333333333
+        title: Engineering tasks
+    user:
+      - id: 44444444-4444-4444-8444-444444444444
+        name: Ada Lovelace
+        type: person
+      - id: 55555555-5555-4555-8555-555555555555
+        name: Cauldron
+        type: bot
+
+# Conformance cases, read from Notion's API reference rather than observed
+# against a live workspace. The verify report says so.
+conformance:
+  - name: a request without Notion-Version is refused
+    source: https://developers.notion.com/reference/versioning
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/pages/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer secret_cauldron
+    expect:
+      # The whole point of required_headers. A fake that waves this through
+      # lets code ship that fails on its first real call.
+      status: 400
+      body:
+        object: error
+        code: missing_version
+        status: 400
+
+  - name: every object declares what it is
+    source: https://developers.notion.com/reference/page
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/pages/11111111-1111-4111-8111-111111111111
+      headers:
+        Authorization: Bearer secret_cauldron
+        Notion-Version: "2022-06-28"
+    expect:
+      status: 200
+      body:
+        object: page
+        archived: false
+        properties:
+          title: Conformance suite design
+          status: In progress
+      absent:
+        - title
+
+  - name: a collection is a list object, not a page object
+    source: https://developers.notion.com/reference/intro#pagination
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/users
+      headers:
+        Authorization: Bearer secret_cauldron
+        Notion-Version: "2022-06-28"
+    expect:
+      status: 200
+      body:
+        object: list
+        has_more: false
+        results[0].object: user
+        results[0].name: Ada Lovelace
+      absent:
+        - data
+
+  - name: a page is created with a UUID, not a prefixed string
+    source: https://developers.notion.com/reference/post-page
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/pages
+      headers:
+        Authorization: Bearer secret_cauldron
+        Notion-Version: "2022-06-28"
+      json:
+        properties:
+          title: Written through the API
+    expect:
+      status: 200
+      body:
+        object: page
+        properties:
+          title: Written through the API
+          status: Not started
+      matches:
+        id: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+  - name: an unknown page explains that sharing may be the problem
+    source: https://developers.notion.com/reference/status-codes
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/pages/99999999-9999-4999-8999-999999999999
+      headers:
+        Authorization: Bearer secret_cauldron
+        Notion-Version: "2022-06-28"
+    expect:
+      status: 404
+      body:
+        object: error
+        code: object_not_found
+        status: 404
+      matches:
+        message: 'shared with your integration'
+
+  - name: a bad token is rejected with the version header still required
+    source: https://developers.notion.com/reference/authentication
+    request:
+      method: GET
+      path: /v1/users
+      headers:
+        Notion-Version: "2022-06-28"
+    expect:
+      status: 401
+      body:
+        object: error
+        code: unauthorized
+
+  - name: paging carries a cursor and a has_more flag
+    source: https://developers.notion.com/reference/intro#pagination
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/users
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer secret_cauldron
+        Notion-Version: "2022-06-28"
+    expect:
+      status: 200
+      body:
+        object: list
+        has_more: true
+      matches:
+        next_cursor: '^[0-9a-f-]+$'
+      absent:
+        - results[1]

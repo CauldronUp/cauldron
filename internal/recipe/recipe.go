@@ -29,6 +29,11 @@ type Recipe struct {
 	Responses Responses           `yaml:"responses"`
 	Errors    map[string]Error    `yaml:"errors"`
 	Fixtures  map[string]Fixture  `yaml:"fixtures"`
+	// RequiredHeaders are headers a request must carry, mapped to the error
+	// name to raise when one is missing. Forgetting Notion-Version is the
+	// classic Notion integration bug, and a fake that does not enforce it lets
+	// code ship that fails on the first real call.
+	RequiredHeaders map[string]string `yaml:"required_headers"`
 	// Conformance is the evidence that this Recipe resembles the real provider.
 	Conformance []Case `yaml:"conformance"`
 }
@@ -190,6 +195,14 @@ type ListResponse struct {
 	// A dotted name nests, so Slack's response_metadata.next_cursor is
 	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
+	// HasMoreField names a boolean saying whether more pages remain. The
+	// envelope style always sends has_more because Stripe does; other styles
+	// send one only when the Recipe says so.
+	HasMoreField string `yaml:"has_more_field"`
+	// Fields are constants added to a list response only. Notion stamps
+	// {"object": "list"} on a collection and {"object": "page"} on a single
+	// page, so the two cannot share one set of envelope constants.
+	Fields map[string]any `yaml:"fields"`
 }
 
 // Resource is an object type the provider exposes.
@@ -212,8 +225,9 @@ type Resource struct {
 // more than it looks: applications routinely parse or prefix-match IDs.
 type ID struct {
 	// Style is one of: prefixed (cus_abc123), numeric (1, 2, 3), timestamp
-	// (1767225600.000100, which is how Slack identifies a message) or opaque
-	// (a bare random string, which is what SendGrid returns as a message id).
+	// (1767225600.000100, which is how Slack identifies a message), opaque
+	// (a bare random string, which is what SendGrid returns as a message id)
+	// or uuid (Notion, and most APIs designed after about 2015).
 	// Empty means prefixed.
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
@@ -323,7 +337,7 @@ var (
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
-	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque"}
+	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "datetime"}
 )
 
@@ -536,6 +550,14 @@ func (r *Recipe) Validate() error {
 
 		if e.Status < 100 || e.Status > 599 {
 			add("error %q has status %d, which is not a valid HTTP status", name, e.Status)
+		}
+	}
+
+	for _, header := range sortedKeys(r.RequiredHeaders) {
+		if name := r.RequiredHeaders[header]; name != "" {
+			if _, ok := r.Errors[name]; !ok {
+				add("required_headers[%s] names error %q, which is not declared", header, name)
+			}
 		}
 	}
 

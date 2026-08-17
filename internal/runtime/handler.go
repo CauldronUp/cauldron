@@ -44,6 +44,16 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A header the provider insists on is part of the contract. Forgetting
+	// Notion-Version is the classic Notion integration bug, and a fake that
+	// waves it through lets code ship that fails on its first real call.
+	if header, name, ok := s.missingHeader(r); !ok {
+		exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
+			"The "+header+" header is required.", header)
+
+		return
+	}
+
 	matched, vars, ok := s.router.match(r.Method, r.URL.Path)
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
@@ -261,6 +271,23 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	return http.StatusOK
 }
 
+// missingHeader reports the first required header a request does not carry.
+func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok bool) {
+	for name, raise := range s.recipe.RequiredHeaders {
+		if r.Header.Get(name) != "" {
+			continue
+		}
+
+		if raise == "" {
+			raise = "parameter_missing"
+		}
+
+		return name, raise, false
+	}
+
+	return "", "", true
+}
+
 // writeRouteHeaders sets the response headers a route declares, substituting
 // the record's identifier for {id}.
 func (s *Sandbox) writeRouteHeaders(w http.ResponseWriter, matched route, record store.Record) {
@@ -449,7 +476,13 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 			setPath(body, spec.CursorField, page.NextCursor)
 		}
 
-		return withFields(body, s.recipe.Responses.Success.Fields)
+		if spec.HasMoreField != "" {
+			setPath(body, spec.HasMoreField, page.HasMore)
+		}
+
+		body = withFields(body, s.recipe.Responses.Success.Fields)
+
+		return withFields(body, spec.Fields)
 	default:
 		body := map[string]any{
 			"object":   "list",
@@ -469,7 +502,9 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 			setPath(body, spec.CursorField, page.NextCursor)
 		}
 
-		return withFields(body, s.recipe.Responses.Success.Fields)
+		body = withFields(body, s.recipe.Responses.Success.Fields)
+
+		return withFields(body, spec.Fields)
 	}
 }
 
