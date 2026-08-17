@@ -1,0 +1,372 @@
+# Typeform Recipe for Cauldron
+#
+# Typeform has no sandbox. A token reaches a real account, and testing a
+# responses integration means submitting real responses to a real form, which
+# counts against the plan's monthly response limit and pollutes the analytics
+# the form owner actually looks at. On a free plan the limit is low enough that
+# a CI suite exhausts it, and the build then fails for billing reasons.
+#
+# Two things worth modelling exactly:
+#
+#   1. A response answers questions by field id, not by question title, and the
+#      answer's shape depends on the question type. Code that indexes answers
+#      positionally breaks the moment somebody reorders the form, which is the
+#      single most common Typeform integration bug.
+#   2. A response can be partial. Typeform records what somebody typed before
+#      they abandoned the form, and a partial submission has no submitted_at.
+#      Code that assumes every response is complete reads a field that is not
+#      there.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: typeform
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://www.typeform.com/developers/create/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - tfp_cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    count_field: total_items
+    fields:
+      page_count: 1
+  error:
+    style: flat
+    code_field: code
+    # Typeform calls the prose "description", not "message".
+    message_field: description
+
+resources:
+  form:
+    collection: items
+    id:
+      style: opaque
+      length: 6
+    fields:
+      title:
+        type: string
+        required: true
+      # The form's own type. A quiz scores answers; a classification routes
+      # them. Treating them all the same loses the scoring entirely.
+      type:
+        type: string
+        default: form
+      last_updated_at:
+        type: datetime
+      # A form has to be published before its link works, and an unpublished
+      # one is still returned by the listing.
+      published:
+        type: boolean
+        default: false
+      self_link:
+        type: string
+
+  response:
+    collection: items
+    id:
+      style: opaque
+      field: response_id
+      length: 24
+    fields:
+      form_id:
+        type: string
+      landing_id:
+        type: string
+      # Typeform records abandoned forms too. A partial response has no
+      # submitted_at, and code that assumes every response is complete reads
+      # a field that is not there.
+      response_type:
+        type: string
+        default: completed
+      landed_at:
+        type: datetime
+      submitted_at:
+        type: datetime
+      # Answers are keyed by field id, not by question title. Indexing them
+      # positionally breaks the moment somebody reorders the form.
+      answer_email:
+        type: string
+        in: hidden
+      calculated_score:
+        type: integer
+        default: 0
+
+  webhook:
+    collection: items
+    id:
+      style: opaque
+      length: 12
+    fields:
+      form_id:
+        type: string
+      tag:
+        type: string
+        required: true
+      url:
+        type: string
+        required: true
+      enabled:
+        type: boolean
+        default: false
+      verify_ssl:
+        type: boolean
+        default: true
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /forms
+    resource: form
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /forms/{id}
+    resource: form
+    operation: get
+
+  - method: GET
+    path: /forms/{form_id}/responses
+    resource: response
+    operation: list
+    scope: [form_id]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /forms/{form_id}/webhooks
+    resource: webhook
+    operation: list
+    scope: [form_id]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /forms/{form_id}/webhooks/{id}
+    resource: webhook
+    operation: get
+    scope: [form_id]
+
+webhooks:
+  events:
+    - form_response
+  signing:
+    scheme: hmac-sha256
+    header: Typeform-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: TOO_MANY_REQUESTS
+    message: Too many requests. Slow down.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: AUTHENTICATION_FAILED
+    message: Authentication credentials are missing or invalid
+
+  resource_missing:
+    status: 404
+    code: FORM_NOT_FOUND
+    message: "Non existing form: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: VALIDATION_ERROR
+    message: "The request is invalid: {detail} is required"
+
+  # The billing wall. Nothing about the request is wrong, and retrying does
+  # not help until the month rolls over.
+  response_limit_reached:
+    status: 403
+    code: PLAN_LIMIT_REACHED
+    message: The account has reached its monthly response limit
+
+  # A token scoped to read forms cannot read responses, and the failure looks
+  # like a missing form until you read the code.
+  forbidden:
+    status: 403
+    code: FORBIDDEN
+    message: The token does not have the required scope for this resource
+
+fixtures:
+  empty: {}
+
+  small-account:
+    form:
+      - id: aBc123
+        title: Customer satisfaction
+        type: form
+        published: true
+        self_link: https://cauldron.typeform.com/to/aBc123
+      - id: dEf456
+        title: Product quiz
+        # A quiz scores answers. Treating every form the same loses that.
+        type: quiz
+        published: true
+      - id: gHi789
+        title: Draft, never published
+        # Still listed. Its link does not work.
+        published: false
+    response:
+      - id: resp00000000000000000001
+        form_id: aBc123
+        response_type: completed
+        answer_email: ada@example.com
+        calculated_score: 0
+      - id: resp00000000000000000002
+        form_id: aBc123
+        # Abandoned. There is no submitted_at on this one, and code that
+        # assumes every response is complete reads a field that is absent.
+        response_type: partial
+        answer_email: grace@example.com
+      - id: resp00000000000000000003
+        form_id: dEf456
+        response_type: completed
+        calculated_score: 7
+    webhook:
+      - id: hook00000001
+        form_id: aBc123
+        tag: crm-sync
+        url: https://example.com/typeform
+        enabled: true
+
+# Conformance cases, read from Typeform's developer reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a collection is wrapped in items with a total
+    source: https://www.typeform.com/developers/create/reference/retrieve-forms/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        total_items: 3
+        page_count: 1
+        items[0].title: Customer satisfaction
+      absent:
+        - data
+        - results
+
+  - name: an unpublished form is still listed
+    source: https://www.typeform.com/developers/create/reference/retrieve-forms/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/gHi789
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        # Listing it is not the same as its link working. Code that offers
+        # every form it finds sends people to a dead page.
+        published: false
+        title: Draft, never published
+
+  - name: a partial response has no submitted_at
+    source: https://www.typeform.com/developers/create/reference/retrieve-responses/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/aBc123/responses
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        items[0].response_type: completed
+        # Abandoned before submitting. Code that assumes every response is
+        # complete reads a field that is not there.
+        items[1].response_type: partial
+      absent:
+        - items[2]
+
+  - name: the response identifier is response_id, not id
+    source: https://www.typeform.com/developers/create/reference/retrieve-responses/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/dEf456/responses
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        items[0].response_id: resp00000000000000000003
+        items[0].calculated_score: 7
+      absent:
+        - items[0].id
+
+  - name: a quiz is a different form type
+    source: https://www.typeform.com/developers/create/reference/create-form/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/dEf456
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        # A quiz scores answers. Treating every form the same loses the
+        # scoring entirely.
+        type: quiz
+        title: Product quiz
+
+  - name: the error prose is in description, not message
+    source: https://www.typeform.com/developers/create/reference/errors/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/zzzzzz
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 404
+      body:
+        code: FORM_NOT_FOUND
+      matches:
+        description: 'Non existing form'
+      # Code reading error.message, or even a bare message, finds nothing.
+      absent:
+        - message
+        - error
+        - errors
+
+  - name: another form's responses are not visible
+    source: https://www.typeform.com/developers/create/reference/retrieve-responses/
+    fixture: small-account
+    request:
+      method: GET
+      path: /forms/dEf456/responses
+      headers:
+        Authorization: Bearer tfp_cauldron
+    expect:
+      status: 200
+      body:
+        total_items: 1
+      absent:
+        - items[1]
