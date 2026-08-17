@@ -642,13 +642,20 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 	spec := s.recipe.Responses.Error
 
 	if spec.Style != "flat" && spec.Style != "list" {
-		return map[string]any{
-			"error": map[string]any{
-				"type":    category,
-				"code":    code,
-				"message": message,
-			},
+		nested := map[string]any{"type": category, "message": message}
+
+		// Stripe sends a code alongside the type; Airtable sends only the two.
+		// Declaring the omission keeps the emulator from inventing a field.
+		if spec.CodeField != "-" {
+			nested["code"] = code
 		}
+
+		key := spec.Key
+		if key == "" {
+			key = "error"
+		}
+
+		return map[string]any{key: nested}
 	}
 
 	body := map[string]any{}

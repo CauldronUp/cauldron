@@ -1,0 +1,287 @@
+# Airtable Recipe for Cauldron
+#
+# Airtable is where a surprising amount of small-company operations lives, and
+# testing against it means either a throwaway base that drifts from the real
+# schema or a shared one that other people keep editing mid-test-run.
+#
+# Two shapes to get right:
+#
+#   1. A record's own columns live under "fields". Only id and createdTime sit
+#      at the top level, so a client reading record.Name finds nothing.
+#   2. Base and table are path segments that really do partition the data. A
+#      record created in one table must not appear in another, which is the
+#      kind of thing a hand-rolled fake gets wrong silently.
+#
+# Known fidelity gap, stated rather than hidden: Airtable's createdTime carries
+# milliseconds (2026-01-01T00:00:00.000Z). Cauldron emits second precision.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: airtable
+version: 0.1.0
+
+upstream:
+  api: v0
+  docs: https://airtable.com/developers/web/api/introduction
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - patCauldron.00000000000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: records
+    cursor_field: offset
+  # Airtable nests its error but sends only a type and a message, never a code.
+  error:
+    style: nested
+    code_field: "-"
+
+resources:
+  record:
+    collection: records
+    id:
+      prefix: rec
+      length: 14
+    fields:
+      # base and table are the path segments that partition the data.
+      base:
+        type: string
+      table:
+        type: string
+      Name:
+        type: string
+        required: true
+        in: fields
+      Status:
+        type: string
+        default: Todo
+        in: fields
+      Notes:
+        type: string
+        in: fields
+      Owner:
+        type: string
+        in: fields
+      createdTime:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v0/{base}/{table}
+    resource: record
+    operation: list
+    scope: [base, table]
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /v0/{base}/{table}
+    resource: record
+    operation: create
+    scope: [base, table]
+
+  - method: GET
+    path: /v0/{base}/{table}/{id}
+    resource: record
+    operation: get
+    scope: [base, table]
+
+  - method: PATCH
+    path: /v0/{base}/{table}/{id}
+    resource: record
+    operation: update
+    scope: [base, table]
+
+  - method: DELETE
+    path: /v0/{base}/{table}/{id}
+    resource: record
+    operation: delete
+    scope: [base, table]
+
+webhooks:
+  events:
+    - record.created
+    - record.updated
+    - record.deleted
+  signing:
+    scheme: hmac-sha256
+    header: X-Airtable-Content-MAC
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: RATE_LIMIT_REACHED
+    type: RATE_LIMIT_REACHED
+    message: Rate limit reached. Please try again later.
+    headers:
+      Retry-After: "30"
+
+  authentication_error:
+    status: 401
+    code: AUTHENTICATION_REQUIRED
+    type: AUTHENTICATION_REQUIRED
+    message: You should provide valid api key to perform this operation
+
+  resource_missing:
+    status: 404
+    code: NOT_FOUND
+    type: MODEL_ID_NOT_FOUND
+    message: "Record not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: INVALID_REQUEST_MISSING_FIELDS
+    type: INVALID_REQUEST_MISSING_FIELDS
+    message: "Could not find field: {detail}"
+
+  # The one every integration meets: a single-select value that is not in the
+  # column's option list.
+  invalid_value:
+    status: 422
+    code: INVALID_MULTIPLE_CHOICE_OPTIONS
+    type: INVALID_MULTIPLE_CHOICE_OPTIONS
+    message: Insufficient permissions to create new select option
+
+fixtures:
+  empty: {}
+
+  small-base:
+    record:
+      - id: rec00000000000001
+        base: appCauldron000001
+        table: Tasks
+        Name: Ship the conformance suite
+        Status: Done
+        Owner: ada@example.com
+      - id: rec00000000000002
+        base: appCauldron000001
+        table: Tasks
+        Name: Write the Airtable Recipe
+        Status: In progress
+        Owner: grace@example.com
+      # A second table in the same base, so scoping is exercised by the fixture
+      # rather than only by a hand-written test.
+      - id: rec00000000000003
+        base: appCauldron000001
+        table: Customers
+        Name: Analytical Engines
+        Status: Active
+
+# Conformance cases, read from Airtable's Web API reference rather than
+# observed against a live base. The verify report says so.
+conformance:
+  - name: a record's columns live under fields
+    source: https://airtable.com/developers/web/api/get-record
+    fixture: small-base
+    request:
+      method: GET
+      path: /v0/appCauldron000001/Tasks/rec00000000000001
+      headers:
+        Authorization: Bearer patCauldron.00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        id: rec00000000000001
+        fields:
+          Name: Ship the conformance suite
+          Status: Done
+      # A client reading record.Name finds nothing, because Airtable does not
+      # put it there.
+      absent:
+        - Name
+        - Status
+
+  - name: a listing is wrapped in records, not data
+    source: https://airtable.com/developers/web/api/list-records
+    fixture: small-base
+    request:
+      method: GET
+      path: /v0/appCauldron000001/Tasks
+      headers:
+        Authorization: Bearer patCauldron.00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        records[0].id: rec00000000000001
+        records[0].fields.Name: Ship the conformance suite
+      absent:
+        - data
+        - has_more
+
+  - name: another table's records are not visible
+    source: https://airtable.com/developers/web/api/list-records
+    fixture: small-base
+    request:
+      method: GET
+      path: /v0/appCauldron000001/Customers
+      headers:
+        Authorization: Bearer patCauldron.00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        records[0].fields.Name: Analytical Engines
+      # Exactly one record belongs to this table. If the Tasks rows leaked in
+      # there would be a second.
+      absent:
+        - records[1]
+
+  - name: a create sends fields nested and gets them back nested
+    source: https://airtable.com/developers/web/api/create-records
+    fixture: empty
+    request:
+      method: POST
+      path: /v0/appCauldron000001/Tasks
+      headers:
+        Authorization: Bearer patCauldron.00000000000000000000000000000000
+      json:
+        fields:
+          Name: Added through the API
+    expect:
+      status: 200
+      body:
+        fields:
+          Name: Added through the API
+          Status: Todo
+      matches:
+        id: '^rec[A-Za-z0-9]{14}$'
+        createdTime: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+
+  - name: an unknown record is a nested error with a type but no code
+    source: https://airtable.com/developers/web/api/errors
+    fixture: small-base
+    request:
+      method: GET
+      path: /v0/appCauldron000001/Tasks/recDoesNotExist
+      headers:
+        Authorization: Bearer patCauldron.00000000000000000000000000000000
+    expect:
+      status: 404
+      body:
+        error:
+          type: MODEL_ID_NOT_FOUND
+      matches:
+        error.message: 'Record not found'
+      # Airtable sends a type and a message. Inventing a code would be a field
+      # a client could come to depend on and then lose.
+      absent:
+        - error.code
+
+  - name: a missing token is refused with Airtable's own wording
+    source: https://airtable.com/developers/web/api/authentication
+    request:
+      method: GET
+      path: /v0/appCauldron000001/Tasks
+    expect:
+      status: 401
+      body:
+        error:
+          type: AUTHENTICATION_REQUIRED
+      absent:
+        - error.code

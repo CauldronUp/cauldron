@@ -163,7 +163,9 @@ type ErrorResponse struct {
 	// CodeField names the property carrying the error code in a flat envelope.
 	// Twilio sends one and its clients switch on it; GitHub does not send one
 	// at all, so this stays empty unless a Recipe claims otherwise. A code that
-	// is entirely digits is sent as a number, because Twilio's is.
+	// is entirely digits is sent as a number, because Twilio's is. As with
+	// MessageField, "-" omits the code, which the nested style needs too:
+	// Airtable nests its error but sends only a type and a message.
 	CodeField string `yaml:"code_field"`
 	// StatusField names a property echoing the HTTP status inside the body,
 	// which Twilio does.
