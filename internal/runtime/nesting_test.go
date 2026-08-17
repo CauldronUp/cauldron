@@ -210,3 +210,54 @@ func TestDeclaredConstantsMergeWithComputedValues(t *testing.T) {
 		t.Errorf("the computed cursor was lost: pages = %v", pages)
 	}
 }
+
+// Contentful keeps the identifier at sys.id rather than at the top level, so
+// the rename has to nest the same way a declared field does. Code reading
+// entry.id against the real API finds nothing.
+func TestTheIdentifierCanBeRenamedIntoANestedObject(t *testing.T) {
+	r, err := recipe.Open("contentful")
+	if err != nil {
+		t.Fatalf("open contentful: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-space"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/spaces/cauldron/environments/master/entries/entry000000000000000001", nil)
+	req.Header.Set("Authorization", "Bearer cauldron-delivery-token")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	sys, _ := body["sys"].(map[string]any)
+	if sys == nil {
+		t.Fatalf("no sys block in %v", body)
+	}
+
+	if sys["id"] != "entry000000000000000001" {
+		t.Errorf("sys.id = %v", sys["id"])
+	}
+
+	// The renamed identifier and the declared sys fields share one object,
+	// so neither may erase the other.
+	if sys["revision"] == nil || sys["type"] != "Entry" {
+		t.Errorf("the declared sys fields were lost: %v", sys)
+	}
+
+	if _, flat := body["id"]; flat {
+		t.Error("the identifier should not also appear at the top level")
+	}
+
+	if _, literal := body["sys.id"]; literal {
+		t.Error("a dotted field name should nest, not become a literal key")
+	}
+}

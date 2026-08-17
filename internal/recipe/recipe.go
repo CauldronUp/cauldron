@@ -261,7 +261,8 @@ type ID struct {
 	Length int    `yaml:"length"`
 	// Field is the property the provider returns the identifier in. Empty means
 	// "id". Twilio calls it "sid" everywhere, and code that reads response.id
-	// against Twilio gets nothing at all.
+	// against Twilio gets nothing at all. A dotted name nests, which is how
+	// Contentful keeps the identifier at sys.id.
 	Field string `yaml:"field"`
 }
 
