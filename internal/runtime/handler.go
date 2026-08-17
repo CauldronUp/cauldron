@@ -536,7 +536,10 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		// A caller doing json.Unmarshal into a slice must not receive an object.
 		return items
 	case "wrapped":
-		body := map[string]any{s.collectionName(resource, spec.Key): items}
+		// A dotted key nests, so a collection can sit two levels down.
+		// Segment answers with data.sources rather than a top-level array.
+		body := map[string]any{}
+		setPath(body, s.collectionName(resource, spec.Key), items)
 
 		if spec.CursorField != "" && page.NextCursor != "" {
 			setPath(body, spec.CursorField, page.NextCursor)

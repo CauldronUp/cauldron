@@ -218,7 +218,9 @@ type ListResponse struct {
 	// Style is one of: envelope (Stripe), bare (GitHub), wrapped (Shopify).
 	// Empty means envelope, which keeps existing Recipes working.
 	Style string `yaml:"style"`
-	// Key is the wrapping property name, required when style is wrapped.
+	// Key is the wrapping property name, required when style is wrapped. A
+	// dotted name nests, so a collection can sit two levels down: Segment
+	// answers with data.sources rather than a top-level array.
 	Key string `yaml:"key"`
 	// URL asks the envelope to echo the request path, which Stripe does.
 	URL bool `yaml:"url"`
