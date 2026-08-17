@@ -93,7 +93,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Microsoft Teams | Channels, messages, members |
 | GitHub Actions | Could extend the GitHub Recipe, probably its own |
 | ~~WorkOS~~ | Shipped. Inactive-but-present users, per-IdP raw attributes, draft connections |
-| Stytch | Authentication, sessions, organisations |
+| ~~Stytch~~ | Shipped. Per-factor verification, session factors, invited members |
 | Descope | Authentication flows and identities |
 | FusionAuth | Users, tenants, applications |
 | Keycloak | Realms, users, clients, tokens |

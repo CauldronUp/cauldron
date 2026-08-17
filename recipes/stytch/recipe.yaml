@@ -1,0 +1,511 @@
+# Stytch Recipe for Cauldron
+#
+# Stytch has a test environment with its own project id and secret, and it is
+# a proper one: test magic links resolve without sending mail, and there are
+# documented test values that produce specific outcomes. The header says so
+# rather than inventing a grievance.
+#
+# The reason to emulate it is that authentication state is what breaks
+# integrations, and the states worth testing are the ones nobody can reach on
+# demand: a session that expired between two requests, a user with a pending
+# factor that was never completed, a member whose organisation revoked them.
+# Those are time-dependent or admin-dependent, and the test environment has
+# the same clocks and the same admin surface as production.
+#
+# Four things worth modelling exactly:
+#
+#   1. Every response carries status_code in the body as well as in the HTTP
+#      status. They agree, which makes the body one redundant, and a client
+#      that reads only the body one is right until a proxy or a network error
+#      produces something with no body at all.
+#   2. A user has an array of factors, not a flag. emails, phone_numbers and
+#      providers each carry their own verified state, so "is this user
+#      verified" has no answer: a user can have a verified email and an
+#      unverified phone at once, and status active says nothing about either.
+#   3. A session is a list of authentication_factors that says how it was
+#      obtained. A session from a magic link and a session from a password are
+#      both valid sessions, and code that requires a particular factor has to
+#      read the array rather than trust the session.
+#   4. Deleting a user does not end their sessions. The sessions remain valid
+#      until they expire on their own, so a revoked account keeps working for
+#      as long as its token has left.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not issue or verify JWTs. Session tokens here are opaque
+#     strings a fixture holds, and the session_jwt field is carried rather
+#     than signed.
+#   - Sessions do not expire on their own. An expired session is a state a
+#     fixture puts in place, which is the more useful shape for a test than
+#     waiting five minutes.
+#   - The authenticate endpoints do not perform authentication. They return
+#     the session the fixture holds, so this Recipe is about the shape of the
+#     answer and the states it comes in.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: stytch
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://stytch.com/docs/api
+
+auth:
+  # The project id is the Basic username and the secret is the password. The
+  # secret is the half worth checking.
+  scheme: basic
+  credential: password
+  keys:
+    - secret-test-cauldron
+
+responses:
+  list:
+    style: wrapped
+    key: results
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_message
+    code_field: error_type
+    code_type: string
+    status_field: status_code
+    type_field: "-"
+    fields:
+      # Stytch documents every error type at a stable URL and includes it in
+      # the response, which is the thing worth quoting in a bug report.
+      error_url: https://stytch.com/docs/api/errors
+
+resources:
+  user:
+    id:
+      style: opaque
+      field: user_id
+      length: 36
+    fields:
+      # active, pending, or deleted. A pending user was created by an
+      # invitation nobody accepted, and it is not the same as unverified.
+      status:
+        type: string
+        default: active
+      name_first_name:
+        type: string
+        in: name
+        as: first_name
+      name_last_name:
+        type: string
+        in: name
+        as: last_name
+      # An array, each with its own verified flag. "Is this user verified" has
+      # no answer: they can have a verified email and an unverified phone at
+      # the same time.
+      emails:
+        type: list
+      phone_numbers:
+        type: list
+      # OAuth identities. A user who signed up with Google has one here and
+      # no password, so a password reset flow has nothing to reset.
+      providers:
+        type: list
+      # Whether they have a password at all. Absent on an OAuth-only user
+      # rather than false, so a truthiness check works and a presence check
+      # is what actually distinguishes them.
+      password_id:
+        type: string
+      created_at:
+        type: string
+
+  session:
+    collection: sessions
+    id:
+      style: opaque
+      field: session_id
+      length: 36
+    fields:
+      user_id:
+        type: string
+      # How the session was obtained. A magic link session and a password
+      # session are both valid, and code that requires a particular factor
+      # has to read this rather than trust the session.
+      authentication_factors:
+        type: list
+      # Absent once past. A session that expired is not deleted, it simply
+      # stops being returned by authenticate, and it stays in a list until
+      # something reaps it.
+      expires_at:
+        type: string
+      last_accessed_at:
+        type: string
+      # Present only on a session from an organisation member. A consumer
+      # session has none, so code that reads it for tenancy fails on the
+      # first B2C user.
+      organization_id:
+        type: string
+
+  member:
+    collection: members
+    id:
+      style: opaque
+      field: member_id
+      length: 36
+    fields:
+      organization_id:
+        type: string
+      email_address:
+        type: string
+      # active, pending, invited, deleted. An invited member exists, is
+      # listed, counts against the seat total, and cannot log in.
+      status:
+        type: string
+        default: active
+      # Whether the organisation requires MFA of them. A member who has not
+      # enrolled is required and cannot complete a login, which looks like a
+      # broken password.
+      mfa_enrolled:
+        type: boolean
+        default: false
+      is_breakglass:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /v1/users/{id}
+    resource: user
+    operation: get
+
+  - method: POST
+    path: /v1/users
+    resource: user
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v1/sessions
+    resource: session
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1/sessions/{id}
+    resource: session
+    operation: get
+
+  - method: GET
+    path: /v1/b2b/organizations/{organization_id}/members
+    resource: member
+    operation: list
+    scope: [organization_id]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1/b2b/members/{id}
+    resource: member
+    operation: get
+
+webhooks:
+  events:
+    - user.create
+    - user.update
+    - user.delete
+    - session.revoke
+  signing:
+    scheme: hmac-sha256
+    header: svix-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    code: unauthorized_credentials
+    message: "Unauthorized credentials."
+
+  resource_missing:
+    status: 404
+    code: user_not_found
+    message: "User could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: invalid_request
+    message: "{detail} is required"
+
+  # The session expired between two requests. The token is well-formed and no
+  # longer valid, which reads as a broken token rather than as time passing.
+  session_not_found:
+    status: 404
+    code: session_not_found
+    message: "Session expired or does not exist."
+
+  # A member whose organisation requires MFA and who has not enrolled. The
+  # password was right and the login cannot complete, so it looks like a
+  # broken password to everybody involved.
+  mfa_required:
+    status: 401
+    code: mfa_required
+    message: "This member is required to complete MFA before authenticating."
+
+  # An OAuth-only user asked to reset a password they never had. Nothing in
+  # the user object says so except the absence of a password_id.
+  no_password:
+    status: 400
+    code: user_password_not_found
+    message: "This user does not have a password set."
+
+fixtures:
+  empty: {}
+
+  small-project:
+    user:
+      # A verified email and an unverified phone at the same time. "Is this
+      # user verified" has no answer, and status active says nothing about
+      # either.
+      - id: user-test-cauldron-00000000-0000-0000-0001
+        status: active
+        name_first_name: Ada
+        name_last_name: Lovelace
+        emails:
+          - email_id: email-test-cauldron-0001
+            email: ada@example.com
+            verified: true
+        phone_numbers:
+          - phone_id: phone-test-cauldron-0001
+            phone_number: "+15550100"
+            verified: false
+        password_id: password-test-cauldron-0001
+      # Signed up with Google. No password_id at all, so a reset flow has
+      # nothing to reset and the only evidence is an absence.
+      - id: user-test-cauldron-00000000-0000-0000-0002
+        status: active
+        name_first_name: Grace
+        name_last_name: Hopper
+        emails:
+          - email_id: email-test-cauldron-0002
+            email: grace@example.com
+            verified: true
+        providers:
+          - provider_type: Google
+            provider_subject: "108234567890123456789"
+      # Invited and never accepted. Not unverified: pending, which is a
+      # different thing and cannot log in.
+      - id: user-test-cauldron-00000000-0000-0000-0003
+        status: pending
+        emails:
+          - email_id: email-test-cauldron-0003
+            email: invited@example.com
+            verified: false
+
+    session:
+      # From a magic link. A session is valid regardless of how it was
+      # obtained, and only this array says which.
+      - id: session-test-cauldron-0001
+        user_id: user-test-cauldron-00000000-0000-0000-0001
+        authentication_factors:
+          - type: magic_link
+            delivery_method: email
+            last_authenticated_at: "2026-01-15T09:00:00Z"
+        expires_at: "2026-01-15T10:00:00Z"
+        last_accessed_at: "2026-01-15T09:05:00Z"
+      # From a password, for the same user. Code that requires a particular
+      # factor has to read the array rather than trust the session.
+      - id: session-test-cauldron-0002
+        user_id: user-test-cauldron-00000000-0000-0000-0001
+        authentication_factors:
+          - type: password
+            last_authenticated_at: "2026-01-15T08:00:00Z"
+        expires_at: "2026-01-15T09:00:00Z"
+        last_accessed_at: "2026-01-15T08:30:00Z"
+
+    member:
+      - id: member-test-cauldron-0001
+        organization_id: organization-test-cauldron-01
+        email_address: ada@example.com
+        status: active
+        mfa_enrolled: true
+      # Invited and not accepted. Exists, listed, counts against the seat
+      # total, cannot log in.
+      - id: member-test-cauldron-0002
+        organization_id: organization-test-cauldron-01
+        email_address: invited@example.com
+        status: invited
+      # Active and not enrolled in MFA the organisation requires. The
+      # password is right and the login cannot complete, which looks like a
+      # broken password to everybody involved.
+      - id: member-test-cauldron-0003
+        organization_id: organization-test-cauldron-01
+        email_address: grace@example.com
+        status: active
+        mfa_enrolled: false
+
+# Conformance cases, read from the Stytch API reference rather than observed
+# against a live project. The verify report says so.
+conformance:
+  - name: a user can be verified and unverified at once
+    source: https://stytch.com/docs/api/get-user
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/users/user-test-cauldron-00000000-0000-0000-0001
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        # A verified email and an unverified phone on the same user. "Is this
+        # user verified" has no answer, and status says nothing about either.
+        status: active
+        emails[0].verified: true
+        phone_numbers[0].verified: false
+
+  - name: an OAuth user has no password to reset
+    source: https://stytch.com/docs/api/get-user
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/users/user-test-cauldron-00000000-0000-0000-0002
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        providers[0].provider_type: Google
+        emails[0].verified: true
+      # Absent rather than false or null. A reset flow has nothing to reset,
+      # and the only evidence is this absence.
+      absent:
+        - password_id
+
+  - name: a pending user is not an unverified one
+    source: https://stytch.com/docs/api/get-user
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/users/user-test-cauldron-00000000-0000-0000-0003
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        # Invited and never accepted. A different state from an active user
+        # with an unverified email, and it cannot log in at all.
+        status: pending
+        emails[0].verified: false
+
+  - name: a session says how it was obtained
+    source: https://stytch.com/docs/api/session-get
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/sessions/session-test-cauldron-0001
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        # A magic link session. Valid, like any other, and only this array
+        # says which factor produced it.
+        authentication_factors[0].type: magic_link
+        authentication_factors[0].delivery_method: email
+
+  - name: the same user has a second session from a different factor
+    source: https://stytch.com/docs/api/session-get
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/sessions/session-test-cauldron-0002
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        # Same user, different factor, both valid. Code that requires a
+        # particular factor has to read the array rather than trust that a
+        # session exists.
+        user_id: user-test-cauldron-00000000-0000-0000-0001
+        authentication_factors[0].type: password
+      # A consumer session, so no organisation. Code reading this for tenancy
+      # fails on the first B2C user.
+      absent:
+        - organization_id
+
+  - name: an invited member counts and cannot log in
+    source: https://stytch.com/docs/b2b/api/get-member
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/b2b/organizations/organization-test-cauldron-01/members
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        members[0].status: active
+        # Exists, listed, counts against the seat total, cannot log in.
+        members[1].status: invited
+        members[2].status: active
+
+  - name: an active member can still be unable to authenticate
+    source: https://stytch.com/docs/b2b/api/get-member
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/b2b/members/member-test-cauldron-0003
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        # Active and not enrolled in the MFA the organisation requires. The
+        # password is right and the login cannot complete, which looks like a
+        # broken password to everybody involved.
+        status: active
+        mfa_enrolled: false
+
+  - name: the status code is repeated in the body
+    source: https://stytch.com/docs/api/errors
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/users/user-does-not-exist
+      headers:
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOnNlY3JldC10ZXN0LWNhdWxkcm9u
+    expect:
+      status: 404
+      body:
+        # The same number in two places. A client reading only the body one is
+        # right until a proxy or a network error produces something with no
+        # body at all.
+        status_code: 404
+        error_type: user_not_found
+        error_url: https://stytch.com/docs/api/errors
+      matches:
+        error_message: 'could not be found'
+      absent:
+        - message
+        - code
+        - errors
+
+  - name: the secret is the half that is checked
+    source: https://stytch.com/docs/api/authentication
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/sessions
+      headers:
+        # The right project id, and a wrong secret.
+        Authorization: Basic cHJvamVjdC10ZXN0LWNhdWxkcm9uOndyb25n
+    expect:
+      status: 401
+      body:
+        error_type: unauthorized_credentials
+        status_code: 401
