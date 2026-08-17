@@ -1,0 +1,458 @@
+# AWS Secrets Manager Recipe for Cauldron
+#
+# There is no test mode, and this is the one service in the collection where
+# pointing tests at the real thing is not merely expensive but a bad idea on
+# its own terms: the resource under test is the credential. A test account
+# holding fake secrets still costs per secret per month and per API call, and
+# a test that deletes one does not delete it, which is its own problem below.
+#
+# Four things worth modelling exactly:
+#
+#   1. The ARN is not derivable from the name. Secrets Manager appends six
+#      random characters, so a secret called "prod/db" has an ARN ending
+#      prod/db-AbCdEf. Code that builds ARNs by hand from the account, region
+#      and name produces something that looks exactly right and matches
+#      nothing, and IAM policies written the same way silently grant access to
+#      no secret at all.
+#   2. SecretString and SecretBinary are alternatives, never both. A binary
+#      secret has no SecretString key at all, so JSON.parse(s.SecretString)
+#      throws on undefined rather than reporting a type problem.
+#   3. Deleting a secret schedules it. It keeps its ARN, keeps its value, and
+#      gains a DeletedDate, and reading it fails with InvalidRequestException
+#      rather than ResourceNotFoundException. Code that catches "not found"
+#      does not catch this, and the secret is still billed and still blocking
+#      its own name for up to thirty days.
+#   4. During rotation there are two versions and the labels move between
+#      them. AWSPENDING is the new value and AWSCURRENT is still the old one,
+#      so reading "the secret" mid-rotation returns the old value. That is
+#      correct, and it is not what anybody expects.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not verify SigV4, for the same reason as the SQS and
+#     DynamoDB Recipes. The shape is checked, which catches credentials not
+#     being configured, and a wrongly signed request is accepted.
+#   - Rotation does not advance on its own. Which version holds which stage
+#     label is what a fixture puts there, so a mid-rotation read is something
+#     a test seeds rather than waits for.
+#   - Resource policies and cross-account access are not modelled.
+#
+# Every value below is a fixture. None of them is a secret, and the strings
+# that look like credentials are deliberately obvious about it.
+
+recipe: secretsmanager
+version: 0.1.0
+
+upstream:
+  api: "2017-10-17"
+  docs: https://docs.aws.amazon.com/secretsmanager/latest/apireference/
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape. See the gap note above.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+
+responses:
+  list:
+    style: wrapped
+    key: SecretList
+    omit_when_empty: true
+    cursor_field: NextToken
+  resource:
+    style: bare
+  error:
+    style: flat
+    code_field: __type
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  secret:
+    collection: SecretList
+    id:
+      style: opaque
+      field: Name
+      length: 12
+    fields:
+      # Six random characters appended to the name. Building this by hand
+      # produces something that looks exactly right and matches nothing, and
+      # an IAM policy written the same way grants access to no secret.
+      ARN:
+        type: string
+      Description:
+        type: string
+      # The value, when it is text. Absent entirely on a binary secret.
+      SecretString:
+        type: string
+      # The value, when it is not. Base64, and never present alongside the
+      # string form.
+      SecretBinary:
+        type: string
+      VersionId:
+        type: string
+      # AWSCURRENT, AWSPREVIOUS, AWSPENDING. Labels, not versions: they move
+      # between versions as rotation progresses.
+      VersionStages:
+        type: list
+      # Set when the secret is scheduled for deletion. The secret still
+      # exists, still has its value, and still holds its name.
+      DeletedDate:
+        type: timestamp
+        stamped: false
+      RotationEnabled:
+        type: boolean
+        default: false
+      RotationLambdaARN:
+        type: string
+      # Present only when rotation is enabled. A secret that should be
+      # rotating and is not has neither this nor an error anywhere.
+      NextRotationDate:
+        type: timestamp
+        stamped: false
+      # The last time the value actually changed, as opposed to the last time
+      # anything about the secret was touched.
+      LastChangedDate:
+        type: timestamp
+        stamped: false
+      LastAccessedDate:
+        type: timestamp
+        stamped: false
+      CreatedDate:
+        type: timestamp
+
+routes:
+  # Secrets Manager dispatches on the X-Amz-Target header rather than the
+  # path, and every operation takes SecretId in the body. Cauldron routes on
+  # paths, so each operation gets one here, and the identifier comes from the
+  # body exactly as it does in the real call. That matters: a secret name
+  # contains slashes, so it was never going to be a path segment.
+  - method: POST
+    path: /ListSecrets
+    resource: secret
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: POST
+    path: /GetSecretValue
+    resource: secret
+    operation: get
+    id_from: body:SecretId
+
+  - method: POST
+    path: /DescribeSecret
+    resource: secret
+    operation: get
+    id_from: body:SecretId
+
+  - method: POST
+    path: /CreateSecret
+    resource: secret
+    operation: create
+
+  - method: POST
+    path: /PutSecretValue
+    resource: secret
+    operation: update
+    id_from: body:SecretId
+
+webhooks:
+  # Secrets Manager emits CloudTrail events and EventBridge rules can act on
+  # them, but the service itself calls nothing back. Claiming an event
+  # catalogue would be describing EventBridge.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 400
+    code: ThrottlingException
+    message: Rate exceeded
+
+  authentication_error:
+    status: 403
+    code: InvalidClientTokenId
+    message: The security token included in the request is invalid.
+
+  resource_missing:
+    status: 400
+    code: ResourceNotFoundException
+    message: "Secrets Manager can't find the specified secret: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: InvalidParameterException
+    message: "Invalid parameter: {detail}"
+
+  # The one that matters. A secret scheduled for deletion is not missing, and
+  # code catching ResourceNotFoundException does not catch this.
+  marked_for_deletion:
+    status: 400
+    code: InvalidRequestException
+    message: You can't perform this operation on the secret because it was marked for deletion.
+
+  # Creating a secret whose name is held by one scheduled for deletion is
+  # refused for the whole recovery window, which is up to thirty days.
+  name_in_use:
+    status: 400
+    code: ResourceExistsException
+    message: The operation failed because the secret already exists.
+
+  # A rotation already in progress refuses a second one, which is what a retry
+  # after a timeout runs into.
+  rotation_in_progress:
+    status: 400
+    code: InvalidRequestException
+    message: A previous rotation isn't complete. That rotation will be reattempted.
+
+  # The secret exists and the key that encrypts it does not permit this
+  # caller. The failure names KMS rather than the secret, so it reads like an
+  # unrelated service being broken.
+  decryption_failure:
+    status: 400
+    code: DecryptionFailure
+    message: Secrets Manager can't decrypt the protected secret text using the provided KMS key.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    secret:
+      # An ordinary text secret, rotating.
+      - id: prod/db
+        # The six random characters are the point. Building this ARN by hand
+        # from the account, region and name produces something that looks
+        # right and matches nothing.
+        ARN: arn:aws:secretsmanager:eu-west-2:000000000000:secret:prod/db-AbCdEf
+        Description: Application database credentials
+        SecretString: '{"username":"cauldron","password":"not-a-real-password"}'
+        VersionId: 11111111-1111-4111-8111-111111111111
+        VersionStages:
+          - AWSCURRENT
+        RotationEnabled: true
+        RotationLambdaARN: arn:aws:lambda:eu-west-2:000000000000:function:rotate-db
+        NextRotationDate: 1769904000
+        LastChangedDate: 1767225600
+      # Mid-rotation. The new value is AWSPENDING and the old one is still
+      # AWSCURRENT, so reading "the secret" right now returns the old value.
+      # That is correct, and it is not what anybody expects.
+      - id: prod/api-key
+        ARN: arn:aws:secretsmanager:eu-west-2:000000000000:secret:prod/api-key-GhIjKl
+        Description: Partner API key, rotating
+        SecretString: not-a-real-key-old
+        VersionId: 22222222-2222-4222-8222-222222222222
+        VersionStages:
+          - AWSPENDING
+          - AWSPREVIOUS
+        RotationEnabled: true
+        RotationLambdaARN: arn:aws:lambda:eu-west-2:000000000000:function:rotate-key
+      # Binary. No SecretString at all, so JSON.parse of it throws on
+      # undefined rather than reporting a type problem.
+      - id: prod/certificate
+        ARN: arn:aws:secretsmanager:eu-west-2:000000000000:secret:prod/certificate-MnOpQr
+        Description: Client certificate
+        SecretBinary: bm90LWEtcmVhbC1jZXJ0aWZpY2F0ZQ==
+        VersionId: 33333333-3333-4333-8333-333333333333
+        VersionStages:
+          - AWSCURRENT
+      # Scheduled for deletion. It still exists, still has its value, still
+      # holds its name against a new secret, and is still billed.
+      - id: old/unused
+        ARN: arn:aws:secretsmanager:eu-west-2:000000000000:secret:old/unused-StUvWx
+        Description: Superseded, pending deletion
+        SecretString: not-a-real-password
+        VersionId: 44444444-4444-4444-8444-444444444444
+        VersionStages:
+          - AWSCURRENT
+        DeletedDate: 1767830400
+
+# Conformance cases, read from the Secrets Manager API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: an ARN is not derivable from the name
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DescribeSecret.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: prod/db
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Name: prod/db
+      matches:
+        # Six random characters appended. An ARN built by hand from the
+        # account, region and name looks exactly right and matches nothing,
+        # and an IAM policy written the same way grants access to no secret.
+        ARN: '^arn:aws:secretsmanager:[^:]+:\d+:secret:prod/db-[A-Za-z]{6}$'
+
+  - name: a binary secret has no string form at all
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: prod/certificate
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        SecretBinary: bm90LWEtcmVhbC1jZXJ0aWZpY2F0ZQ==
+      # Not empty, not null. JSON.parse of it throws on undefined rather than
+      # reporting a type problem.
+      absent:
+        - SecretString
+
+  - name: a text secret has no binary form
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: prod/db
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        SecretString: '{"username":"cauldron","password":"not-a-real-password"}'
+      absent:
+        - SecretBinary
+
+  - name: mid-rotation the current label is still on the old value
+    source: https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_how.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: prod/api-key
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Labels, not versions. They move between versions as rotation
+        # progresses, and reading "the secret" right now returns the old
+        # value. That is correct, and it is not what anybody expects.
+        VersionStages[0]: AWSPENDING
+        VersionStages[1]: AWSPREVIOUS
+        RotationEnabled: true
+      absent:
+        # Rotation is in progress, so there is no next date yet.
+        - NextRotationDate
+
+  - name: a rotating secret says when it will happen again
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DescribeSecret.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: prod/db
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        RotationEnabled: true
+        NextRotationDate: 1769904000
+        VersionStages[0]: AWSCURRENT
+      # Never deleted, so no DeletedDate. A secret with one is a different
+      # thing entirely.
+      absent:
+        - DeletedDate
+
+  - name: a deleted secret is not deleted
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_DeleteSecret.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: old/unused
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Still here, still holding its value and its name, still billed, and
+        # blocking a new secret with the same name for the whole recovery
+        # window.
+        DeletedDate: 1767830400
+        SecretString: not-a-real-password
+        Name: old/unused
+
+  - name: a scheduled deletion still appears in a listing
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_ListSecrets.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /ListSecrets
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        SecretList[0].Name: prod/db
+        # An inventory that counts secrets counts this one, and a cost report
+        # that ignores DeletedDate is short by however many are pending.
+        SecretList[3].Name: old/unused
+        SecretList[3].DeletedDate: 1767830400
+
+  - name: an empty account omits the list rather than sending an empty one
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_ListSecrets.html
+    fixture: empty
+    request:
+      method: POST
+      path: /ListSecrets
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      absent:
+        - SecretList
+
+  - name: the failure names an exception rather than a code
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/CommonErrors.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /DescribeSecret
+      json:
+        SecretId: doesnotexist
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      # 400, not 404. Branching on the status tells you nothing, and the
+      # __type is the only signal. A secret marked for deletion answers the
+      # same status with InvalidRequestException, which is why catching "not
+      # found" does not catch it.
+      status: 400
+      body:
+        __type: ResourceNotFoundException
+      absent:
+        - code
+        - error
+        - "-"
+
+  - name: a request with no credentials is refused
+    source: https://docs.aws.amazon.com/secretsmanager/latest/apireference/CommonParameters.html
+    fixture: small-account
+    request:
+      method: POST
+      path: /ListSecrets
+    expect:
+      status: 403
+      body:
+        __type: InvalidClientTokenId
