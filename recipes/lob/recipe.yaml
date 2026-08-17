@@ -1,0 +1,414 @@
+# Lob Recipe for Cauldron
+#
+# Lob prints and posts physical mail. A live key sends a real letter to a real
+# address and charges for the postage, so this is the one API in this
+# collection where testing against production has a per-request cost measured
+# in stamps rather than credits.
+#
+# Lob does provide test keys, and they are the usual trap: a test letter is
+# always accepted, always renders, and never gets returned to sender. Address
+# verification in test mode reports a deliverability the real service would
+# not agree with, so an integration validated in test mode still posts to
+# addresses nobody lives at.
+#
+# Two things worth modelling exactly:
+#
+#   1. Deliverability is a graded verdict, not a boolean. "deliverable",
+#      "deliverable_unnecessary_unit", "deliverable_incorrect_unit",
+#      "deliverable_missing_unit" and "undeliverable" are five answers, and
+#      three of them are yes with a caveat. Code that checks for equality with
+#      "deliverable" rejects addresses that would arrive.
+#   2. A letter's tracking events are the only way to know it went anywhere.
+#      "processed_for_delivery" is not "delivered", and "re-routed" and
+#      "returned_to_sender" both happen after a letter looked fine.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: lob
+version: 0.1.0
+
+upstream:
+  api: "2020-02-11"
+  docs: https://docs.lob.com/
+
+auth:
+  # Lob sends the API key as the Basic username with an empty password.
+  scheme: basic
+  keys:
+    - test_cauldron_key
+
+responses:
+  list:
+    style: envelope
+    url: true
+  error:
+    style: nested
+    # Lob nests a code, a message and the HTTP status together.
+    type_field: "-"
+
+resources:
+  letter:
+    constants:
+      object: letter
+    id:
+      prefix: ltr_
+      length: 16
+    fields:
+      description:
+        type: string
+      to_name:
+        type: string
+        required: true
+      to_address_line1:
+        type: string
+      # Lob's own delivery estimate, which is a date and not a promise.
+      expected_delivery_date:
+        type: string
+      # A letter in test mode is always accepted. In production it can come
+      # back, and these are the states that say so.
+      tracking_status:
+        type: string
+        default: mailed
+      # Once a letter is out of the door it cannot be recalled, and this is
+      # the flag that says the window has closed.
+      send_date:
+        type: datetime
+      double_sided:
+        type: boolean
+        default: true
+      color:
+        type: boolean
+        default: false
+      date_created:
+        type: datetime
+
+  address:
+    constants:
+      object: address
+    id:
+      prefix: adr_
+      length: 16
+    fields:
+      name:
+        type: string
+      address_line1:
+        type: string
+        required: true
+      address_line2:
+        type: string
+      address_city:
+        type: string
+      address_zip:
+        type: string
+      address_country:
+        type: string
+        default: GB
+      # Five answers, and three of them are yes with a caveat. Comparing for
+      # equality with "deliverable" rejects addresses that would arrive.
+      deliverability:
+        type: string
+        default: deliverable
+      date_created:
+        type: datetime
+
+  postcard:
+    constants:
+      object: postcard
+    id:
+      prefix: psc_
+      length: 16
+    fields:
+      description:
+        type: string
+      to_name:
+        type: string
+        required: true
+      size:
+        type: string
+        default: 4x6
+      tracking_status:
+        type: string
+        default: mailed
+      send_date:
+        type: datetime
+      date_created:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/letters
+    resource: letter
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: POST
+    path: /v1/letters
+    resource: letter
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/letters/{id}
+    resource: letter
+    operation: get
+
+  - method: DELETE
+    path: /v1/letters/{id}
+    resource: letter
+    operation: delete
+
+  - method: GET
+    path: /v1/addresses
+    resource: address
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: POST
+    path: /v1/addresses
+    resource: address
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/addresses/{id}
+    resource: address
+    operation: get
+
+  - method: GET
+    path: /v1/postcards
+    resource: postcard
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+webhooks:
+  events:
+    - letter.created
+    - letter.rendered_pdf
+    - letter.mailed
+    - letter.processed_for_delivery
+    - letter.re-routed
+    - letter.returned_to_sender
+    - postcard.mailed
+  signing:
+    scheme: hmac-sha256
+    header: Lob-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: The API key is not valid
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "No such resource: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: invalid
+    message: "{detail} is required"
+
+  # The failures that only exist once a letter meets the postal system, and
+  # that a test key will never produce.
+  address_undeliverable:
+    status: 422
+    code: address_undeliverable
+    message: The address could not be verified and mail will not be sent to it.
+
+  # Lob refuses to cancel a letter once it has entered production, which is
+  # the window a cancellation flow has to respect.
+  cancellation_window_closed:
+    status: 422
+    code: cancellation_not_allowed
+    message: The letter has entered production and can no longer be cancelled.
+
+  # A live key used where a test key was intended sends real mail, so Lob
+  # separates them and refuses to mix test and live resources.
+  mismatched_environment:
+    status: 422
+    code: environment_mismatch
+    message: A test key cannot be used with a live resource.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    address:
+      - id: adr_cauldron00000001
+        name: Ada Lovelace
+        address_line1: 12 Difference Street
+        address_city: London
+        address_zip: SW1A 1AA
+        deliverability: deliverable
+      - id: adr_cauldron00000002
+        name: Grace Hopper
+        address_line1: 40 Compiler Road
+        address_line2: Flat 9
+        address_city: London
+        # Deliverable, and the unit number is wrong. Three of the five
+        # verdicts are yes with a caveat, and comparing for equality with
+        # "deliverable" rejects this one even though it would arrive.
+        deliverability: deliverable_incorrect_unit
+      - id: adr_cauldron00000003
+        name: Nobody
+        address_line1: 999 Imaginary Road
+        address_city: London
+        deliverability: undeliverable
+    letter:
+      - id: ltr_cauldron00000001
+        to_name: Ada Lovelace
+        description: Annual statement
+        # Out of the door and not yet arrived.
+        tracking_status: mailed
+        expected_delivery_date: "2026-01-20"
+      - id: ltr_cauldron00000002
+        to_name: Grace Hopper
+        description: Renewal notice
+        # Handed to the postal service. Not the same as delivered, and the
+        # last state Lob can see for most mail classes.
+        tracking_status: processed_for_delivery
+      - id: ltr_cauldron00000003
+        to_name: Nobody
+        description: Sent to a bad address
+        # Came back. A test key never produces this, which is why an
+        # integration validated in test mode still posts to nowhere.
+        tracking_status: returned_to_sender
+    postcard:
+      - id: psc_cauldron00000001
+        to_name: Ada Lovelace
+        size: 4x6
+        tracking_status: mailed
+
+# Conformance cases, read from Lob's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: deliverability is graded, not a boolean
+    source: https://docs.lob.com/#tag/US-Verifications
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/addresses
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        data[0].deliverability: deliverable
+        # Yes, with a caveat. Comparing for equality with "deliverable"
+        # rejects an address that would arrive.
+        data[1].deliverability: deliverable_incorrect_unit
+        data[2].deliverability: undeliverable
+
+  - name: processed_for_delivery is not delivered
+    source: https://docs.lob.com/#tag/Letters
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/letters/ltr_cauldron00000002
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        # Handed to the postal service, and the last state Lob can see for
+        # most mail classes. Treating it as arrival overstates every send.
+        tracking_status: processed_for_delivery
+        object: letter
+
+  - name: a letter can come back
+    source: https://docs.lob.com/#tag/Letters
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/letters/ltr_cauldron00000003
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        # A test key never produces this, which is why an integration
+        # validated in test mode still posts to nowhere.
+        tracking_status: returned_to_sender
+        to_name: Nobody
+
+  - name: an expected delivery date is an estimate, not a promise
+    source: https://docs.lob.com/#tag/Letters
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/letters/ltr_cauldron00000001
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        expected_delivery_date: "2026-01-20"
+        tracking_status: mailed
+
+  - name: every object says what it is
+    source: https://docs.lob.com/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/addresses/adr_cauldron00000001
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        object: address
+        name: Ada Lovelace
+      matches:
+        id: '^adr_[A-Za-z0-9]{16}$'
+
+  - name: a collection is an envelope that echoes its own url
+    source: https://docs.lob.com/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/letters
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 200
+      body:
+        object: list
+        url: /v1/letters
+        has_more: false
+      absent:
+        - items
+        - results
+
+  - name: the error is nested with a code and no type
+    source: https://docs.lob.com/#tag/Errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/letters/ltr_doesnotexist000
+      headers:
+        Authorization: Basic dGVzdF9jYXVsZHJvbl9rZXk6
+    expect:
+      status: 404
+      body:
+        error:
+          code: not_found
+      matches:
+        error.message: 'No such resource'
+      absent:
+        - error.type
+        - message
