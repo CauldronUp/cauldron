@@ -355,3 +355,105 @@ func TestTheOmissionMarkerNeverBecomesAFieldName(t *testing.T) {
 		}
 	}
 }
+
+// SQS answers an idle queue with 200 and no Messages key at all. Sending an
+// empty array instead is the helpful kind of wrong: every test passes, and the
+// first quiet minute in production throws inside
+// `for (const m of response.Messages)`.
+func TestACollectionKeyCanBeOmittedWhenEmpty(t *testing.T) {
+	r, err := recipe.Open("sqs")
+	if err != nil {
+		t.Fatalf("open sqs: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	const signed = "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, " +
+		"SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	receive := func() map[string]any {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("Authorization", signed)
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200\n%s", rec.Code, rec.Body)
+		}
+
+		return decode(t, rec)
+	}
+
+	// Nothing to give is a success that says nothing.
+	if _, present := receive()["Messages"]; present {
+		t.Error("an idle queue should omit the key rather than send an empty array")
+	}
+
+	if err := s.Seed("small-account"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// And omitting it when empty only means something if it is there when not.
+	messages, present := receive()["Messages"].([]any)
+	if !present || len(messages) == 0 {
+		t.Error("a busy queue should send the key")
+	}
+}
+
+// AWS signs every request, so there is no fixed credential to compare. The
+// shape is what can be checked, and that catches the failure that actually
+// happens: credentials not configured, or the header wired up like every other
+// API in this collection. A wrongly signed request is accepted, and the Recipe
+// header says so rather than leaving it to be found.
+func TestACredentialCanBeCheckedByShape(t *testing.T) {
+	r, err := recipe.Open("sqs")
+	if err != nil {
+		t.Fatalf("open sqs: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	call := func(authorization string) int {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodGet, "/queues", nil)
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+
+		return rec.Code
+	}
+
+	signed := "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, " +
+		"SignedHeaders=host;x-amz-date, Signature=" + strings.Repeat("ab", 32)
+
+	if code := call(signed); code != http.StatusOK {
+		t.Errorf("a well-formed signature should be accepted, got %d", code)
+	}
+
+	// The two failures that actually happen.
+	if code := call(""); code != http.StatusForbidden {
+		t.Errorf("no credentials at all should be refused, got %d", code)
+	}
+
+	if code := call("Bearer cauldron-sqs-key"); code != http.StatusForbidden {
+		t.Errorf("a bearer token is not a signature, got %d", code)
+	}
+
+	// Truncated, so the shape is wrong even though the algorithm is right.
+	if code := call("AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request"); code != http.StatusForbidden {
+		t.Errorf("a half-formed signature should be refused, got %d", code)
+	}
+}

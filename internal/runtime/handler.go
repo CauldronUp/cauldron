@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -558,7 +559,15 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		// A dotted key nests, so a collection can sit two levels down.
 		// Segment answers with data.sources rather than a top-level array.
 		body := map[string]any{}
-		setPath(body, s.collectionName(resource, spec.Key), items)
+
+		// SQS leaves the key out entirely when there is nothing to send, and
+		// that is the difference between a consumer that waits on an idle
+		// queue and one that throws. Sending an empty array is the helpful
+		// kind of wrong: every test passes and the first quiet minute in
+		// production does not.
+		if !spec.OmitWhenEmpty || len(page.Records) > 0 {
+			setPath(body, s.collectionName(resource, spec.Key), items)
+		}
 
 		if spec.CursorField != "" && page.NextCursor != "" {
 			setPath(body, spec.CursorField, page.NextCursor)
@@ -669,7 +678,7 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 
 	// A Recipe that declares no keys accepts anything, so an author can model
 	// routes first and tighten auth later.
-	if auth.Scheme == "" || auth.Scheme == "none" || len(auth.Keys) == 0 {
+	if auth.Scheme == "" || auth.Scheme == "none" || (len(auth.Keys) == 0 && auth.Pattern == "") {
 		return true
 	}
 
@@ -718,6 +727,17 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 	}
 
 	presented = strings.TrimSpace(presented)
+
+	// A pattern, for a credential computed per request. AWS signs every call,
+	// so there is no fixed value to compare and the shape is what can be
+	// checked. That catches the failure that actually happens — credentials
+	// not configured at all — and the Recipe says plainly that it does not
+	// verify the signature.
+	if auth.Pattern != "" {
+		matched, err := regexp.MatchString(auth.Pattern, presented)
+
+		return err == nil && matched
+	}
 
 	for _, key := range auth.Keys {
 		if presented == key {

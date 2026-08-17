@@ -177,6 +177,18 @@ type Auth struct {
 	// Keys are the credentials the emulator accepts. Test keys only — a Recipe
 	// must never carry a real secret.
 	Keys []string `yaml:"keys"`
+	// Pattern accepts any credential matching this regular expression, for
+	// schemes where the value is computed per request and cannot be compared
+	// against a fixed list.
+	//
+	// AWS signs every request with SigV4, so the Authorization header is
+	// different each time and there is no key to hold. Verifying the signature
+	// would mean implementing the algorithm, which is not what this project is
+	// for. Checking the shape catches the failure that actually happens —
+	// credentials not configured, or the header missing entirely — and the
+	// Recipe header has to say plainly that a wrongly signed request is
+	// accepted. Silence about that would be worse than the gap.
+	Pattern string `yaml:"pattern"`
 }
 
 // Responses describes the envelopes a provider wraps its payloads in.
@@ -306,6 +318,16 @@ type ListResponse struct {
 	// envelope style always sends has_more because Stripe does; other styles
 	// send one only when the Recipe says so.
 	HasMoreField string `yaml:"has_more_field"`
+	// OmitWhenEmpty leaves the collection key out entirely when there is
+	// nothing to send, rather than sending an empty array.
+	//
+	// SQS does this, and it is the difference between a consumer that waits on
+	// an idle queue and one that throws. ReceiveMessage with nothing to give
+	// answers 200 with no Messages key at all, so
+	// `for (const m of response.Messages)` fails on the quietest possible
+	// input. An emulator sending [] is the helpful kind of wrong: every test
+	// passes and the first quiet minute in production does not.
+	OmitWhenEmpty bool `yaml:"omit_when_empty"`
 	// CompleteField names a boolean saying the opposite: that no pages remain.
 	//
 	// Salesforce sends done, and false is the interesting value. Modelling it
@@ -790,6 +812,16 @@ func (r *Recipe) Validate() error {
 
 	if r.Responses.Error.Key == "-" && len(r.Responses.Error.Fields) > 0 {
 		add("responses.error.key is \"-\", so there is no envelope for responses.error.fields to sit beside")
+	}
+
+	if r.Auth.Pattern != "" {
+		if _, err := regexp.Compile(r.Auth.Pattern); err != nil {
+			add("auth.pattern is not a valid regular expression: %v", err)
+		}
+
+		if len(r.Auth.Keys) > 0 {
+			add("auth declares both keys and a pattern, and only one can decide whether a credential is accepted")
+		}
 	}
 
 	if !contains(validCodeTypes, r.Responses.Error.CodeType) {
