@@ -1,0 +1,425 @@
+# Webflow Recipe for Cauldron
+#
+# Webflow has no sandbox. A token reaches a real site, and the CMS API writes
+# to the same collections the live site renders from. A test that creates an
+# item creates it in the CMS, where an editor will see it, and publishing is a
+# separate call that can push it live by accident. There is no undo.
+#
+# Two things worth modelling exactly:
+#
+#   1. A created item is a draft until it is published, and the two flags are
+#      separate: isDraft says whether it is finished, isArchived says whether
+#      it is hidden. Neither means "live". Code that creates an item and
+#      assumes the site now shows it is wrong on every new item.
+#   2. The content fields live under fieldData, and the CMS field names are
+#      whatever the collection defines rather than a fixed schema. Code
+#      reading item.name finds nothing.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: webflow
+version: 0.1.0
+
+upstream:
+  api: "2.0.0"
+  docs: https://developers.webflow.com/data/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_webflow_token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    count_field: pagination.total
+    fields:
+      pagination:
+        limit: 100
+        offset: 0
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    fields:
+      externalReference: null
+      details: []
+
+resources:
+  collection_item:
+    collection: items
+    id:
+      style: hex
+      length: 24
+    fields:
+      collection_id:
+        type: string
+      # A new item is a draft. Nothing on the live site changes until it is
+      # published, and publishing is a separate call.
+      isDraft:
+        type: boolean
+        default: true
+      # Archived is not the same as draft. An archived item was live and has
+      # been hidden; a draft was never live at all.
+      isArchived:
+        type: boolean
+        default: false
+      # The CMS fields, whose names come from the collection rather than a
+      # fixed schema. Code reading item.name finds nothing.
+      name:
+        type: string
+        required: true
+        in: fieldData
+      slug:
+        type: string
+        in: fieldData
+      summary:
+        type: string
+        in: fieldData
+      createdOn:
+        type: datetime
+      lastUpdated:
+        type: datetime
+
+  collection:
+    collection: items
+    id:
+      style: hex
+      length: 24
+    fields:
+      site_id:
+        type: string
+      displayName:
+        type: string
+        required: true
+      singularName:
+        type: string
+      slug:
+        type: string
+      createdOn:
+        type: datetime
+
+  site:
+    collection: items
+    id:
+      style: hex
+      length: 24
+    fields:
+      displayName:
+        type: string
+        required: true
+      shortName:
+        type: string
+      # A site that has never been published has no live domain, and the
+      # preview URL is not the same thing.
+      previewUrl:
+        type: string
+      timezone:
+        type: string
+        default: Europe/London
+      createdOn:
+        type: datetime
+      # Absent until the site has actually been published. Stamping it would
+      # make the emulator claim a publish that never happened.
+      lastPublished:
+        type: datetime
+        stamped: false
+
+routes:
+  - method: GET
+    path: /v2/sites
+    resource: site
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /v2/sites/{id}
+    resource: site
+    operation: get
+
+  - method: GET
+    path: /v2/sites/{site_id}/collections
+    resource: collection
+    operation: list
+    scope: [site_id]
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: GET
+    path: /v2/collections/{id}
+    resource: collection
+    operation: get
+
+  - method: GET
+    path: /v2/collections/{collection_id}/items
+    resource: collection_item
+    operation: list
+    scope: [collection_id]
+    pagination:
+      style: offset
+      limit: 100
+
+  - method: POST
+    path: /v2/collections/{collection_id}/items
+    resource: collection_item
+    operation: create
+    scope: [collection_id]
+    status: 202
+
+  - method: GET
+    path: /v2/collections/{collection_id}/items/{id}
+    resource: collection_item
+    operation: get
+    scope: [collection_id]
+
+  - method: PATCH
+    path: /v2/collections/{collection_id}/items/{id}
+    resource: collection_item
+    operation: update
+    scope: [collection_id]
+
+  - method: DELETE
+    path: /v2/collections/{collection_id}/items/{id}
+    resource: collection_item
+    operation: delete
+    scope: [collection_id]
+
+webhooks:
+  events:
+    - collection_item_created
+    - collection_item_changed
+    - collection_item_deleted
+    - site_publish
+    - form_submission
+  signing:
+    scheme: hmac-sha256
+    header: x-webflow-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: The rate limit for this site has been reached
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: The access token is invalid or has been revoked
+
+  resource_missing:
+    status: 404
+    code: resource_not_found
+    message: "The requested resource was not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: validation_error
+    message: "Validation failure: {detail} is required"
+
+  # Webflow enforces a unique slug per collection, which is what breaks a
+  # content import the moment two entries share a title.
+  duplicate_slug:
+    status: 409
+    code: conflict
+    message: A collection item with that slug already exists
+
+  # The plan wall. A site over its CMS item limit refuses writes while reads
+  # keep working, which reads like an intermittent failure.
+  item_limit_reached:
+    status: 402
+    code: item_limit_reached
+    message: The site has reached its CMS item limit
+
+fixtures:
+  empty: {}
+
+  small-site:
+    site:
+      - id: "000000000000000000000001"
+        displayName: Cauldron marketing
+        shortName: cauldron
+        previewUrl: https://preview.webflow.com/preview/cauldron
+      - id: "000000000000000000000002"
+        displayName: Never published
+        shortName: draft-site
+        # No lastPublished. The preview URL is not the live site.
+    collection:
+      - id: "000000000000000000000010"
+        site_id: "000000000000000000000001"
+        displayName: Blog Posts
+        singularName: Blog Post
+        slug: blog-posts
+    collection_item:
+      - id: "000000000000000000000100"
+        collection_id: "000000000000000000000010"
+        name: Seasoning cast iron
+        slug: seasoning-cast-iron
+        summary: Heat, oil, repeat.
+        isDraft: false
+        isArchived: false
+      - id: "000000000000000000000101"
+        collection_id: "000000000000000000000010"
+        name: Written but not published
+        slug: written-not-published
+        # Never live. The site does not show this.
+        isDraft: true
+      - id: "000000000000000000000102"
+        collection_id: "000000000000000000000010"
+        name: Was live, now hidden
+        slug: was-live-now-hidden
+        # Archived is not draft. This one was live and has been hidden.
+        isDraft: false
+        isArchived: true
+
+# Conformance cases, read from Webflow's Data API reference rather than
+# observed against a live site. The verify report says so.
+conformance:
+  - name: content fields live under fieldData
+    source: https://developers.webflow.com/data/reference/cms/collection-items/staged-items/get-item
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/collections/000000000000000000000010/items/000000000000000000000100
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 200
+      body:
+        fieldData:
+          name: Seasoning cast iron
+          slug: seasoning-cast-iron
+        isDraft: false
+        isArchived: false
+      # The CMS field names come from the collection, not a fixed schema, and
+      # code reading item.name finds nothing.
+      absent:
+        - name
+        - slug
+
+  - name: draft and archived are separate flags
+    source: https://developers.webflow.com/data/reference/cms/collection-items/staged-items/list-items
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/collections/000000000000000000000010/items
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 200
+      body:
+        # Live.
+        items[0].isDraft: false
+        items[0].isArchived: false
+        # Never live.
+        items[1].isDraft: true
+        # Was live, now hidden. Neither flag alone tells you what the site
+        # currently shows.
+        items[2].isDraft: false
+        items[2].isArchived: true
+
+  - name: a created item is a draft and answers 202
+    source: https://developers.webflow.com/data/reference/cms/collection-items/staged-items/create-item
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/collections/000000000000000000000010/items
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+      json:
+        fieldData:
+          name: Added through the API
+          slug: added-through-the-api
+    expect:
+      # Accepted, not created, and nothing on the live site has changed.
+      status: 202
+      body:
+        fieldData:
+          name: Added through the API
+        # Code that creates an item and assumes the site now shows it is
+        # wrong on every new item.
+        isDraft: true
+        isArchived: false
+      matches:
+        id: '^[0-9a-f]{24}$'
+
+  - name: a collection is wrapped in items with nested pagination
+    source: https://developers.webflow.com/data/reference/cms/collection-items/staged-items/list-items
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/collections/000000000000000000000010/items
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 200
+      body:
+        pagination:
+          total: 3
+          limit: 100
+          offset: 0
+      absent:
+        - data
+        - total
+
+  - name: the error carries a code and empty details
+    source: https://developers.webflow.com/data/reference/errors
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/collections/000000000000000000000010/items/ffffffffffffffffffffffff
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 404
+      body:
+        code: resource_not_found
+        externalReference: null
+        details: []
+      matches:
+        message: 'was not found'
+      absent:
+        - error
+        - errors
+
+  - name: a site that has never been published has no live date
+    source: https://developers.webflow.com/data/reference/sites/get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/sites/000000000000000000000002
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 200
+      body:
+        displayName: Never published
+      # The preview URL is not the live site, and treating the two as the
+      # same ships links that only work for logged-in editors.
+      absent:
+        - lastPublished
+
+  - name: another collection's items are not visible
+    source: https://developers.webflow.com/data/reference/cms/collection-items/staged-items/list-items
+    fixture: small-site
+    request:
+      method: GET
+      path: /v2/collections/000000000000000000000099/items
+      headers:
+        Authorization: Bearer cauldron_webflow_token
+    expect:
+      status: 200
+      body:
+        pagination:
+          total: 0
+      absent:
+        - items[0]

@@ -278,6 +278,16 @@ type Field struct {
 	Type     string `yaml:"type"`
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
+	// Stamped decides whether a timestamp or datetime field is filled in
+	// automatically when the caller does not supply it. Nil means yes, which
+	// is right for created_at and updated_at.
+	//
+	// Set it to false for a field whose absence is the meaningful state: a
+	// Webflow site that has never been published has no lastPublished, and a
+	// Typeform response that was abandoned has no submitted_at. Stamping
+	// those makes the emulator claim an event happened that did not, which is
+	// the kind of infidelity a test can never catch.
+	Stamped *bool `yaml:"stamped"`
 	// In nests this field under a sub-object on the wire. HubSpot puts every
 	// business attribute under "properties" and leaves only id, timestamps and
 	// archived at the top level, so a client reads contact.properties.email.
