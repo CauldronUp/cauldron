@@ -331,3 +331,67 @@ conformance:
 		t.Error("a case asserting only a 200 is not evidence of anything")
 	}
 }
+
+// Only time fields are ever filled in from the sandbox clock, so declaring
+// stamped on a string does nothing while reading as though it does. The first
+// draft of the Shippo Recipe made exactly that mistake.
+func TestStampedOnlyAppliesToTimeFields(t *testing.T) {
+	source := `
+recipe: stamping
+version: 0.1.0
+upstream:
+  api: "1"
+auth:
+  scheme: none
+resources:
+  thing:
+    id:
+      prefix: thg_
+    fields:
+      label_url:
+        type: string
+        stamped: false
+routes:
+  - method: GET
+    path: /things
+    resource: thing
+    operation: list
+`
+
+	_, err := Parse([]byte(source))
+	if err == nil {
+		t.Fatal("stamped on a string field should be refused")
+	}
+
+	if !strings.Contains(err.Error(), "only applies to") {
+		t.Errorf("err = %q", err)
+	}
+}
+
+func TestStampedIsAcceptedOnATimeField(t *testing.T) {
+	source := `
+recipe: stamping-ok
+version: 0.1.0
+upstream:
+  api: "1"
+auth:
+  scheme: none
+resources:
+  thing:
+    id:
+      prefix: thg_
+    fields:
+      resolved_at:
+        type: datetime
+        stamped: false
+routes:
+  - method: GET
+    path: /things
+    resource: thing
+    operation: list
+`
+
+	if _, err := Parse([]byte(source)); err != nil {
+		t.Fatalf("stamped on a datetime field should be accepted: %v", err)
+	}
+}

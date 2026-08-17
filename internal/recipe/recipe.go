@@ -386,6 +386,9 @@ var (
 	validErrStyles  = []string{"", "nested", "flat", "list", "string_list"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
+	// The types Cauldron fills in from the sandbox clock, and therefore the
+	// only ones a stamped declaration can affect.
+	timeFieldTypes = []string{"timestamp", "timestamp_ms", "datetime"}
 )
 
 // Load reads and validates a Recipe from a YAML file.
@@ -490,9 +493,19 @@ func (r *Recipe) Validate() error {
 		}
 
 		for _, field := range sortedKeys(resource.Fields) {
-			if !contains(validFieldTypes, resource.Fields[field].Type) {
+			spec := resource.Fields[field]
+
+			if !contains(validFieldTypes, spec.Type) {
 				add("resource %q field %q has type %q, which must be one of %s",
-					name, field, resource.Fields[field].Type, strings.Join(validFieldTypes[1:], ", "))
+					name, field, spec.Type, strings.Join(validFieldTypes[1:], ", "))
+			}
+
+			// Only time fields are ever filled in automatically, so declaring
+			// stamped on anything else does nothing and reads as though it
+			// does something.
+			if spec.Stamped != nil && !contains(timeFieldTypes, spec.Type) {
+				add("resource %q field %q declares stamped, which only applies to %s",
+					name, field, strings.Join(timeFieldTypes, ", "))
 			}
 		}
 	}
