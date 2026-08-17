@@ -1,0 +1,457 @@
+# Cloudinary Recipe for Cauldron
+#
+# Cloudinary has no sandbox. There is a free tier, which is a real account with
+# real quota, and a test that uploads uses transformation credits and storage
+# that the free tier meters at 25 credits a month. A suite that uploads on
+# every run exhausts a hobby account in days, and on a paid account it simply
+# costs money. Assets uploaded by tests are also served publicly by default,
+# which is a different kind of problem.
+#
+# Four things worth modelling exactly:
+#
+#   1. url is http and secure_url is https, and both are always present. Using
+#      the first on an https page is blocked as mixed content by every modern
+#      browser, so the image silently does not appear. It is the most common
+#      Cloudinary bug and the response hands you the wrong one first
+#      alphabetically and in most examples.
+#   2. Deleting something that does not exist answers HTTP 200 with
+#      {"result": "not found"} in the body. Not a 404. Code checking the
+#      status treats a no-op as a successful deletion, and a cleanup routine
+#      reports success having deleted nothing.
+#   3. public_id carries no file extension. The delivery URL needs the format
+#      appended, so a URL built from public_id alone is a 404 unless the
+#      transformation uses f_auto. The format is a separate field and nothing
+#      joins them for you.
+#   4. An asset pending moderation is uploaded, stored, billed and not
+#      deliverable. It has a public_id and a secure_url that returns nothing,
+#      so an upload that "succeeded" produces a broken image.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not transform images. A delivery URL is not served here at
+#     all: this Recipe covers the upload and admin APIs, which is where the
+#     response shapes and failures live. Transformations are URL construction
+#     rather than API calls, so there is nothing to emulate.
+#   - Upload signatures are not verified. The signature is computed from the
+#     parameters and the API secret, and checking it would mean implementing
+#     the algorithm; the credential is checked instead.
+#   - Moderation does not advance on its own, so an approved asset is a state
+#     a fixture puts in place.
+#   - Cauldron does not decide whether a destroy found anything. The two cases
+#     below assert that both outcomes carry HTTP 200 and differ only by one
+#     word in the body, which is the half that breaks callers; the emulator is
+#     told which outcome to produce rather than working it out. Worth knowing
+#     before trusting a test built on it.
+#   - A public_id may contain slashes when assets are organised into folders,
+#     and Cloudinary lets those occupy several path segments. Cauldron routes
+#     an identifier as one segment, so the fixtures here use folder-less
+#     public_ids, which are equally real: Cloudinary's own samples have none.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: cloudinary
+version: 0.1.0
+
+upstream:
+  api: v1_1
+  docs: https://cloudinary.com/documentation/image_upload_api_reference
+
+auth:
+  # The API key is the Basic username and the secret is the password. The
+  # secret is the half that is actually secret, so that is the half checked.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-api-secret
+
+responses:
+  list:
+    style: wrapped
+    key: resources
+    cursor_field: next_cursor
+  resource:
+    style: bare
+  # Nested under error with a message and nothing else. No code, no type, no
+  # status in the body.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  resource:
+    collection: resources
+    id:
+      style: opaque
+      field: public_id
+      length: 20
+    fields:
+      # No file extension. A delivery URL built from this alone is a 404
+      # unless the transformation uses f_auto, and the format below is a
+      # separate field that nothing joins for you.
+      format:
+        type: string
+        default: jpg
+      resource_type:
+        type: string
+        default: image
+      type:
+        type: string
+        default: upload
+      # A number, and it prefixes the delivery URL as v<number>. Omitting it
+      # can serve a stale cached asset after an overwrite.
+      version:
+        type: integer
+      # http. Using this on an https page is blocked as mixed content by every
+      # modern browser, and the image silently does not appear.
+      url:
+        type: string
+      # https. This is the one to use, every time.
+      secure_url:
+        type: string
+      bytes:
+        type: integer
+      width:
+        type: integer
+      height:
+        type: integer
+      # pending, approved, rejected. A pending asset is uploaded, stored,
+      # billed, and not deliverable.
+      moderation_status:
+        type: string
+      # Cloudinary's own content hash. Two uploads of the same bytes share it,
+      # which is the only way to notice a duplicate.
+      etag:
+        type: string
+      created_at:
+        type: datetime
+
+  # The result of a destroy call, which is its own shape rather than the
+  # asset. It answers 200 whatever happened.
+  destroy:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      # "ok" or "not found", in the body, with HTTP 200 either way.
+      result:
+        type: string
+        default: ok
+
+  usage:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      plan:
+        type: string
+        default: Free
+      # Credits, not requests. Transformations, storage and bandwidth all
+      # consume them at different rates, so "how many uploads can I do" has no
+      # answer without knowing what happens to them afterwards.
+      credits_usage:
+        type: number
+        in: credits
+        as: usage
+      credits_limit:
+        type: number
+        in: credits
+        as: limit
+      # Over quota does not stop delivery. It stops transformations, so
+      # existing assets keep serving and anything new breaks.
+      credits_used_percent:
+        type: number
+        in: credits
+        as: used_percent
+
+routes:
+  - method: POST
+    path: /v1_1/{cloud}/image/upload
+    resource: resource
+    operation: create
+
+  - method: GET
+    path: /v1_1/{cloud}/resources/image
+    resource: resource
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+
+  - method: GET
+    path: /v1_1/{cloud}/resources/image/upload/{id}
+    resource: resource
+    operation: get
+
+  - method: POST
+    path: /v1_1/{cloud}/image/destroy
+    resource: destroy
+    operation: create
+
+  - method: GET
+    path: /v1_1/{cloud}/usage
+    resource: usage
+    operation: get
+    id_from: query:id
+
+webhooks:
+  events:
+    - upload
+    - moderation
+    - delete
+  signing:
+    scheme: hmac-sha256
+    header: X-Cld-Signature
+    secret: cauldron-notification-secret
+
+errors:
+  rate_limit:
+    status: 420
+    message: Rate limit reached. Please try again later.
+    headers:
+      # Cloudinary's own headers, and a 420 rather than a 429. A client
+      # branching on 429 does not retry.
+      X-FeatureRateLimit-Limit: "500"
+      X-FeatureRateLimit-Remaining: "0"
+      X-FeatureRateLimit-Reset: "Wed, 15 Jan 2026 10:00:00 GMT"
+
+  authentication_error:
+    status: 401
+    message: Invalid Signature. String to sign - 'timestamp=1767225600'.
+
+  resource_missing:
+    status: 404
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "Missing required parameter: {detail}"
+
+  # The plan wall. Delivery of existing assets carries on, so the site looks
+  # fine and every new upload fails.
+  quota_exceeded:
+    status: 420
+    message: You have exceeded your monthly transformation quota. Please upgrade your plan.
+
+  # An upload preset that does not permit unsigned uploads, which is the
+  # failure a browser-side integration meets after working from the server.
+  unsigned_not_allowed:
+    status: 400
+    message: Upload preset must be whitelisted for unsigned uploads
+
+  # The file is not an image. Cloudinary reads the bytes rather than trusting
+  # the extension, so a renamed file fails here rather than at delivery.
+  invalid_image:
+    status: 400
+    message: Invalid image file
+
+fixtures:
+  empty: {}
+
+  small-account:
+    usage:
+      - id: cauldron
+        plan: Free
+        credits_usage: 23.4
+        credits_limit: 25
+        # Over ninety per cent. Delivery of existing assets carries on when
+        # this passes a hundred, so the site looks fine and every new upload
+        # fails.
+        credits_used_percent: 93.6
+
+    resource:
+      - id: cauldron-front
+        format: jpg
+        version: 1767225600
+        # http. Blocked as mixed content on an https page, and the image
+        # silently does not appear.
+        url: http://res.cloudinary.com/cauldron/image/upload/v1767225600/cauldron-front.jpg
+        # https. This is the one to use, every time.
+        secure_url: https://res.cloudinary.com/cauldron/image/upload/v1767225600/cauldron-front.jpg
+        bytes: 148213
+        width: 1600
+        height: 1200
+        etag: 4a7d1ed414474e4033ac29ccb8653d9b
+      - id: cauldron-side
+        format: png
+        version: 1767225601
+        url: http://res.cloudinary.com/cauldron/image/upload/v1767225601/cauldron-side.png
+        secure_url: https://res.cloudinary.com/cauldron/image/upload/v1767225601/cauldron-side.png
+        bytes: 205118
+        width: 1600
+        height: 1200
+        # Uploaded, stored, billed and not deliverable. The secure_url above
+        # returns nothing until somebody approves it, so an upload that
+        # "succeeded" produces a broken image.
+        moderation_status: pending
+        etag: 8f14e45fceea167a5a36dedd4bea2543
+
+# Conformance cases, read from Cloudinary's upload and admin API references
+# rather than observed against a live account. The verify report says so.
+conformance:
+  - name: url is http and secure_url is https
+    source: https://cloudinary.com/documentation/image_upload_api_reference#upload_response
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image/upload/cauldron-front
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 200
+      body:
+        # Both are always present, and the wrong one comes first
+        # alphabetically and in most examples. Using it on an https page is
+        # blocked as mixed content and the image silently does not appear.
+        url: http://res.cloudinary.com/cauldron/image/upload/v1767225600/cauldron-front.jpg
+        secure_url: https://res.cloudinary.com/cauldron/image/upload/v1767225600/cauldron-front.jpg
+
+  - name: public_id carries no extension
+    source: https://cloudinary.com/documentation/image_upload_api_reference#upload_response
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image/upload/cauldron-front
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 200
+      body:
+        # No .jpg. A delivery URL built from this alone is a 404 unless the
+        # transformation uses f_auto, and the format is a separate field that
+        # nothing joins for you.
+        public_id: cauldron-front
+        format: jpg
+        # Prefixes the delivery URL as v1767225600. Omitting it can serve a
+        # stale cached asset after an overwrite.
+        version: 1767225600
+
+  - name: a pending asset is uploaded and not deliverable
+    source: https://cloudinary.com/documentation/moderate_assets
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image/upload/cauldron-side
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 200
+      body:
+        # Stored, billed, and serving nothing. The upload succeeded and the
+        # image is broken.
+        moderation_status: pending
+        bytes: 205118
+      matches:
+        secure_url: '^https://'
+
+  - name: an approved asset carries no moderation status at all
+    source: https://cloudinary.com/documentation/moderate_assets
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image/upload/cauldron-front
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 200
+      body:
+        format: jpg
+      # Absent rather than "approved", so a check for a rejected asset has to
+      # test for presence first.
+      absent:
+        - moderation_status
+
+  - name: deleting nothing answers 200 and says so in the body
+    source: https://cloudinary.com/documentation/image_upload_api_reference#destroy
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1_1/cauldron/image/destroy
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+      json:
+        public_id: never/existed
+        result: not found
+    expect:
+      # Not a 404. Code checking the status treats a no-op as a successful
+      # deletion, and a cleanup routine reports success having deleted
+      # nothing. The outcome is supplied rather than decided here, so what
+      # this pins down is the status and the shape, not the lookup.
+      status: 200
+      body:
+        result: not found
+
+  - name: a real deletion answers exactly the same way
+    source: https://cloudinary.com/documentation/image_upload_api_reference#destroy
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1_1/cauldron/image/destroy
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+      json:
+        public_id: cauldron-front
+    expect:
+      status: 200
+      body:
+        # Same status, same shape. The only difference between deleting
+        # something and deleting nothing is one word in the body.
+        result: ok
+
+  - name: usage is credits rather than requests
+    source: https://cloudinary.com/documentation/admin_api#usage
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/usage
+      query:
+        id: cauldron
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 200
+      body:
+        credits:
+          # Transformations, storage and bandwidth all consume these at
+          # different rates, so "how many uploads can I do" has no answer
+          # without knowing what happens to them afterwards.
+          usage: 23.4
+          limit: 25
+          used_percent: 93.6
+        plan: Free
+
+  - name: the failure is nested under error with only a message
+    source: https://cloudinary.com/documentation/image_upload_api_reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image/upload/doesnotexist
+      headers:
+        Authorization: Basic Y2F1bGRyb24ta2V5OmNhdWxkcm9uLWFwaS1zZWNyZXQ=
+    expect:
+      status: 404
+      matches:
+        error.message: 'Resource not found'
+      # No code, no type, no status in the body. The message is all there is,
+      # so anything that needs to branch has to match on prose.
+      absent:
+        - error.code
+        - error.type
+        - message
+        - code
+
+  - name: the secret is the half that is checked
+    source: https://cloudinary.com/documentation/admin_api
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1_1/cauldron/resources/image
+      headers:
+        # The right API key, and a wrong secret.
+        Authorization: Basic Y2F1bGRyb24ta2V5Ondyb25n
+    expect:
+      status: 401
+      matches:
+        error.message: 'Invalid Signature'
