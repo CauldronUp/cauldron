@@ -1,0 +1,445 @@
+# Documenso Recipe for Cauldron
+#
+# Documenso is open source and can be self-hosted, so unlike most of this
+# collection there genuinely is a way to run a real one locally. It is a
+# Next.js application with Postgres, a mail server and a signing certificate,
+# which is a lot of environment to stand up so that a test can assert the
+# shape of a JSON response.
+#
+# The cloud service has no sandbox, and the thing that makes a test dangerous
+# there is the same as everywhere signatures live: sending a document for
+# signature emails real people, and a signed document is a legal artefact that
+# cannot be unsent.
+#
+# Four things worth modelling exactly:
+#
+#   1. A document has a status and each recipient has a separate one, and they
+#      answer different questions. A document is PENDING while anybody has not
+#      signed; a recipient is SIGNED, VIEWED, SENT or OPENED. Reading the
+#      document status to find out whether one person signed gives the answer
+#      for everybody at once.
+#   2. Sending is not signing. A document moves to PENDING when it goes out,
+#      which reads as in-progress and means "waiting for humans", and it can
+#      sit there indefinitely.
+#   3. A recipient's token is what identifies them in the signing URL, and it
+#      is not their id. Building a signing link from the id produces a URL
+#      that resolves to nothing.
+#   4. Recipients have a signing order only when the document says so. Without
+#      it every recipient is emailed at once, so a workflow that assumes
+#      sequential signing sends the second signer their link before the first
+#      has done anything.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron sends no mail and produces no PDF. This Recipe covers the API
+#     surface and the state it exposes.
+#   - Nothing signs anything. A signed recipient is a state a fixture puts
+#     there, which is the point: the waiting for humans is what a test wants
+#     removed.
+#   - Documenso is versioned and self-hosted instances lag. The Recipe targets
+#     the v1 API and says so, and an instance behind that will differ.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: documenso
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.documenso.com/developers/public-api
+
+auth:
+  # The key alone, with no scheme, like LaunchDarkly and AssemblyAI. Three
+  # providers in this collection now, which is enough that reaching for
+  # "Bearer" is a habit worth breaking.
+  scheme: header
+  header: Authorization
+  keys:
+    - api_cauldron000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: documents
+    count_field: totalPages
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  document:
+    collection: documents
+    id:
+      style: numeric
+    fields:
+      title:
+        type: string
+        required: true
+      # DRAFT, PENDING, COMPLETED. PENDING means it went out and is waiting
+      # for humans, which can be forever, and it is not an error state.
+      status:
+        type: string
+        default: DRAFT
+      # Whether recipients are emailed one at a time. Without it they all go
+      # at once, so a workflow assuming sequential signing sends the second
+      # signer their link before the first has done anything.
+      signingOrder:
+        type: string
+      documentDataId:
+        type: string
+      userId:
+        type: integer
+      # Set only once every recipient has signed. A document with one
+      # outstanding signer has none, so its absence is the real "not done".
+      completedAt:
+        type: string
+      createdAt:
+        type: string
+
+  recipient:
+    collection: recipients
+    id:
+      style: numeric
+    fields:
+      documentId:
+        type: integer
+      email:
+        type: string
+        required: true
+      name:
+        type: string
+      # What identifies this recipient in the signing URL. Not the id: a link
+      # built from the id resolves to nothing.
+      token:
+        type: string
+      # SIGNED, VIEWED, SENT, OPENED. Per recipient, and a different question
+      # from the document's status.
+      signingStatus:
+        type: string
+        default: NOT_SIGNED
+      readStatus:
+        type: string
+        default: NOT_OPENED
+      # SIGNER, APPROVER, CC, VIEWER. A CC recipient is emailed and never
+      # blocks completion, so counting recipients to decide whether a
+      # document can complete counts people who were never going to sign.
+      role:
+        type: string
+        default: SIGNER
+      # Their place in the order, and only meaningful when the document has
+      # one. Present regardless, which makes it look meaningful when it is
+      # not.
+      signingOrder:
+        type: integer
+      signedAt:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/documents
+    resource: document
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /api/v1/documents/{id}
+    resource: document
+    operation: get
+
+  - method: POST
+    path: /api/v1/documents
+    resource: document
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /api/v1/documents/{documentId}/recipients
+    resource: recipient
+    operation: list
+    scope: [documentId]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /api/v1/recipients/{id}
+    resource: recipient
+    operation: get
+
+webhooks:
+  events:
+    - DOCUMENT_CREATED
+    - DOCUMENT_SENT
+    - DOCUMENT_OPENED
+    - DOCUMENT_SIGNED
+    - DOCUMENT_COMPLETED
+  signing:
+    scheme: hmac-sha256
+    header: X-Documenso-Secret
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: "Document not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # A document already sent cannot have its fields or recipients changed. The
+  # window closes the moment it goes out, and a workflow that prepares in two
+  # steps has to finish before sending.
+  document_sent:
+    status: 400
+    message: Document already sent and cannot be modified.
+
+  # A document with no signer cannot be sent. A CC-only document looks
+  # complete from a recipient count and cannot go anywhere.
+  no_signers:
+    status: 400
+    message: Document must have at least one recipient with the SIGNER role.
+
+  # The self-hosted case. An instance without a signing certificate accepts
+  # documents and cannot complete one, and the failure arrives at signing
+  # rather than at upload.
+  no_certificate:
+    status: 500
+    message: No signing certificate is configured on this instance.
+
+fixtures:
+  empty: {}
+
+  small-team:
+    document:
+      # Sent and waiting. PENDING reads as in-progress and means waiting for
+      # humans, which can be forever.
+      - id: "101"
+        title: Supply agreement
+        status: PENDING
+        userId: 1
+        createdAt: "2026-01-14T10:00:00.000Z"
+      # Everybody signed. completedAt is set, and its absence above is the
+      # real "not done".
+      - id: "102"
+        title: Non-disclosure agreement
+        status: COMPLETED
+        userId: 1
+        completedAt: "2026-01-12T16:30:00.000Z"
+        createdAt: "2026-01-11T09:00:00.000Z"
+      # Never sent. No recipient has been emailed and nothing is waiting.
+      - id: "103"
+        title: Draft terms
+        status: DRAFT
+        userId: 1
+        createdAt: "2026-01-15T08:00:00.000Z"
+
+    recipient:
+      # Signed. The document above is still PENDING because of the next one,
+      # so reading the document status to find out about this person gives
+      # the wrong answer.
+      - id: "201"
+        documentId: 101
+        email: ada@example.com
+        name: Ada Lovelace
+        # The token, not the id. A signing link built from the id resolves to
+        # nothing.
+        token: tokcauldron0000000000001
+        signingStatus: SIGNED
+        readStatus: OPENED
+        role: SIGNER
+        signingOrder: 1
+        signedAt: "2026-01-14T11:00:00.000Z"
+      # Has not signed, and has not even opened it. The document is PENDING
+      # entirely because of this recipient.
+      - id: "202"
+        documentId: 101
+        email: grace@example.com
+        name: Grace Hopper
+        token: tokcauldron0000000000002
+        signingStatus: NOT_SIGNED
+        readStatus: NOT_OPENED
+        role: SIGNER
+        signingOrder: 2
+      # Copied in and never expected to sign. Counting recipients to decide
+      # whether a document can complete counts somebody who was never going
+      # to.
+      - id: "203"
+        documentId: 101
+        email: legal@example.com
+        token: tokcauldron0000000000003
+        signingStatus: NOT_SIGNED
+        readStatus: NOT_OPENED
+        role: CC
+        signingOrder: 3
+
+# Conformance cases, read from the Documenso public API documentation rather
+# than observed against a live instance. The verify report says so.
+conformance:
+  - name: a document status is not a recipient status
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/101
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Waiting for humans, and it can sit here indefinitely. It says
+        # nothing about whether any particular person has signed.
+        status: PENDING
+        title: Supply agreement
+      # Not complete, and the absence is the real evidence rather than the
+      # status word.
+      absent:
+        - completedAt
+
+  - name: one recipient has signed and the document has not
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/101/recipients
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Ada signed and the document is still PENDING because Grace has not.
+        # Reading the document status to find out about Ada gives the answer
+        # for everybody at once.
+        recipients[0].signingStatus: SIGNED
+        recipients[1].signingStatus: NOT_SIGNED
+        recipients[1].readStatus: NOT_OPENED
+
+  - name: a CC recipient never blocks completion
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/recipients/203
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Copied in, never going to sign, and counted by anything that counts
+        # recipients to decide whether a document can complete.
+        role: CC
+        signingStatus: NOT_SIGNED
+
+  - name: the signing token is not the recipient id
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/recipients/201
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two different identifiers. A signing link built from the id
+        # resolves to nothing.
+        id: "201"
+        token: tokcauldron0000000000001
+
+  - name: a completed document says when
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/102
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: COMPLETED
+        completedAt: "2026-01-12T16:30:00.000Z"
+
+  - name: a draft has been sent to nobody
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/103
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Nothing has been emailed and nothing is waiting. The only state of
+        # the three where a document can still be changed.
+        status: DRAFT
+        title: Draft terms
+      absent:
+        - completedAt
+
+  - name: a signing order is present whether or not it means anything
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/101/recipients
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Every recipient has one, and the document does not enable ordered
+        # signing, so all three were emailed at once. The field looks
+        # meaningful and is not.
+        recipients[0].signingOrder: 1
+        recipients[1].signingOrder: 2
+        recipients[2].signingOrder: 3
+
+  - name: the document that owns them has no signing order at all
+    source: https://docs.documenso.com/developers/public-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents/101
+      headers:
+        Authorization: api_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: PENDING
+      # Without this the recipients' order numbers mean nothing and everybody
+      # was emailed at the same time.
+      absent:
+        - signingOrder
+
+  - name: the key goes in Authorization with no scheme
+    source: https://docs.documenso.com/developers/public-api/authentication
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v1/documents
+      headers:
+        Authorization: Bearer api_cauldron000000000000000000000000
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+      absent:
+        - error
+        - errors
+        - code

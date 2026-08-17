@@ -160,7 +160,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 
 | Provider | Why |
 |---|---|
-| Documenso | Signatures and document workflows |
+| ~~Documenso~~ | Shipped. Document against recipient status, tokens, CC recipients |
 | Dropbox Sign | Signature requests and callbacks |
 | Adobe Acrobat Sign | Agreements and the signing lifecycle |
 | Ironclad | Contracts and approval workflows |
