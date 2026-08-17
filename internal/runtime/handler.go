@@ -700,12 +700,18 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 	spec := s.recipe.Responses.Error
 
 	if spec.Style != "flat" && spec.Style != "list" {
-		nested := map[string]any{"type": category, "message": message}
+		nested := map[string]any{"message": message}
 
-		// Stripe sends a code alongside the type; Airtable sends only the two.
-		// Declaring the omission keeps the emulator from inventing a field.
+		// Providers disagree about which of these they send. Stripe sends a
+		// type and a code, Airtable only a type, Vercel only a code. Declaring
+		// the omission keeps the emulator from inventing a field a client
+		// could come to depend on and then lose.
 		if spec.CodeField != "-" {
 			nested["code"] = code
+		}
+
+		if spec.TypeField != "-" {
+			nested["type"] = category
 		}
 
 		key := spec.Key
