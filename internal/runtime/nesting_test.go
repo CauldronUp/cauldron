@@ -310,3 +310,89 @@ func TestAFieldCanOptOutOfAutomaticStamping(t *testing.T) {
 		t.Error("createdOn missing on the published site")
 	}
 }
+
+// A nested field's key used to be the name it is stored under, so a resource
+// wanting both title.rendered and content.rendered could not have them: the two
+// fields need distinct names, and whatever they were called leaked onto the
+// wire as title.title_rendered and content.content_rendered.
+//
+// Thirty-one fields across six Recipes were doing that. Every conformance case
+// about them passed, because they asserted the shape the emulator produced
+// rather than the shape the provider sends. It was found by curling the
+// emulator, not by the suite.
+func TestANestedFieldTakesItsDeclaredWireName(t *testing.T) {
+	r, err := recipe.Open("wordpress")
+	if err != nil {
+		t.Fatalf("open wordpress: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-site"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/wp-json/wp/v2/posts/101", nil)
+	req.Header.Set("Authorization", "Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	// Two fields, two parents, the same key underneath. That is the case the
+	// wire name exists for.
+	for _, parent := range []string{"title", "content", "excerpt"} {
+		object, isObject := body[parent].(map[string]any)
+		if !isObject {
+			t.Fatalf("%s = %#v, want an object", parent, body[parent])
+		}
+
+		if _, present := object["rendered"]; !present {
+			t.Errorf("%s has no rendered key: %v", parent, object)
+		}
+
+		// The stored name must not leak out beside it.
+		if _, leaked := object[parent+"_rendered"]; leaked {
+			t.Errorf("%s sends the stored name %q rather than the wire name", parent, parent+"_rendered")
+		}
+	}
+
+	if protected, present := body["content"].(map[string]any)["protected"]; !present || protected != false {
+		t.Errorf("content.protected = %v, want the boolean WordPress sends", protected)
+	}
+}
+
+// The reverse: a client sends the provider's shape, and the store keeps it flat
+// under the name the Recipe uses. Without this a create round-trips to nothing.
+func TestARequestIsFlattenedByWireName(t *testing.T) {
+	r, err := recipe.Open("wordpress")
+	if err != nil {
+		t.Fatalf("open wordpress: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/wp-json/wp/v2/posts",
+		strings.NewReader(`{"title":{"rendered":"A new post"},"content":{"rendered":"<p>Body.</p>"}}`))
+	req.Header.Set("Authorization", "Basic Y2F1bGRyb246Y2F1bGRyb24gYXBwIHBhc3Mgd29yZCBoZXJl")
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201\n%s", rec.Code, rec.Body)
+	}
+
+	title, _ := decode(t, rec)["title"].(map[string]any)
+	if title["rendered"] != "A new post" {
+		t.Errorf("title = %v, want the value the client sent to survive the round trip", title)
+	}
+}
