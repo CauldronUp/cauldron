@@ -12,6 +12,8 @@ import (
 // alphabet is the character set provider identifiers are drawn from. Digits and
 // both cases, matching what Stripe, Shopify and most others actually emit —
 // applications occasionally validate the shape, so the fakes have to match it.
+const hexDigits = "0123456789abcdef"
+
 const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 // shape describes how one resource's identifiers look.
@@ -94,6 +96,25 @@ func (g *Generator) Next(resource string) string {
 		g.shapes[resource] = s
 
 		return strconv.Itoa(s.seq)
+
+	case "uuid":
+		// A version 4 UUID drawn from the seeded source, so it looks like the
+		// real thing and reproduces exactly.
+		g.shapes[resource] = s
+
+		var b strings.Builder
+
+		for _, run := range []int{8, 4, 4, 4, 12} {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+
+			for i := 0; i < run; i++ {
+				b.WriteByte(hexDigits[g.rng.Intn(len(hexDigits))])
+			}
+		}
+
+		return b.String()
 
 	case "timestamp":
 		// Slack identifies a message by the second it arrived plus a counter,
