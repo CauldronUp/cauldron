@@ -139,6 +139,51 @@ func TestAFailureIsReportedAsAnArray(t *testing.T) {
 	}
 }
 
+// An error code that is all digits is not automatically a number. Twilio's
+// 20404 really is an integer and a client comparing against "20404" never
+// matches; Adyen's "000" really is a string and turning it into a number
+// destroys the leading zeros a client is matching on. Inferring from the shape
+// of the literal gets one of those two right, which is why a Recipe can say.
+func TestAnErrorCodeIsSentAsTheRecipeDeclares(t *testing.T) {
+	code := func(t *testing.T, name, path, header, key string) any {
+		t.Helper()
+
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		sandbox, err := New(r, Options{Seed: 1})
+		if err != nil {
+			t.Fatalf("new sandbox: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set(header, "not-a-key")
+
+		rec := httptest.NewRecorder()
+		sandbox.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want 401\n%s", name, rec.Code, rec.Body)
+		}
+
+		return decode(t, rec)[key]
+	}
+
+	// Adyen declares code_type: string, so the leading zeros survive.
+	if got := code(t, "adyen", "/v71/paymentMethods", "X-API-Key", "errorCode"); got != "000" {
+		t.Errorf("adyen errorCode = %#v, want the string \"000\"", got)
+	}
+
+	// Twilio declares nothing, so the inference stands and the code stays a
+	// number, which is what its clients switch on.
+	if got := code(t, "twilio", "/2010-04-01/Accounts/ACcauldron00000000000000000000000/Messages.json",
+		"Authorization", "code"); got != float64(20003) {
+		t.Errorf("twilio code = %#v, want the number 20003", got)
+	}
+}
+
 func TestAuthFailsBeforeAnythingIsSent(t *testing.T) {
 	s := sendgridSandbox(t)
 

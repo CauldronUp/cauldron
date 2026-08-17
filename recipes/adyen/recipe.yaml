@@ -1,0 +1,522 @@
+# Adyen Recipe for Cauldron
+#
+# Adyen has a test environment, and it is the good kind: a separate host, test
+# cards, no real money. The reason to emulate it anyway is that the test
+# environment is shared infrastructure on someone else's schedule. It has
+# maintenance windows, it rate limits, it is slow enough that a payment suite
+# doubles a build's runtime, and the card numbers that produce the interesting
+# refusals change. A CI job that cannot run offline cannot run on a laptop with
+# no network, and a test suite that depends on Adyen being up fails for reasons
+# that have nothing to do with the code under test.
+#
+# Four things worth modelling exactly:
+#
+#   1. resultCode is spelled the British way. "Authorised", not "authorized".
+#      Code ported from a provider that spells it the other way compares
+#      against a string Adyen never sends, so every payment reads as failed.
+#   2. resultCode has twelve values and only one of them is success. Three of
+#      the others are not failures either: "Received" and "Pending" mean the
+#      outcome arrives later by webhook, and "RedirectShopper" means the
+#      shopper has not finished yet. Branching on != "Authorised" declines
+#      payments that are going to settle.
+#   3. A refusal carries prose and a code, and only the code is stable.
+#      refusalReason is written for a human and Adyen changes the wording;
+#      refusalReasonCode is the thing to branch on, and it is a string of
+#      digits rather than a number.
+#   4. Amounts are minor units. 1000 EUR in this API is ten euros, and a
+#      currency without decimals is not scaled at all, so dividing everything
+#      by a hundred is wrong for about a fifth of the world.
+#
+# Known fidelity gap, stated rather than hidden: Cauldron emits every webhook
+# in one envelope, and Adyen's notification does not use it. The real thing
+# arrives as notificationItems, each holding a NotificationRequestItem, and its
+# success field is the string "true" rather than a boolean, so a truth test on
+# it is also true for "false". That is a genuine Adyen behaviour this Recipe
+# cannot yet reproduce, and pretending otherwise would be worse than saying so.
+#
+# Keys and references below are fixtures, not secrets. They belong to no
+# merchant account.
+
+recipe: adyen
+version: 0.1.0
+
+upstream:
+  api: v71
+  docs: https://docs.adyen.com/api-explorer/Checkout/71/overview
+
+auth:
+  # Adyen's own header. An Authorization bearer token gets nowhere.
+  scheme: header
+  header: X-API-Key
+  keys:
+    - AQEyhmfxK4cauldron
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  # Flat, with the HTTP status repeated inside the body and an errorType
+  # beside the code.
+  error:
+    style: flat
+    message_field: message
+    code_field: errorCode
+    # Adyen's codes are strings even where they look numeric. "000" carries
+    # leading zeros a client matches on, and "14_006" is not a number at all.
+    # Left to infer from the value, "000" would arrive as 0.
+    code_type: string
+    type_field: errorType
+    status_field: status
+
+resources:
+  payment:
+    collection: payments
+    id:
+      # Adyen's own reference: sixteen upper-case alphanumerics. It is the only
+      # identifier that means anything to Adyen support, and it is not the
+      # merchantReference the shop generated.
+      style: hex
+      field: pspReference
+      length: 16
+    fields:
+      # Twelve values, one of which is success. Three of the rest are not
+      # failures: Received, Pending and RedirectShopper all mean "not yet".
+      resultCode:
+        type: string
+        default: Authorised
+      # The shop's own reference. Adyen does not enforce that it is unique,
+      # so two payments can carry the same one and reconciliation keyed on it
+      # merges two real transactions.
+      merchantReference:
+        type: string
+      # Minor units. 1000 EUR is ten euros, and a currency without decimals
+      # is not scaled at all.
+      amount_value:
+        type: integer
+        in: amount
+      amount_currency:
+        type: string
+        in: amount
+      # Written for a human, and Adyen changes the wording. Logging it is
+      # fine; branching on it is not.
+      refusalReason:
+        type: string
+      # A string of digits, and the stable half of the pair.
+      refusalReasonCode:
+        type: string
+      paymentMethod_type:
+        type: string
+        in: paymentMethod
+      paymentMethod_brand:
+        type: string
+        in: paymentMethod
+      # Present only when the shopper still has something to do. A payment
+      # with an action has no outcome yet, and treating the absence of
+      # Authorised as a decline abandons the shopper mid-flow.
+      action_type:
+        type: string
+        in: action
+      action_url:
+        type: string
+        in: action
+
+  paymentMethod:
+    collection: paymentMethods
+    id:
+      style: opaque
+      length: 10
+    fields:
+      # scheme, ideal, sepadirectdebit, klarna. The type is what a client
+      # switches on, and the brand underneath it is finer grained.
+      type:
+        type: string
+        required: true
+      name:
+        type: string
+      # An asynchronous method's payment is Received rather than Authorised,
+      # and the money arrives days later.
+      brands:
+        type: string
+
+  refund:
+    collection: refunds
+    id:
+      style: hex
+      field: pspReference
+      length: 16
+    fields:
+      # The payment being refunded. Refunds carry their own pspReference, and
+      # correlating one with its payment needs this rather than the id.
+      paymentPspReference:
+        type: string
+      # A refund is accepted, not completed. "received" means Adyen has the
+      # request; whether the money moves is a webhook away, and a refund can
+      # still fail after this.
+      status:
+        type: string
+        default: received
+      merchantReference:
+        type: string
+      amount_value:
+        type: integer
+        in: amount
+      amount_currency:
+        type: string
+        in: amount
+
+routes:
+  - method: POST
+    path: /v71/payments
+    resource: payment
+    operation: create
+    status: 200
+
+  # Adyen has no plain GET for a payment. The way a client learns the outcome
+  # of a flow it had to hand back to the shopper is to post the opaque state
+  # blob it was given, which is what id_from models here.
+  - method: POST
+    path: /v71/payments/details
+    resource: payment
+    operation: get
+    id_from: body:paymentData
+
+  - method: POST
+    path: /v71/paymentMethods
+    resource: paymentMethod
+    operation: list
+    status: 200
+    pagination:
+      style: page
+      limit: 50
+
+  - method: POST
+    path: /v71/payments/{paymentPspReference}/refunds
+    resource: refund
+    operation: create
+    scope: [paymentPspReference]
+    status: 201
+
+webhooks:
+  events:
+    - AUTHORISATION
+    - CANCELLATION
+    - REFUND
+    - REFUND_FAILED
+    - CHARGEBACK
+    - NOTIFICATION_OF_CHARGEBACK
+    - CAPTURE_FAILED
+  signing:
+    scheme: hmac-sha256
+    header: Adyen-Signature
+    secret: cauldron-hmac-key
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    code: "000"
+    message: "HTTP Status Response - Unauthorized"
+
+  resource_missing:
+    status: 422
+    code: "167"
+    message: "Original pspReference required for this operation: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: "14_006"
+    message: "Invalid request: {detail} is required"
+
+  # The merchant account is part of every request body, and getting it wrong
+  # looks like an auth failure without being one.
+  invalid_merchant_account:
+    status: 403
+    code: "010"
+    message: Not allowed
+
+  # Adyen refuses a refund larger than what was captured, which is what a
+  # partial-refund flow hits when it forgets an earlier partial.
+  refund_exceeds_payment:
+    status: 422
+    code: "247"
+    message: "Unable to refund: the amount exceeds the refundable balance"
+
+  # A currency with no decimal places is not scaled, and sending scaled minor
+  # units for one asks for a hundred times the money.
+  invalid_amount:
+    status: 422
+    code: "130"
+    message: "Reference Missing or amount is not a valid number for this currency"
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    paymentMethod:
+      - id: pm00000001
+        type: scheme
+        name: Cards
+        brands: visa,mc,amex
+      - id: pm00000002
+        type: ideal
+        name: iDEAL
+        brands: ideal
+      - id: pm00000003
+        type: sepadirectdebit
+        name: SEPA Direct Debit
+        brands: sepadirectdebit
+
+    payment:
+      # The only success in the list, and spelled the British way.
+      - id: "8836183744AAAAAA"
+        resultCode: Authorised
+        merchantReference: order-1001
+        amount_value: 1000
+        amount_currency: EUR
+        paymentMethod_type: scheme
+        paymentMethod_brand: visa
+      # Not a failure. A direct debit is collected days later, and the
+      # outcome arrives by webhook. Treating this as a decline loses a sale
+      # that was going to settle.
+      - id: "8836183744BBBBBB"
+        resultCode: Received
+        merchantReference: order-1002
+        amount_value: 2500
+        amount_currency: EUR
+        paymentMethod_type: sepadirectdebit
+      # Also not a failure. The shopper is at their bank, and the payment has
+      # no outcome at all until they come back.
+      - id: "8836183744CCCCCC"
+        resultCode: RedirectShopper
+        merchantReference: order-1003
+        amount_value: 4200
+        amount_currency: EUR
+        paymentMethod_type: ideal
+        action_type: redirect
+        action_url: https://test.adyen.com/hpp/checkout.shtml
+      # A real decline. The prose is for a human and Adyen rewords it; the
+      # code is the half worth branching on.
+      - id: "8836183744DDDDDD"
+        resultCode: Refused
+        merchantReference: order-1004
+        amount_value: 999
+        amount_currency: EUR
+        refusalReason: Refused
+        refusalReasonCode: "2"
+        paymentMethod_type: scheme
+        paymentMethod_brand: mc
+      # A currency without decimals. 5000 here is five thousand yen, not
+      # fifty, and dividing by a hundred loses two orders of magnitude.
+      - id: "8836183744EEEEEE"
+        resultCode: Authorised
+        merchantReference: order-1005
+        amount_value: 5000
+        amount_currency: JPY
+        paymentMethod_type: scheme
+        paymentMethod_brand: visa
+
+    refund:
+      - id: "8836183744FFFFFF"
+        paymentPspReference: "8836183744AAAAAA"
+        # Accepted, not completed. Whether the money moves is a webhook away,
+        # and a refund can still fail after this.
+        status: received
+        merchantReference: order-1001
+        amount_value: 1000
+        amount_currency: EUR
+
+# Conformance cases, read from Adyen's Checkout API explorer rather than
+# observed against a live merchant account. The verify report says so.
+conformance:
+  - name: success is spelled the British way
+    source: https://docs.adyen.com/api-explorer/Checkout/71/post/payments
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744AAAAAA"
+    expect:
+      status: 200
+      body:
+        # Code ported from a provider that spells it the other way compares
+        # against a string Adyen never sends, and every payment reads as
+        # failed.
+        resultCode: Authorised
+        merchantReference: order-1001
+
+  - name: Received is not a failure
+    source: https://docs.adyen.com/api-explorer/Checkout/71/post/payments
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744BBBBBB"
+    expect:
+      status: 200
+      body:
+        # A direct debit is collected days later and the outcome arrives by
+        # webhook. Branching on != Authorised declines a sale that settles.
+        resultCode: Received
+        paymentMethod:
+          paymentMethod_type: sepadirectdebit
+      absent:
+        - refusalReason
+        - refusalReasonCode
+
+  - name: a redirect carries an action and no outcome
+    source: https://docs.adyen.com/api-explorer/Checkout/71/post/payments
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744CCCCCC"
+    expect:
+      status: 200
+      body:
+        # The shopper is at their bank. Treating the absence of Authorised as
+        # a decline abandons them mid-flow.
+        resultCode: RedirectShopper
+        action:
+          action_type: redirect
+          action_url: https://test.adyen.com/hpp/checkout.shtml
+      absent:
+        - refusalReasonCode
+
+  - name: a refusal has stable code and unstable prose
+    source: https://docs.adyen.com/development-resources/refusal-reasons
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744DDDDDD"
+    expect:
+      status: 200
+      body:
+        resultCode: Refused
+        # A string of digits. A client comparing against the number 2 never
+        # matches, and the prose beside it is reworded by Adyen at will.
+        refusalReasonCode: "2"
+        refusalReason: Refused
+
+  - name: amounts are minor units and a currency without decimals is not scaled
+    source: https://docs.adyen.com/development-resources/currency-codes
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744EEEEEE"
+    expect:
+      status: 200
+      body:
+        amount:
+          # Five thousand yen, not fifty. Dividing everything by a hundred is
+          # wrong for about a fifth of the world.
+          amount_value: 5000
+          amount_currency: JPY
+
+  - name: a refund is accepted rather than completed
+    source: https://docs.adyen.com/api-explorer/Checkout/71/post/payments/_paymentPspReference_/refunds
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/8836183744AAAAAA/refunds
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        merchantAccount: CauldronECOM
+        amount_value: 1000
+        amount_currency: EUR
+    expect:
+      status: 201
+      body:
+        # Whether the money moves is a webhook away, and a refund can still
+        # fail after this.
+        status: received
+        paymentPspReference: "8836183744AAAAAA"
+      matches:
+        # Its own reference, not the payment's. Correlating a refund with its
+        # payment needs paymentPspReference rather than this.
+        pspReference: '^[0-9a-f]{16}$'
+
+  - name: a payment method list is wrapped under its own key
+    source: https://docs.adyen.com/api-explorer/Checkout/71/post/paymentMethods
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/paymentMethods
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        merchantAccount: CauldronECOM
+    expect:
+      status: 200
+      body:
+        paymentMethods[0].type: scheme
+        # An asynchronous method. A payment on it is Received rather than
+        # Authorised, and the money arrives days later.
+        paymentMethods[2].type: sepadirectdebit
+      absent:
+        - data
+        - items
+
+  - name: the key goes in X-API-Key, not Authorization
+    source: https://docs.adyen.com/development-resources/api-credentials
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/paymentMethods
+      headers:
+        Authorization: Bearer AQEyhmfxK4cauldron
+      json:
+        merchantAccount: CauldronECOM
+    expect:
+      status: 401
+      body:
+        status: 401
+        errorCode: "000"
+        errorType: authentication_error
+      absent:
+        - error
+        - errors
+
+  - name: a failure repeats the status inside the body
+    source: https://docs.adyen.com/development-resources/error-codes
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /v71/payments/details
+      headers:
+        X-API-Key: AQEyhmfxK4cauldron
+      json:
+        paymentData: "8836183744999999"
+    expect:
+      status: 422
+      body:
+        status: 422
+        # Adyen's codes are grouped by namespace and carry an underscore, so
+        # they are strings even where they look numeric.
+        errorCode: "167"
+      matches:
+        message: 'pspReference'

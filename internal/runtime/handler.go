@@ -805,10 +805,10 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		// the omission keeps the emulator from inventing a field a client
 		// could come to depend on and then lose.
 		if spec.CodeField != "-" {
-			// The same numeric conversion the flat style applies. PagerDuty's
-			// codes really are numbers, and sending "2006" as text meant a
-			// client switching on the code never matched.
-			nested["code"] = numberOrString(code)
+			// The same conversion the flat style applies. PagerDuty's codes
+			// really are numbers, and sending "2006" as text meant a client
+			// switching on the code never matched.
+			nested["code"] = codeValue(spec.CodeType, code)
 		}
 
 		if spec.TypeField != "-" {
@@ -839,7 +839,7 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 	}
 
 	if spec.CodeField != "" && code != "" {
-		setPath(body, spec.CodeField, numberOrString(code))
+		setPath(body, spec.CodeField, codeValue(spec.CodeType, code))
 	}
 
 	if spec.TypeField != "" {
@@ -870,6 +870,21 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 	}
 
 	return withFields(withFields(body, spec.Fields), extra)
+}
+
+// codeValue renders an error code as the Recipe says the provider sends it.
+//
+// An undeclared code_type falls back to inferring from the value, which is
+// right for Twilio and wrong for Adyen: "000" is a string there, and turning it
+// into a number destroys the leading zeros a client is matching on. The
+// inference stays the default so that Recipes written before this existed keep
+// working, but it is a guess, and a Recipe that knows better says so.
+func codeValue(codeType, value string) any {
+	if codeType == "string" {
+		return value
+	}
+
+	return numberOrString(value)
 }
 
 // numberOrString keeps an all-digit code a number, because Twilio's error codes
