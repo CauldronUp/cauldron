@@ -1,0 +1,507 @@
+# Bill.com Recipe for Cauldron
+#
+# Bill.com has a sandbox, and getting into it means a developer account and an
+# approval step rather than a signup form. The sandbox is also a shared
+# environment with its own organisation, so a suite running against it competes
+# with whatever state the last run left behind.
+#
+# The reason to emulate it is that this API pays suppliers. A payment created
+# against a real organisation moves money on its process date, and the window
+# for stopping it is short. It sits with Gusto as one of the two APIs here
+# where a mistake in a test costs somebody actual money rather than credits.
+#
+# Four things worth modelling exactly:
+#
+#   1. Failures arrive with HTTP 200. The envelope carries response_status 1
+#      and the reason under response_data, so a client that checks the status
+#      code treats every failure as a success. This is the single most
+#      important thing about integrating with this API.
+#   2. isActive is a string, "1" or "2", and 2 means inactive. Not a boolean
+#      and not an enum: a numeral in quotes, where the truthy value and the
+#      falsy meaning are the same character in different positions. Both "1"
+#      and "2" are truthy in every language that has the concept.
+#   3. A paid invoice is not a settled one. paymentStatus moves to paid when
+#      the payment is scheduled, and the money leaves on the process date,
+#      which can be days later and can still be stopped in between.
+#   4. Bill.com uses its own id format with a type prefix, and the prefix
+#      identifies the object kind. A vendor id starts 0056, an invoice
+#      00e, a payment 00o. Passing one where another belongs fails as an
+#      invalid id rather than as a wrong object.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Bill.com's session model is a login call returning a sessionId used as
+#     a header on everything after. Cauldron checks the header and does not
+#     implement the login exchange or session expiry.
+#   - The API is form-encoded with a JSON "data" parameter rather than a JSON
+#     body. Cauldron accepts the shape a client sends and does not model that
+#     encoding.
+#   - Nothing settles. Whether a payment has cleared is what a fixture puts
+#     there.
+#
+# Credentials below are fixtures, not secrets, and every figure is invented.
+
+recipe: billcom
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.bill.com/reference
+
+auth:
+  # The session id from a prior login call, in Bill.com's own header.
+  scheme: header
+  header: sessionId
+  keys:
+    - cauldron-session-00000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: response_data
+  resource:
+    style: wrapped
+    key: response_data
+  # The success half of the same envelope. Zero means success and one means
+  # failure, and both arrive with HTTP 200, so this field is the only thing
+  # that decides which happened. Emitting it on failures alone would let a
+  # client tell them apart by presence, which the real API does not permit.
+  success:
+    fields:
+      response_status: 0
+      response_message: Success
+  # The envelope is the same shape for success and failure. response_status
+  # is the field that decides, and the HTTP status is 200 either way.
+  error:
+    style: flat
+    message_field: response_data.error_message
+    code_field: response_data.error_code
+    code_type: string
+    type_field: "-"
+    fields:
+      # One means failure. Zero means success. Both arrive with HTTP 200, so
+      # a client checking the status code never sees a failure at all.
+      response_status: 1
+      response_message: Error
+
+resources:
+  vendor:
+    collection: response_data
+    id:
+      style: opaque
+      length: 12
+    fields:
+      # The type prefix says what kind of object this is. A vendor starts
+      # 0056, and passing it where an invoice id belongs fails as an invalid
+      # id rather than as a wrong object.
+      entity:
+        type: string
+        default: Vendor
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+      # "1" or "2", as a string. Two means inactive, and both values are
+      # truthy in every language that has the concept.
+      isActive:
+        type: string
+        default: "1"
+      # Whether the vendor can be paid electronically. A vendor without this
+      # is paid by cheque, which takes days longer and is not obvious from
+      # anything else on the record.
+      payBy:
+        type: string
+        default: Check
+      accountNumber:
+        type: string
+
+  invoice:
+    collection: response_data
+    id:
+      style: opaque
+      length: 12
+    fields:
+      entity:
+        type: string
+        default: Invoice
+      vendorId:
+        type: string
+      invoiceNumber:
+        type: string
+      # Money as a number here, unlike Gusto and WooCommerce. Bill.com is
+      # inconsistent with itself: the amount is a number and isActive is a
+      # string.
+      amount:
+        type: number
+      dueDate:
+        type: string
+      # 0 unpaid, 1 paid, 2 partially paid, 4 scheduled. Paid means the
+      # payment was scheduled rather than settled.
+      paymentStatus:
+        type: string
+        default: "0"
+      # What is still outstanding. A partially paid invoice has a status of
+      # 2 and a balance below the amount, and code that reads the status as
+      # a boolean treats it as done.
+      amountDue:
+        type: number
+      isActive:
+        type: string
+        default: "1"
+
+  payment:
+    collection: response_data
+    id:
+      style: opaque
+      length: 12
+    fields:
+      entity:
+        type: string
+        default: SentPay
+      vendorId:
+        type: string
+      amount:
+        type: number
+      # When the money actually leaves. Days after the payment is created,
+      # and the window for stopping it closes before this.
+      processDate:
+        type: string
+      # 0 scheduled, 1 paid, 2 void, 4 in process. A scheduled payment has
+      # not moved anything yet.
+      status:
+        type: string
+        default: "0"
+      # Set once the money has actually gone. Absent while scheduled, which
+      # makes its presence the reliable signal rather than the status.
+      paidDate:
+        type: string
+
+routes:
+  - method: POST
+    path: /api/v2/List/Vendor.json
+    resource: vendor
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: POST
+    path: /api/v2/Crud/Read/Vendor.json
+    resource: vendor
+    operation: get
+    id_from: body:id
+
+  - method: POST
+    path: /api/v2/List/Invoice.json
+    resource: invoice
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+
+  - method: POST
+    path: /api/v2/Crud/Read/Invoice.json
+    resource: invoice
+    operation: get
+    id_from: body:id
+
+  - method: POST
+    path: /api/v2/Crud/Read/SentPay.json
+    resource: payment
+    operation: get
+    id_from: body:id
+
+webhooks:
+  # Bill.com has no outbound webhooks on this API. Everything is polled, and
+  # claiming an event catalogue would be describing a feature it does not
+  # have.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 200
+    code: BDC_1201
+    message: Rate limit exceeded for this organization.
+
+  authentication_error:
+    status: 200
+    code: BDC_1013
+    message: "Invalid session. Please login again."
+
+  resource_missing:
+    status: 200
+    code: BDC_1102
+    message: "The object was not found: {detail}"
+
+  parameter_missing:
+    status: 200
+    code: BDC_1105
+    message: "Missing required field: {detail}"
+
+  # A well-formed id of the wrong kind. The failure names the id rather than
+  # the type, so it reads as a typo.
+  wrong_entity_prefix:
+    status: 200
+    code: BDC_1110
+    message: "Invalid id: the id does not belong to this entity type."
+
+  # A payment past its stop window. It cannot be voided and the money is
+  # going, which is the state a cancellation flow has to check for before it
+  # promises anything.
+  payment_not_voidable:
+    status: 200
+    code: BDC_1451
+    message: "The payment has already been processed and cannot be voided."
+
+  # An inactive vendor cannot be paid. Nothing on the invoice says so, and
+  # the failure arrives at payment time rather than when the bill was
+  # created.
+  vendor_inactive:
+    status: 200
+    code: BDC_1305
+    message: "The vendor is inactive and cannot be paid."
+
+fixtures:
+  empty: {}
+
+  small-org:
+    vendor:
+      - id: "0056000001abcdef"
+        name: Analytical Engines Ltd
+        email: billing@example.com
+        isActive: "1"
+        payBy: ACH
+        accountNumber: V-1001
+      # Inactive, and still returned by a list that does not filter. Nothing
+      # on an invoice says the vendor cannot be paid, and the failure arrives
+      # at payment time.
+      - id: "0056000002abcdef"
+        name: Former Supplier
+        email: old@example.com
+        isActive: "2"
+        payBy: Check
+
+    invoice:
+      # Paid, meaning the payment was scheduled. The money has not
+      # necessarily moved.
+      - id: "00e000001abcdef0"
+        vendorId: "0056000001abcdef"
+        invoiceNumber: INV-2026-001
+        amount: 4200.00
+        dueDate: "2026-01-31"
+        paymentStatus: "1"
+        amountDue: 0
+      # Partially paid. Status 2, and a balance below the amount, so code
+      # reading the status as a boolean treats it as settled.
+      - id: "00e000002abcdef0"
+        vendorId: "0056000001abcdef"
+        invoiceNumber: INV-2026-002
+        amount: 1800.00
+        dueDate: "2026-02-14"
+        paymentStatus: "2"
+        amountDue: 600.00
+      - id: "00e000003abcdef0"
+        vendorId: "0056000002abcdef"
+        invoiceNumber: INV-2026-003
+        amount: 950.00
+        dueDate: "2026-02-28"
+        paymentStatus: "0"
+        amountDue: 950.00
+
+    payment:
+      # Scheduled, not sent. The money leaves on the process date and can
+      # still be stopped until shortly before it.
+      - id: "00o000001abcdef0"
+        vendorId: "0056000001abcdef"
+        amount: 4200.00
+        processDate: "2026-01-29"
+        status: "0"
+      # Gone. paidDate is set, and its presence is the reliable signal rather
+      # than the status beside it.
+      - id: "00o000002abcdef0"
+        vendorId: "0056000001abcdef"
+        amount: 1200.00
+        processDate: "2026-01-10"
+        status: "1"
+        paidDate: "2026-01-10"
+
+# Conformance cases, read from the Bill.com API reference rather than
+# observed against a live organisation. The verify report says so.
+conformance:
+  - name: a failure arrives with HTTP 200
+    source: https://developer.bill.com/reference/error-codes
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/Vendor.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "0056999999abcdef"
+    expect:
+      # Two hundred, on a failure. A client that checks the status code
+      # treats every failure as a success, which is the single most important
+      # thing about integrating with this API.
+      status: 200
+      body:
+        # One means failure. Zero means success. Both are 200.
+        response_status: 1
+        response_message: Error
+        response_data.error_code: BDC_1102
+      matches:
+        response_data.error_message: 'was not found'
+
+  - name: isActive is a string where 2 means inactive
+    source: https://developer.bill.com/reference/vendor
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/List/Vendor.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+    expect:
+      status: 200
+      body:
+        # "1" and "2", both strings, both truthy. The falsy meaning is
+        # carried by a character rather than by the value's type, so
+        # if (vendor.isActive) is true for an inactive vendor.
+        response_data[0].isActive: "1"
+        response_data[1].isActive: "2"
+        response_data[1].name: Former Supplier
+
+  - name: paid means scheduled rather than settled
+    source: https://developer.bill.com/reference/invoice
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/Invoice.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "00e000001abcdef0"
+    expect:
+      status: 200
+      body:
+        # Status 1 with nothing outstanding, and the payment against it is
+        # still only scheduled. The money has not necessarily moved.
+        response_data.paymentStatus: "1"
+        response_data.amountDue: 0
+
+  - name: a partially paid invoice reads as done to a boolean check
+    source: https://developer.bill.com/reference/invoice
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/Invoice.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "00e000002abcdef0"
+    expect:
+      status: 200
+      body:
+        # Status 2, six hundred still owed. Both "1" and "2" are truthy, so
+        # code treating the status as a boolean marks this settled.
+        response_data.paymentStatus: "2"
+        response_data.amountDue: 600
+        response_data.amount: 1800
+
+  - name: a scheduled payment has not moved any money
+    source: https://developer.bill.com/reference/sentpay
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/SentPay.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "00o000001abcdef0"
+    expect:
+      status: 200
+      body:
+        # Status zero, and a process date in the future. It can still be
+        # stopped until shortly before that date.
+        response_data.status: "0"
+        response_data.processDate: "2026-01-29"
+      # Absent, and its absence is the reliable signal rather than the status
+      # beside it.
+      absent:
+        - response_data.paidDate
+
+  - name: a sent payment says when the money left
+    source: https://developer.bill.com/reference/sentpay
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/SentPay.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "00o000002abcdef0"
+    expect:
+      status: 200
+      body:
+        response_data.status: "1"
+        response_data.paidDate: "2026-01-10"
+
+  - name: an id carries the type it belongs to
+    source: https://developer.bill.com/reference/object-ids
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/Vendor.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "0056000001abcdef"
+    expect:
+      status: 200
+      body:
+        # 0056 is a vendor, 00e an invoice, 00o a payment. Passing one where
+        # another belongs fails as an invalid id rather than as a wrong
+        # object, which sends people looking for a typo.
+        response_data.id: "0056000001abcdef"
+        response_data.entity: Vendor
+
+  - name: an ACH vendor and a cheque vendor look the same otherwise
+    source: https://developer.bill.com/reference/vendor
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/List/Vendor.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+    expect:
+      status: 200
+      body:
+        # One is paid electronically and one by cheque, which takes days
+        # longer. Nothing else on either record says so.
+        response_data[0].payBy: ACH
+        response_data[1].payBy: Check
+
+  - name: a success uses the same envelope with a zero
+    source: https://developer.bill.com/reference/error-codes
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v2/Crud/Read/Invoice.json
+      headers:
+        sessionId: cauldron-session-00000000000000000000
+      json:
+        id: "00e000003abcdef0"
+    expect:
+      status: 200
+      body:
+          # Zero, in the same envelope the failure above uses. This field is
+        # the only thing that distinguishes them: both are HTTP 200 and both
+        # carry a response_status, so a client cannot tell them apart by
+        # presence and has to read the value.
+        response_status: 0
+        response_message: Success
+        response_data.invoiceNumber: INV-2026-003
+      absent:
+        - response_data.error_code
+        - response_data.error_message
