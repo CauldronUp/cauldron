@@ -368,6 +368,11 @@ type Error struct {
 	Type    string            `yaml:"type"`
 	Message string            `yaml:"message"`
 	Headers map[string]string `yaml:"headers"`
+	// Fields are extra body properties this failure carries, merged over the
+	// Recipe-wide ones. Dropbox describes each failure with its own nested
+	// union, so a single set of constants would make every error claim to be
+	// the same one.
+	Fields map[string]any `yaml:"fields"`
 }
 
 // Fixture is a named seed dataset: resource name to a list of records.

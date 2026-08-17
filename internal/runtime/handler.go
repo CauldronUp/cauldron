@@ -694,6 +694,9 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// error its own category, which no real provider does.
 	category := name
 
+	// Extra body properties this particular failure carries.
+	var extra map[string]any
+
 	if defined, ok := s.recipe.Errors[name]; ok {
 		status = defined.Status
 
@@ -717,15 +720,17 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		for key, value := range defined.Headers {
 			w.Header().Set(key, value)
 		}
+
+		extra = defined.Fields
 	}
 
-	writeJSON(w, status, s.errorBody(category, code, message, status))
+	writeJSON(w, status, s.errorBody(category, code, message, status, extra))
 
 	return status
 }
 
 // errorBody shapes a failure according to the Recipe's declared error style.
-func (s *Sandbox) errorBody(category, code, message string, status int) map[string]any {
+func (s *Sandbox) errorBody(category, code, message string, status int, extra map[string]any) map[string]any {
 	spec := s.recipe.Responses.Error
 
 	if spec.Style == "string_list" {
@@ -737,7 +742,7 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		// Datadog sends the array with bare strings in it. A client looping
 		// over the entries and reading .message from each finds undefined on
 		// every one, which throws rather than reporting anything.
-		return withFields(map[string]any{key: []any{message}}, spec.Fields)
+		return withFields(withFields(map[string]any{key: []any{message}}, spec.Fields), extra)
 	}
 
 	if spec.Style != "flat" && spec.Style != "list" {
@@ -760,7 +765,7 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 			key = "error"
 		}
 
-		return map[string]any{key: nested}
+		return withFields(map[string]any{key: nested}, extra)
 	}
 
 	body := map[string]any{}
@@ -802,10 +807,10 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		//
 		// Declared fields sit beside the array rather than inside each entry:
 		// Clerk's trace id belongs to the response, not to one failure.
-		return withFields(map[string]any{key: []any{body}}, spec.Fields)
+		return withFields(withFields(map[string]any{key: []any{body}}, spec.Fields), extra)
 	}
 
-	return withFields(body, spec.Fields)
+	return withFields(withFields(body, spec.Fields), extra)
 }
 
 // numberOrString keeps an all-digit code a number, because Twilio's error codes
