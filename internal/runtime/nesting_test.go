@@ -396,3 +396,60 @@ func TestARequestIsFlattenedByWireName(t *testing.T) {
 		t.Errorf("title = %v, want the value the client sent to survive the round trip", title)
 	}
 }
+
+// A dotted `in` nests twice. Brex puts a card's spending limit at
+// spend_controls.limit.amount, and before this the path was treated as one
+// literal key: the response carried a flat "spend_controls.limit" key that no
+// provider sends, sitting beside a half-populated spend_controls object.
+//
+// Nothing caught it, because a conformance case asserting spend_controls.limit
+// walks the path and finds nothing either way. It was found by reading the
+// response.
+func TestADottedNestNestsTwice(t *testing.T) {
+	r, err := recipe.Open("brex")
+	if err != nil {
+		t.Fatalf("open brex: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-account"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/cards/cdcauldron0000000001", nil)
+	req.Header.Set("Authorization", "Bearer bxt_cauldron000000000000000000000000")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	// The flat key must not be there at all. Its presence is the bug.
+	if _, flattened := body["spend_controls.limit"]; flattened {
+		t.Error("the dotted path was written as a literal key rather than nested")
+	}
+
+	controls, _ := body["spend_controls"].(map[string]any)
+	if controls == nil {
+		t.Fatalf("spend_controls = %#v, want an object", body["spend_controls"])
+	}
+
+	// Both levels, in one object: the deeper field and the shallower one
+	// beside it rather than in a separate sibling.
+	limit, _ := controls["limit"].(map[string]any)
+	if limit == nil {
+		t.Fatalf("spend_controls.limit = %#v, want an object", controls["limit"])
+	}
+
+	if limit["amount"] != float64(500000) {
+		t.Errorf("limit.amount = %v", limit["amount"])
+	}
+
+	if controls["limit_type"] != "MONTHLY" {
+		t.Errorf("limit_type = %v, want it beside limit rather than under it", controls["limit_type"])
+	}
+}

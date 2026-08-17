@@ -1,0 +1,513 @@
+# Brex Recipe for Cauldron
+#
+# Brex has no sandbox. A token reaches the real account, and the objects behind
+# it are corporate cards belonging to real employees. Creating one issues a
+# card; changing a limit changes what somebody can spend this afternoon.
+#
+# It is the second corporate card API here after Ramp, and the pair is worth
+# having because they solve the same problem in opposite units. Ramp reports
+# an amount as an integer of cents with nothing saying so. Brex reports a
+# money object with the amount in cents and a currency beside it, which is
+# clearer and is a different shape entirely: brex.amount.amount against
+# ramp.amount. Code that handles one finds a number where it expected an
+# object, or the reverse.
+#
+# Four things worth modelling exactly:
+#
+#   1. Money is an object with amount and currency, and the amount is still
+#      cents. Reading transaction.amount gives an object rather than a number,
+#      so arithmetic on it produces NaN rather than a wrong figure, which is
+#      the better failure of the two and still a failure.
+#   2. A card exists before it can be used. status moves through PENDING to
+#      ACTIVE, and a card created a moment ago declines everything while
+#      looking issued. There is no field that says why.
+#   3. Expenses and transactions are separate objects for the same money. A
+#      transaction is what the card did; an expense is the record somebody
+#      has to attach a receipt to, and it can be missing a receipt while the
+#      transaction is perfectly settled.
+#   4. Cursors are opaque and returned under next_cursor at the top level,
+#      and the absence of one is how a page says it is the last. An empty
+#      string is not the same as absent, and Brex omits it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is spent. Which state a card or an expense holds is what a
+#     fixture puts there.
+#   - Card creation is deliberately not modelled, for the same reason
+#     Mercury's payment creation is not: issuing a card in an emulator that
+#     warns about issuing cards would be inviting the mistake.
+#   - Brex's OAuth flow, scopes and token refresh are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: brex
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.brex.com/openapi/expenses_api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - bxt_cauldron000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    # Opaque, at the top level, and absent on the last page rather than empty.
+    cursor_field: next_cursor
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  transaction:
+    collection: items
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # An object, not a number. Reading this and doing arithmetic gives NaN
+      # rather than a wrong figure, which is the better failure and still a
+      # failure.
+      amount_amount:
+        type: integer
+        in: amount
+        as: amount
+      amount_currency:
+        type: string
+        in: amount
+        as: currency
+      card_id:
+        type: string
+      description:
+        type: string
+      # PENDING or SETTLED. A pending transaction can still change, and its
+      # amount is an authorisation rather than a final figure.
+      posted_at_date:
+        type: string
+        in: posted_at_date
+        as: date
+      initiated_at_date:
+        type: string
+      type:
+        type: string
+        default: PURCHASE
+
+  card:
+    collection: items
+    id:
+      style: opaque
+      length: 20
+    fields:
+      last_four:
+        type: string
+      # PENDING, ACTIVE, TERMINATED, SUSPENDED. A card created a moment ago
+      # is PENDING and declines everything while looking issued.
+      status:
+        type: string
+        default: PENDING
+      # VIRTUAL or PHYSICAL. A physical card is also unusable until somebody
+      # activates the plastic, which this field does not say.
+      card_type:
+        type: string
+        default: VIRTUAL
+      owner_user_id:
+        type: string
+      # Cents, inside an object, like everything else. Null on a card with no
+      # limit of its own.
+      limit_amount:
+        type: integer
+        in: spend_controls.limit
+        as: amount
+      limit_currency:
+        type: string
+        in: spend_controls.limit
+        as: currency
+      # MONTHLY, QUARTERLY, ANNUALLY, ONE_TIME. A one-time card is dead after
+      # its first purchase and looks ACTIVE until somebody tries.
+      limit_type:
+        type: string
+        in: spend_controls
+        as: limit_type
+
+  expense:
+    collection: items
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # The transaction this expense is the record of. Two objects for the
+      # same money, and a receipt hangs off this one.
+      original_amount_amount:
+        type: integer
+        in: original_amount
+        as: amount
+      original_amount_currency:
+        type: string
+        in: original_amount
+        as: currency
+      # DRAFT, OUT_OF_POLICY, APPROVED, SETTLED. Out of policy is not a
+      # failure: the money was spent and somebody has to justify it.
+      status:
+        type: string
+        default: DRAFT
+      merchant_raw_descriptor:
+        type: string
+        in: merchant
+        as: raw_descriptor
+      # NOT_SUBMITTED, SUBMITTED, ACCEPTED. A settled transaction with no
+      # receipt is the ordinary state of an expense report nobody has done
+      # yet.
+      receipt_status:
+        type: string
+        default: NOT_SUBMITTED
+      payment_status:
+        type: string
+        default: PENDING
+      purchased_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/transactions/card/primary
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /v2/cards
+    resource: card
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /v2/cards/{id}
+    resource: card
+    operation: get
+
+  - method: GET
+    path: /v1/expenses
+    resource: expense
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /v1/expenses/{id}
+    resource: expense
+    operation: get
+
+webhooks:
+  events:
+    - EXPENSE_CREATED
+    - EXPENSE_UPDATED
+    - EXPENSE_PAYMENT_STATUS_UPDATED
+  signing:
+    scheme: hmac-sha256
+    header: Brex-Webhook-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    message: "The access token is invalid."
+
+  resource_missing:
+    status: 404
+    message: "Not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+
+  # A token without the scope for this endpoint. Brex scopes finely, so a
+  # token that reads expenses cannot read cards.
+  insufficient_scope:
+    status: 403
+    message: "The token is missing a required scope for this endpoint."
+
+  # A card that is not yet active cannot be modified. It looks issued and is
+  # not usable, which is the state a provisioning script races.
+  card_pending:
+    status: 422
+    message: "The card is still being provisioned and cannot be modified."
+
+fixtures:
+  empty: {}
+
+  small-account:
+    card:
+      - id: cdcauldron0000000001
+        last_four: "4242"
+        status: ACTIVE
+        card_type: VIRTUAL
+        owner_user_id: uscauldron0000000001
+        # Cents, inside an object. Five thousand a month.
+        limit_amount: 500000
+        limit_currency: USD
+        limit_type: MONTHLY
+      # Created moments ago. It declines everything and looks issued, and no
+      # field says why.
+      - id: cdcauldron0000000002
+        last_four: "1881"
+        status: PENDING
+        card_type: PHYSICAL
+        owner_user_id: uscauldron0000000002
+      # One-time. Dead after its first purchase and ACTIVE until somebody
+      # tries a second.
+      - id: cdcauldron0000000003
+        last_four: "9310"
+        status: ACTIVE
+        card_type: VIRTUAL
+        owner_user_id: uscauldron0000000001
+        limit_amount: 25000
+        limit_currency: USD
+        limit_type: ONE_TIME
+
+    transaction:
+      - id: txcauldron0000000001
+        amount_amount: 4250
+        amount_currency: USD
+        card_id: cdcauldron0000000001
+        description: CAST IRON SUPPLIES
+        posted_at_date: "2026-01-14"
+        initiated_at_date: "2026-01-13"
+        type: PURCHASE
+
+    expense:
+      # The record for the transaction above. Settled money, no receipt, and
+      # somebody still has to do something about it.
+      - id: excauldron0000000001
+        original_amount_amount: 4250
+        original_amount_currency: USD
+        status: SETTLED
+        merchant_raw_descriptor: CAST IRON SUPPLIES
+        receipt_status: NOT_SUBMITTED
+        payment_status: CLEARED
+        purchased_at: "2026-01-13T19:22:00Z"
+      # Out of policy. The money was spent and somebody has to justify it,
+      # which is not the same as a decline.
+      - id: excauldron0000000002
+        original_amount_amount: 32000
+        original_amount_currency: USD
+        status: OUT_OF_POLICY
+        merchant_raw_descriptor: THE EXPENSIVE HOTEL
+        receipt_status: SUBMITTED
+        payment_status: CLEARED
+        purchased_at: "2026-01-12T22:00:00Z"
+
+# Conformance cases, read from the Brex API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: money is an object rather than a number
+    source: https://developer.brex.com/openapi/transactions_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/transactions/card/primary
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Reading transaction.amount gives an object. Arithmetic on it
+        # produces NaN rather than a wrong figure, which is the better
+        # failure of the two and still a failure.
+        items[0].amount.amount: 4250
+        items[0].amount.currency: USD
+      absent:
+        - items[0].amount_amount
+
+  - name: a pending card looks issued and declines everything
+    source: https://developer.brex.com/openapi/cards_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/cards/cdcauldron0000000002
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Issued, numbered, and unusable. No field says why, and a
+        # provisioning script that creates a card and uses it races this.
+        status: PENDING
+        last_four: "1881"
+        card_type: PHYSICAL
+      # No limit of its own, so nothing on the card says what it can spend
+      # even once it works.
+      absent:
+        - spend_controls
+
+  - name: a one time card is active until it is used
+    source: https://developer.brex.com/openapi/cards_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/cards/cdcauldron0000000003
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # ACTIVE, and dead after its first purchase. The limit type is the
+        # only thing that says so.
+        status: ACTIVE
+        spend_controls:
+          limit_type: ONE_TIME
+          limit:
+            amount: 25000
+
+  - name: a recurring card carries the same shape with a different interval
+    source: https://developer.brex.com/openapi/cards_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/cards/cdcauldron0000000001
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Identical in structure to the one-time card above, and it renews.
+        # Only the interval distinguishes a card that keeps working from one
+        # that stops.
+        spend_controls:
+          limit_type: MONTHLY
+          limit:
+            amount: 500000
+            currency: USD
+
+  - name: a settled expense can have no receipt
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/expenses/excauldron0000000001
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The money cleared and nobody has attached anything. This is the
+        # ordinary state of an expense report that has not been done, not a
+        # failure of any kind.
+        status: SETTLED
+        payment_status: CLEARED
+        receipt_status: NOT_SUBMITTED
+
+  - name: out of policy is not a decline
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/expenses/excauldron0000000002
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Spent, cleared, and against policy. Somebody has to justify it, and
+        # code that treats this as a failed payment reverses money that has
+        # already gone.
+        status: OUT_OF_POLICY
+        payment_status: CLEARED
+        original_amount:
+          amount: 32000
+
+  - name: an expense and a transaction are the same money twice
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/expenses/excauldron0000000001
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # 4250, the same figure the transaction above carries, in a field
+        # with a different name and the same nested shape. Counting both
+        # doubles the spend.
+        original_amount:
+          amount: 4250
+          currency: USD
+        merchant:
+          raw_descriptor: CAST IRON SUPPLIES
+
+  - name: a page with more to come carries an opaque cursor
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/expenses
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        items[0].status: SETTLED
+      matches:
+        # At the top level, and opaque. Asserting only its absence on a last
+        # page would hold whatever the field were called, so this pins the
+        # name down where it exists.
+        next_cursor: '.'
+      absent:
+        - items[1]
+
+  - name: the last page omits the cursor
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/expenses
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        items[0].status: SETTLED
+      # Absent rather than empty or null. A loop that continues while the
+      # cursor is truthy stops correctly here and a loop comparing against
+      # "" never terminates.
+      absent:
+        - next_cursor
+
+  - name: the failure carries a message and nothing else
+    source: https://developer.brex.com/openapi/expenses_api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/cards/cdneverexisted000001
+      headers:
+        Authorization: Bearer bxt_cauldron000000000000000000000000
+    expect:
+      status: 404
+      matches:
+        message: 'Not found'
+      # No code and no type, so anything that needs to branch has to match on
+      # prose.
+      absent:
+        - code
+        - error
+        - errors
