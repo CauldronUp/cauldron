@@ -185,7 +185,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 
 | Provider | Why |
 |---|---|
-| Cloudinary | Assets, transformations, uploads |
+| ~~Cloudinary~~ | Shipped. url against secure_url, 200-with-not-found, moderation |
 | Imgix | Image transformations and delivery |
 | Mux | Video assets, playback, processing states |
 | Vimeo | Uploads, videos, privacy |
