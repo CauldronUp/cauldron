@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -15,14 +16,14 @@ const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 // shape describes how one resource's identifiers look.
 type shape struct {
-	// numeric mints sequential integers (GitHub issue numbers), rather than
-	// prefixed strings (Stripe object ids). Providers genuinely differ, and
-	// applications parse both, so the emulator has to match.
-	numeric bool
-	prefix  string
-	length  int
-	seq     int
-	drawn   int
+	// style is prefixed (Stripe object ids), numeric (GitHub issue numbers) or
+	// timestamp (Slack message ts). Providers genuinely differ, applications
+	// parse all three, so the emulator has to match.
+	style  string
+	prefix string
+	length int
+	seq    int
+	drawn  int
 }
 
 // Generator mints identifiers that look like the provider's own but are fully
@@ -36,6 +37,7 @@ type Generator struct {
 	seed   int64
 	rng    *rand.Rand
 	shapes map[string]shape
+	now    func() int64
 }
 
 // NewGenerator returns a generator for the given seed.
@@ -61,7 +63,16 @@ func (g *Generator) DeclareStyle(resource, style, prefix string, length int) {
 		length = 14
 	}
 
-	g.shapes[resource] = shape{numeric: style == "numeric", prefix: prefix, length: length}
+	g.shapes[resource] = shape{style: style, prefix: prefix, length: length}
+}
+
+// Now is the sandbox clock, used by the timestamp style. It is injected rather
+// than read from the wall clock so identifiers stay reproducible.
+func (g *Generator) Now(now func() int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.now = now
 }
 
 // Next mints the next identifier for a resource.
@@ -76,11 +87,27 @@ func (g *Generator) Next(resource string) string {
 
 	s.drawn++
 
-	if s.numeric {
+	switch s.style {
+	case "numeric":
 		s.seq++
 		g.shapes[resource] = s
 
 		return strconv.Itoa(s.seq)
+
+	case "timestamp":
+		// Slack identifies a message by the second it arrived plus a counter,
+		// which is why thread_ts is a string that looks like a float. The
+		// counter keeps two messages in the same second distinct, and comes
+		// from the sandbox clock so the value is reproducible.
+		s.seq++
+		g.shapes[resource] = s
+
+		seconds := int64(0)
+		if g.now != nil {
+			seconds = g.now()
+		}
+
+		return strconv.FormatInt(seconds, 10) + "." + fmt.Sprintf("%06d", s.seq)
 	}
 
 	g.shapes[resource] = s

@@ -116,6 +116,16 @@ type Responses struct {
 	List     ListResponse     `yaml:"list"`
 	Error    ErrorResponse    `yaml:"error"`
 	Resource ResourceResponse `yaml:"resource"`
+	Success  SuccessResponse  `yaml:"success"`
+}
+
+// SuccessResponse describes what a provider adds to every successful body.
+//
+// Slack stamps {"ok": true} on everything and its clients check it before
+// looking at anything else. A fake that omits it fails at the first line of
+// every handler written against the real API.
+type SuccessResponse struct {
+	Fields map[string]any `yaml:"fields"`
 }
 
 // ResourceResponse describes how a single object comes back.
@@ -137,7 +147,9 @@ type ErrorResponse struct {
 	// Style is nested (Stripe, the default) or flat (GitHub).
 	Style string `yaml:"style"`
 	// MessageField names the property carrying the human-readable message when
-	// the style is flat. Empty means "message".
+	// the style is flat. Empty means "message". Set it to "-" to omit the
+	// message entirely, which Slack does: its errors are a code and nothing
+	// else, and inventing prose the provider never sends is still infidelity.
 	MessageField string `yaml:"message_field"`
 	// CodeField names the property carrying the error code in a flat envelope.
 	// Twilio sends one and its clients switch on it; GitHub does not send one
@@ -165,6 +177,9 @@ type ListResponse struct {
 	// not send one: Stripe expects the caller to pass the last id back as
 	// starting_after. Leaving it empty is therefore the faithful default, and
 	// setting it is a deliberate claim that the provider really sends it.
+	//
+	// A dotted name nests, so Slack's response_metadata.next_cursor is
+	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
 }
 
@@ -187,7 +202,8 @@ type Resource struct {
 // ID describes how the provider mints identifiers. Getting this right matters
 // more than it looks: applications routinely parse or prefix-match IDs.
 type ID struct {
-	// Style is one of: prefixed (cus_abc123) or numeric (1, 2, 3).
+	// Style is one of: prefixed (cus_abc123), numeric (1, 2, 3) or timestamp
+	// (1767225600.000100, which is how Slack identifies a message).
 	// Empty means prefixed.
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
@@ -223,7 +239,12 @@ type Route struct {
 	// Status is the success status this route returns. Empty means 200. GitHub
 	// answers a create with 201, Stripe with 200, and a client checking for one
 	// exact code is not being unreasonable.
-	Status     int        `yaml:"status"`
+	Status int `yaml:"status"`
+	// IDFrom says where the identifier comes from when it is not a path
+	// parameter: "query:channel" or "body:channel". Slack and every other
+	// RPC-shaped API put it in the query string or the body, and without this
+	// the format could only describe APIs that happen to be RESTful.
+	IDFrom     string     `yaml:"id_from"`
 	Pagination Pagination `yaml:"pagination"`
 }
 
@@ -274,7 +295,7 @@ var (
 	validPagination = []string{"", "cursor", "offset", "page"}
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
-	validIDStyles   = []string{"", "prefixed", "numeric"}
+	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp"}
 )
 
 // Load reads and validates a Recipe from a YAML file.
@@ -355,10 +376,10 @@ func (r *Recipe) Validate() error {
 		resource := r.Resources[name]
 
 		if !contains(validIDStyles, resource.ID.Style) {
-			add("resource %q has id.style %q, which must be prefixed or numeric", name, resource.ID.Style)
+			add("resource %q has id.style %q, which must be prefixed, numeric or timestamp", name, resource.ID.Style)
 		}
 
-		if resource.ID.Style != "numeric" && resource.ID.Prefix == "" {
+		if resource.ID.Style != "numeric" && resource.ID.Style != "timestamp" && resource.ID.Prefix == "" {
 			add("resource %q must declare an id.prefix. Applications routinely prefix-match identifiers", name)
 		}
 
@@ -423,6 +444,24 @@ func (r *Recipe) Validate() error {
 
 		if !contains(validPagination, route.Pagination.Style) {
 			add("%s: pagination.style %q is not supported", where, route.Pagination.Style)
+		}
+
+		if route.IDFrom != "" {
+			source, name, ok := strings.Cut(route.IDFrom, ":")
+
+			switch {
+			case !ok || name == "":
+				add("%s: id_from %q must look like query:channel or body:channel", where, route.IDFrom)
+			case source != "query" && source != "body":
+				add("%s: id_from source %q must be query or body", where, source)
+			case strings.Contains(route.Path, "{id}"):
+				add("%s: id_from and an {id} path parameter cannot both apply", where)
+			}
+		}
+
+		if route.Operation != "list" && route.Operation != "create" &&
+			route.IDFrom == "" && !strings.Contains(route.Path, "{id}") {
+			add("%s: a %s needs an {id} in the path or an id_from", where, route.Operation)
 		}
 	}
 

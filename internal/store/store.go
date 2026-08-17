@@ -68,6 +68,12 @@ func (s *Store) Declare(resource, prefix string, length int) {
 }
 
 // DeclareStyle registers a resource type with an explicit identifier style.
+// Clock gives the identifier generator the sandbox clock, for styles that mint
+// time-based identifiers.
+func (s *Store) Clock(now func() int64) {
+	s.ids.Now(now)
+}
+
 func (s *Store) DeclareStyle(resource, style, prefix string, length int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -30,6 +31,11 @@ func decodeBody(r *http.Request) (store.Record, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Put it back. A route whose identifier comes from the body reads it once
+	// to find the id and again to apply the changes, and a drained body would
+	// make the second read silently return nothing.
+	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	if len(body) == 0 {
 		return store.Record{}, nil

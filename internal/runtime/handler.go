@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,11 +64,11 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "create":
 		exchange.Status = s.create(w, r, matched, vars)
 	case "get":
-		exchange.Status = s.get(w, matched, vars)
+		exchange.Status = s.get(w, r, matched, vars)
 	case "update":
 		exchange.Status = s.update(w, r, matched, vars)
 	case "delete":
-		exchange.Status = s.delete(w, matched, vars)
+		exchange.Status = s.delete(w, r, matched, vars)
 	case "list":
 		exchange.Status = s.list(w, r, matched, vars)
 	default:
@@ -112,10 +113,39 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 	return status
 }
 
-func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]string) int {
-	record, err := s.store.Get(matched.spec.Resource, vars["id"])
+// identifier resolves the record id for a request. Most providers put it in
+// the path; RPC-shaped ones like Slack put it in the query string or the body,
+// which the Recipe declares with id_from.
+func identifier(matched route, r *http.Request, vars map[string]string) string {
+	if matched.spec.IDFrom == "" {
+		return vars["id"]
+	}
+
+	source, name, _ := strings.Cut(matched.spec.IDFrom, ":")
+
+	switch source {
+	case "query":
+		return r.URL.Query().Get(name)
+	case "body":
+		body, err := decodeBody(r)
+		if err != nil {
+			return ""
+		}
+
+		if value, ok := body[name]; ok {
+			return fmt.Sprint(value)
+		}
+	}
+
+	return ""
+}
+
+func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
+	id := identifier(matched, r, vars)
+
+	record, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
 	// A record that exists but belongs to another scope must look absent, not
@@ -123,8 +153,8 @@ func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]stri
 	// not want to teach an application to rely on.
 	if !store.Matches(record, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".",
-			matched.spec.Resource+": "+vars["id"])
+			"No such "+matched.spec.Resource+": "+id+".",
+			matched.spec.Resource+": "+id)
 	}
 
 	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, record))
@@ -133,25 +163,27 @@ func (s *Sandbox) get(w http.ResponseWriter, matched route, vars map[string]stri
 }
 
 func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
+	id := identifier(matched, r, vars)
+
 	changes, err := decodeBody(r)
 	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "Request body could not be parsed.")
 	}
 
-	existing, err := s.store.Get(matched.spec.Resource, vars["id"])
+	existing, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
 	if !store.Matches(existing, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".",
-			matched.spec.Resource+": "+vars["id"])
+			"No such "+matched.spec.Resource+": "+id+".",
+			matched.spec.Resource+": "+id)
 	}
 
-	updated, err := s.store.Update(matched.spec.Resource, vars["id"], changes)
+	updated, err := s.store.Update(matched.spec.Resource, id, changes)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
 	s.emitFor(matched.spec.Resource, "updated", updated)
@@ -161,26 +193,28 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 	return http.StatusOK
 }
 
-func (s *Sandbox) delete(w http.ResponseWriter, matched route, vars map[string]string) int {
-	record, err := s.store.Get(matched.spec.Resource, vars["id"])
+func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
+	id := identifier(matched, r, vars)
+
+	record, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
 	if !store.Matches(record, scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+vars["id"]+".",
-			matched.spec.Resource+": "+vars["id"])
+			"No such "+matched.spec.Resource+": "+id+".",
+			matched.spec.Resource+": "+id)
 	}
 
-	if err := s.store.Delete(matched.spec.Resource, vars["id"]); err != nil {
-		return s.notFound(w, err, matched.spec.Resource, vars["id"])
+	if err := s.store.Delete(matched.spec.Resource, id); err != nil {
+		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
 	s.emitFor(matched.spec.Resource, "deleted", record)
 
 	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, store.Record{
-		"id":      vars["id"],
+		"id":      id,
 		"object":  matched.spec.Resource,
 		"deleted": true,
 	}))
@@ -259,11 +293,52 @@ func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Re
 func (s *Sandbox) resourceBody(resource string, record store.Record) any {
 	record = s.present(resource, record)
 
+	success := s.recipe.Responses.Success.Fields
+
 	if s.recipe.Responses.Resource.Style != "wrapped" {
-		return record
+		if len(success) == 0 {
+			return record
+		}
+
+		// Nowhere to put the envelope fields without colliding with the
+		// object's own, so wrap rather than silently overwrite a real field.
+		out := make(map[string]any, len(record)+len(success))
+
+		for key, value := range record {
+			out[key] = value
+		}
+
+		return withFields(out, success)
 	}
 
-	return map[string]any{resource: record}
+	return withFields(map[string]any{resource: record}, success)
+}
+
+// withFields stamps a provider's constant envelope fields onto a body. A dotted
+// name nests, so response_metadata.next_cursor needs no second mechanism.
+func withFields(body map[string]any, fields map[string]any) map[string]any {
+	for name, value := range fields {
+		setPath(body, name, value)
+	}
+
+	return body
+}
+
+func setPath(body map[string]any, path string, value any) {
+	head, rest, nested := strings.Cut(path, ".")
+
+	if !nested {
+		body[head] = value
+		return
+	}
+
+	child, ok := body[head].(map[string]any)
+	if !ok {
+		child = map[string]any{}
+		body[head] = child
+	}
+
+	setPath(child, rest, value)
 }
 
 // listBody shapes a page according to the Recipe's declared list style.
@@ -277,7 +352,13 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		// A caller doing json.Unmarshal into a slice must not receive an object.
 		return page.Records
 	case "wrapped":
-		return map[string]any{s.collectionName(resource, spec.Key): page.Records}
+		body := map[string]any{s.collectionName(resource, spec.Key): page.Records}
+
+		if spec.CursorField != "" && page.NextCursor != "" {
+			setPath(body, spec.CursorField, page.NextCursor)
+		}
+
+		return withFields(body, s.recipe.Responses.Success.Fields)
 	default:
 		body := map[string]any{
 			"object":   "list",
@@ -294,10 +375,10 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		// locally and fails in production, which is the exact failure this
 		// project exists to prevent.
 		if spec.CursorField != "" && page.NextCursor != "" {
-			body[spec.CursorField] = page.NextCursor
+			setPath(body, spec.CursorField, page.NextCursor)
 		}
 
-		return body
+		return withFields(body, s.recipe.Responses.Success.Fields)
 	}
 }
 
@@ -479,26 +560,28 @@ func (s *Sandbox) errorBody(category, code, message string, status int) map[stri
 		}
 	}
 
-	field := spec.MessageField
-	if field == "" {
-		field = "message"
+	body := map[string]any{}
+
+	// "-" means the provider sends no prose at all. Slack's errors are a code
+	// and nothing else, and inventing a sentence it never sends is infidelity
+	// in the direction that is hardest to notice.
+	if field := spec.MessageField; field != "-" {
+		if field == "" {
+			field = "message"
+		}
+
+		body[field] = message
 	}
 
-	body := map[string]any{field: message}
-
 	if spec.CodeField != "" && code != "" {
-		body[spec.CodeField] = numberOrString(code)
+		setPath(body, spec.CodeField, numberOrString(code))
 	}
 
 	if spec.StatusField != "" {
-		body[spec.StatusField] = status
+		setPath(body, spec.StatusField, status)
 	}
 
-	for name, value := range spec.Fields {
-		body[name] = value
-	}
-
-	return body
+	return withFields(body, spec.Fields)
 }
 
 // numberOrString keeps an all-digit code a number, because Twilio's error codes

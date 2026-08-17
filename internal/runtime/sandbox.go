@@ -69,6 +69,10 @@ func New(r *recipe.Recipe, opts Options) (*Sandbox, error) {
 		webhooks: newWebhookQueue(r, c),
 	}
 
+	// The identifier generator reads the sandbox clock, never the wall clock,
+	// so a time-based identifier is as reproducible as any other.
+	s.store.Clock(func() int64 { return s.clock.Unix() })
+
 	for name, resource := range r.Resources {
 		s.store.DeclareStyle(name, resource.ID.Style, resource.ID.Prefix, resource.ID.Length)
 	}

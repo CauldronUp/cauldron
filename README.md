@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 26 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 34 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | Stripe, GitHub, Shopify, Twilio |
+| Recipes shipped | Stripe, GitHub, Shopify, Twilio, Slack |
 
 ## Try it
 
@@ -209,8 +209,8 @@ stripe 0.1.0
   8 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one, and today it reads the same for all four
-Recipes: 26 cases, none yet run against a live account. Documentation-derived
+That second line is the honest one, and today it reads the same for every
+Recipe: 34 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
