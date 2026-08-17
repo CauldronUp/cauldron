@@ -1,0 +1,416 @@
+# TaxJar Recipe for Cauldron
+#
+# TaxJar has a sandbox at api.sandbox.taxjar.com, and it is a real sandbox with
+# its own token. The reason to emulate it anyway is that tax is the one thing
+# in a checkout nobody can afford to get subtly wrong, and the sandbox is a
+# network call on somebody else's uptime sitting in the middle of the most
+# latency-sensitive page a shop has. A suite that calculates tax on every
+# checkout test is slow, and one that mocks it by hand invents rates.
+#
+# The sandbox also does not have every jurisdiction, and the rates it does
+# return are not guaranteed current, so a test asserting a number against it is
+# asserting against something that can change underneath the test for reasons
+# that have nothing to do with the code.
+#
+# Four things worth modelling exactly:
+#
+#   1. Every monetary value is a number, and the rates are decimals between
+#      zero and one. combined_rate 0.08 is eight per cent, not eight, and a
+#      display that multiplies by a hundred twice shows 800%.
+#   2. Tax is not one rate. The response breaks it into state, county, city
+#      and special district amounts that sum to the total, and a jurisdiction
+#      that does not apply is present with zero rather than absent. Summing
+#      the parts and the total double-counts.
+#   3. freight_taxable decides whether shipping is taxed, and it varies by
+#      state rather than by product. A calculation that always taxes shipping,
+#      or never does, is wrong in about half the country.
+#   4. has_nexus is the whole question. Without nexus in the destination
+#      state the amount is zero and the breakdown is absent entirely, so a
+#      response with no tax is not an error and not a bug.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not calculate tax. The rates in a fixture are the rates
+#     it returns, so this Recipe is about the shape of the answer and the
+#     states it comes in, not about arithmetic. A test that needs a real rate
+#     needs the real service.
+#   - Nexus is a fixture rather than something derived from a configured
+#     address list.
+#   - Filing and the transaction endpoints are not modelled.
+#
+# Tokens below are fixtures, not secrets, and the rates are illustrative
+# rather than current.
+
+recipe: taxjar
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.taxjar.com/api/reference/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-taxjar-token
+
+responses:
+  # No list block: nothing in this Recipe returns a collection. TaxJar's tax
+  # and rate endpoints each answer with one object, so declaring a collection
+  # shape would be describing something it does not serve.
+  resource:
+    # Every response is wrapped in a key named for what was asked. A tax
+    # calculation arrives under "tax", a rate lookup under "rate".
+    style: wrapped
+  error:
+    style: flat
+    message_field: detail
+    code_field: error
+    code_type: string
+    status_field: status
+    type_field: "-"
+
+resources:
+  tax:
+    id:
+      style: opaque
+      length: 12
+    fields:
+      order_total_amount:
+        type: number
+      shipping:
+        type: number
+      taxable_amount:
+        type: number
+      # The number to charge. Zero is a legitimate answer rather than a
+      # failure, and it is the answer whenever there is no nexus, which is
+      # why it defaults to zero rather than being absent.
+      amount_to_collect:
+        type: number
+        default: 0.0
+      # A decimal between zero and one. 0.08 is eight per cent, and a display
+      # that multiplies by a hundred twice shows 800%.
+      rate:
+        type: number
+      # The whole question. Without nexus in the destination state the amount
+      # is zero and the breakdown below is absent entirely.
+      has_nexus:
+        type: boolean
+        default: false
+      # Whether shipping is taxed, which varies by state rather than by
+      # product. Always taxing it, or never, is wrong in about half the
+      # country.
+      freight_taxable:
+        type: boolean
+        default: false
+      tax_source:
+        type: string
+      # The parts. They sum to the total, so adding them to it double-counts,
+      # and a jurisdiction that does not apply is present with zero rather
+      # than missing.
+      breakdown:
+        type: list
+
+  rate:
+    id:
+      style: opaque
+      field: zip
+      length: 12
+    fields:
+      country:
+        type: string
+        default: US
+      state:
+        type: string
+      county:
+        type: string
+      city:
+        type: string
+      # Decimals, all of them, and a county with no tax is 0.0 rather than
+      # absent.
+      state_rate:
+        type: number
+      county_rate:
+        type: number
+      city_rate:
+        type: number
+      combined_district_rate:
+        type: number
+      combined_rate:
+        type: number
+      # Per state, and the reason a shipping calculation cannot be written
+      # once and reused.
+      freight_taxable:
+        type: boolean
+        default: false
+
+routes:
+  - method: POST
+    path: /v2/taxes
+    resource: tax
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v2/rates/{id}
+    resource: rate
+    operation: get
+
+webhooks:
+  # TaxJar posts nothing back. Filing notifications are email, and claiming a
+  # webhook catalogue would be describing something else.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: "Too Many Requests"
+    message: Rate limit exceeded
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: Not authorized for route 'GET /v2/rates'
+
+  resource_missing:
+    status: 404
+    code: Not Found
+    message: "Resource can not be found: {detail}"
+
+  parameter_missing:
+    status: 422
+    code: Unprocessable Entity
+    message: "{detail} is missing, is empty, or is invalid"
+
+  # An address TaxJar cannot resolve. The calculation fails rather than
+  # falling back, so a checkout with a typo in the postcode cannot complete
+  # at all.
+  address_unresolved:
+    status: 422
+    code: Unprocessable Entity
+    message: "to_zip is not a valid postal code for to_state"
+
+  # The plan wall. TaxJar meters calculations, and an account over its limit
+  # stops calculating while everything else keeps working.
+  plan_limit:
+    status: 429
+    code: "Too Many Requests"
+    message: You have exceeded the number of API calls allowed by your plan.
+
+fixtures:
+  empty: {}
+
+  small-shop:
+    rate:
+      - id: "90404"
+        country: US
+        state: CA
+        county: LOS ANGELES
+        city: SANTA MONICA
+        # Decimals, not percentages.
+        state_rate: 0.0625
+        county_rate: 0.01
+        city_rate: 0.0
+        combined_district_rate: 0.0275
+        combined_rate: 0.1
+        # California does not tax shipping, so a calculation that always adds
+        # it is wrong here and right one state over.
+        freight_taxable: false
+      - id: "10001"
+        country: US
+        state: NY
+        county: NEW YORK
+        city: NEW YORK
+        state_rate: 0.04
+        county_rate: 0.0
+        city_rate: 0.04500
+        combined_district_rate: 0.00375
+        combined_rate: 0.08875
+        # New York does. The same shipping line is taxable here and not in
+        # California, which is why this cannot be written once.
+        freight_taxable: true
+
+    tax:
+      # A calculation with nexus. The breakdown sums to the amount, and the
+      # county line is zero rather than missing.
+      - id: withnexus
+        order_total_amount: 100.0
+        shipping: 10.0
+        taxable_amount: 100.0
+        amount_to_collect: 10.0
+        rate: 0.1
+        has_nexus: true
+        freight_taxable: false
+        tax_source: destination
+        breakdown:
+          - state_taxable_amount: 100.0
+            state_tax_collectable: 6.25
+            county_taxable_amount: 100.0
+            county_tax_collectable: 1.0
+            # Present and zero. Summing the parts and the total
+            # double-counts, and treating a zero as missing loses the line.
+            city_taxable_amount: 100.0
+            city_tax_collectable: 0.0
+            special_district_taxable_amount: 100.0
+            special_district_tax_collectable: 2.75
+      # No nexus. Zero to collect, and no breakdown at all: not an empty
+      # array, absent. This is a correct answer rather than a failure.
+      - id: nonexus
+        order_total_amount: 100.0
+        shipping: 10.0
+        taxable_amount: 0.0
+        amount_to_collect: 0.0
+        rate: 0.0
+        has_nexus: false
+        freight_taxable: false
+
+# Conformance cases, read from the TaxJar API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a rate is a decimal rather than a percentage
+    source: https://developers.taxjar.com/api/reference/#get-show-tax-rates-for-a-location
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/90404
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 200
+      body:
+        # Ten per cent, written as 0.1. A display that multiplies by a
+        # hundred twice shows 1000%, and one that does not multiply at all
+        # shows 0.1%.
+        rate.combined_rate: 0.1
+        rate.state_rate: 0.0625
+
+  - name: a jurisdiction with no tax is present with zero
+    source: https://developers.taxjar.com/api/reference/#get-show-tax-rates-for-a-location
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/90404
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 200
+      body:
+        # Zero, not missing. Code that treats a missing rate as "no tax here"
+        # and a zero rate as "not looked up yet" has them backwards.
+        rate.city_rate: 0.0
+        rate.county_rate: 0.01
+
+  - name: shipping is taxable in one state and not the next
+    source: https://developers.taxjar.com/api/reference/#get-show-tax-rates-for-a-location
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/10001
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 200
+      body:
+        # New York taxes shipping and California does not. A calculation that
+        # always adds it, or never does, is wrong in about half the country.
+        rate.freight_taxable: true
+        rate.state: NY
+
+  - name: the same field is false one postcode away
+    source: https://developers.taxjar.com/api/reference/#get-show-tax-rates-for-a-location
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/90404
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 200
+      body:
+        rate.freight_taxable: false
+        rate.state: CA
+
+  - name: no nexus means zero tax and no breakdown at all
+    source: https://developers.taxjar.com/api/reference/#post-calculate-sales-tax-for-an-order
+    fixture: small-shop
+    request:
+      method: POST
+      path: /v2/taxes
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+      json:
+        # Deliberately sends neither has_nexus nor amount_to_collect, so the
+        # values asserted below are the emulator's rather than an echo of
+        # this request.
+        from_country: US
+        to_country: US
+    expect:
+      status: 200
+      body:
+        # A correct answer, not a failure. Zero to collect because there is
+        # nothing to collect.
+        tax.has_nexus: false
+        tax.amount_to_collect: 0.0
+      # Absent, not empty. Code that maps over the breakdown throws on the
+      # response it will see most often for an out-of-state order.
+      absent:
+        - tax.breakdown
+
+  - name: the parts sum to the combined rate rather than adding to it
+    source: https://developers.taxjar.com/api/reference/#get-show-tax-rates-for-a-location
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/90404
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 200
+      body:
+        # 0.0625 state plus 0.01 county plus 0.0 city plus 0.0275 district is
+        # the 0.1 combined. Adding the combined rate to the parts charges the
+        # customer twice, and the zero city line is the one most likely to be
+        # dropped on the way through.
+        rate.state_rate: 0.0625
+        rate.county_rate: 0.01
+        rate.city_rate: 0.0
+        rate.combined_district_rate: 0.0275
+        rate.combined_rate: 0.1
+
+  - name: the failure names a code in words and repeats its status
+    source: https://developers.taxjar.com/api/reference/#errors
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/00000
+      headers:
+        Authorization: Bearer cauldron-taxjar-token
+    expect:
+      status: 404
+      body:
+        # A phrase rather than a slug, and the status repeated in the body.
+        # The prose field is called detail, not message, so a client reading
+        # message finds nothing.
+        error: Not Found
+        status: 404
+      matches:
+        detail: 'can not be found'
+      absent:
+        - message
+        - code
+        - errors
+
+  - name: a token is required
+    source: https://developers.taxjar.com/api/reference/#authentication
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/rates/90404
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+        status: 401
