@@ -1,0 +1,394 @@
+# Rollbar Recipe for Cauldron
+#
+# Rollbar has no sandbox. A project token reaches a real project, and the only
+# way to get items to read is to send real errors into it, which pollutes the
+# alerting and the occurrence counts everyone else depends on. A test suite
+# that reports an error per run inflates a graph somebody uses to decide
+# whether a release went well.
+#
+# Two things worth modelling exactly:
+#
+#   1. Every response is wrapped in {"err": 0, "result": {...}}, and err is a
+#      number. Zero means success. A client that checks for the presence of
+#      "err" rather than its value treats every successful call as a failure,
+#      and one that reads the body directly finds nothing at all.
+#   2. An item's level and its status are independent. A critical error that
+#      somebody has already resolved is still returned, still critical, and
+#      counting by level alone re-reports work that is done.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: rollbar
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://docs.rollbar.com/reference
+
+auth:
+  # Rollbar's own header for a project access token.
+  scheme: header
+  header: X-Rollbar-Access-Token
+  keys:
+    - cauldron-rollbar-token
+
+responses:
+  # Zero means success, and it is a number rather than a boolean.
+  success:
+    fields:
+      err: 0
+  list:
+    style: wrapped
+    key: result
+  resource:
+    style: wrapped
+    key: result
+  error:
+    style: flat
+    message_field: message
+    fields:
+      # One rather than zero. A client checking for the presence of err
+      # instead of its value gets this exactly backwards.
+      err: 1
+
+resources:
+  item:
+    collection: result
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      counter:
+        type: integer
+      title:
+        type: string
+        required: true
+      environment:
+        type: string
+        default: production
+      # critical, error, warning, info, debug. Independent of status.
+      level:
+        type: string
+        default: error
+      # active, resolved, muted, resolved_in_next_release. A resolved item is
+      # still returned and still carries its level.
+      status:
+        type: string
+        default: active
+      # How many times it has happened, and how many people it hit. A high
+      # occurrence count on a low level is often more urgent than the
+      # reverse, which is why both exist.
+      total_occurrences:
+        type: integer
+        default: 1
+      unique_occurrences:
+        type: integer
+        default: 1
+      first_occurrence_timestamp:
+        type: timestamp
+      last_occurrence_timestamp:
+        type: timestamp
+      # Set only when somebody actually resolved it.
+      resolved_in_version:
+        type: string
+
+  project:
+    collection: result
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      account_id:
+        type: string
+      # enabled or disabled. A disabled project accepts no new items and is
+      # still listed, so a dashboard that sums every project reports a
+      # healthy zero for one that is simply switched off.
+      status:
+        type: string
+        default: enabled
+      date_created:
+        type: timestamp
+
+  deploy:
+    collection: result
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      environment:
+        type: string
+        default: production
+      revision:
+        type: string
+        required: true
+      local_username:
+        type: string
+      comment:
+        type: string
+      start_time:
+        type: timestamp
+
+routes:
+  - method: GET
+    path: /api/1/items
+    resource: item
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /api/1/item/{id}
+    resource: item
+    operation: get
+
+  - method: PATCH
+    path: /api/1/item/{id}
+    resource: item
+    operation: update
+
+  - method: GET
+    path: /api/1/projects
+    resource: project
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /api/1/project/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /api/1/deploys
+    resource: deploy
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: POST
+    path: /api/1/deploy
+    resource: deploy
+    operation: create
+
+webhooks:
+  events:
+    - new_item
+    - reactivated_item
+    - resolved_item
+    - occurrence
+    - deploy
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "60"
+      X-Rate-Limit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    message: invalid access token
+
+  resource_missing:
+    status: 404
+    message: "not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    message: "missing required param: {detail}"
+
+  # A project access token is scoped to read or write, and using the wrong
+  # one fails in a way that names neither the scope nor the token.
+  wrong_token_scope:
+    status: 403
+    message: invalid access token for this endpoint
+
+  # Rollbar stops accepting items once the plan's monthly quota is spent, and
+  # reads keep working, so the first sign is a graph that goes flat.
+  quota_exceeded:
+    status: 402
+    message: monthly occurrence quota reached
+
+fixtures:
+  empty: {}
+
+  small-account:
+    project:
+      - id: "100001"
+        name: cauldron-engine
+        status: enabled
+      - id: "100002"
+        name: retired-service
+        # Accepts no new items and is still listed. A dashboard summing
+        # every project reports a healthy zero for one that is switched off.
+        status: disabled
+    item:
+      - id: "200001"
+        project_id: "100001"
+        counter: 41
+        title: "TypeError: cannot read property total of undefined"
+        level: critical
+        status: active
+        total_occurrences: 4128
+        unique_occurrences: 97
+      - id: "200002"
+        project_id: "100001"
+        counter: 42
+        title: "Timeout connecting to upstream"
+        # Resolved, and still critical, and still returned. Counting by level
+        # alone re-reports work that is already done.
+        level: critical
+        status: resolved
+        resolved_in_version: 2026.1.3
+        total_occurrences: 12
+      - id: "200003"
+        project_id: "100001"
+        counter: 43
+        title: "Deprecated config key in use"
+        # Low level, very high volume. Often more urgent than the reverse,
+        # which is why both numbers exist.
+        level: warning
+        status: active
+        total_occurrences: 91400
+        unique_occurrences: 8800
+    deploy:
+      - id: "300001"
+        project_id: "100001"
+        environment: production
+        revision: 4f21c9ab
+        local_username: ada
+
+# Conformance cases, read from Rollbar's API reference rather than observed
+# against a live project. The verify report says so.
+conformance:
+  - name: every response is wrapped with err zero
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/item/200001
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 200
+      body:
+        # Zero means success, and it is a number. A client checking for the
+        # presence of err rather than its value treats this as a failure.
+        err: 0
+        result:
+          title: "TypeError: cannot read property total of undefined"
+          level: critical
+      # Reading the body directly finds nothing at all.
+      absent:
+        - title
+        - level
+
+  - name: a failure uses the same wrapper with err one
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/item/999999
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 404
+      body:
+        err: 1
+      matches:
+        message: 'not found'
+      absent:
+        - result
+        - error
+
+  - name: level and status are independent
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/items
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 200
+      body:
+        err: 0
+        result[0].level: critical
+        result[0].status: active
+        # Resolved, still critical, still returned. Counting by level alone
+        # re-reports work that is already done.
+        result[1].level: critical
+        result[1].status: resolved
+
+  - name: a resolved item names the version that fixed it
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/item/200002
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 200
+      body:
+        result:
+          status: resolved
+          resolved_in_version: 2026.1.3
+
+  - name: occurrence counts matter as much as the level
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/item/200003
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 200
+      body:
+        result:
+          # A warning that has happened ninety thousand times and hit nearly
+          # nine thousand people. Sorting by level alone buries this under a
+          # critical that fired twelve times.
+          level: warning
+          total_occurrences: 91400
+          unique_occurrences: 8800
+
+  - name: a disabled project is still listed
+    source: https://docs.rollbar.com/reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/1/projects
+      headers:
+        X-Rollbar-Access-Token: cauldron-rollbar-token
+    expect:
+      status: 200
+      body:
+        err: 0
+        result[0].status: enabled
+        # Accepts nothing new. A dashboard summing every project reports a
+        # healthy zero for one that is simply switched off.
+        result[1].status: disabled
+
+  - name: a bad token is refused with the same wrapper
+    source: https://docs.rollbar.com/reference/getting-started
+    request:
+      method: GET
+      path: /api/1/items
+    expect:
+      status: 401
+      body:
+        err: 1
+      matches:
+        message: 'invalid access token'
