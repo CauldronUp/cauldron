@@ -1,0 +1,416 @@
+# Zoom Recipe for Cauldron
+#
+# Zoom has no sandbox. A Server-to-Server OAuth app reaches a real account, and
+# a test that schedules a meeting puts it on somebody's calendar, may email the
+# invitees, and counts against the account. Deleting it emails them again. The
+# free tier also rate limits hard enough that a CI suite creating a meeting per
+# run starts failing on request budget rather than on code.
+#
+# Two things worth modelling exactly:
+#
+#   1. The meeting identifier is a number and the meeting UUID is not the same
+#      thing. Reports and recordings are keyed by UUID, meetings by id, and the
+#      id is large enough that parsing it as a JavaScript number is unsafe.
+#      Code that uses one where the other is expected gets a 404 that looks
+#      like a missing meeting.
+#   2. Meeting type is an integer enum, and a recurring meeting with no fixed
+#      time behaves nothing like a scheduled one. Code that reads start_time
+#      unconditionally finds nothing on type 3.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: zoom
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.zoom.us/docs/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_zoom_token
+
+responses:
+  list:
+    style: wrapped
+    count_field: total_records
+    cursor_field: next_page_token
+    fields:
+      page_size: 30
+      page_count: 1
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+
+resources:
+  meeting:
+    collection: meetings
+    id:
+      # Zoom meeting ids are long numbers that travel as numbers in the JSON
+      # but exceed what a JavaScript number holds safely.
+      style: digits
+      length: 11
+    fields:
+      uuid:
+        type: string
+      host_id:
+        type: string
+      topic:
+        type: string
+        required: true
+      # An integer enum: 1 instant, 2 scheduled, 3 recurring with no fixed
+      # time, 8 recurring with a fixed time. A type 3 meeting has no
+      # start_time at all.
+      type:
+        type: integer
+        default: 2
+      status:
+        type: string
+        default: waiting
+      start_time:
+        type: datetime
+        stamped: false
+      duration:
+        type: integer
+        default: 60
+      timezone:
+        type: string
+        default: Europe/London
+      join_url:
+        type: string
+      created_at:
+        type: datetime
+
+  user:
+    collection: users
+    id:
+      style: opaque
+      length: 22
+    fields:
+      email:
+        type: string
+        required: true
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # An integer enum again: 1 basic, 2 licensed. A basic user cannot host
+      # a meeting longer than forty minutes, and the API will not say so
+      # until the meeting ends.
+      type:
+        type: integer
+        default: 1
+      # A pending user has been invited and has not accepted, and cannot host
+      # anything yet.
+      status:
+        type: string
+        default: pending
+      created_at:
+        type: datetime
+
+  recording:
+    collection: meetings
+    id:
+      style: digits
+      length: 11
+    fields:
+      host_id:
+        type: string
+      uuid:
+        type: string
+      topic:
+        type: string
+      # Recordings are keyed by the meeting UUID, not the meeting id, which
+      # is the mismatch that produces a 404 that looks like a missing
+      # meeting.
+      recording_count:
+        type: integer
+        default: 1
+      total_size:
+        type: integer
+        default: 0
+      share_url:
+        type: string
+      start_time:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/users/{host_id}/meetings
+    resource: meeting
+    operation: list
+    scope: [host_id]
+    pagination:
+      style: cursor
+      limit: 30
+
+  - method: POST
+    path: /v2/users/{host_id}/meetings
+    resource: meeting
+    operation: create
+    scope: [host_id]
+    status: 201
+
+  - method: GET
+    path: /v2/meetings/{id}
+    resource: meeting
+    operation: get
+
+  - method: PATCH
+    path: /v2/meetings/{id}
+    resource: meeting
+    operation: update
+
+  - method: DELETE
+    path: /v2/meetings/{id}
+    resource: meeting
+    operation: delete
+
+  - method: GET
+    path: /v2/users
+    resource: user
+    operation: list
+    pagination:
+      style: cursor
+      limit: 30
+
+  - method: GET
+    path: /v2/users/{id}
+    resource: user
+    operation: get
+
+  - method: GET
+    path: /v2/users/{host_id}/recordings
+    resource: recording
+    operation: list
+    scope: [host_id]
+    pagination:
+      style: cursor
+      limit: 30
+
+webhooks:
+  events:
+    - meeting.created
+    - meeting.started
+    - meeting.ended
+    - meeting.participant_joined
+    - meeting.participant_left
+    - recording.completed
+  signing:
+    scheme: hmac-sha256
+    header: x-zm-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: You have exceeded the daily rate limit of API requests
+    headers:
+      Retry-After: "1"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: "124"
+    message: Invalid access token.
+
+  resource_missing:
+    status: 404
+    code: "3001"
+    message: "Meeting does not exist: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "300"
+    message: "Validation failed: {detail} is required"
+
+  # Zoom refuses to schedule for a user who has not accepted their invitation,
+  # which is the state a freshly provisioned account is in and a test account
+  # never is.
+  user_not_active:
+    status: 400
+    code: "1001"
+    message: User does not exist or does not belong to this account.
+
+  # A basic licence cannot host a long meeting, and the refusal arrives at
+  # schedule time rather than at the forty minute mark.
+  meeting_capacity:
+    status: 400
+    code: "3000"
+    message: Cannot schedule a meeting of that duration on a basic plan.
+
+  # The scope wall. A Server-to-Server app missing a scope fails in a way that
+  # names the scope, which is unusually helpful and worth reproducing.
+  invalid_scope:
+    status: 400
+    code: "4711"
+    message: "Invalid access token, does not contain scopes: meeting:write:admin"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    user:
+      - id: cauldronHost0000000001
+        email: ada@example.com
+        first_name: Ada
+        last_name: Lovelace
+        # Licensed, so can host long meetings.
+        type: 2
+        status: active
+      - id: cauldronHost0000000002
+        email: grace@example.com
+        first_name: Grace
+        # Basic, and still pending. Cannot host anything yet.
+        type: 1
+        status: pending
+    meeting:
+      - id: "82345678901"
+        uuid: aBcDeFgHiJkLmNoPqRsTuQ==
+        host_id: cauldronHost0000000001
+        topic: Weekly planning
+        type: 2
+        status: waiting
+        start_time: "2026-02-01T10:00:00Z"
+        duration: 30
+        join_url: https://zoom.us/j/82345678901
+      - id: "82345678902"
+        uuid: bBcDeFgHiJkLmNoPqRsTuQ==
+        host_id: cauldronHost0000000001
+        topic: Office hours
+        # Recurring with no fixed time. There is no start_time at all, and
+        # code that reads one unconditionally finds nothing.
+        type: 3
+        status: waiting
+    recording:
+      - id: "82345678901"
+        uuid: aBcDeFgHiJkLmNoPqRsTuQ==
+        host_id: cauldronHost0000000001
+        topic: Weekly planning
+        recording_count: 2
+        total_size: 148000000
+        share_url: https://zoom.us/rec/share/cauldron
+
+# Conformance cases, read from Zoom's API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a recurring meeting with no fixed time has no start_time
+    source: https://developers.zoom.us/docs/api/meetings/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/meetings/82345678902
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 200
+      body:
+        # Type 3 is recurring with no fixed time. Code that reads start_time
+        # unconditionally finds nothing here.
+        type: 3
+        topic: Office hours
+      absent:
+        - start_time
+
+  - name: a scheduled meeting keeps the time it was given
+    source: https://developers.zoom.us/docs/api/meetings/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/meetings/82345678901
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 200
+      body:
+        type: 2
+        start_time: "2026-02-01T10:00:00Z"
+        duration: 30
+
+  - name: the meeting id and the meeting uuid are different things
+    source: https://developers.zoom.us/docs/api/meetings/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/meetings/82345678901
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 200
+      body:
+        id: "82345678901"
+        uuid: aBcDeFgHiJkLmNoPqRsTuQ==
+      matches:
+        # Eleven digits. Reports and recordings are keyed by the uuid, and
+        # using one where the other is expected gets a 404 that reads like a
+        # missing meeting.
+        id: '^[1-9][0-9]{10}$'
+
+  - name: a collection reports a total and a page size
+    source: https://developers.zoom.us/docs/api/meetings/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/users/cauldronHost0000000001/meetings
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 200
+      body:
+        total_records: 2
+        page_size: 30
+        meetings[0].topic: Weekly planning
+      absent:
+        - data
+        - items
+
+  - name: a pending basic user cannot yet host
+    source: https://developers.zoom.us/docs/api/users/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/users/cauldronHost0000000002
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 200
+      body:
+        # Basic licence, invitation not accepted. A freshly provisioned
+        # account is in exactly this state and a test account never is.
+        type: 1
+        status: pending
+        email: grace@example.com
+
+  - name: an unknown meeting is a flat error with Zoom's own code
+    source: https://developers.zoom.us/docs/api/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/meetings/99999999999
+      headers:
+        Authorization: Bearer cauldron_zoom_token
+    expect:
+      status: 404
+      body:
+        code: 3001
+      matches:
+        message: 'Meeting does not exist'
+      absent:
+        - error
+        - errors
+
+  - name: a bad token is refused before any meeting is read
+    source: https://developers.zoom.us/docs/internal-apps/s2s-oauth/
+    request:
+      method: GET
+      path: /v2/users
+    expect:
+      status: 401
+      body:
+        code: 124
+        message: Invalid access token.
