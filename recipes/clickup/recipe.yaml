@@ -1,0 +1,388 @@
+# ClickUp Recipe for Cauldron
+#
+# ClickUp has no sandbox. A personal token reaches a real workspace, and a test
+# that creates tasks creates them where people can see them, notifies watchers
+# and counts against the plan. Deleting a task moves it to the trash rather
+# than removing it, so a suite that creates and deletes leaves a growing pile
+# somebody has to empty by hand.
+#
+# Two things worth modelling exactly:
+#
+#   1. A task's status is an object, not a string. It carries the name, the
+#      colour and a type, and the type is what says whether the status counts
+#      as done. Code that compares task.status to "complete" compares an
+#      object to a string and is false forever.
+#   2. The error shape is its own thing: "err" carries the prose and "ECODE"
+#      a machine-readable code. Nothing is called message or error, so code
+#      written for any other provider finds nothing at all.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: clickup
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.clickup.com/reference
+
+auth:
+  # A personal token is sent raw, with no scheme in front of it.
+  scheme: header
+  header: Authorization
+  keys:
+    - pk_cauldron_00000000
+
+responses:
+  list:
+    style: wrapped
+    key: tasks
+  error:
+    style: flat
+    message_field: err
+    code_field: ECODE
+
+resources:
+  task:
+    collection: tasks
+    id:
+      style: opaque
+      length: 9
+    fields:
+      list_id:
+        type: string
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      # The status is an object. Comparing task.status to a string compares
+      # an object to a string and is false forever.
+      status:
+        type: string
+        default: open
+        in: status
+      color:
+        type: string
+        default: "#d3d3d3"
+        in: status
+      # "closed" or "done" here is what actually means finished, not the
+      # status name, which a workspace admin can rename to anything.
+      type:
+        type: string
+        default: open
+        in: status
+      priority:
+        type: string
+      # ClickUp sends timestamps as Unix milliseconds in a string, which is
+      # two conversions away from a date.
+      date_created:
+        type: timestamp_ms
+      date_closed:
+        type: timestamp_ms
+        stamped: false
+      archived:
+        type: boolean
+        default: false
+
+  list:
+    collection: lists
+    id:
+      style: opaque
+      length: 9
+    fields:
+      folder_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # A list counts only unarchived tasks here, so a total that disagrees
+      # with the task list is not a bug.
+      task_count:
+        type: integer
+        default: 0
+      archived:
+        type: boolean
+        default: false
+
+  space:
+    collection: spaces
+    id:
+      style: opaque
+      length: 9
+    fields:
+      name:
+        type: string
+        required: true
+      private:
+        type: boolean
+        default: false
+      # A space with multiple assignees disabled silently drops all but the
+      # first assignee on any task written to it.
+      multiple_assignees:
+        type: boolean
+        default: true
+      archived:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /api/v2/list/{list_id}/task
+    resource: task
+    operation: list
+    scope: [list_id]
+    pagination:
+      style: page
+      limit: 100
+
+  - method: POST
+    path: /api/v2/list/{list_id}/task
+    resource: task
+    operation: create
+    scope: [list_id]
+
+  - method: GET
+    path: /api/v2/task/{id}
+    resource: task
+    operation: get
+
+  - method: PUT
+    path: /api/v2/task/{id}
+    resource: task
+    operation: update
+
+  - method: DELETE
+    path: /api/v2/task/{id}
+    resource: task
+    operation: delete
+
+  - method: GET
+    path: /api/v2/folder/{folder_id}/list
+    resource: list
+    operation: list
+    scope: [folder_id]
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /api/v2/team/{team_id}/space
+    resource: space
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  events:
+    - taskCreated
+    - taskUpdated
+    - taskDeleted
+    - taskStatusUpdated
+    - listCreated
+  signing:
+    scheme: hmac-sha256
+    header: X-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: RATE_001
+    message: Rate limit reached
+    headers:
+      Retry-After: "60"
+      X-RateLimit-Remaining: "0"
+
+  authentication_error:
+    status: 401
+    code: OAUTH_019
+    message: Token invalid
+
+  resource_missing:
+    status: 404
+    code: OAUTH_027
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: INPUT_005
+    message: "{detail} is required"
+
+  # ClickUp refuses a status that is not configured on the list, which is what
+  # breaks an import the moment somebody renames a column.
+  status_not_found:
+    status: 400
+    code: CAT_001
+    message: Status not found on this list
+
+  # The plan wall. A workspace over its task limit refuses writes while reads
+  # keep working.
+  plan_limit_reached:
+    status: 403
+    code: TEAM_110
+    message: The workspace has reached its plan limit
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    space:
+      - id: spc000001
+        name: Engineering
+        private: false
+        multiple_assignees: true
+      - id: spc000002
+        name: Solo work
+        # Silently drops all but the first assignee on any task written here.
+        multiple_assignees: false
+    list:
+      - id: lst000001
+        folder_id: fld000001
+        name: Sprint
+        task_count: 2
+    task:
+      - id: tsk000001
+        list_id: lst000001
+        name: Ship the conformance suite
+        status: in progress
+        color: "#4194f6"
+        # Not done, whatever the status is called.
+        type: custom
+      - id: tsk000002
+        list_id: lst000001
+        name: Write the ClickUp Recipe
+        # A workspace admin renamed the done column. The name says nothing;
+        # the type is what counts.
+        status: shipped
+        color: "#6bc950"
+        type: closed
+        date_closed: 1767225600000
+      - id: tsk000003
+        list_id: lst000001
+        name: Archived, still returned by id
+        status: open
+        type: open
+        archived: true
+
+# Conformance cases, read from ClickUp's API reference rather than observed
+# against a live workspace. The verify report says so.
+conformance:
+  - name: a task status is an object, not a string
+    source: https://developer.clickup.com/reference/gettask
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/task/tsk000001
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 200
+      body:
+        # Comparing task.status to "complete" compares an object to a string
+        # and is false forever.
+        status:
+          status: in progress
+          color: "#4194f6"
+          type: custom
+        name: Ship the conformance suite
+
+  - name: the status type says done, not the status name
+    source: https://developer.clickup.com/reference/gettask
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/task/tsk000002
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 200
+      body:
+        status:
+          # An admin renamed the done column to "shipped". Matching on the
+          # name breaks the moment somebody edits it; the type does not.
+          status: shipped
+          type: closed
+
+  - name: an open task has no closed date
+    source: https://developer.clickup.com/reference/gettask
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/task/tsk000001
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 200
+      body:
+        archived: false
+      absent:
+        - date_closed
+
+  - name: timestamps are milliseconds
+    source: https://developer.clickup.com/reference/gettask
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/task/tsk000002
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 200
+      body:
+        date_closed: 1767225600000
+      matches:
+        # Thirteen digits. Treating these as seconds lands in 1970.
+        date_created: '^[0-9]{13}$'
+
+  - name: the error uses err and ECODE, not message
+    source: https://developer.clickup.com/docs/errors
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/task/doesnotex
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 404
+      body:
+        ECODE: OAUTH_027
+      matches:
+        err: 'Resource not found'
+      # Nothing is called message or error, so code written for any other
+      # provider finds nothing at all.
+      absent:
+        - message
+        - error
+        - errors
+
+  - name: the token is sent raw, with no scheme
+    source: https://developer.clickup.com/reference/authentication
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/list/lst000001/task
+      headers:
+        Authorization: Bearer pk_cauldron_00000000
+    expect:
+      # Adding Bearer breaks it, which is the opposite of what everybody
+      # expects and worth being able to reproduce.
+      status: 401
+      body:
+        ECODE: OAUTH_019
+
+  - name: a space can silently drop extra assignees
+    source: https://developer.clickup.com/reference/getspaces
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/team/team01/space
+      headers:
+        Authorization: pk_cauldron_00000000
+    expect:
+      status: 200
+      body:
+        spaces[0].multiple_assignees: true
+        # Any task written to this space keeps only the first assignee, and
+        # nothing in the response says so.
+        spaces[1].multiple_assignees: false
