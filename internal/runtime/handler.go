@@ -429,12 +429,31 @@ func (s *Sandbox) resourceBody(resource string, record store.Record) any {
 		return withFields(out, success)
 	}
 
-	key := s.recipe.Responses.Resource.Key
+	spec := s.recipe.Responses.Resource
+
+	// The default is the resource's own singular name, which is what Shopify,
+	// Slack, Square and Zendesk all use. When the object is wrapped in a list
+	// the default is the plural collection name instead, because a list of one
+	// is still a collection: Xero answers with Invoices, not Invoice.
+	key := spec.Key
 	if key == "" {
 		key = resource
+
+		if spec.Array {
+			key = s.collectionName(resource, "")
+		}
 	}
 
-	return withFields(map[string]any{key: record}, success)
+	var payload any = record
+
+	// Xero answers a request for one invoice with a list of one, so client
+	// code reads Invoices[0]. An emulator returning the object directly lets
+	// code ship that breaks against the real API on the first call.
+	if spec.Array {
+		payload = []store.Record{record}
+	}
+
+	return withFields(map[string]any{key: payload}, success)
 }
 
 // withFields stamps a provider's constant envelope fields onto a body. A dotted

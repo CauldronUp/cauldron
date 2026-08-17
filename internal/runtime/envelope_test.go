@@ -241,3 +241,52 @@ func TestASingleResourceCanBeWrappedUnderADeclaredKey(t *testing.T) {
 		t.Errorf("success = %v, want the declared envelope flag", body["success"])
 	}
 }
+
+// Xero answers a request for one invoice with a list of one, so client code
+// reads Invoices[0]. An emulator returning the object directly lets code ship
+// that breaks against the real API on its first call.
+func TestASingleResourceCanComeBackAsAListOfOne(t *testing.T) {
+	r, err := recipe.Open("xero")
+	if err != nil {
+		t.Fatalf("open xero: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-org"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api.xro/2.0/Invoices/33333333-3333-4333-8333-333333333333", nil)
+	req.Header.Set("Authorization", "Bearer cauldron-xero-access-token")
+	req.Header.Set("Xero-tenant-id", "cauldron-tenant")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	body := decode(t, rec)
+
+	// The plural collection name, because a list of one is still a collection.
+	invoices, _ := body["Invoices"].([]any)
+	if len(invoices) != 1 {
+		t.Fatalf("Invoices = %v, want a list of one", body["Invoices"])
+	}
+
+	invoice, _ := invoices[0].(map[string]any)
+	if invoice["InvoiceNumber"] != "INV-0001" {
+		t.Errorf("InvoiceNumber = %v", invoice["InvoiceNumber"])
+	}
+
+	// Xero has no "id" anywhere: the identifier is InvoiceID.
+	if _, wrong := invoice["id"]; wrong {
+		t.Error("the identifier should have been renamed to InvoiceID")
+	}
+
+	if _, wrong := body["invoice"]; wrong {
+		t.Error("the object should not also appear under its singular name")
+	}
+}
