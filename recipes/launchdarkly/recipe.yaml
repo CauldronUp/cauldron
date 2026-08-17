@@ -1,0 +1,487 @@
+# LaunchDarkly Recipe for Cauldron
+#
+# LaunchDarkly has no sandbox. The nearest thing is a test environment inside
+# the real project, which shares the project's flags: creating a flag creates
+# it everywhere, and archiving one archives it everywhere. A test that toggles
+# a flag toggles the flag production reads, and the only thing separating them
+# is which environment key somebody remembered to pass.
+#
+# It also has a file-based data source for offline SDK testing, and that is a
+# genuinely good facility for evaluation. It does not cover the management API
+# at all, which is what this Recipe is for: creating flags, reading their
+# per-environment state, and the failures around both.
+#
+# Four things worth modelling exactly:
+#
+#   1. The Authorization header carries the key with no scheme. Not "Bearer",
+#      not "Token", just the key. Every other API in this collection wants a
+#      prefix, so the habit of adding one is exactly wrong here and produces a
+#      401 that reads like a bad key.
+#   2. A flag has no single on state. It has one per environment, under an
+#      environments map keyed by environment key, so "is this flag on" is a
+#      question that cannot be answered without saying where. Code reading
+#      flag.on finds undefined.
+#   3. A variation is referenced by index, not by value. fallthrough.variation
+#      is 0 or 1, and for a boolean flag those mean true and false in the
+#      order the variations were defined. Reading the index as the value gives
+#      0 for true.
+#   4. An archived flag still exists and still serves. It is hidden from a
+#      default listing, which makes it look deleted, and the SDK keeps
+#      evaluating it until every reference is gone.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The SDK does not read this API. It streams from LaunchDarkly's CDN and
+#     evaluates locally, so what a Recipe can model is the management surface
+#     rather than what a flag evaluates to for a given user. Targeting rules
+#     are carried as data here and not applied.
+#   - Approvals, workflows and experiment allocation are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: launchdarkly
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://apidocs.launchdarkly.com/
+
+auth:
+  # No scheme, no prefix. The key alone, which is why an integration written
+  # from muscle memory sends "Bearer api-..." and gets a 401 that reads like
+  # a bad key rather than a malformed header.
+  scheme: header
+  header: Authorization
+  keys:
+    - api-cauldron-000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    count_field: totalCount
+  resource:
+    style: bare
+  error:
+    style: flat
+    code_field: code
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  flag:
+    collection: items
+    id:
+      style: opaque
+      field: key
+      length: 20
+    fields:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      # boolean, string, number, json. A boolean flag has exactly two
+      # variations and everything else has as many as somebody defined.
+      kind:
+        type: string
+        default: boolean
+      # The values a flag can serve. Everything else refers to these by
+      # index, which is the part that catches people.
+      variations:
+        type: list
+      # Hidden from a default listing, still existing, still served by the
+      # SDK until every reference is gone. It looks deleted and is not.
+      archived:
+        type: boolean
+        default: false
+      # Whether the flag is exposed to client-side SDKs. A flag that works on
+      # the server and not in the browser is usually this and nothing else.
+      clientSideAvailability_usingEnvironmentId:
+        type: boolean
+        in: clientSideAvailability
+        as: usingEnvironmentId
+      # There is no top-level "on". State is per environment, under here,
+      # keyed by environment key.
+      environments_production:
+        type: list
+        in: environments
+        as: production
+      environments_test:
+        type: list
+        in: environments
+        as: test
+      # A flag nobody has evaluated in a long time is a candidate for
+      # removal, and this is the only evidence. It is per environment in the
+      # real API and flattened here.
+      temporary:
+        type: boolean
+        default: true
+      creationDate:
+        type: timestamp_ms
+
+  environment:
+    collection: items
+    id:
+      style: opaque
+      field: key
+      length: 20
+    fields:
+      name:
+        type: string
+        required: true
+      # The client-side id, which is public and safe to ship in a browser.
+      # The SDK key beside it is not, and they are easy to confuse because
+      # both are opaque strings on the same object.
+      _id:
+        type: string
+      apiKey:
+        type: string
+      mobileKey:
+        type: string
+      color:
+        type: string
+        default: "417505"
+      # A confirmation prompt before a production change. It stops nothing
+      # from an API key, which is the point worth knowing: the guard is in
+      # the dashboard.
+      confirmChanges:
+        type: boolean
+        default: false
+      requireComments:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /api/v2/flags/{project}
+    resource: flag
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+
+  - method: GET
+    path: /api/v2/flags/{project}/{id}
+    resource: flag
+    operation: get
+
+  - method: POST
+    path: /api/v2/flags/{project}
+    resource: flag
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/projects/{project}/environments
+    resource: environment
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+
+  - method: GET
+    path: /api/v2/projects/{project}/environments/{id}
+    resource: environment
+    operation: get
+
+webhooks:
+  events:
+    - flag.created
+    - flag.updated
+    - flag.archived
+    - flag.deleted
+  signing:
+    scheme: hmac-sha256
+    header: X-LD-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limited
+    message: Too many requests
+    headers:
+      # LaunchDarkly's reset is milliseconds since the epoch, not seconds and
+      # not a delay. Treating it as either sleeps for roughly fifty-six
+      # thousand years or not at all.
+      X-Ratelimit-Route-Remaining: "0"
+      X-Ratelimit-Reset: "1767225660000"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Invalid access token
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Unknown feature flag key: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: invalid_request
+    message: "{detail} is required"
+
+  # A key scoped to a reader role cannot change anything, and the failure
+  # names the role rather than the action.
+  forbidden:
+    status: 403
+    code: forbidden
+    message: You do not have permission to perform this action.
+
+  # Creating a flag whose key already exists. Keys are permanent and cannot
+  # be reused after deletion, so a teardown that deletes flags makes the
+  # names unavailable rather than free.
+  conflict:
+    status: 409
+    code: conflict
+    message: A feature flag with that key already exists.
+
+fixtures:
+  empty: {}
+
+  small-project:
+    environment:
+      - id: production
+        name: Production
+        # Quoted, because it is a string of digits and YAML would otherwise
+        # make it a number. LaunchDarkly sends a string.
+        _id: "000000000000000000000001"
+        apiKey: sdk-cauldron-000000000000000000000001
+        mobileKey: mob-cauldron-000000000000000000000001
+        # A dashboard prompt. It stops nothing coming from an API key, so an
+        # integration can change production without meeting it.
+        confirmChanges: true
+        requireComments: true
+      - id: test
+        name: Test
+        _id: "000000000000000000000002"
+        apiKey: sdk-cauldron-000000000000000000000002
+        mobileKey: mob-cauldron-000000000000000000000002
+
+    flag:
+      - id: new-checkout
+        name: New checkout
+        kind: boolean
+        # Index 0 is true and index 1 is false, in the order defined.
+        # Everything below refers to these by position.
+        variations:
+          - value: true
+          - value: false
+        # On in test, off in production. There is no single answer to "is
+        # this flag on", and code reading flag.on finds undefined.
+        environments_production:
+          - on: false
+            # Index, not value. Reading it as the value gives 0 for true.
+            fallthrough_variation: 0
+            offVariation: 1
+        environments_test:
+          - on: true
+            fallthrough_variation: 0
+            offVariation: 1
+        clientSideAvailability_usingEnvironmentId: false
+        creationDate: 1767225600000
+      - id: legacy-banner
+        name: Legacy banner
+        kind: boolean
+        variations:
+          - value: true
+          - value: false
+        # Archived. Hidden from a default listing, still existing, still
+        # served by the SDK until every reference is gone. It looks deleted.
+        archived: true
+        environments_production:
+          - on: true
+            fallthrough_variation: 0
+            offVariation: 1
+        environments_test:
+          - on: true
+            fallthrough_variation: 0
+            offVariation: 1
+        creationDate: 1735689600000
+      - id: pricing-tier
+        name: Pricing tier
+        # Not a boolean. Three variations, and the indices below mean nothing
+        # without reading them.
+        kind: string
+        variations:
+          - value: control
+          - value: variant-a
+          - value: variant-b
+        environments_production:
+          - on: true
+            fallthrough_variation: 2
+            offVariation: 0
+        environments_test:
+          - on: true
+            fallthrough_variation: 1
+            offVariation: 0
+        # Available to browser SDKs, unlike the checkout flag above. A flag
+        # that works on the server and not in the browser is usually this and
+        # nothing else.
+        clientSideAvailability_usingEnvironmentId: true
+        temporary: false
+        creationDate: 1751328000000
+
+# Conformance cases, read from the LaunchDarkly API reference rather than
+# observed against a live project. The verify report says so.
+conformance:
+  - name: a flag has no single on state
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags#operation/getFeatureFlag
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/new-checkout
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Off in production, on in test. "Is this flag on" is a question that
+        # cannot be answered without saying where.
+        environments.production[0].on: false
+        environments.test[0].on: true
+      # There is no top-level on, so code reading flag.on finds undefined
+      # rather than a wrong answer, which is the better failure of the two.
+      absent:
+        - on
+
+  - name: a variation is an index, not a value
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags#operation/getFeatureFlag
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/new-checkout
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Index 0 is the variation whose value is true. Reading the index as
+        # the value gives 0, which is falsy, so a boolean flag serving true
+        # reads as off.
+        environments.production[0].fallthrough_variation: 0
+        environments.production[0].offVariation: 1
+        variations[0].value: true
+        variations[1].value: false
+
+  - name: a non-boolean flag makes the indices meaningless on their own
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags#operation/getFeatureFlag
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/pricing-tier
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        kind: string
+        # Production serves variant-b and test serves variant-a, and neither
+        # number says so. The variations list is the only key.
+        environments.production[0].fallthrough_variation: 2
+        environments.test[0].fallthrough_variation: 1
+        variations[2].value: variant-b
+
+  - name: an archived flag still exists and still serves
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags#operation/getFeatureFlag
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/legacy-banner
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Hidden from a default listing, which makes it look deleted, and on
+        # in both environments. The SDK keeps evaluating it until every
+        # reference is gone.
+        archived: true
+        environments.production[0].on: true
+
+  - name: client-side availability is separate from the flag working
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags#operation/getFeatureFlag
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/new-checkout
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        clientSideAvailability:
+          # Server SDKs see this flag and browsers do not. A flag that works
+          # in one and not the other is usually this and nothing else.
+          usingEnvironmentId: false
+
+  - name: an environment carries a public id and a private key together
+    source: https://apidocs.launchdarkly.com/tag/Environments#operation/getEnvironment
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/projects/cauldron/environments/production
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # _id is public and safe in a browser. apiKey is not, and they are
+        # easy to confuse because both are opaque strings on the same object.
+        _id: "000000000000000000000001"
+        apiKey: sdk-cauldron-000000000000000000000001
+        # A dashboard prompt that stops nothing coming from an API key.
+        confirmChanges: true
+
+  - name: the key goes in Authorization with no scheme at all
+    source: https://apidocs.launchdarkly.com/#section/Overview/Authentication
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron
+      headers:
+        # The habit every other API in this collection teaches, and it is
+        # exactly wrong here. The 401 reads like a bad key rather than a
+        # malformed header.
+        Authorization: Bearer api-cauldron-000000000000000000000000
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+        message: Invalid access token
+
+  - name: the same key without a prefix works
+    source: https://apidocs.launchdarkly.com/#section/Overview/Authentication
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 200
+      body:
+        totalCount: 3
+        items[0].key: new-checkout
+
+  - name: a missing flag names the key it could not find
+    source: https://apidocs.launchdarkly.com/tag/Feature-flags
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/v2/flags/cauldron/never-existed
+      headers:
+        Authorization: api-cauldron-000000000000000000000000
+    expect:
+      status: 404
+      body:
+        code: not_found
+      matches:
+        message: 'Unknown feature flag key'
+      absent:
+        - error
+        - errors
+        - "-"
