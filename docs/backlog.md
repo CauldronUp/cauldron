@@ -170,7 +170,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 
 | Provider | Why |
 |---|---|
-| TaxJar | Tax calculations, nexus, transactions |
+| ~~TaxJar~~ | Shipped. Decimal rates, present-and-zero jurisdictions, nexus |
 | Avalara | Sales tax calculations and filings |
 | Stripe Tax | Probably a specialised extension of the Stripe Recipe |
 | FreshBooks | Invoices, clients, expenses |
