@@ -97,6 +97,19 @@ func (g *Generator) Next(resource string) string {
 
 		return strconv.Itoa(s.seq)
 
+	case "hex":
+		// Lower-case hex of the declared length, which is what an identifier
+		// that started life as a MongoDB ObjectID looks like.
+		g.shapes[resource] = s
+
+		var hex strings.Builder
+
+		for i := 0; i < s.length; i++ {
+			hex.WriteByte(hexDigits[g.rng.Intn(len(hexDigits))])
+		}
+
+		return s.prefix + hex.String()
+
 	case "uuid":
 		// A version 4 UUID drawn from the seeded source, so it looks like the
 		// real thing and reproduces exactly.

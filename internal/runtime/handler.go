@@ -446,7 +446,21 @@ func setPath(body map[string]any, path string, value any) {
 	head, rest, nested := strings.Cut(path, ".")
 
 	if !nested {
+		// A declared constant must not destroy data already in the body.
+		// Intercom's pages object carries both a declared type and a computed
+		// next cursor, and whichever landed second used to erase the other.
+		if object, ok := value.(map[string]any); ok {
+			if existing, ok := body[head].(map[string]any); ok {
+				for key, nestedValue := range object {
+					setPath(existing, key, nestedValue)
+				}
+
+				return
+			}
+		}
+
 		body[head] = value
+
 		return
 	}
 
