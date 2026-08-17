@@ -855,8 +855,12 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		// client already has to loop over.
 		//
 		// Declared fields sit beside the array rather than inside each entry:
-		// Clerk's trace id belongs to the response, not to one failure.
-		return withFields(withFields(map[string]any{key: []any{body}}, spec.Fields), extra)
+		// Clerk's trace id belongs to the response, not to one failure. A
+		// dotted key nests, which QuickBooks needs for Fault.Error.
+		envelope := map[string]any{}
+		setPath(envelope, key, []any{body})
+
+		return withFields(withFields(envelope, spec.Fields), extra)
 	}
 
 	return withFields(withFields(body, spec.Fields), extra)

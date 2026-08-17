@@ -184,7 +184,9 @@ type ErrorResponse struct {
 	// bare strings in it rather than objects) or text (Trello, whose failures
 	// are not JSON at all, so a client calling .json() on one throws).
 	Style string `yaml:"style"`
-	// Key is the property holding the array when the style is list.
+	// Key is the property holding the array when the style is list. A dotted
+	// name nests, which QuickBooks needs: its failures arrive under
+	// Fault.Error rather than at the top level.
 	Key string `yaml:"key"`
 	// MessageField names the property carrying the human-readable message when
 	// the style is flat. Empty means "message". Set it to "-" to omit the
