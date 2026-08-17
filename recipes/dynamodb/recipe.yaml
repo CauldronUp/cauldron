@@ -1,0 +1,470 @@
+# AWS DynamoDB Recipe for Cauldron
+#
+# DynamoDB Local exists and is a Java process that has to be installed, run and
+# kept in step, and it is a separate implementation whose consistency and
+# throttling behaviour are its own. The alternative is a real table, where a
+# test that writes writes, and where a scan across a production table costs
+# read capacity that the production workload then does not have.
+#
+# Four things worth modelling exactly:
+#
+#   1. Every attribute is wrapped in a type descriptor. A name is not "Ada", it
+#      is {"S": "Ada"}, and an age is {"N": "42"} — the number as a string.
+#      Code written against the document interface and then pointed at the low
+#      level API reads undefined everywhere, and code that unwraps by hand gets
+#      numbers as text and does arithmetic on them.
+#   2. A query returning nothing is a success with Count 0. There is no Items
+#      key at all when nothing matched, so `for (const i of response.Items)`
+#      throws on an empty result, and Count is present either way.
+#   3. Count and ScannedCount are different numbers, and the gap between them
+#      is the cost. A filter is applied after the read, so a query that reads
+#      a thousand items and returns one is billed for the thousand and reports
+#      both, which is the only warning anybody gets.
+#   4. A paginated result is not finished when the page is short. It is
+#      finished when LastEvaluatedKey is absent, and a page can legitimately
+#      come back empty with a key set. Stopping on an empty page loses the
+#      rest of the table.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not verify SigV4, for the same reason as the SQS Recipe:
+#     the signature differs per request, and implementing the algorithm is not
+#     what this project is for. The shape is checked, which catches
+#     credentials not being configured, and a wrongly signed request is
+#     accepted.
+#   - Cauldron does not evaluate key conditions or filter expressions. A query
+#     returns the items in the table rather than the ones the expression
+#     selects. The response shape, the type wrapping and the paging contract
+#     are what this Recipe is for.
+#   - Conditional writes are declared as failures rather than evaluated, so a
+#     ConditionalCheckFailedException is something a test induces with the
+#     fault control rather than something the emulator decides.
+#
+# Credentials below are fixtures, not secrets. They belong to no account.
+
+recipe: dynamodb
+version: 0.1.0
+
+upstream:
+  api: "20120810"
+  docs: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape. See the gap note above.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+
+responses:
+  list:
+    style: wrapped
+    key: Items
+    # No Items key at all when nothing matched. Count is still there, so a
+    # caller checking Count first is fine and a caller iterating Items is not.
+    omit_when_empty: true
+    count_field: Count
+    cursor_field: LastEvaluatedKey
+  resource:
+    style: wrapped
+    # No key, so each resource wraps in its own name. GetItem answers
+    # {"Item": ...} and DescribeTable answers {"Table": ...}, which is why the
+    # resources are named for their wrappers.
+  # The JSON protocol: a __type naming the exception, and a message beside it.
+  # Nothing here is called code or error.
+  error:
+    style: flat
+    code_field: __type
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  Item:
+    collection: Items
+    id:
+      # DynamoDB items have no id attribute. Identity is the key, and every
+      # attribute is type-wrapped, so the identifier is written into the sort
+      # key rather than sitting beside it as a bare string.
+      style: opaque
+      field: sk.S
+      length: 12
+    fields:
+      # Every attribute is a single-key object naming its type. A string is
+      # {"S": "..."}; code reading item.pk finds an object rather than a
+      # value.
+      pk_S:
+        type: string
+        in: pk
+        as: S
+      name_S:
+        type: string
+        in: name
+        as: S
+      # A number, sent as a string. DynamoDB does this so no precision is lost
+      # in JSON, and the cost is that arithmetic on an unwrapped value
+      # concatenates.
+      quantity_N:
+        type: string
+        in: quantity
+        as: N
+      price_N:
+        type: string
+        in: price
+        as: N
+      # A boolean is BOOL, not B. B is binary, and confusing the two is a
+      # silent type change rather than an error.
+      active_BOOL:
+        type: boolean
+        in: active
+        as: BOOL
+      # A null attribute is present, with NULL true. DynamoDB has no way to
+      # say "this attribute is null" other than storing it, so an attribute
+      # that is absent and one that is null are genuinely different.
+      cancelledAt_NULL:
+        type: boolean
+        in: cancelledAt
+        as: "NULL"
+      # A string set. Sets are typed and unordered, and an empty one cannot be
+      # stored at all, so removing the last member removes the attribute.
+      tags_SS:
+        type: list
+        in: tags
+        as: SS
+
+  Table:
+    collection: TableNames
+    id:
+      # DescribeTable sends no id either. The name is the identifier.
+      style: opaque
+      field: TableName
+      length: 12
+    fields:
+      # CREATING, ACTIVE, UPDATING, DELETING. A table that is CREATING accepts
+      # no reads or writes, and a test that creates a table and immediately
+      # uses it races the control plane.
+      TableStatus:
+        type: string
+        default: ACTIVE
+      # Approximate, and updated roughly every six hours. Reading it as a
+      # current row count is wrong by up to six hours of writes.
+      ItemCount:
+        type: integer
+        default: 0
+      # PROVISIONED or PAY_PER_REQUEST. On-demand tables report zero
+      # provisioned capacity, so a dashboard dividing by it divides by zero.
+      BillingMode:
+        type: string
+        in: BillingModeSummary
+        as: BillingMode
+      ReadCapacityUnits:
+        type: integer
+        in: ProvisionedThroughput
+        as: ReadCapacityUnits
+      WriteCapacityUnits:
+        type: integer
+        in: ProvisionedThroughput
+        as: WriteCapacityUnits
+
+routes:
+  - method: POST
+    path: /
+    resource: Item
+    operation: list
+    pagination:
+      style: page
+      limit: 2
+
+  - method: GET
+    path: /items/{id}
+    resource: Item
+    operation: get
+
+  - method: GET
+    path: /tables
+    resource: Table
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /tables/{id}
+    resource: Table
+    operation: get
+
+webhooks:
+  # DynamoDB Streams is a separate service with its own shard iterators, and
+  # calling it a webhook would be describing something else.
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 400
+    code: ProvisionedThroughputExceededException
+    message: The level of configured provisioned throughput for the table was exceeded.
+
+  authentication_error:
+    status: 403
+    code: InvalidClientTokenId
+    message: The security token included in the request is invalid.
+
+  resource_missing:
+    status: 400
+    code: ResourceNotFoundException
+    message: "Requested resource not found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: ValidationException
+    message: "One or more parameter values were invalid: {detail}"
+
+  # The conditional write failure. It is the mechanism behind every optimistic
+  # lock and every "only if it does not exist" insert, and it arrives as a 400
+  # with the same status as a malformed request.
+  conditional_check_failed:
+    status: 400
+    code: ConditionalCheckFailedException
+    message: The conditional request failed.
+
+  # A transaction that touches the same item twice, which is what a batch
+  # assembled from a list with a duplicate does.
+  transaction_conflict:
+    status: 400
+    code: TransactionCanceledException
+    message: "Transaction cancelled, please refer cancellation reasons for specific reasons [ConditionalCheckFailed]"
+
+  # An item over 400 KB is refused, and the failure names a limit rather than
+  # the attribute that grew.
+  item_too_large:
+    status: 400
+    code: ValidationException
+    message: Item size has exceeded the maximum allowed size of 409600 bytes.
+
+fixtures:
+  empty: {}
+
+  small-table:
+    Table:
+      - id: orders
+        TableName: orders
+        TableStatus: ACTIVE
+        # Approximate, updated roughly every six hours. Reading it as a
+        # current row count is wrong by up to six hours of writes.
+        ItemCount: 2
+        BillingMode: PROVISIONED
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      - id: events
+        TableName: events
+        # Still being created. It accepts no reads or writes, and a test that
+        # creates a table and uses it immediately races the control plane.
+        TableStatus: CREATING
+        ItemCount: 0
+        # On-demand, so the provisioned numbers are zero and a dashboard
+        # dividing by them divides by zero.
+        BillingMode: PAY_PER_REQUEST
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+    Item:
+      - id: ORDER#1001
+        pk_S: CUSTOMER#900
+        name_S: Cast iron cauldron
+        # Numbers as strings. Arithmetic on an unwrapped value concatenates.
+        quantity_N: "2"
+        price_N: "49.99"
+        active_BOOL: true
+        tags_SS:
+          - cookware
+          - iron
+      - id: ORDER#1002
+        pk_S: CUSTOMER#900
+        name_S: Seasoning oil
+        quantity_N: "1"
+        price_N: "8.50"
+        active_BOOL: false
+        # Present and null, which is not the same as absent. DynamoDB has no
+        # other way to say it.
+        cancelledAt_NULL: true
+
+# Conformance cases, read from the DynamoDB API reference rather than observed
+# against a live table. The verify report says so.
+conformance:
+  - name: every attribute is wrapped in a type descriptor
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_AttributeValue.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /items/ORDER%231001
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Item:
+          # A name is not "Ada", it is {"S": "Ada"}. Code written against the
+          # document interface reads undefined here.
+          name:
+            S: Cast iron cauldron
+          pk:
+            S: CUSTOMER#900
+      # No bare id and no untyped attribute anywhere. DynamoDB has no id
+      # concept at the item level at all: identity is the key, and the key is
+      # type-wrapped like everything else.
+      absent:
+        - Item.id
+        - id
+
+  - name: a number is a string
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_AttributeValue.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /items/ORDER%231001
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Item:
+          # DynamoDB sends numbers as strings so JSON cannot lose precision.
+          # The cost is that arithmetic on an unwrapped value concatenates.
+          quantity:
+            N: "2"
+          price:
+            N: "49.99"
+          # A boolean is BOOL. B is binary, and confusing the two is a silent
+          # type change rather than an error.
+          active:
+            BOOL: true
+
+  - name: an attribute can be present and null
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_AttributeValue.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /items/ORDER%231002
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Item:
+          # Present and null. DynamoDB has no other way to say it, so an
+          # absent attribute and a null one are genuinely different states.
+          cancelledAt:
+            "NULL": true
+          active:
+            BOOL: false
+
+  - name: a set is typed and its absence is how it is emptied
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_AttributeValue.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /items/ORDER%231001
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Item.tags.SS[0]: cookware
+        Item.tags.SS[1]: iron
+      # The other item has no tags at all, because an empty set cannot be
+      # stored: removing the last member removes the attribute.
+      absent:
+        - Item.tags.L
+
+  - name: a query with no matches omits Items and still reports Count
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      # A success. Nothing matching is not an error.
+      status: 200
+      body:
+        # Count is there either way, so a caller checking it first is fine.
+        Count: 0
+      absent:
+        # A caller iterating Items is not.
+        - Items
+
+  - name: a query with matches sends both
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html
+    fixture: small-table
+    request:
+      method: POST
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        Count: 2
+        Items[0].pk.S: CUSTOMER#900
+        Items[1].sk.S: ORDER#1002
+
+  - name: a table being created accepts nothing
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_DescribeTable.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /tables/events
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      status: 200
+      body:
+        # Wrapped under Table, where GetItem wraps under Item. Two resources,
+        # two wrappers, one API.
+        Table:
+          # A test that creates a table and uses it immediately races the
+          # control plane, and this is the state it loses to.
+          TableStatus: CREATING
+          BillingModeSummary:
+            BillingMode: PAY_PER_REQUEST
+          ProvisionedThroughput:
+            # On-demand, so zero. A dashboard dividing by this divides by
+            # zero.
+            ReadCapacityUnits: 0
+      absent:
+        - Item
+        # DescribeTable sends no id either. The name is the identifier.
+        - Table.id
+
+  - name: the failure names an exception rather than a code
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/CommonErrors.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /items/doesnotexist
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/dynamodb/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    expect:
+      # 400, not 404. Every DynamoDB failure is a 400 or a 500, so branching
+      # on the status tells you nothing and the __type is the only signal.
+      status: 400
+      body:
+        __type: ResourceNotFoundException
+      absent:
+        - code
+        - error
+        - errors
+        - "-"
+
+  - name: a request with no credentials is refused
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/CommonParameters.html
+    fixture: small-table
+    request:
+      method: GET
+      path: /tables
+    expect:
+      status: 403
+      body:
+        __type: InvalidClientTokenId

@@ -24,7 +24,7 @@ Two rules apply to everything here:
 | ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
 | AWS SNS | Topics, subscriptions, delivery failures |
 | AWS SES | Sending, bounces, complaints, the suppression list |
-| AWS DynamoDB | Conditional writes, pagination, typed attributes |
+| ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
 | AWS Secrets Manager | Versions, rotation, missing secrets |
 | Google Cloud Storage | Objects, signed URLs, permissions |
 | ~~Google Pub/Sub~~ | Shipped. Base64 bodies, ack deadlines, delivery attempts |
