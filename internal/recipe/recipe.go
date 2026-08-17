@@ -372,6 +372,12 @@ type Field struct {
 	// The difference is not cosmetic: one parses as a number and the other
 	// does not, and a factor of a thousand puts a date in 1970 or in the year
 	// 55000.
+	// list is a sequence of anything, and it exists because several providers
+	// send one where a client expects an object. WooCommerce's meta_data is an
+	// array of {id, key, value} objects, so order.meta_data.some_key finds
+	// undefined and the value is sitting in the array under a key that has to
+	// be searched for. Declaring the field as a list says that on purpose;
+	// leaving it untyped would emit the same bytes while claiming nothing.
 	Type     string `yaml:"type"`
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
@@ -507,7 +513,7 @@ var (
 	validErrStyles  = []string{"", "nested", "flat", "list", "string_list", "text"}
 	validCodeTypes  = []string{"", "string", "number"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
-	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
+	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime", "list"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
 	// only ones a stamped declaration can affect.
 	timeFieldTypes = []string{"timestamp", "timestamp_ms", "datetime"}
@@ -629,6 +635,12 @@ func (r *Recipe) Validate() error {
 
 		for _, field := range sortedKeys(resource.Fields) {
 			spec := resource.Fields[field]
+
+			if spec.Type == "list" && spec.Default != nil {
+				if _, ok := spec.Default.([]any); !ok {
+					add("resource %q field %q is a list, but its default is not a sequence", name, field)
+				}
+			}
 
 			if !contains(validFieldTypes, spec.Type) {
 				add("resource %q field %q has type %q, which must be one of %s",
@@ -808,8 +820,26 @@ func (r *Recipe) Validate() error {
 
 	for _, fixtureName := range sortedKeys(r.Fixtures) {
 		for _, resourceName := range sortedKeys(r.Fixtures[fixtureName]) {
-			if _, ok := r.Resources[resourceName]; !ok {
+			resource, ok := r.Resources[resourceName]
+			if !ok {
 				add("fixture %q seeds unknown resource %q", fixtureName, resourceName)
+				continue
+			}
+
+			// A list field declared as one and then seeded with a scalar would
+			// serve the scalar and pass every case written about it, so the
+			// declaration has to mean something.
+			for i, record := range r.Fixtures[fixtureName][resourceName] {
+				for _, field := range sortedKeys(record) {
+					if resource.Fields[field].Type != "list" {
+						continue
+					}
+
+					if _, isList := record[field].([]any); !isList {
+						add("fixture %q record %d of %q sets list field %q to something that is not a sequence",
+							fixtureName, i, resourceName, field)
+					}
+				}
 			}
 		}
 	}
