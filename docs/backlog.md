@@ -27,7 +27,7 @@ Two rules apply to everything here:
 | AWS DynamoDB | Conditional writes, pagination, typed attributes |
 | AWS Secrets Manager | Versions, rotation, missing secrets |
 | Google Cloud Storage | Objects, signed URLs, permissions |
-| Google Pub/Sub | Ack deadlines, redelivery, ordering |
+| ~~Google Pub/Sub~~ | Shipped. Base64 bodies, ack deadlines, delivery attempts |
 | Azure Blob Storage | Containers, blobs, SAS and auth behaviour |
 | Cloudflare R2 | Sits beside the existing Cloudflare Recipe |
 | Vultr | Instances, block storage, the async provisioning lifecycle |
@@ -35,6 +35,13 @@ Two rules apply to everything here:
 The queueing ones are the most valuable and the least like anything shipped so
 far: at-least-once delivery, a message that comes back after a visibility
 timeout, and a dead-letter queue are behaviours no fake reproduces by accident.
+
+**XML is the blocker for several of these.** S3, SNS and Azure Blob answer in
+XML, not JSON, and so do UPS, FedEx, USPS and Avalara further down. Cauldron
+serves JSON, so those need either XML response support in the format or an
+honest exclusion. That decision is worth making once, deliberately, rather than
+one Recipe at a time. The AWS services that use the JSON protocol — SQS,
+DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 ## Payments and money
 

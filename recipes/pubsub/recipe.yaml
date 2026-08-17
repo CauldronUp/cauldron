@@ -1,0 +1,465 @@
+# Google Cloud Pub/Sub Recipe for Cauldron
+#
+# Pub/Sub has an emulator, and it is one of the better ones. It is also a Java
+# process that has to be installed, started, pointed at with an environment
+# variable, and kept in step with the client library, and it is a separate
+# reimplementation rather than the service, so what it does under redelivery is
+# its own answer rather than Google's. The alternative is a real project, where
+# a test that publishes puts a message into a topic real subscribers are
+# attached to.
+#
+# Four things worth modelling exactly:
+#
+#   1. message.data is base64. Every message body arrives encoded, so code that
+#      reads it directly gets a string that looks like nonsense but is not
+#      obviously wrong: it is a valid string, it has a length, and it will sit
+#      in a database quite happily. This is the single most reproduced mistake
+#      against this API.
+#   2. Pulling nothing returns an empty object. No receivedMessages key at all,
+#      so a loop doing `for (const m of response.receivedMessages)` throws on
+#      the quietest possible input, which is the same shape SQS has and worth
+#      knowing is not a coincidence.
+#   3. deliveryAttempt is only present when a dead-letter policy is configured.
+#      On every other subscription it is absent, so the field a consumer would
+#      use to detect a retry is missing exactly where nobody set one up.
+#   4. An ackId is per-pull, not per-message, and the default ack deadline is
+#      ten seconds. Ten. A handler doing anything real will exceed it and the
+#      message will be redelivered while the first attempt is still running.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Ack deadlines do not elapse on their own. A redelivered message is
+#     something a fixture puts in that state, which is the more useful shape
+#     for a test than a race.
+#   - Ordering keys are carried but not enforced. Pub/Sub only orders messages
+#     with the same key on a subscription with ordering enabled, and modelling
+#     that properly means modelling delivery order, which Cauldron does not.
+#   - Streaming pull is not modelled. Only the unary pull endpoint is.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: pubsub
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://cloud.google.com/pubsub/docs/reference/rest
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ya29.cauldron-access-token
+
+responses:
+  list:
+    style: wrapped
+    # Nothing to give is an empty object, not an empty array. A loop over
+    # receivedMessages throws on an idle subscription.
+    omit_when_empty: true
+  resource:
+    style: bare
+  # Google's standard error: nested, with a numeric code and a string status
+  # beside it, and neither of them called "type".
+  error:
+    style: nested
+    key: error
+    message_field: message
+    # status is the enum, and it is a string. code is the HTTP status repeated
+    # as a number. A client switching on one and logging the other is reading
+    # two vocabularies for the same fact.
+    code_field: status
+    code_type: string
+    status_field: code
+    type_field: "-"
+
+resources:
+  receivedMessage:
+    collection: receivedMessages
+    id:
+      style: opaque
+      field: ackId
+      length: 24
+    fields:
+      # Base64. Reading it directly gives a string that looks like nonsense
+      # but is not obviously wrong: valid, measurable, and perfectly happy to
+      # be written to a database.
+      data:
+        type: string
+        in: message
+        as: data
+      messageId:
+        type: string
+        in: message
+        as: messageId
+      publishTime:
+        type: string
+        in: message
+        as: publishTime
+      # Attributes are strings, always. A number published as an attribute
+      # comes back as text, so arithmetic on it concatenates.
+      orderingKey:
+        type: string
+        in: message
+        as: orderingKey
+      # Present only when the subscription has a dead-letter policy. Absent
+      # everywhere else, which is exactly where nobody configured one.
+      deliveryAttempt:
+        type: integer
+
+  subscription:
+    collection: subscriptions
+    id:
+      style: opaque
+      length: 24
+    fields:
+      # The full resource path, not the short name the URL takes. A client
+      # that stores this and puts it straight back into a URL builds
+      # .../subscriptions/projects/cauldron/subscriptions/orders-sub.
+      name:
+        type: string
+      topic:
+        type: string
+      # Ten seconds by default. A handler doing anything real exceeds it, and
+      # the message is redelivered while the first attempt is still running.
+      ackDeadlineSeconds:
+        type: integer
+        default: 10
+      # ACTIVE or RESOURCE_ERROR. A subscription whose dead-letter topic was
+      # deleted goes to RESOURCE_ERROR and stops delivering, while still
+      # existing and still listing.
+      state:
+        type: string
+        default: ACTIVE
+      # A subscription with no activity for the expiration period is deleted
+      # by Google. A staging environment that goes quiet over Christmas comes
+      # back in January with no subscription.
+      expirationPolicy_ttl:
+        type: string
+        in: expirationPolicy
+        as: ttl
+      deadLetterPolicy_maxDeliveryAttempts:
+        type: integer
+        in: deadLetterPolicy
+        as: maxDeliveryAttempts
+      deadLetterPolicy_deadLetterTopic:
+        type: string
+        in: deadLetterPolicy
+        as: deadLetterTopic
+      # Ordering is off unless the subscription asks for it, and a message
+      # with an ordering key on an unordered subscription is delivered in
+      # whatever order it arrives.
+      enableMessageOrdering:
+        type: boolean
+        default: false
+
+  topic:
+    collection: topics
+    id:
+      style: opaque
+      length: 24
+    fields:
+      # Google returns the full resource path, not the short name the URL
+      # takes. Splitting on the last slash is the usual fix and it breaks on
+      # any name containing one.
+      name:
+        type: string
+      labels_env:
+        type: string
+        in: labels
+        as: env
+      messageStoragePolicy_allowedPersistenceRegions:
+        type: list
+        in: messageStoragePolicy
+        as: allowedPersistenceRegions
+
+routes:
+  - method: POST
+    path: /v1/projects/{project}/subscriptions/{subscription}:pull
+    resource: receivedMessage
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /v1/projects/{project}/subscriptions
+    resource: subscription
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /v1/projects/{project}/subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: GET
+    path: /v1/projects/{project}/topics
+    resource: topic
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+
+  - method: GET
+    path: /v1/projects/{project}/topics/{id}
+    resource: topic
+    operation: get
+
+webhooks:
+  # A push subscription posts to an endpoint, so Pub/Sub genuinely does call
+  # back. The payload is the same envelope the pull response wraps, with the
+  # message under a message key and the subscription beside it.
+  events:
+    - push
+  signing:
+    scheme: none
+  payload:
+    "{object}": true
+    subscription: projects/cauldron/subscriptions/orders-sub
+
+errors:
+  rate_limit:
+    status: 429
+    code: RESOURCE_EXHAUSTED
+    message: Quota exceeded for quota metric 'Publish requests'.
+
+  authentication_error:
+    status: 401
+    code: UNAUTHENTICATED
+    message: "Request had invalid authentication credentials. Expected OAuth 2 access token."
+
+  resource_missing:
+    status: 404
+    code: NOT_FOUND
+    message: "Resource not found (resource={detail})."
+
+  parameter_missing:
+    status: 400
+    code: INVALID_ARGUMENT
+    message: "Invalid request: {detail} is required."
+
+  # An ack after the deadline has passed. The message is already back on the
+  # subscription and the ack does nothing, which is how a slow handler
+  # processes everything twice.
+  ack_deadline_expired:
+    status: 400
+    code: INVALID_ARGUMENT
+    message: "One or more ackIds are invalid or have expired."
+
+  # A subscription whose dead-letter topic was deleted stops delivering and
+  # reports this, while still existing and still appearing in a listing.
+  resource_error:
+    status: 400
+    code: FAILED_PRECONDITION
+    message: "The subscription is in a RESOURCE_ERROR state and cannot deliver messages."
+
+  # Publishing with an ordering key to a topic in a bad ordering state is
+  # refused until the key is resumed, and nothing about the failure says which
+  # key is stuck.
+  ordering_paused:
+    status: 400
+    code: FAILED_PRECONDITION
+    message: "Publishing for ordering key is paused due to a previous error."
+
+fixtures:
+  empty: {}
+
+  small-project:
+    topic:
+      - id: orders
+        name: projects/cauldron/topics/orders
+        labels_env: production
+        messageStoragePolicy_allowedPersistenceRegions:
+          - europe-west2
+
+    subscription:
+      - id: orders-sub
+        name: projects/cauldron/subscriptions/orders-sub
+        topic: projects/cauldron/topics/orders
+        # Ten seconds. A handler doing anything real exceeds it.
+        ackDeadlineSeconds: 10
+        state: ACTIVE
+        deadLetterPolicy_maxDeliveryAttempts: 5
+        deadLetterPolicy_deadLetterTopic: projects/cauldron/topics/orders-dead
+        expirationPolicy_ttl: 2678400s
+      - id: analytics-sub
+        name: projects/cauldron/subscriptions/analytics-sub
+        topic: projects/cauldron/topics/orders
+        ackDeadlineSeconds: 60
+        # Its dead-letter topic was deleted. It still exists, still lists, and
+        # delivers nothing.
+        state: RESOURCE_ERROR
+        enableMessageOrdering: true
+
+    receivedMessage:
+      - id: ackIdcauldron00000000001
+        # Base64 of {"order_id":1001}. Reading data directly gives this
+        # string, which is valid, measurable, and completely wrong.
+        data: eyJvcmRlcl9pZCI6MTAwMX0=
+        messageId: "8234567890123456"
+        publishTime: "2026-01-15T09:00:00.000Z"
+        # Second attempt, and only visible because this subscription has a
+        # dead-letter policy.
+        deliveryAttempt: 2
+      - id: ackIdcauldron00000000002
+        # Base64 of {"order_id":1002}.
+        data: eyJvcmRlcl9pZCI6MTAwMn0=
+        messageId: "8234567890123457"
+        publishTime: "2026-01-15T09:00:01.000Z"
+        orderingKey: customer-900
+        deliveryAttempt: 1
+
+# Conformance cases, read from the Pub/Sub REST reference rather than observed
+# against a live project. The verify report says so.
+conformance:
+  - name: a message body is base64 rather than text
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/PubsubMessage
+    fixture: small-project
+    request:
+      method: POST
+      path: /v1/projects/cauldron/subscriptions/orders-sub:pull
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        # Base64 of {"order_id":1001}. Reading it directly gives a string that
+        # is valid, has a length, and will sit in a database quite happily
+        # while being completely wrong.
+        receivedMessages[0].message.data: eyJvcmRlcl9pZCI6MTAwMX0=
+        receivedMessages[0].message.messageId: "8234567890123456"
+
+  - name: pulling nothing returns an empty object
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/projects/cauldron/subscriptions/orders-sub:pull
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      # A success. An idle subscription is not an error.
+      status: 200
+      absent:
+        # Not an empty array. A loop over this throws on the quietest possible
+        # input, which is the same shape SQS has and not a coincidence.
+        - receivedMessages
+
+  - name: an ackId is per pull, not per message
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull
+    fixture: small-project
+    request:
+      method: POST
+      path: /v1/projects/cauldron/subscriptions/orders-sub:pull
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        # Two different things. The messageId identifies the publish and
+        # repeats across redeliveries; the ackId identifies this delivery and
+        # does not.
+        receivedMessages[0].ackId: ackIdcauldron00000000001
+        receivedMessages[0].message.messageId: "8234567890123456"
+
+  - name: deliveryAttempt is the only sign of a retry
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull
+    fixture: small-project
+    request:
+      method: POST
+      path: /v1/projects/cauldron/subscriptions/orders-sub:pull
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        # Second attempt, and visible only because this subscription has a
+        # dead-letter policy. Without one the field is absent everywhere,
+        # which is exactly where nobody configured it.
+        receivedMessages[0].deliveryAttempt: 2
+        receivedMessages[1].deliveryAttempt: 1
+
+  - name: the default ack deadline is ten seconds
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/projects/cauldron/subscriptions/orders-sub
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        # Ten. A handler doing anything real exceeds it, and the message is
+        # redelivered while the first attempt is still running.
+        ackDeadlineSeconds: 10
+        state: ACTIVE
+        deadLetterPolicy:
+          maxDeliveryAttempts: 5
+
+  - name: a broken subscription still exists and still lists
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/projects/cauldron/subscriptions
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        subscriptions[0].state: ACTIVE
+        # Its dead-letter topic was deleted. It delivers nothing and looks
+        # entirely healthy from a listing that reads only names.
+        subscriptions[1].state: RESOURCE_ERROR
+        subscriptions[1].enableMessageOrdering: true
+      absent:
+        # No dead-letter policy on the second, so no maxDeliveryAttempts, so
+        # no deliveryAttempt on anything it delivers.
+        - subscriptions[1].deadLetterPolicy
+
+  - name: a name is a full resource path
+    source: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/projects/cauldron/topics
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 200
+      body:
+        # Not the short name. Splitting on the last slash is the usual fix and
+        # it breaks on any name containing one.
+        topics[0].name: projects/cauldron/topics/orders
+        topics[0].labels:
+          env: production
+
+  - name: the failure nests a numeric code beside a string status
+    source: https://cloud.google.com/apis/design/errors
+    fixture: small-project
+    request:
+      method: GET
+      path: /v1/projects/cauldron/subscriptions/doesnotexist
+      headers:
+        Authorization: Bearer ya29.cauldron-access-token
+    expect:
+      status: 404
+      body:
+        error:
+          # The number and the enum say the same thing in two vocabularies,
+          # and a client switching on one while logging the other is reading
+          # both. Neither is called "type".
+          code: 404
+          status: NOT_FOUND
+      matches:
+        error.message: 'Resource not found'
+      absent:
+        - error.type
+        - message
+        - code
+        - status

@@ -844,21 +844,46 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 	}
 
 	if spec.Style != "flat" && spec.Style != "list" {
-		nested := map[string]any{"message": message}
+		// The sub-keys are named the same way the flat style names its
+		// top-level ones. Google nests a numeric code beside a string status
+		// and calls neither of them "type", so the names have to be
+		// declarable rather than assumed. An empty name keeps the old default,
+		// which is what every nested Recipe written before this relied on.
+		nested := map[string]any{}
+
+		if field := spec.MessageField; field != "-" {
+			if field == "" {
+				field = "message"
+			}
+
+			nested[field] = message
+		}
 
 		// Providers disagree about which of these they send. Stripe sends a
 		// type and a code, Airtable only a type, Vercel only a code. Declaring
 		// the omission keeps the emulator from inventing a field a client
 		// could come to depend on and then lose.
-		if spec.CodeField != "-" {
+		if field := spec.CodeField; field != "-" {
+			if field == "" {
+				field = "code"
+			}
+
 			// The same conversion the flat style applies. PagerDuty's codes
 			// really are numbers, and sending "2006" as text meant a client
 			// switching on the code never matched.
-			nested["code"] = codeValue(spec.CodeType, code)
+			nested[field] = codeValue(spec.CodeType, code)
 		}
 
-		if spec.TypeField != "-" {
-			nested["type"] = category
+		if field := spec.TypeField; field != "-" {
+			if field == "" {
+				field = "type"
+			}
+
+			nested[field] = category
+		}
+
+		if spec.StatusField != "" {
+			nested[spec.StatusField] = status
 		}
 
 		key := spec.Key
