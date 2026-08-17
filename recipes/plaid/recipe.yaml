@@ -1,0 +1,397 @@
+# Plaid Recipe for Cauldron
+#
+# Plaid has a sandbox, and it is still the wrong tool for local development.
+# It needs credentials, it needs network, and the interesting states are the
+# ones you cannot summon on demand: an item whose login has expired, an
+# institution that is down, a product that is not yet ready. Those are exactly
+# the branches banking code gets wrong, and exactly the ones nobody exercises.
+#
+# Three things this Recipe models:
+#
+#   1. Every endpoint is a POST and the identifier arrives in the body. There
+#      is no /accounts/{id} to route on.
+#   2. Credentials are two headers, not one, and forgetting the client id is a
+#      distinct failure from a bad secret.
+#   3. The error category is a separate field from the code, and clients
+#      switch on the category first: it decides whether to retry, send the
+#      user back through Link, or give up.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: plaid
+version: 0.1.0
+
+upstream:
+  api: "2020-09-14"
+  docs: https://plaid.com/docs/api
+
+auth:
+  scheme: header
+  header: PLAID-SECRET
+  keys:
+    - cauldron-sandbox-secret
+
+# Plaid rejects a request that carries a secret but no client id, and that is
+# a different failure from a bad secret.
+required_headers:
+  PLAID-CLIENT-ID: parameter_missing
+
+responses:
+  list:
+    style: wrapped
+    count_field: total_transactions
+    # Every response carries the item the data belongs to, which is how a
+    # client knows which connection produced it.
+    fields:
+      item:
+        item_id: item-sandbox-cauldron
+        institution_id: ins_109508
+        available_products:
+          - balance
+          - identity
+        billed_products:
+          - transactions
+        webhook: https://example.com/plaid/webhook
+        error: null
+  error:
+    style: flat
+    type_field: error_type
+    code_field: error_code
+    message_field: error_message
+    status_field: status_code
+    fields:
+      request_id: cauldron00000001
+      # Plaid distinguishes the message meant for logs from the one meant for
+      # a person, and sends null when there is nothing safe to show.
+      display_message: null
+      causes: []
+
+resources:
+  account:
+    collection: accounts
+    id:
+      style: opaque
+      field: account_id
+      length: 24
+    fields:
+      name:
+        type: string
+        required: true
+      official_name:
+        type: string
+      mask:
+        type: string
+      type:
+        type: string
+        default: depository
+      subtype:
+        type: string
+        default: checking
+      # Plaid's balances are nested, and code reads account.balances.available
+      # rather than account.available.
+      available:
+        type: number
+        in: balances
+      current:
+        type: number
+        in: balances
+      iso_currency_code:
+        type: string
+        default: GBP
+        in: balances
+
+  transaction:
+    collection: transactions
+    id:
+      style: opaque
+      field: transaction_id
+      length: 24
+    fields:
+      account_id:
+        type: string
+        required: true
+      name:
+        type: string
+        required: true
+      amount:
+        type: number
+        required: true
+      iso_currency_code:
+        type: string
+        default: GBP
+      date:
+        type: string
+      pending:
+        type: boolean
+        default: false
+      merchant_name:
+        type: string
+
+routes:
+  # Every endpoint is a POST, and the access token in the body is what selects
+  # the data. There is no path parameter to route on anywhere in this API.
+  - method: POST
+    path: /accounts/get
+    resource: account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /accounts/balance/get
+    resource: account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+  - method: POST
+    path: /transactions/get
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+
+webhooks:
+  # The webhook codes that matter are the ones announcing that a connection
+  # has broken, which is the state a sandbox cannot produce on request.
+  events:
+    - TRANSACTIONS.INITIAL_UPDATE
+    - TRANSACTIONS.DEFAULT_UPDATE
+    - TRANSACTIONS.TRANSACTIONS_REMOVED
+    - ITEM.ERROR
+    - ITEM.PENDING_EXPIRATION
+    - ITEM.USER_PERMISSION_REVOKED
+    - ITEM.NEW_ACCOUNTS_AVAILABLE
+  signing:
+    scheme: hmac-sha256
+    header: Plaid-Verification
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: RATE_LIMIT
+    type: RATE_LIMIT_EXCEEDED
+    message: Too many requests. Please retry after a short delay.
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 400
+    code: INVALID_API_KEYS
+    type: INVALID_INPUT
+    message: invalid client_id or secret provided
+
+  resource_missing:
+    status: 400
+    code: INVALID_ACCESS_TOKEN
+    type: INVALID_INPUT
+    message: "provided access token is in an invalid format: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: MISSING_FIELDS
+    type: INVALID_REQUEST
+    message: "the following required fields are missing: {detail}"
+
+  # The one every banking integration eventually meets in production and
+  # almost never rehearses: the user changed their password and the connection
+  # needs to go back through Link.
+  item_login_required:
+    status: 400
+    code: ITEM_LOGIN_REQUIRED
+    type: ITEM_ERROR
+    message: the login details of this item have changed and a user login is required to update this information
+
+  # The bank is down. Retrying immediately is wrong; retrying later is right.
+  institution_down:
+    status: 400
+    code: INSTITUTION_DOWN
+    type: INSTITUTION_ERROR
+    message: this institution is not currently responding to this request
+
+  # The data is not ready yet. New connections hit this and code that treats
+  # it as a hard failure loses the connection.
+  product_not_ready:
+    status: 400
+    code: PRODUCT_NOT_READY
+    type: ITEM_ERROR
+    message: the requested product is not yet ready, please provide a webhook or try again later
+
+fixtures:
+  empty: {}
+
+  small-item:
+    account:
+      - id: acc0000000000000000000001
+        name: Everyday Current
+        official_name: Everyday Current Account
+        mask: "4471"
+        type: depository
+        subtype: checking
+        available: 1284.31
+        current: 1310.09
+      - id: acc0000000000000000000002
+        name: Instant Saver
+        mask: "9920"
+        type: depository
+        subtype: savings
+        available: 8400
+        current: 8400
+      - id: acc0000000000000000000003
+        name: Rewards Card
+        mask: "3310"
+        type: credit
+        subtype: credit card
+        available: 2150.5
+        current: -849.5
+    transaction:
+      - id: txn0000000000000000000001
+        account_id: acc0000000000000000000001
+        name: Pret A Manger
+        merchant_name: Pret A Manger
+        amount: 4.85
+        date: "2026-01-01"
+      - id: txn0000000000000000000002
+        account_id: acc0000000000000000000001
+        name: Direct Debit, Council Tax
+        amount: 168
+        date: "2026-01-01"
+      - id: txn0000000000000000000003
+        account_id: acc0000000000000000000003
+        name: Pending card authorisation
+        amount: 32.4
+        date: "2026-01-01"
+        pending: true
+
+# Conformance cases, read from Plaid's API reference rather than observed
+# against a live sandbox. The verify report says so.
+conformance:
+  - name: a request without the client id header is refused
+    source: https://plaid.com/docs/api/#api-host
+    fixture: small-item
+    request:
+      method: POST
+      path: /accounts/get
+      headers:
+        PLAID-SECRET: cauldron-sandbox-secret
+      json:
+        access_token: access-sandbox-cauldron
+    expect:
+      status: 400
+      body:
+        error_type: INVALID_REQUEST
+        error_code: MISSING_FIELDS
+        status_code: 400
+
+  - name: balances are nested under balances, not on the account
+    source: https://plaid.com/docs/api/accounts/#accounts-get
+    fixture: small-item
+    request:
+      method: POST
+      path: /accounts/get
+      headers:
+        PLAID-CLIENT-ID: cauldron
+        PLAID-SECRET: cauldron-sandbox-secret
+      json:
+        access_token: access-sandbox-cauldron
+    expect:
+      status: 200
+      body:
+        accounts[0].name: Everyday Current
+        accounts[0].balances:
+          available: 1284.31
+          current: 1310.09
+          iso_currency_code: GBP
+      # Code reading account.available finds nothing, because Plaid does not
+      # put it there.
+      absent:
+        - accounts[0].available
+        - data
+
+  - name: the identifier is account_id, and every response names its item
+    source: https://plaid.com/docs/api/accounts/#accounts-get
+    fixture: small-item
+    request:
+      method: POST
+      path: /accounts/get
+      headers:
+        PLAID-CLIENT-ID: cauldron
+        PLAID-SECRET: cauldron-sandbox-secret
+      json:
+        access_token: access-sandbox-cauldron
+    expect:
+      status: 200
+      body:
+        accounts[0].account_id: acc0000000000000000000001
+        item:
+          item_id: item-sandbox-cauldron
+          institution_id: ins_109508
+      absent:
+        - accounts[0].id
+
+  - name: an expired login is an ITEM_ERROR, not a generic failure
+    source: https://plaid.com/docs/errors/item/#item_login_required
+    fixture: small-item
+    request:
+      method: POST
+      path: /accounts/get
+      headers:
+        PLAID-CLIENT-ID: cauldron
+        PLAID-SECRET: wrong-secret
+      json:
+        access_token: access-sandbox-cauldron
+    expect:
+      # A bad secret is INVALID_INPUT. The category is what a client branches
+      # on first, because it decides whether to retry or re-authenticate.
+      status: 400
+      body:
+        error_type: INVALID_INPUT
+        error_code: INVALID_API_KEYS
+        display_message: null
+      absent:
+        - error
+        - message
+
+  - name: transactions report a total separate from the page
+    source: https://plaid.com/docs/api/products/transactions/#transactionsget
+    fixture: small-item
+    request:
+      method: POST
+      path: /transactions/get
+      headers:
+        PLAID-CLIENT-ID: cauldron
+        PLAID-SECRET: cauldron-sandbox-secret
+      json:
+        access_token: access-sandbox-cauldron
+        count: 2
+      query:
+        limit: "2"
+    expect:
+      status: 200
+      body:
+        total_transactions: 3
+        transactions[0].name: Pret A Manger
+        transactions[0].amount: 4.85
+      absent:
+        - transactions[2]
+
+  - name: a pending transaction says so
+    source: https://plaid.com/docs/api/products/transactions/#transactions-get-response-transactions-pending
+    fixture: small-item
+    request:
+      method: POST
+      path: /transactions/get
+      headers:
+        PLAID-CLIENT-ID: cauldron
+        PLAID-SECRET: cauldron-sandbox-secret
+      json:
+        access_token: access-sandbox-cauldron
+    expect:
+      status: 200
+      body:
+        transactions[2].pending: true
+        transactions[0].pending: false
