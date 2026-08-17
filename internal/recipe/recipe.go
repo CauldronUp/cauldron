@@ -235,11 +235,19 @@ type ErrorResponse struct {
 	MessageField string `yaml:"message_field"`
 	// CodeField names the property carrying the error code in a flat envelope.
 	// Twilio sends one and its clients switch on it; GitHub does not send one
-	// at all, so this stays empty unless a Recipe claims otherwise. A code that
-	// is entirely digits is sent as a number, because Twilio's is. As with
+	// at all, so this stays empty unless a Recipe claims otherwise. As with
 	// MessageField, "-" omits the code, which the nested style needs too:
 	// Airtable nests its error but sends only a type and a message.
 	CodeField string `yaml:"code_field"`
+	// CodeType says whether the code is sent as a number or as a string.
+	//
+	// Empty infers it from the value: all digits becomes a number, anything
+	// else stays text. That inference is right for Twilio, whose codes really
+	// are integers, and wrong for Adyen, whose "000" is a string and loses its
+	// leading zeros on the way through. Inferring a provider's behaviour from
+	// the shape of a literal is a guess, so a Recipe that knows can say, and
+	// one that says overrides the guess.
+	CodeType string `yaml:"code_type"`
 	// StatusField names a property echoing the HTTP status inside the body,
 	// which Twilio does.
 	StatusField string `yaml:"status_field"`
@@ -453,6 +461,7 @@ var (
 	validSigning    = []string{"", "none", "hmac-sha256"}
 	validListStyles = []string{"", "envelope", "bare", "wrapped"}
 	validErrStyles  = []string{"", "nested", "flat", "list", "string_list", "text"}
+	validCodeTypes  = []string{"", "string", "number"}
 	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
@@ -667,6 +676,10 @@ func (r *Recipe) Validate() error {
 			route.IDFrom == "" && !strings.Contains(route.Path, "{id}") {
 			add("%s: a %s needs an {id} in the path or an id_from", where, route.Operation)
 		}
+	}
+
+	if !contains(validCodeTypes, r.Responses.Error.CodeType) {
+		add("responses.error.code_type %q must be one of %s", r.Responses.Error.CodeType, strings.Join(validCodeTypes[1:], ", "))
 	}
 
 	if !contains(validErrStyles, r.Responses.Error.Style) {
