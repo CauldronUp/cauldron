@@ -64,10 +64,10 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 257 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 278 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 37: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun |
+| Recipes shipped | 40: Stripe, GitHub, Shopify, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox |
 
 ## Try it
 
@@ -210,7 +210,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 257 cases, none yet run against a live account. Documentation-derived
+Recipe: 278 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 
@@ -251,7 +251,13 @@ password. A request with the correct username and a completely wrong key
 returned 200, so the failure path a test most wants to exercise could not be
 reached at all.
 
-Thirteen of the last twenty-two needed no format change at all, which is the
+Dropbox found a limitation in the conformance checker rather than the emulator.
+It names a field `.tag`, where the leading dot is part of the name, and the
+checker split every path on dots, so there was no way to assert on it at all.
+The emulator had been sending it correctly the whole time while every case that
+mentioned it failed.
+
+Fifteen of the last twenty-five needed no format change at all, which is the
 sign the format has stopped being Stripe-shaped underneath.
 
 Not every provider fits. Linear is GraphQL: a single endpoint where the request
