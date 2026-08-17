@@ -1,0 +1,380 @@
+# Segment Recipe for Cauldron
+#
+# Segment has no sandbox workspace. A token reaches the real one, and the
+# things worth testing are configuration changes: enabling a destination,
+# editing a tracking plan, disabling a source. Those take effect on live event
+# delivery immediately, so a mistake stops data reaching a warehouse somebody
+# is reporting from. There is no undo and no preview.
+#
+# Two things worth modelling exactly:
+#
+#   1. The collection sits two levels down, under data.sources rather than at
+#      the top or under a single key. Code written for either of the usual
+#      shapes finds nothing.
+#   2. A source that is disabled still exists, still has its write key, and
+#      still appears in every listing. It simply drops the events sent to it,
+#      silently, which is the failure mode that takes longest to notice.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: segment
+version: 0.1.0
+
+upstream:
+  api: v1beta
+  docs: https://docs.segmentapis.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_segment_token
+
+responses:
+  list:
+    style: wrapped
+    # Each resource declares its own dotted collection path below, because
+    # they do not share one: sources, destinations and tracking plans each
+    # sit under their own key inside data.
+    count_field: data.pagination.totalEntries
+    cursor_field: data.pagination.next
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: list
+    key: errors
+    type_field: type
+    message_field: message
+    status_field: status
+
+resources:
+  source:
+    collection: data.sources
+    id:
+      style: opaque
+      length: 12
+    fields:
+      slug:
+        type: string
+        required: true
+      name:
+        type: string
+      # A disabled source keeps its write key and still appears everywhere.
+      # It drops the events sent to it, silently, which is the failure that
+      # takes longest to notice.
+      enabled:
+        type: boolean
+        default: true
+      metadata_name:
+        type: string
+        in: metadata
+      metadata_slug:
+        type: string
+        in: metadata
+      write_key:
+        type: string
+      created_at:
+        type: datetime
+
+  destination:
+    collection: data.destinations
+    id:
+      style: opaque
+      length: 12
+    fields:
+      source_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # A destination can be connected and disabled, which looks configured
+      # from every angle except the data arriving.
+      enabled:
+        type: boolean
+        default: false
+      connection_mode:
+        type: string
+        default: cloud
+      created_at:
+        type: datetime
+
+  tracking_plan:
+    collection: data.tracking_plans
+    id:
+      style: opaque
+      length: 12
+    fields:
+      display_name:
+        type: string
+        required: true
+      # A tracking plan only blocks events once violations are configured to
+      # block. Until then it records them and lets everything through, which
+      # reads as working from the API alone.
+      blocking:
+        type: boolean
+        default: false
+      rules_count:
+        type: integer
+        default: 0
+      create_time:
+        type: datetime
+      update_time:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1beta/workspaces/{workspace}/sources
+    resource: source
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1beta/workspaces/{workspace}/sources/{id}
+    resource: source
+    operation: get
+
+  - method: GET
+    path: /v1beta/workspaces/{workspace}/sources/{source_id}/destinations
+    resource: destination
+    operation: list
+    scope: [source_id]
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1beta/workspaces/{workspace}/tracking-plans
+    resource: tracking_plan
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+
+  - method: GET
+    path: /v1beta/workspaces/{workspace}/tracking-plans/{id}
+    resource: tracking_plan
+    operation: get
+
+webhooks:
+  events:
+    - source.created
+    - source.enabled
+    - source.disabled
+    - destination.enabled
+    - tracking_plan.updated
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    type: rate_limit_exceeded
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  authentication_error:
+    status: 401
+    type: unauthenticated
+    message: The access token is invalid
+
+  resource_missing:
+    status: 404
+    type: not_found
+    message: "The resource could not be found: {detail}"
+
+  parameter_missing:
+    status: 400
+    type: invalid_argument
+    message: "{detail} is required"
+
+  # Segment refuses to delete a source that still has destinations attached,
+  # which is what a teardown script runs into halfway through.
+  source_has_destinations:
+    status: 409
+    type: failed_precondition
+    message: The source still has connected destinations
+
+  # A token scoped to read cannot change configuration, and the failure names
+  # neither the scope nor the token.
+  permission_denied:
+    status: 403
+    type: permission_denied
+    message: The token does not have permission to modify this workspace
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    source:
+      - id: src000000001
+        slug: web
+        name: Website
+        enabled: true
+        metadata_name: Javascript
+        metadata_slug: javascript
+        write_key: cauldronwritekey01
+      - id: src000000002
+        slug: legacy-ios
+        name: Legacy iOS app
+        # Still exists, still has a write key, still listed. Every event sent
+        # to it is dropped in silence.
+        enabled: false
+        metadata_name: Analytics.js
+        metadata_slug: analytics-js
+        write_key: cauldronwritekey02
+    destination:
+      - id: dst000000001
+        source_id: src000000001
+        name: Amplitude
+        enabled: true
+      - id: dst000000002
+        source_id: src000000001
+        name: Warehouse
+        # Connected and switched off. Looks configured from every angle
+        # except the data arriving.
+        enabled: false
+    tracking_plan:
+      - id: tp0000000001
+        display_name: Core events
+        # Records violations and lets everything through. Reads as working
+        # from the API alone.
+        blocking: false
+        rules_count: 42
+
+# Conformance cases, read from Segment's Config API documentation rather than
+# observed against a live workspace. The verify report says so.
+conformance:
+  - name: the collection sits two levels down
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        # A top-level dotted path, because an index has to be walked rather
+        # than looked up as a literal key.
+        data.sources[0].slug: web
+        data.sources[1].slug: legacy-ios
+      # Code written for a top-level array, or for a single wrapping key,
+      # finds nothing.
+      absent:
+        - sources
+        - items
+
+  - name: a disabled source is still listed and still has its write key
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources/src000000002
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        data:
+          # Every event sent here is dropped in silence, and nothing about
+          # the source says so except this flag.
+          enabled: false
+          write_key: cauldronwritekey02
+          slug: legacy-ios
+
+  - name: source metadata is nested
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources/src000000001
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        data:
+          metadata:
+            metadata_name: Javascript
+            metadata_slug: javascript
+      absent:
+        - data.metadata_name
+
+  - name: a connected destination can be switched off
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources/src000000001/destinations
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        data.destinations[0].enabled: true
+        # Connected and off. Looks configured from every angle except the
+        # data arriving.
+        data.destinations[1].enabled: false
+        data.destinations[1].name: Warehouse
+
+  - name: a non-blocking tracking plan lets everything through
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/tracking-plans/tp0000000001
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        data:
+          # Records violations and blocks nothing. Reads as working from the
+          # API alone, and the events keep arriving malformed.
+          blocking: false
+          rules_count: 42
+
+  - name: the paging total sits under data as well
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 200
+      body:
+        data:
+          pagination:
+            totalEntries: 2
+      absent:
+        - data.sources[1]
+        - totalEntries
+
+  - name: failures are an array with a type and a status
+    source: https://docs.segmentapis.com/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1beta/workspaces/cauldron/sources/doesnotexist
+      headers:
+        Authorization: Bearer cauldron_segment_token
+    expect:
+      status: 404
+      body:
+        errors[0].type: not_found
+        errors[0].status: 404
+      matches:
+        errors[0].message: 'could not be found'
+      absent:
+        - error
+        - message
