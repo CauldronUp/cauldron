@@ -1,0 +1,425 @@
+# QuickBooks Online Recipe for Cauldron
+#
+# QuickBooks gives you a sandbox company, and it is a fixed demo file you
+# cannot reset to a known state, cannot seed, and cannot make match the chart
+# of accounts a real customer uses. The interesting behaviour is accounting
+# behaviour: an invoice that is partly paid, one voided after payment, a
+# customer who is also a supplier. None of that can be arranged on demand, and
+# a real company file is somebody's actual books.
+#
+# Three things worth modelling exactly:
+#
+#   1. The query response is doubly nested. A customer list arrives under
+#      QueryResponse.Customer, capitalised, so a client reading data or
+#      customers finds nothing at either level.
+#   2. Failures arrive under Fault.Error as an array, with the HTTP status
+#      often still 200 for a batch. Code reading a top-level message finds
+#      nothing.
+#   3. SyncToken is the optimistic concurrency check, and it is a string of
+#      digits. Sending a stale one is refused, and sending none at all
+#      overwrites whatever changed since you read.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: quickbooks
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/account
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_qbo_token
+
+responses:
+  list:
+    style: wrapped
+    fields:
+      QueryResponse:
+        startPosition: 1
+      # Every response carries the server time, which reconciliation code
+      # uses to decide whether its view is stale.
+      time: "2026-01-15T09:00:00.000Z"
+  resource:
+    style: wrapped
+  # An array under Fault.Error, with a fault type beside it.
+  error:
+    style: list
+    key: Fault.Error
+    message_field: Message
+    code_field: code
+    fields:
+      Fault:
+        type: ValidationFault
+      time: "2026-01-15T09:00:00.000Z"
+
+resources:
+  Customer:
+    collection: QueryResponse.Customer
+    id:
+      style: numeric
+    fields:
+      DisplayName:
+        type: string
+        required: true
+      CompanyName:
+        type: string
+      # A string of digits, and the optimistic concurrency check. Sending a
+      # stale one is refused; sending none overwrites whatever changed.
+      SyncToken:
+        type: string
+        default: "0"
+      # An inactive customer is still returned by a query that does not
+      # filter, and still counts against the list.
+      Active:
+        type: boolean
+        default: true
+      # QuickBooks lets the same entity be both, and code that assumes a
+      # name is unique across the two gets the wrong record.
+      Job:
+        type: boolean
+        default: false
+      Balance:
+        type: number
+        default: 0
+      PrimaryEmailAddr:
+        type: string
+
+  Invoice:
+    collection: QueryResponse.Invoice
+    id:
+      style: numeric
+    fields:
+      CustomerRef:
+        type: string
+      DocNumber:
+        type: string
+      SyncToken:
+        type: string
+        default: "0"
+      TotalAmt:
+        type: number
+        default: 0
+      # The part that matters. An invoice with a balance below its total is
+      # partly paid, and code that treats any balance as unpaid chases a
+      # customer who has already sent most of the money.
+      Balance:
+        type: number
+        default: 0
+      TxnDate:
+        type: string
+      DueDate:
+        type: string
+      # A voided invoice keeps its number and its record, and its total goes
+      # to zero. It is not deleted and not paid.
+      PrivateNote:
+        type: string
+
+  Account:
+    collection: QueryResponse.Account
+    id:
+      style: numeric
+    fields:
+      Name:
+        type: string
+        required: true
+      AccountType:
+        type: string
+        default: Income
+      # Whether the account increases with a debit or a credit, which is the
+      # thing a naive ledger import gets backwards.
+      Classification:
+        type: string
+        default: Revenue
+      CurrentBalance:
+        type: number
+        default: 0
+      Active:
+        type: boolean
+        default: true
+      SyncToken:
+        type: string
+        default: "0"
+
+routes:
+  - method: GET
+    path: /v3/company/{realm}/query
+    resource: Customer
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /v3/company/{realm}/customer/{id}
+    resource: Customer
+    operation: get
+
+  - method: POST
+    path: /v3/company/{realm}/customer
+    resource: Customer
+    operation: create
+
+  - method: GET
+    path: /v3/company/{realm}/invoice/{id}
+    resource: Invoice
+    operation: get
+
+  - method: GET
+    path: /v3/company/{realm}/invoices
+    resource: Invoice
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+  - method: GET
+    path: /v3/company/{realm}/accounts
+    resource: Account
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+
+webhooks:
+  events:
+    - Customer.Create
+    - Customer.Update
+    - Invoice.Create
+    - Invoice.Update
+    - Invoice.Void
+    - Payment.Create
+  signing:
+    scheme: hmac-sha256
+    header: intuit-signature
+    secret: cauldron-verifier-token
+
+errors:
+  rate_limit:
+    status: 429
+    code: "3001"
+    message: Rate limit exceeded
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 401
+    code: "3200"
+    message: "message=ApplicationAuthenticationFailed; errorCode=003200"
+
+  resource_missing:
+    status: 404
+    code: "610"
+    message: "Object Not Found: {detail}"
+
+  parameter_missing:
+    status: 400
+    code: "2020"
+    message: "Required param missing, need to supply the required value for the API: {detail}"
+
+  # The optimistic concurrency failure, which is the one an integration hits
+  # as soon as two people edit the same customer.
+  stale_object:
+    status: 400
+    code: "5010"
+    message: "Stale Object Error: You and another user were working on the same object at the same time."
+
+  # QuickBooks refuses a duplicate name, which is what breaks a customer
+  # import halfway through.
+  duplicate_name:
+    status: 400
+    code: "6240"
+    message: "Duplicate Name Exists Error: The name supplied already exists."
+
+  # An invoice already voided cannot be voided again, and a retried request
+  # after a timeout hits exactly this.
+  invalid_transaction:
+    status: 400
+    code: "6000"
+    message: "A business validation error has occurred: the transaction is already void."
+
+fixtures:
+  empty: {}
+
+  small-company:
+    Account:
+      - id: "79"
+        Name: Sales
+        AccountType: Income
+        Classification: Revenue
+        CurrentBalance: 12400
+      - id: "80"
+        Name: Accounts Receivable
+        AccountType: Accounts Receivable
+        # Increases with a debit. A ledger import that assumes every account
+        # behaves the same way posts it backwards.
+        Classification: Asset
+        CurrentBalance: 3600
+    Customer:
+      - id: "1"
+        DisplayName: Analytical Engines
+        CompanyName: Analytical Engines Ltd
+        SyncToken: "3"
+        Balance: 1200
+        PrimaryEmailAddr: ada@example.com
+      - id: "2"
+        DisplayName: Former Client
+        SyncToken: "0"
+        # Inactive, and still returned by a query that does not filter.
+        Active: false
+    Invoice:
+      - id: "101"
+        CustomerRef: "1"
+        DocNumber: "1001"
+        SyncToken: "1"
+        TotalAmt: 2400
+        # Partly paid. Code that treats any balance as unpaid chases a
+        # customer who has already sent half.
+        Balance: 1200
+        TxnDate: "2026-01-05"
+        DueDate: "2026-02-04"
+      - id: "102"
+        CustomerRef: "1"
+        DocNumber: "1002"
+        SyncToken: "2"
+        # Voided. Keeps its number and its record, total goes to zero, and it
+        # is neither deleted nor paid.
+        TotalAmt: 0
+        Balance: 0
+        PrivateNote: Voided, raised against the wrong customer
+        TxnDate: "2026-01-06"
+
+# Conformance cases, read from Intuit's Accounting API reference rather than
+# observed against a live company. The verify report says so.
+conformance:
+  - name: a query response is doubly nested and capitalised
+    source: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/customer
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/query
+      query:
+        query: select * from Customer
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        # Two levels down and capitalised. A client reading data or customers
+        # finds nothing at either level.
+        QueryResponse.Customer[0].DisplayName: Analytical Engines
+        QueryResponse.startPosition: 1
+      absent:
+        - data
+        - customers
+        - Customer
+
+  - name: a partly paid invoice has a balance below its total
+    source: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/invoice
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/invoice/101
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        Invoice:
+          # Half paid. Treating any balance as unpaid chases a customer who
+          # has already sent most of the money.
+          TotalAmt: 2400
+          Balance: 1200
+          DocNumber: "1001"
+
+  - name: a voided invoice keeps its number and zeroes its total
+    source: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/invoice
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/invoice/102
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        Invoice:
+          # Neither deleted nor paid. A report that sums totals sees nothing
+          # here, and a report that counts invoices still sees one.
+          DocNumber: "1002"
+          TotalAmt: 0
+          Balance: 0
+
+  - name: SyncToken is a string of digits
+    source: https://developer.intuit.com/app/developer/qbo/docs/develop/rest-api-features
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/customer/1
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        Customer:
+          # A string, not a number. Sending a stale one is refused, and
+          # sending none overwrites whatever changed since you read.
+          SyncToken: "3"
+          DisplayName: Analytical Engines
+
+  - name: an inactive customer is still returned
+    source: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/customer
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/query
+      query:
+        query: select * from Customer
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        QueryResponse.Customer[0].Active: true
+        # Still in the list. A count that does not filter includes somebody
+        # the business has stopped trading with.
+        QueryResponse.Customer[1].Active: false
+
+  - name: an account classification says which way it moves
+    source: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/most-commonly-used/account
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/accounts
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 200
+      body:
+        QueryResponse.Account[0].Classification: Revenue
+        # Increases with a debit. A ledger import that assumes every account
+        # behaves the same way posts this one backwards.
+        QueryResponse.Account[1].Classification: Asset
+        QueryResponse.Account[1].AccountType: Accounts Receivable
+
+  - name: failures arrive under Fault.Error as an array
+    source: https://developer.intuit.com/app/developer/qbo/docs/develop/handle-errors
+    fixture: small-company
+    request:
+      method: GET
+      path: /v3/company/cauldron/customer/9999
+      headers:
+        Authorization: Bearer cauldron_qbo_token
+    expect:
+      status: 404
+      matches:
+        Fault.Error[0].Message: 'Object Not Found'
+      # Code reading a top-level message, or an errors array, finds nothing.
+      absent:
+        - message
+        - Message
+        - errors
