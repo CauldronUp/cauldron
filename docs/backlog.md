@@ -495,7 +495,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Orb | A usage invoice is not final until the period closes, so the amount changes under you and reading it early is reading a draft |
+| ~~Orb~~ | Shipped. A draft is a running total, a closed period can still be amended, and money is a decimal string |
 | Metronome | Usage events are deduplicated inside a window, so sending the same event twice is sometimes one event and sometimes two |
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
 | Lemon Squeezy | Merchant of record, so the tax is theirs, the payout is net, and the order total is not what arrives |
