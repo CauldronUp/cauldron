@@ -400,6 +400,8 @@ These are the decisions the project intends to be held to.
 
 **Detection never guesses.** Package-to-Recipe mapping is an explicit table. A wrong guess is worse than no guess, because booting the wrong fake sends someone chasing a bug that doesn't exist. Anything unrecognised is reported, never silently faked.
 
+A project can also say so itself. `cauldron add mercury` writes a `cauldron.yaml` listing the providers it talks to, which is how a project reaches a Recipe no dependency maps to, or one it talks to over raw HTTP with no library at all. The first `add` copies whatever detection already found into the file, so starting one loses nothing, and from then on the file is the answer rather than the guess.
+
 The table reaches 91 of the 117 Recipes. The other 26 ship and can be named directly; nothing maps to them yet because their published client libraries have not been checked, and writing a package name from memory is the guess the paragraph above rules out.
 
 It also holds one entry with no Recipe behind it. A dependency Cauldron recognises and cannot emulate is reported by name, which tells you more than "this looks like an API client" does. `go test ./internal/detect/` prints the current figure and names what is missing.

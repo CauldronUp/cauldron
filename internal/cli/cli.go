@@ -39,6 +39,12 @@ func commands() map[string]command {
 			usage:   "cauldron detect [path]",
 			run:     runDetect,
 		},
+		"add": {
+			name:    "add",
+			summary: "Add a provider this project talks to",
+			usage:   "cauldron add <recipe>...",
+			run:     runAdd,
+		},
 		"up": {
 			name:    "up",
 			summary: "Boot the project and its dependencies",
