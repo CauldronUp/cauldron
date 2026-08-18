@@ -610,3 +610,65 @@ func TestEveryBundledRecipeSaysWhatItDoes(t *testing.T) {
 		}
 	}
 }
+
+// A resource whose identifier never reaches the wire is defensible when it is
+// fetched one at a time by a key that lives in the path. On a collection it is
+// not: a page of records with nothing to tell them apart cannot be what any
+// provider sends, because nobody could address the second one.
+func TestAHiddenIdentifierIsRefusedOnACollection(t *testing.T) {
+	yaml := `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+      field: "-"
+    fields:
+      email:
+        type: string
+routes:
+  - method: GET
+    path: /v1/customers
+    resource: customer
+    operation: list
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "nothing can address") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAHiddenIdentifierIsAcceptedOnASingleFetch(t *testing.T) {
+	yaml := `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+      field: "-"
+    fields:
+      email:
+        type: string
+routes:
+  - method: GET
+    path: /v1/customers/{id}
+    resource: customer
+    operation: get
+`
+
+	if _, err := parse(t, yaml); err != nil {
+		t.Errorf("a hidden identifier on a get should be allowed: %v", err)
+	}
+}

@@ -588,6 +588,13 @@ type ID struct {
 	// "id". Twilio calls it "sid" everywhere, and code that reads response.id
 	// against Twilio gets nothing at all. A dotted name nests, which is how
 	// Contentful keeps the identifier at sys.id.
+	//
+	// "-" means the provider does not echo it at all. Some resources are
+	// addressed by a key that appears only in the path: Marqeta's balance is
+	// fetched at /v3/balances/{token} and the body that comes back carries no
+	// token anywhere. Cauldron still keys the record internally, because it
+	// has to be found somehow, but emitting an identifier the provider never
+	// sends would put a field on the wire that real code cannot rely on.
 	Field string `yaml:"field"`
 }
 
@@ -1176,6 +1183,16 @@ func (r *Recipe) Validate() error {
 		if route.Operation != "list" && route.Operation != "create" &&
 			route.IDFrom == "" && !strings.Contains(route.Path, "{id}") {
 			add("%s: a %s needs an {id} in the path or an id_from", where, route.Operation)
+		}
+
+		// A hidden identifier is defensible on a resource fetched one at a
+		// time by a key that lives in the path. It is not defensible on a
+		// collection: a page of records with nothing to tell them apart
+		// cannot be what the provider sends, because nobody could address
+		// the second one.
+		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" {
+			add("%s: resource %q hides its identifier, so this list would return records nothing can address",
+				where, route.Resource)
 		}
 	}
 

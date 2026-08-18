@@ -485,15 +485,22 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 		return record
 	}
 
-	renamed := spec.ID.Field != "" && spec.ID.Field != "id"
+	// "-" is not a rename but a suppression: the identifier is how Cauldron
+	// finds the record, not something the provider puts on the wire.
+	hidden := spec.ID.Field == "-"
+	renamed := spec.ID.Field != "" && spec.ID.Field != "id" && !hidden
 
-	if !renamed && !s.nests(spec) {
+	if !renamed && !hidden && !s.nests(spec) {
 		return record
 	}
 
 	out := make(store.Record, len(record))
 
 	for key, value := range record {
+		if key == "id" && hidden {
+			continue
+		}
+
 		if key == "id" && renamed {
 			// setPath, so a dotted name nests. Contentful keeps the
 			// identifier at sys.id rather than at the top level.
