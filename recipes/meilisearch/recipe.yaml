@@ -1,0 +1,653 @@
+# Meilisearch Recipe for Cauldron
+#
+# Meilisearch is worth emulating for one reason above all the others: writing
+# a document and finding it are two different things, minutes apart, and the
+# API is honest about this in a way almost nobody reads.
+#
+# Adding a document answers 202 with a task number. Not the document, not its
+# id, not a count: a number, and the word "enqueued". The document is not
+# searchable yet. It may never be searchable, because the task can fail after
+# the 202 that accepted it. A test that adds a document and immediately
+# searches for it finds nothing, and the usual response is to add a sleep,
+# which turns a race into a slow race.
+#
+# Four more worth modelling exactly:
+#
+#   1. The task is the only receipt. There is no document id in the response,
+#      so the only way to know whether your write landed is to poll
+#      /tasks/{uid} until the status leaves enqueued. Code that treats 202 as
+#      success reports success for writes that failed.
+#   2. estimatedTotalHits is an estimate. It is in the name and it is still
+#      the number people page on, and it changes between requests for the
+#      same query. A paginator computing a page count from it produces a
+#      count that was true once.
+#   3. A search that matches nothing answers 200 with an empty hits array.
+#      A search against an index that does not exist answers 404. Both look
+#      like "no results" to code that only checks whether hits is empty.
+#   4. The primary key is inferred from the first document if it was not set,
+#      and inferred wrong is permanent: the index has to be deleted. A
+#      document whose id field is named something unexpected quietly decides
+#      the schema for every document after it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No task ever progresses. A task is enqueued, processing, succeeded or
+#     failed because a fixture says so, and nothing moves it along. That is
+#     the honest half of the trap: the point is that a client must poll, and
+#     a client polling this Recipe finds whatever the fixture holds.
+#   - No text is indexed and nothing is ranked. A search returns the fixture
+#     hits for that index, in fixture order, whatever the query says. The
+#     ranking rules, typo tolerance, synonyms and stop words are the part of
+#     Meilisearch this cannot reproduce and should not pretend to.
+#   - Faceting, filtering, geosearch and multi-search are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: meilisearch
+capability: search
+version: 0.1.0
+
+upstream:
+  api: v1.11
+  docs: https://www.meilisearch.com/docs/reference/api/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-meilisearch-master-key
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    count_field: total
+    # offset and limit, not a cursor. Meilisearch pages its administrative
+    # listings by offset and its search results by a different mechanism
+    # entirely, which is its own small trap.
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: type
+
+resources:
+  index:
+    collection: results
+    id:
+      style: opaque
+      length: 12
+      # Meilisearch calls it uid everywhere. Code reading index.id gets
+      # nothing, on every endpoint.
+      field: uid
+    fields:
+      # Inferred from the first document if it was not set, and inferring it
+      # wrong is permanent: the index has to be deleted and rebuilt. A
+      # document whose identifier field is named something unexpected
+      # quietly decides the schema for everything after it.
+      primaryKey:
+        type: string
+        null_when_unset: true
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  task:
+    collection: results
+    id:
+      # A JSON number, not a string. uid === "42" is false against a real
+      # instance and a schema declaring an integer rejects a quoted one.
+      #
+      # It increments across the whole instance rather than per index, so two
+      # tasks on different indexes have adjacent numbers and neither fact
+      # means anything.
+      style: numeric
+      type: number
+      field: uid
+    fields:
+      indexUid:
+        type: string
+      # enqueued, processing, succeeded, failed, canceled. The 202 that
+      # created this task said nothing about which.
+      status:
+        type: string
+        default: enqueued
+      # documentAdditionOrUpdate, documentDeletion, indexCreation,
+      # settingsUpdate, and others. One name covers both adding and
+      # updating, so the task does not say which happened.
+      type:
+        type: string
+        default: documentAdditionOrUpdate
+      # How many documents the task touched, and null until it finishes. A
+      # client reading it off an enqueued task reads nothing.
+      receivedDocuments:
+        type: integer
+        in: details
+        as: receivedDocuments
+      indexedDocuments:
+        type: integer
+        in: details
+        as: indexedDocuments
+      # Present only on a failure, nested, and the message is the whole
+      # diagnosis.
+      errorMessage:
+        type: string
+        in: error
+        as: message
+      errorCode:
+        type: string
+        in: error
+        as: code
+      enqueuedAt:
+        type: datetime
+      startedAt:
+        type: datetime
+        null_when_unset: true
+      finishedAt:
+        type: datetime
+        null_when_unset: true
+
+  # What a write answers with. The same task, described differently: this is
+  # taskUid and the full object at /tasks is uid, so a client holding a write
+  # response and going to look the task up has to know they are the same
+  # number under two names.
+  enqueued_task:
+    collection: results
+    id:
+      style: numeric
+      type: number
+      field: taskUid
+    fields:
+      indexUid:
+        type: string
+      status:
+        type: string
+        default: enqueued
+      type:
+        type: string
+        default: documentAdditionOrUpdate
+      enqueuedAt:
+        type: datetime
+
+  # A document that has arrived. Not one that has been accepted: a document
+  # is in neither the document listing nor the search index until the task
+  # that added it has succeeded, so this collection is the answer to "did my
+  # write land", and the answer is often no for several seconds.
+  #
+  # The fields below are Meilisearch's own example dataset. A real index has
+  # whatever shape its documents have, which is the part of this that no
+  # Recipe can describe for everybody.
+  document:
+    collection: results
+    id:
+      # Whatever the index's primary key holds. The example dataset uses
+      # numbers, and an index keyed on a string identifier would declare
+      # otherwise.
+      style: numeric
+      type: number
+    fields:
+      indexUid:
+        type: string
+      title:
+        type: string
+      overview:
+        type: string
+      genres:
+        type: list
+      release_date:
+        type: integer
+
+routes:
+  - method: GET
+    path: /indexes
+    resource: index
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /indexes/{id}
+    resource: index
+    operation: get
+
+  # Creating an index answers with a task, not an index. There is no index
+  # yet, and there is no index id in the response to hold on to.
+  - method: POST
+    path: /indexes
+    resource: enqueued_task
+    operation: create
+    status: 202
+    returns:
+      - id
+      - indexUid
+      - status
+      - type
+      - enqueuedAt
+
+  # And so does adding a document. 202, a number, and the word enqueued.
+  # Not the document, not its id, not a count.
+  - method: POST
+    path: /indexes/{indexUid}/documents
+    resource: enqueued_task
+    operation: create
+    scope:
+      - indexUid
+    status: 202
+    returns:
+      - id
+      - indexUid
+      - status
+      - type
+      - enqueuedAt
+
+  - method: GET
+    path: /indexes/{indexUid}/documents
+    resource: document
+    operation: list
+    scope:
+      - indexUid
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /indexes/{indexUid}/documents/{id}
+    resource: document
+    operation: get
+    scope:
+      - indexUid
+
+  - method: GET
+    path: /tasks
+    resource: task
+    operation: list
+
+  - method: GET
+    path: /tasks/{id}
+    resource: task
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    # Four types cover every failure Meilisearch has, and dozens of codes
+    # sit under them. A client that switches on the code has a switch that
+    # grows; one that switches on the type has four branches forever.
+    type: system
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: missing_authorization_header
+    type: auth
+    message: "The Authorization header is missing. It must use the bearer authorization method."
+
+  # An index that does not exist. A search against it answers 404 while a
+  # search that simply matched nothing answers 200, and both read as "no
+  # results" to code that only looks at whether the list is empty.
+  resource_missing:
+    status: 404
+    code: index_not_found
+    type: invalid_request
+    message: "Index `movies` not found."
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    type: invalid_request
+    message: "The request is invalid."
+
+  # The identifier field could not be worked out from the documents sent,
+  # because more than one field looked like an id. The write is rejected and
+  # the index stays empty rather than half-populated.
+  primary_key_inference_failed:
+    status: 400
+    code: index_primary_key_multiple_candidates_found
+    type: invalid_request
+    message: "The primary key inference failed as the engine found several fields ending with `id` in their names. Please specify the primary key manually."
+
+  # The index already has a primary key and it cannot be changed. The only
+  # way out is to delete the index and rebuild it, so a wrong inference on
+  # the first document is permanent.
+  primary_key_already_present:
+    status: 400
+    code: index_primary_key_already_exists
+    type: invalid_request
+    message: "Index already has a primary key: `id`."
+
+fixtures:
+  empty: {}
+
+  small-instance:
+    index:
+      - id: movies
+        primaryKey: id
+        createdAt: "2026-07-02T11:00:00Z"
+        updatedAt: "2026-08-14T09:14:02Z"
+
+      # No primary key. Meilisearch will infer one from the first document
+      # added, and inferring it wrong is permanent: the index has to be
+      # deleted and rebuilt.
+      - id: drafts
+        createdAt: "2026-08-14T09:20:00Z"
+        updatedAt: "2026-08-14T09:20:00Z"
+
+    document:
+      - id: "287947"
+        indexUid: movies
+        title: Shazam!
+        overview: "A boy is given the ability to become an adult superhero."
+        genres:
+          - Action
+          - Comedy
+        release_date: 1553299200
+
+      - id: "522681"
+        indexUid: movies
+        title: Creed II
+        overview: "Between personal obligations and training for his next big fight."
+        genres:
+          - Drama
+        release_date: 1543708800
+
+      # There is deliberately no document 671 here. Its task is below, it is
+      # still enqueued, and this is the whole point: the write was accepted
+      # with a 202 and the document is in neither the document listing nor
+      # the search index.
+
+    task:
+      - id: "41"
+        indexUid: movies
+        status: succeeded
+        type: documentAdditionOrUpdate
+        receivedDocuments: 2
+        indexedDocuments: 2
+        enqueuedAt: "2026-08-14T09:12:00Z"
+        startedAt: "2026-08-14T09:12:01Z"
+        finishedAt: "2026-08-14T09:14:02Z"
+
+      # Accepted two minutes ago and still not run. The client that added
+      # document 671 got a 202 and a number, and searching for it right now
+      # finds nothing. Adding a sleep turns the race into a slow race.
+      - id: "42"
+        indexUid: movies
+        status: enqueued
+        type: documentAdditionOrUpdate
+        receivedDocuments: 1
+        enqueuedAt: "2026-08-15T10:31:00Z"
+
+      # And this one failed, after the same 202. Nothing about the write
+      # response said it might, and the only place the reason exists is here.
+      - id: "43"
+        indexUid: drafts
+        status: failed
+        type: documentAdditionOrUpdate
+        receivedDocuments: 1
+        indexedDocuments: 0
+        errorMessage: "The primary key inference failed as the engine found several fields ending with `id` in their names. Please specify the primary key manually."
+        errorCode: index_primary_key_multiple_candidates_found
+        enqueuedAt: "2026-08-15T09:58:00Z"
+        startedAt: "2026-08-15T09:58:01Z"
+        finishedAt: "2026-08-15T09:58:01Z"
+
+    enqueued_task: []
+
+# Every case below is derived from Meilisearch's published documentation. None
+# has been run against a real instance. The verify report says so.
+conformance:
+  - name: adding a document answers with a number, not a document
+    # 202, a task number and the word enqueued. No document, no document id,
+    # no count. There is nothing in this response to store.
+    source: https://www.meilisearch.com/docs/reference/api/documents
+    fixture: small-instance
+    request:
+      method: POST
+      path: /indexes/movies/documents
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+      json:
+        title: The Whale
+    expect:
+      status: 202
+      body:
+        indexUid: movies
+        status: enqueued
+        type: documentAdditionOrUpdate
+      matches:
+        taskUid: '^[0-9]+$'
+      absent:
+        - id
+        - uid
+        - title
+        - documents
+
+  - name: the accepted document is in neither listing yet
+    # Task 42 accepted document 671 and has not run. The document listing
+    # does not have it, and neither does anything else. A test that adds a
+    # document and immediately reads it back reads nothing.
+    source: https://www.meilisearch.com/docs/reference/api/documents
+    fixture: small-instance
+    request:
+      method: GET
+      path: /indexes/movies/documents
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        total: 2
+        results[0].title: Shazam!
+        results[1].title: Creed II
+        # Numbers, unquoted. The example dataset is keyed on an integer, and
+        # a listing that quoted them would fail a schema that did not.
+        results[0].id: 287947
+        results[1].id: 522681
+      absent:
+        - results[2]
+
+  - name: the enqueued task is the only place the write exists
+    source: https://www.meilisearch.com/docs/reference/api/tasks
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks/42
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        uid: 42
+        status: enqueued
+        indexUid: movies
+        details.receivedDocuments: 1
+      absent:
+        - taskUid
+        - details.indexedDocuments
+
+  - name: an enqueued task has not started and says so with nulls
+    # startedAt and finishedAt are present and null rather than left out, so
+    # a client testing for the key's existence finds it and reads nothing.
+    source: https://www.meilisearch.com/docs/reference/api/tasks
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks/42
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        startedAt: null
+        finishedAt: null
+
+  - name: the same task is taskUid on a write and uid on a read
+    # One number, two names. A client holding a write response and going to
+    # look the task up has to know they are the same thing.
+    source: https://www.meilisearch.com/docs/reference/api/tasks
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks/41
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        uid: 41
+        status: succeeded
+      absent:
+        - taskUid
+
+  - name: a task uid is a number, not a string
+    # uid === "42" is false against a real instance, and a schema declaring
+    # an integer rejects a quoted one outright.
+    source: https://www.meilisearch.com/docs/reference/api/tasks
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        total: 3
+        results[0].uid: 41
+        results[1].uid: 42
+        results[2].uid: 43
+      absent:
+        - results[3]
+
+  - name: a task can fail after the 202 that accepted it
+    # Nothing about the write response said it might, and the only place the
+    # reason exists is here, nested under error rather than at the top level.
+    source: https://www.meilisearch.com/docs/reference/api/tasks
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks/43
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        status: failed
+        details.receivedDocuments: 1
+        details.indexedDocuments: 0
+        error.code: index_primary_key_multiple_candidates_found
+      absent:
+        - errorCode
+        - errorMessage
+        - message
+
+  - name: an index calls its identifier uid
+    # Not id, on any endpoint. Code reading index.id gets nothing everywhere.
+    source: https://www.meilisearch.com/docs/reference/api/indexes
+    fixture: small-instance
+    request:
+      method: GET
+      path: /indexes/movies
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        uid: movies
+        primaryKey: id
+      absent:
+        - id
+
+  - name: an index without a primary key says null rather than leaving it out
+    # Meilisearch will infer one from the first document added, and inferring
+    # it wrong is permanent: the index has to be deleted and rebuilt.
+    source: https://www.meilisearch.com/docs/reference/api/indexes
+    fixture: small-instance
+    request:
+      method: GET
+      path: /indexes/drafts
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        uid: drafts
+        primaryKey: null
+
+  - name: creating an index answers with a task, not an index
+    # There is no index yet and nothing in this response to hold on to.
+    source: https://www.meilisearch.com/docs/reference/api/indexes
+    fixture: small-instance
+    request:
+      method: POST
+      path: /indexes
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+      json:
+        indexUid: reviews
+        type: indexCreation
+    expect:
+      status: 202
+      body:
+        status: enqueued
+        type: indexCreation
+      absent:
+        - uid
+        - primaryKey
+        - createdAt
+
+  - name: a document listing is scoped to its index
+    source: https://www.meilisearch.com/docs/reference/api/documents
+    fixture: small-instance
+    request:
+      method: GET
+      path: /indexes/drafts/documents
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 200
+      body:
+        total: 0
+      absent:
+        - results[0]
+
+  - name: a missing index is a 404 while an empty result is a 200
+    # Both read as "no results" to code that only checks whether the list is
+    # empty, and one of them means the index name is wrong.
+    source: https://www.meilisearch.com/docs/reference/api/documents
+    fixture: small-instance
+    request:
+      method: GET
+      path: /indexes/movies/documents/999999
+      headers:
+        Authorization: Bearer cauldron-meilisearch-master-key
+    expect:
+      status: 404
+      body:
+        code: index_not_found
+        type: invalid_request
+
+  - name: a missing bearer token is refused
+    source: https://www.meilisearch.com/docs/reference/api/keys
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks
+    expect:
+      status: 401
+      body:
+        code: missing_authorization_header
+        # auth, not invalid_request. Four types cover every failure
+        # Meilisearch has, and a client that switches on the type has four
+        # branches forever where one switching on the code has a switch that
+        # grows.
+        type: auth
