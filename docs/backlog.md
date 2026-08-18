@@ -192,12 +192,224 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Vimeo | Uploads, videos, privacy |
 | YouTube Data API | Videos, playlists, channels |
 
+## A note on the sections below
+
+Everything from here down was added in one sweep looking for services with
+public APIs worth emulating, and it has not been through rule 1 yet. An entry
+whose reason starts with **Assess** names a surface rather than a behaviour:
+somebody still has to read the documentation and decide whether there is a lie
+in there worth reproducing, or whether it belongs in the not-done table
+instead. Saying which entries have been assessed and which have not is cheaper
+than finding out halfway through writing one.
+
+## Telephony and contact centre
+
+| Provider | Why |
+|---|---|
+| RingCentral | Retired its developer sandbox on 1 January 2025 and now tells developers to build against production. For a telephony API that means real calls to real numbers and real per-message billing during a test run. There is no safe way to exercise this API today, which is the strongest case for a Recipe on the list |
+| Aircall | Assess — calls, contacts, webhook ordering. A call's final state arrives after the call ends, so the webhook and the fetched object disagree for a while |
+| Dialpad | Assess — calls, SMS, transcripts |
+| OpenPhone | Assess — the API is young enough that shapes have moved between versions, which is worth pinning |
+| 8x8 | Assess — messaging and voice |
+
+## Issue tracking, docs and planning
+
+| Provider | Why |
+|---|---|
+| Jira Cloud | The largest gap in the collection. Custom fields are named `customfield_10023` on the wire and their human names live behind a separate endpoint, so every integration carries a mapping it built at runtime and cached wrongly. JQL search pages with `startAt`, caps `maxResults` below whatever you asked for without saying so, and the cap differs by instance |
+| Jira Service Management | Assess — requests, queues, SLAs. An SLA clock pauses and the paused time is not the elapsed time |
+| Confluence Cloud | Bodies are XHTML storage format rather than Markdown or HTML, and the `representation` field decides how the same string parses. Sending the wrong one stores markup as literal text |
+| Smartsheet | Assess — sheets, rows, columns. Column ids are numeric and per-sheet, so nothing is portable between sheets |
+| Wrike | Assess — tasks, folders, custom fields |
+| Height | Assess — tasks and lists |
+| Productboard | Assess — features, notes, insights |
+| Canny | Assess — posts, votes, changelog |
+
+## Banking rails and money movement
+
+Same standing rule as Mercury, Brex, Bill.com, Gusto and Deel: an emulator for
+an API that moves money models the reads and leaves the transfers alone, and
+the header says so.
+
+| Provider | Why |
+|---|---|
+| Increase | Assess — the state machine is the product. A transfer is pending, then submitted, then it settles or returns days later, and a return can arrive after everything downstream has treated it as done |
+| Modern Treasury | Assess — payment orders, ledgers, reconciliation. Double-entry means an amount appears twice with opposite signs and summing naively gives zero |
+| Column | Assess — ACH returns and their reason codes |
+| Dwolla | Assess — transfers, funding sources, micro-deposit verification |
+| Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
+| Marqeta | Assess — card issuing, JIT funding, authorisation webhooks with a response deadline |
+| Checkout.com | Assess — payments, 3DS, the difference between authorised and captured |
+| Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
+| Klarna | Assess — order lifecycle across authorise, capture and refund, with a session that expires |
+| Affirm | Assess — checkout, capture, partial refunds |
+| Coinbase Commerce | Assess — charges that expire, underpayment and overpayment as distinct outcomes |
+| Circle | Assess — USDC transfers and their settlement states |
+
+## Feature flags and experimentation
+
+| Provider | Why |
+|---|---|
+| Statsig | Assess — gates, experiments, exposure logging |
+| GrowthBook | Assess — features and their environment overrides |
+| Flagsmith | Assess — flags per environment, identity overrides |
+| Split | Assess — treatments and targeting rules |
+| ConfigCat | Assess — flags, segments, config JSON delivery |
+| Unleash | Assess — toggles, strategies, the client and admin APIs being different shapes |
+
+## Observability and product analytics
+
+| Provider | Why |
+|---|---|
+| Bugsnag | Assess — errors, events, the difference between an error and its occurrences |
+| Honeybadger | Assess — faults and notices |
+| Grafana Cloud | Assess — dashboards, alert rules, the Prometheus-shaped query API |
+| Honeycomb | Assess — datasets, triggers, query results |
+| Better Stack | Assess — logs, uptime monitors, incidents |
+| Heap | Assess — events and user properties |
+| LogRocket | Assess — sessions and issues |
+
+## Hosting, deployment and package registries
+
+| Provider | Why |
+|---|---|
+| Netlify | Assess — deploys are asynchronous and a deploy id exists before the site is live |
+| Render | Assess — services, deploys, the build-then-live gap |
+| Fly.io | Assess — machines, apps, the Machines API against the older platform API |
+| Heroku | Assess — the API still uses `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
+| Linode | Assess — instances and the async provisioning lifecycle, beside Vultr and DigitalOcean |
+| Hetzner Cloud | Assess — servers, actions. Every mutation returns an action object you have to poll, rather than the thing you changed |
+| Scaleway | Assess — instances and object storage |
+| Docker Hub | Assess — repositories, tags, the rate limit that is counted per IP and not per token |
+| npm registry | Assess — packages, versions, dist-tags. Unpublished versions leave a tombstone |
+| PyPI | Assess — the JSON API is read-only and upload is a separate protocol entirely |
+| Codecov | Assess — coverage reports and the commit they attach to |
+| SonarCloud | Assess — issues, quality gates, the gate status arriving after analysis finishes |
+
+## Secrets and configuration
+
+| Provider | Why |
+|---|---|
+| HashiCorp Vault | Assess — KV v1 and KV v2 have different paths and different response shapes for the same secret, and v2 nests the value under `data.data` |
+| Doppler | Assess — configs, secrets, the inherited value that looks local |
+| 1Password | Assess — Connect and Service Accounts are separate APIs |
+| Infisical | Assess — secrets, environments, folder scoping |
+| Terraform Cloud | Assess — runs, plans, applies. A run is a state machine with a confirmation step in the middle |
+| Pulumi Cloud | Assess — stacks, updates, previews |
+
+## Webhooks, queues and workflow
+
+| Provider | Why |
+|---|---|
+| Svix | Assess — the delivery-attempt model, exponential backoff, the endpoint that gets disabled after repeated failure |
+| Knock | Assess — workflows, preferences, batching |
+| Courier | Assess — routing across channels and the fallback that fires silently |
+| Novu | Assess — subscribers, workflows, digest |
+| Hookdeck | Assess — connections, retries, the paused destination |
+| Inngest | Assess — events, functions, step state |
+| Trigger.dev | Assess — runs, tasks, the resumed run |
+
+## Scheduling and real-time
+
+| Provider | Why |
+|---|---|
+| Cal.com | Assess — bookings, availability, the slot that is free when you read it and taken when you book it |
+| Acuity Scheduling | Assess — appointments, types, intake forms |
+| Daily.co | Assess — rooms, meeting tokens, recordings that finish after the call |
+| LiveKit | Assess — rooms, participants, egress |
+| Agora | Assess — channels, tokens, recording |
+| Stream | Assess — chat channels, members, the message that is soft-deleted and still returned |
+| SendBird | Assess — channels and messages |
+
+## Lifecycle and marketing messaging
+
+| Provider | Why |
+|---|---|
+| Customer.io | Assess — the Track and App APIs are separate hosts with separate credentials, which is the sort of thing that only fails in one environment |
+| Braze | Assess — users, campaigns, the export API being asynchronous |
+| Iterable | Assess — users, campaigns, catalogues |
+| ActiveCampaign | Assess — contacts, deals, automations |
+| Brevo | Assess — contacts, transactional email, the shared quota between them |
+| Kit (ConvertKit) | Assess — subscribers, sequences, tags |
+| Attentive | Assess — SMS subscribers and consent state, where consent is legally load-bearing |
+| Beehiiv | Assess — publications, posts, subscribers |
+| Loops | Assess — contacts and transactional sends |
+
+## Social and content platforms
+
+| Provider | Why |
+|---|---|
+| Reddit | Assess — listings page by fullname rather than offset, and a deleted comment is still in the tree with its body replaced by a marker |
+| Twitch | Assess — Helix pagination cursors, token scopes, the EventSub subscription lifecycle |
+| Bluesky | Assess — the AT Protocol is its own model with DIDs and records rather than REST resources, so it may belong in the not-done table |
+| Mastodon | Assess — pagination is Link-header based and instance behaviour varies, which is itself the interesting part |
+| Telegram Bot API | Assess — every method is both GET and POST, errors come back with HTTP 200 in some client libraries, and updates arrive by long polling or webhook but never both |
+| Buffer | Assess — profiles, updates, scheduling |
+| Spotify | Assess — the token expires in an hour and the refresh path is the whole integration |
+| Strava | Assess — activities, webhooks, the rate limit counted in two windows at once |
+
+## Identity verification and risk
+
+| Provider | Why |
+|---|---|
+| Persona | Assess — inquiries, verifications, the decision that arrives by webhook minutes later |
+| Onfido | Assess — applicants, checks, reports. A check is complete and its report can still be `consider` rather than `clear` |
+| Veriff | Assess — sessions and decisions |
+| Middesk | Assess — business verification and its partial matches |
+| Alloy | Assess — evaluations and their outcomes |
+| Sift | Assess — scores, decisions, the workflow that runs server side |
+
+## Travel
+
+| Provider | Why |
+|---|---|
+| Duffel | Assess — offers expire, and an offer that was valid when you displayed it is gone when the customer presses book. That gap is the entire domain |
+| Amadeus | Assess — self-service against enterprise APIs, and the test environment carrying different inventory from production |
+| Hotelbeds | Assess — availability, rates, the rate that changes between check and book |
+
+## Health
+
+| Provider | Why |
+|---|---|
+| Redox | Assess — the data model is HL7 and FHIR shaped rather than REST shaped, which may make it a poor fit for this format |
+| Metriport | Assess — medical records and device data behind one API |
+| Health Gorilla | Assess — patient queries and document retrieval |
+
+## Web data
+
+| Provider | Why |
+|---|---|
+| Firecrawl | Assess — crawl jobs are asynchronous and partial results are readable before the job finishes |
+| Apify | Assess — actor runs, datasets, the run that succeeds with zero items |
+| ScrapingBee | Assess — a failed fetch is a successful API call |
+| Browserless | Assess — sessions and timeouts |
+
+## More commerce and billing
+
+| Provider | Why |
+|---|---|
+| Toast | Assess — orders, checks, the restaurant's business day not matching the calendar day |
+| Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
+| Clover | Assess — merchants, orders, payments |
+| Recharge | Assess — subscriptions on top of Shopify, so two sources of truth for one order |
+| Lemon Squeezy | Assess — orders, subscriptions, the merchant-of-record tax handling |
+| Gumroad | Assess — products and sales |
+| Polar | Assess — subscriptions and benefits |
+| Orb | Assess — usage-based billing where an invoice is not final until the period closes |
+| Metronome | Assess — usage events and their deduplication window |
+| Lago | Assess — open source usage billing, self-hosted and cloud behaving differently |
+| Zuora | Assess — very large, and the object model predates REST conventions |
+| Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
 |---|---|
 | Linear | GraphQL-only. A REST-shaped Recipe would be an approximation of a different API, and saying so is more useful than shipping one |
 | Attio | Same reason |
+| New Relic | NerdGraph is GraphQL-only. Same reason again |
+| Railway | GraphQL-only. Same reason |
+| Temporal Cloud | gRPC rather than HTTP. The format describes HTTP surfaces and nothing here would be a Temporal client |
 
 Monday.com belongs here too, on the same grounds, unless the format grows a way
 to describe a GraphQL surface honestly.
