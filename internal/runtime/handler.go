@@ -381,6 +381,13 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 			where = map[string]any{}
 		}
 
+		// A parameter value the provider expands into several field values.
+		if options, grouped := f.Values[value]; grouped {
+			where[f.Field] = options
+
+			continue
+		}
+
 		where[f.Field] = value
 	}
 

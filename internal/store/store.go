@@ -466,6 +466,29 @@ func (s *Store) ListFrom(resource string, where map[string]any, offset, limit in
 // silently return nothing whenever the scope field happened to be numeric.
 func Matches(record Record, where map[string]any) bool {
 	for field, want := range where {
+		// A set, for the filters whose parameter vocabulary is not the
+		// field's. Alpaca's status=open covers new and partially_filled, and
+		// matching the word literally would hide every partially filled
+		// order, which is the one that most needs to be visible.
+		if options, isSet := want.([]string); isSet {
+			held := fmt.Sprint(record[field])
+			found := false
+
+			for _, option := range options {
+				if held == option {
+					found = true
+
+					break
+				}
+			}
+
+			if !found {
+				return false
+			}
+
+			continue
+		}
+
 		if fmt.Sprint(record[field]) != fmt.Sprint(want) {
 			return false
 		}
