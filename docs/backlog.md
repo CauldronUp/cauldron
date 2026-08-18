@@ -424,6 +424,29 @@ The end state is a validator rule refusing `style: offset` or `style: page`
 without both names. It is not in yet because turning it on today would refuse
 146 routes at once.
 
+## Known gap: what a delete answers with
+
+A delete used to fabricate Stripe's receipt for every provider, using keys no
+Recipe declares. It now answers 204 with no body unless the Recipe says
+otherwise, which is what most providers do and is the safe direction: a client
+calling `.json()` on the response fails here exactly as it would in
+production, rather than working here and throwing there.
+
+`deleted_body: receipt` is declared on Stripe and Airtable, whose providers
+really do answer with an id and a deleted flag, and both now have a
+conformance case. `deleted_body: record` exists for the providers that hand
+back the object they removed.
+
+The remaining thirty-odd delete routes are on the 204 default, and that is a
+default rather than a verified claim. Each one needs a look at its provider's
+documentation: Shopify and Square answer `{}`, Cloudflare wraps a result,
+Vercel returns the object. Until somebody checks, the default is at least
+wrong in the direction that shows up locally.
+
+Only one conformance case in the whole suite touched a DELETE before this
+change, and it was a failure case, which is why none of the above was caught
+by the 787 that were passing.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |

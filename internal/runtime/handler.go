@@ -287,11 +287,30 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "deleted", record)
 
-	return s.writeRecord(w, matched, store.Record{
-		"id":      id,
-		"object":  matched.spec.Resource,
-		"deleted": true,
-	})
+	// Nothing, unless the Recipe says its provider answers with something.
+	// This used to fabricate Stripe's receipt for every provider, using keys
+	// no Recipe declares, so a client calling .json() on the response worked
+	// here and threw against the thirty-odd APIs that answer 204 and an empty
+	// body.
+	switch matched.spec.DeletedBody {
+	case "receipt":
+		return s.writeRecord(w, matched, store.Record{
+			"id":      id,
+			"object":  matched.spec.Resource,
+			"deleted": true,
+		})
+	case "record":
+		return s.writeRecord(w, matched, record)
+	default:
+		status := matched.spec.Status
+		if status == 0 {
+			status = http.StatusNoContent
+		}
+
+		w.WriteHeader(status)
+
+		return status
+	}
 }
 
 func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {

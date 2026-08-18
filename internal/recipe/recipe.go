@@ -649,6 +649,22 @@ type Route struct {
 	// would read fields back that the provider never sends, locally, for as
 	// long as the test suite is the only thing calling it.
 	Returns []string `yaml:"returns"`
+	// DeletedBody says what a delete answers with, for the providers that
+	// answer with something.
+	//
+	// Empty means no body and a 204, which is what most providers do and what
+	// this used to do for none of them. Every delete fabricated Stripe's
+	// receipt — an id, an object discriminator and deleted: true — using keys
+	// no Recipe declares, on 31 of 35 routes whose providers send nothing at
+	// all. So await response.json() succeeded locally and threw
+	// SyntaxError: Unexpected end of JSON input in production, and code
+	// branching on response.deleted === true was reading undefined against the
+	// real API.
+	//
+	// "receipt" is that Stripe shape, for the providers it is actually true
+	// of. "record" answers with the deleted object, for the providers that
+	// hand it back.
+	DeletedBody string `yaml:"deleted_body"`
 	// Error names a failure from the Recipe's own table that this route always
 	// answers with, whatever the request. It is how a retired endpoint is
 	// described.
@@ -758,15 +774,16 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-	validSchemes    = []string{"bearer", "basic", "header", "query", "none"}
-	validOperations = []string{"create", "get", "list", "update", "delete"}
-	validPagination = []string{"", "cursor", "offset", "page"}
-	validSigning    = []string{"", "none", "hmac-sha256"}
-	validListStyles = []string{"", "envelope", "bare", "wrapped", "map"}
-	validErrStyles  = []string{"", "nested", "flat", "list", "string_list", "text"}
-	validCodeTypes  = []string{"", "string", "number"}
-	validIDStyles   = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
-	validFieldTypes = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime", "list"}
+	validSchemes     = []string{"bearer", "basic", "header", "query", "none"}
+	validOperations  = []string{"create", "get", "list", "update", "delete"}
+	validPagination  = []string{"", "cursor", "offset", "page"}
+	validDeletedBody = []string{"", "receipt", "record"}
+	validSigning     = []string{"", "none", "hmac-sha256"}
+	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
+	validErrStyles   = []string{"", "nested", "flat", "list", "string_list", "text"}
+	validCodeTypes   = []string{"", "string", "number"}
+	validIDStyles    = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
+	validFieldTypes  = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime", "list"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
 	// only ones a stamped declaration can affect.
 	timeFieldTypes = []string{"timestamp", "timestamp_ms", "datetime"}
@@ -975,6 +992,14 @@ func (r *Recipe) Validate() error {
 			add("%s: resource is required", where)
 		} else if _, ok := r.Resources[route.Resource]; !ok {
 			add("%s: unknown resource %q", where, route.Resource)
+		}
+
+		if !contains(validDeletedBody, route.DeletedBody) {
+			add("%s: deleted_body %q must be one of %s", where, route.DeletedBody, strings.Join(validDeletedBody[1:], ", "))
+		}
+
+		if route.DeletedBody != "" && route.Operation != "delete" {
+			add("%s: declares deleted_body on a %s, which never deletes anything", where, route.Operation)
 		}
 
 		if len(route.Returns) > 0 {
