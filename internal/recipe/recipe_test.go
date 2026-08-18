@@ -884,3 +884,97 @@ func TestFiltersOnlyNarrowAListing(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A filter value that expands to nothing would hide every record, and one that
+// is also the escape value contradicts itself. Both are the sort of mistake
+// that reads as working.
+const filterBucket = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  invoice:
+    id:
+      prefix: in_
+      length: 14
+    fields:
+      status:
+        type: string
+        default: open
+fixtures:
+  small:
+    invoice:
+      - id: in_0000000000001
+        status: open
+      - id: in_0000000000002
+        status: paid
+routes:
+  - method: GET
+    path: /v1/invoices
+    resource: invoice
+    operation: list
+    filters:
+      - param: status
+        field: status
+        default: unpaid
+        all: every
+        values:
+          unpaid: [open, past_due]
+`
+
+func TestABucketDefaultIsCheckedAgainstItsMembers(t *testing.T) {
+	// "unpaid" is not a status any invoice holds, so checking the word against
+	// the fixture would report that nothing is hidden when the paid invoice
+	// plainly is.
+	if _, err := parse(t, filterBucket); err != nil {
+		t.Errorf("a bucket default with something to hide should be allowed: %v", err)
+	}
+}
+
+func TestABucketDefaultThatHidesNothingIsRefused(t *testing.T) {
+	got := problems(t, strings.Replace(filterBucket, "unpaid: [open, past_due]", "unpaid: [open, paid]", 1))
+
+	if !strings.Contains(got, "the default would hide") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAnEmptyBucketIsRefused(t *testing.T) {
+	got := problems(t, strings.Replace(filterBucket, "unpaid: [open, past_due]", "unpaid: []", 1))
+
+	if !strings.Contains(got, "expands") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestABucketNamedLikeTheEscapeValueIsRefused(t *testing.T) {
+	got := problems(t, strings.Replace(filterBucket, "unpaid: [open, past_due]",
+		"unpaid: [open, past_due]\n          every: [open, paid]", 1))
+
+	if !strings.Contains(got, "turns the filter off") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// null_when_unset says the key is sent with no value in it. A field that also
+// has a default, or is required, is never unset, so the declaration would
+// describe a case that cannot happen.
+func TestNullWhenUnsetConflictsWithADefault(t *testing.T) {
+	got := problems(t, strings.Replace(minimal, "        required: true",
+		"        required: false\n        default: nobody@example.com\n        null_when_unset: true", 1))
+
+	if !strings.Contains(got, "never unset") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNullWhenUnsetConflictsWithRequired(t *testing.T) {
+	got := problems(t, strings.Replace(minimal, "        required: true",
+		"        required: true\n        null_when_unset: true", 1))
+
+	if !strings.Contains(got, "never unset") {
+		t.Errorf("got %q", got)
+	}
+}

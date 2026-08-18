@@ -246,6 +246,15 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 			continue
 		}
 
+		// Present and null, for the providers that send the key regardless.
+		// This has to come before the stamp, because a stamped value is not
+		// an unset one and the whole point is that nothing has happened yet.
+		if field.NullWhenUnset {
+			record[name] = nil
+
+			continue
+		}
+
 		// A field whose absence means something is left absent.
 		if field.Stamped != nil && !*field.Stamped {
 			continue

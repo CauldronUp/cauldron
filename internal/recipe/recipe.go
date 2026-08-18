@@ -614,6 +614,18 @@ type Filter struct {
 	// GitHub and Alpaca both spell it "all". Empty means there is no way to
 	// ask for everything, which is itself worth knowing.
 	All string `yaml:"all"`
+	// Values expands a parameter value into the set of field values it
+	// covers, for the filters whose vocabulary is not the field's.
+	//
+	// Alpaca's order listing takes status=open, and "open" is not a status
+	// any order holds. It is a bucket: new and partially_filled are open,
+	// filled and canceled are closed, and nothing in the record says which
+	// bucket its status belongs to. A filter that matched the word literally
+	// would hide every partially filled order, which is precisely the order
+	// that most needs to be visible, since it is a real position.
+	//
+	// A value with no entry here matches itself, so most filters need none.
+	Values map[string][]string `yaml:"values"`
 }
 
 // Field is a single attribute on a resource.
@@ -644,6 +656,18 @@ type Field struct {
 	// those makes the emulator claim an event happened that did not, which is
 	// the kind of infidelity a test can never catch.
 	Stamped *bool `yaml:"stamped"`
+	// NullWhenUnset sends the field as null rather than leaving it out.
+	//
+	// Absent and null are different on the wire and providers disagree about
+	// which they use, so the format has to be able to say both. Bandwidth
+	// leaves errorCode out of the messages that worked, so a client testing
+	// for null never sees one. Alpaca sends every timestamp on every order and
+	// leaves the ones that have not happened as null, so a client testing for
+	// the key's existence finds it and reads nothing out of it. Each of those
+	// is a real bug in code written against the other assumption.
+	//
+	// It implies no stamping, because a field with a value is not unset.
+	NullWhenUnset bool `yaml:"null_when_unset"`
 	// In nests this field under a sub-object on the wire. HubSpot puts every
 	// business attribute under "properties" and leaves only id, timestamps and
 	// archived at the top level, so a client reads contact.properties.email.
@@ -882,7 +906,7 @@ var (
 	validCapabilities = []string{
 		"payments", "banking", "accounting", "tax", "payroll",
 		"email", "sms", "chat", "push", "voice",
-		"auth", "identity", "crm", "support", "marketing",
+		"auth", "identity", "crm", "support", "marketing", "brokerage",
 		"commerce", "shipping", "storage", "database", "queue",
 		"search", "cdn", "hosting", "observability", "analytics",
 		"flags", "ci", "vcs", "issues", "docs",
@@ -1026,6 +1050,14 @@ func (r *Recipe) Validate() error {
 
 			if spec.As != "" && spec.In == "" {
 				add("resource %q field %q sets as without in, and a top-level field is already named by its key", name, field)
+			}
+
+			if spec.NullWhenUnset && spec.Default != nil {
+				add("resource %q field %q is null when unset and also has a default, so it is never unset", name, field)
+			}
+
+			if spec.NullWhenUnset && spec.Required {
+				add("resource %q field %q is null when unset and also required, so it is never unset", name, field)
 			}
 
 			// Every segment of an in: path has to be something the runtime can
@@ -1271,8 +1303,31 @@ func (r *Recipe) Validate() error {
 				add("%s: the value that turns the filter off is also its default, so it never applies", fwhere)
 			}
 
+			for value, options := range f.Values {
+				if len(options) == 0 {
+					add("%s: expands %q into nothing, so asking for it would hide every record", fwhere, value)
+				}
+
+				if f.All != "" && value == f.All {
+					add("%s: expands %q, which is also the value that turns the filter off", fwhere, value)
+				}
+			}
+
 			if f.Default == "" {
 				continue
+			}
+
+			// A default that names a bucket has to be checked against the
+			// bucket's members rather than against the word, because no
+			// record's field ever holds the word.
+			covered := map[string]bool{}
+
+			if options, grouped := f.Values[f.Default]; grouped {
+				for _, option := range options {
+					covered[option] = true
+				}
+			} else {
+				covered[f.Default] = true
 			}
 
 			// A default that excludes nothing is a default nobody can see. It
@@ -1284,7 +1339,7 @@ func (r *Recipe) Validate() error {
 
 			for _, resources := range r.Fixtures {
 				for _, record := range resources[route.Resource] {
-					if value, present := record[f.Field]; present && fmt.Sprint(value) != f.Default {
+					if value, present := record[f.Field]; present && !covered[fmt.Sprint(value)] {
 						excluded = true
 					}
 				}

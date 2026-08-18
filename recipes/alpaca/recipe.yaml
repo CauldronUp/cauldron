@@ -1,0 +1,751 @@
+# Alpaca Recipe for Cauldron
+#
+# Two things about Alpaca break code that has never traded before, and they
+# compound.
+#
+# The first is that an order is not a fill. You submit an order for ten
+# shares; three fill at one price, four fill at another a minute later, and
+# three never fill at all. The order sits at partially_filled the whole time,
+# and partially_filled is a real position that a real amount of money has been
+# spent on. Code that waits for status == "filled" waits forever and holds
+# seven shares while it waits.
+#
+# The second is that the order listing answers with open orders unless you ask
+# for otherwise. So the sequence that catches everybody is: submit an order,
+# the order fills, list your orders, see nothing, and conclude the order never
+# existed. Nothing errored. The list was correct.
+#
+# Three more worth modelling exactly:
+#
+#   1. Every number is a string. qty is "10", filled_qty is "3",
+#      filled_avg_price is "185.42". In any language that compares strings
+#      lexically this is a live bug: "10" > "9" is false, so a quantity check
+#      passes on nine shares and fails on ten.
+#   2. filled_avg_price is null until something fills, and on a partial fill
+#      it is the average of what has filled so far, so it moves. Code that
+#      reads it once and stores it stores a price that was true for part of
+#      an order.
+#   3. legs is null for an ordinary order and an array for a bracket one.
+#      Iterating it works on the orders somebody tested with and throws on
+#      the ones they did not.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No market moves and nothing fills. Which state an order holds is what a
+#     fixture puts there, and no order placed against this Recipe will ever
+#     progress past what it was created with.
+#   - GET /v2/account is not modelled. buying_power is not cash and can be
+#     four times it on a margin account, which is worth having, but the
+#     format has no way to describe an endpoint that answers with one object
+#     and takes no identifier.
+#   - Market data, watchlists, corporate actions and the streaming API are
+#     not modelled.
+#   - This describes the paper trading API, which is the same shape as the
+#     live one. Nothing here should ever be pointed at a live account.
+#
+# Credentials below are fixtures, not secrets, and every price is invented.
+
+recipe: alpaca
+capability: brokerage
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.alpaca.markets/reference/
+
+auth:
+  # Two headers. The key id names the account and the secret proves it, and
+  # only the secret is checked here: a request carrying the wrong key id and
+  # the right secret is accepted, which the real API would not do. The key id
+  # is required to be present, so the common failure of configuring only one
+  # of the two is still caught.
+  scheme: header
+  header: APCA-API-SECRET-KEY
+  keys:
+    - cauldron-alpaca-secret-key
+
+required_headers:
+  APCA-API-KEY-ID:
+    error: authentication_error
+
+responses:
+  list:
+    # A bare array. No envelope, no count, no cursor on this endpoint.
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      style: uuid
+    fields:
+      client_order_id:
+        type: string
+      symbol:
+        type: string
+      asset_class:
+        type: string
+        default: us_equity
+      # A string, and this is the trap. In any language that compares
+      # strings lexically, "10" > "9" is false, so a quantity check passes
+      # on nine shares and fails on ten.
+      qty:
+        type: string
+      # Also a string, and the number that actually matters. An order at
+      # partially_filled has spent real money on this many shares.
+      filled_qty:
+        type: string
+        default: "0"
+      # Null until something fills, and on a partial fill it is the average
+      # of what has filled so far, so it moves. Read once and stored, it is
+      # a price that was true for part of an order.
+      filled_avg_price:
+        type: string
+      # buy or sell. Not encoded in the sign of anything.
+      side:
+        type: string
+      # market, limit, stop, stop_limit, trailing_stop.
+      type:
+        type: string
+        default: market
+      # The same value as type. One of the two is the older spelling and
+      # both are sent, so code reading either works until the day it does
+      # not.
+      order_type:
+        type: string
+        default: market
+      time_in_force:
+        type: string
+        default: day
+      limit_price:
+        type: string
+      # new, partially_filled, filled, canceled, expired, rejected. Only
+      # some of these are terminal, and partially_filled is not one of them
+      # while still being a real position.
+      status:
+        type: string
+        default: new
+      order_class:
+        type: string
+        default: simple
+      # Null for an ordinary order and an array for a bracket one, so
+      # iterating it works on the orders somebody tested with and throws on
+      # the ones they did not.
+      legs:
+        type: list
+      extended_hours:
+        type: boolean
+        default: false
+      submitted_at:
+        type: datetime
+      # The timestamps of things that have not happened. Alpaca sends them
+      # on every order and leaves them null rather than leaving them out, so
+      # a client testing for the key's existence finds it and reads nothing
+      # out of it. An emulator that stamped them would report a fill time
+      # for an order that never filled.
+      filled_at:
+        type: datetime
+        null_when_unset: true
+      canceled_at:
+        type: datetime
+        null_when_unset: true
+      expired_at:
+        type: datetime
+        null_when_unset: true
+      created_at:
+        type: datetime
+
+  position:
+    id:
+      style: uuid
+    fields:
+      # Positions are addressed by symbol as well as by asset id, and every
+      # example in the documentation uses the symbol.
+      symbol:
+        type: string
+      exchange:
+        type: string
+        default: NASDAQ
+      asset_class:
+        type: string
+        default: us_equity
+      # A string again, and unsigned. Direction is in side, so a short
+      # position is a positive qty with side: short and code that negates
+      # on sign gets it backwards.
+      qty:
+        type: string
+      side:
+        type: string
+        default: long
+      avg_entry_price:
+        type: string
+      market_value:
+        type: string
+      cost_basis:
+        type: string
+      # A string that can be negative, which means a client parsing it with
+      # anything that assumes unsigned reads a loss as a gain.
+      unrealized_pl:
+        type: string
+      unrealized_plpc:
+        type: string
+      current_price:
+        type: string
+    alias: symbol
+
+routes:
+  - method: GET
+    path: /v2/orders
+    resource: order
+    operation: list
+    # Open orders. A filled order is not here, and the sequence that catches
+    # everybody is: submit an order, the order fills, list your orders, see
+    # nothing, conclude the order never existed.
+    #
+    # "open" is not a status any order holds. It is a bucket: new and
+    # partially_filled are open, filled and canceled are closed, and no
+    # single field says which bucket a status belongs to.
+    filters:
+      - param: status
+        field: status
+        default: open
+        all: all
+        values:
+          open:
+            - new
+            - accepted
+            - partially_filled
+          closed:
+            - filled
+            - canceled
+            - expired
+            - rejected
+
+  - method: GET
+    path: /v2/orders/{id}
+    resource: order
+    operation: get
+
+  - method: POST
+    path: /v2/orders
+    resource: order
+    operation: create
+    # 200, not 201. The order was accepted, which is not the same as filled
+    # and not the same as created in the sense most APIs mean.
+    status: 200
+
+  - method: DELETE
+    path: /v2/orders/{id}
+    resource: order
+    operation: delete
+    # 204 and no body. A cancel that is accepted is not a cancel that
+    # happened: an order can fill between the request and the cancel
+    # reaching the exchange, and the only way to find out is to read it
+    # back.
+    status: 204
+
+  - method: GET
+    path: /v2/positions
+    resource: position
+    operation: list
+
+  - method: GET
+    path: /v2/positions/{id}
+    resource: position
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: 42910000
+    message: "rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    # 40110000. The code is not the status, it is eight digits long, and the
+    # first three happen to look like one, which is how it gets mistaken for
+    # a status by code that truncates.
+    code: 40110000
+    message: "request is not authorized"
+
+  resource_missing:
+    status: 404
+    code: 40410000
+    message: "order not found"
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. A malformed order is unprocessable rather than bad, and
+    # a client branching on 400 never sees it.
+    code: 42210000
+    message: "qty must be greater than 0"
+
+  # The account has the cash and not the buying power, or the reverse. Alpaca
+  # answers 403 rather than 422, so it is not a validation failure and
+  # retrying with the same payload will not help.
+  insufficient_buying_power:
+    status: 403
+    code: 40310000
+    message: "insufficient buying power"
+
+  # The market is closed and the order was not queued. extended_hours and
+  # time_in_force decide whether this happens, and neither is in the error.
+  market_closed:
+    status: 422
+    code: 42210000
+    message: "account is not authorized to trade outside regular market hours"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    order:
+      # Three of ten shares filled, and the other seven are still working.
+      # This order is open, it is in the default listing, and three shares
+      # have been bought with real money. Code waiting for status ==
+      # "filled" waits forever and holds three shares while it waits.
+      - id: 5b9f7c21-4e38-4a17-9d02-1c8e37b46af5
+        client_order_id: cauldron-partial-001
+        symbol: AAPL
+        qty: "10"
+        filled_qty: "3"
+        filled_avg_price: "185.42"
+        side: buy
+        type: limit
+        order_type: limit
+        time_in_force: day
+        limit_price: "186.00"
+        status: partially_filled
+        order_class: simple
+        legs: null
+        extended_hours: false
+        submitted_at: "2026-08-14T14:31:02Z"
+        created_at: "2026-08-14T14:31:02Z"
+
+      # Filled, and therefore absent from the default listing. This is the
+      # order somebody placed, watched succeed, and then could not find.
+      - id: 7c3d9e04-2b16-4f89-83a1-6d5b0e27c93f
+        client_order_id: cauldron-filled-002
+        symbol: MSFT
+        qty: "5"
+        filled_qty: "5"
+        filled_avg_price: "402.18"
+        side: buy
+        type: market
+        order_type: market
+        time_in_force: day
+        status: filled
+        order_class: simple
+        legs: null
+        extended_hours: false
+        submitted_at: "2026-08-13T15:02:44Z"
+        filled_at: "2026-08-13T15:02:45Z"
+        created_at: "2026-08-13T15:02:44Z"
+
+      # Nothing filled, and filled_avg_price is null rather than zero, so
+      # arithmetic on it produces NaN rather than a wrong number, which is
+      # the better of the two failures and still a failure.
+      - id: 9e1a4b67-8c25-4d31-b7f0-2a94c5e18d63
+        client_order_id: cauldron-new-003
+        symbol: NVDA
+        qty: "2"
+        filled_qty: "0"
+        filled_avg_price: null
+        side: sell
+        type: limit
+        order_type: limit
+        time_in_force: gtc
+        limit_price: "1450.00"
+        status: new
+        order_class: simple
+        legs: null
+        extended_hours: false
+        submitted_at: "2026-08-15T09:00:00Z"
+        created_at: "2026-08-15T09:00:00Z"
+
+    position:
+      # Three shares from the partial fill above. A partially filled order
+      # is a position, and this is it.
+      - id: b7a2f318-5e94-4c06-a1d8-3f62b09e4715
+        symbol: AAPL
+        exchange: NASDAQ
+        qty: "3"
+        side: long
+        avg_entry_price: "185.42"
+        market_value: "559.23"
+        cost_basis: "556.26"
+        unrealized_pl: "2.97"
+        unrealized_plpc: "0.0053"
+        current_price: "186.41"
+
+      # Losing money, and the sign is inside the string. A parser that
+      # assumes unsigned reads a loss of eleven dollars as a gain.
+      - id: c8b3a429-6f05-4d17-b2e9-4a73c10f5826
+        symbol: MSFT
+        exchange: NASDAQ
+        qty: "5"
+        side: long
+        avg_entry_price: "402.18"
+        market_value: "1999.65"
+        cost_basis: "2010.90"
+        unrealized_pl: "-11.25"
+        unrealized_plpc: "-0.0056"
+        current_price: "399.93"
+
+# Every case below is derived from Alpaca's published documentation. None has
+# been run against a real Alpaca account, paper or live. The verify report
+# says so.
+conformance:
+  - name: the order listing answers with open orders
+    # The filled MSFT order is in this account and is not here. Submit an
+    # order, watch it fill, list your orders, see nothing: nothing errored
+    # and the list was correct.
+    source: https://docs.alpaca.markets/reference/getallorders
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        '[0].symbol': AAPL
+        '[0].status': partially_filled
+        '[1].symbol': NVDA
+        '[1].status': new
+      absent:
+        - '[2]'
+
+  - name: open is a bucket, and a partially filled order is in it
+    # "open" is not a status any order holds. new and partially_filled are
+    # open, filled and canceled are closed, and nothing in the record says
+    # which bucket its status belongs to. A filter matching the word
+    # literally would hide the partially filled order, which is the one that
+    # most needs to be visible because it is a real position.
+    source: https://docs.alpaca.markets/reference/getallorders
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders?status=open
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        '[0].status': partially_filled
+        '[1].status': new
+      absent:
+        - '[2]'
+
+  - name: the filled order is only visible if you ask
+    source: https://docs.alpaca.markets/reference/getallorders
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders?status=closed
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        '[0].symbol': MSFT
+        '[0].status': filled
+      absent:
+        - '[1]'
+
+  - name: all is the only way to see the account's orders
+    source: https://docs.alpaca.markets/reference/getallorders
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders?status=all
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        '[2].symbol': NVDA
+      absent:
+        - '[3]'
+
+  - name: every number is a string
+    # "10" and "3", not 10 and 3. In any language that compares strings
+    # lexically this is live: "10" > "9" is false, so a quantity check
+    # passes on nine shares and fails on ten.
+    source: https://docs.alpaca.markets/reference/getorderbyorderid
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/5b9f7c21-4e38-4a17-9d02-1c8e37b46af5
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        qty: "10"
+        filled_qty: "3"
+        filled_avg_price: "185.42"
+        limit_price: "186.00"
+
+  - name: a partially filled order has spent real money
+    # Three of ten shares at 185.42. The order is not finished, it is not
+    # cancelled, and 556.26 has left the account. Code that waits for
+    # status == "filled" waits forever and holds three shares while it does.
+    source: https://docs.alpaca.markets/reference/getorderbyorderid
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/5b9f7c21-4e38-4a17-9d02-1c8e37b46af5
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        status: partially_filled
+        filled_qty: "3"
+        # Present and null, not absent. Alpaca sends every timestamp on
+        # every order and leaves the ones that have not happened as null,
+        # so a client testing for the key's existence finds it and reads
+        # nothing out of it.
+
+  - name: filled_avg_price is null before anything fills
+    # Null rather than zero or "0", so arithmetic on it produces NaN rather
+    # than a wrong number, which is the better of the two failures and still
+    # a failure.
+    source: https://docs.alpaca.markets/reference/getorderbyorderid
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/9e1a4b67-8c25-4d31-b7f0-2a94c5e18d63
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        filled_qty: "0"
+        filled_avg_price: null
+
+  - name: type and order_type are both sent and both the same
+    # One is the older spelling. Code reading either works, which is why
+    # nobody notices which one they picked.
+    source: https://docs.alpaca.markets/reference/getorderbyorderid
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/7c3d9e04-2b16-4f89-83a1-6d5b0e27c93f
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        type: market
+        order_type: market
+
+  - name: legs is null on an ordinary order
+    # An array on a bracket order. Iterating it works on the orders somebody
+    # tested with and throws on the ones they did not.
+    source: https://docs.alpaca.markets/reference/getorderbyorderid
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/7c3d9e04-2b16-4f89-83a1-6d5b0e27c93f
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        legs: null
+        order_class: simple
+
+  - name: a position is addressed by symbol
+    # Every example in the documentation uses the symbol, and the asset id
+    # is also an identifier, so two different strings address one position.
+    source: https://docs.alpaca.markets/reference/getopenposition
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/positions/AAPL
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        symbol: AAPL
+        qty: "3"
+        avg_entry_price: "185.42"
+
+  - name: a partially filled order is a position
+    # Three shares, from the order that is still working. The position
+    # exists now, at a price, whether or not the order ever completes.
+    source: https://docs.alpaca.markets/reference/getallpositions
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/positions
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        '[0].symbol': AAPL
+        '[0].qty': "3"
+        '[0].side': long
+
+  - name: a loss is a minus sign inside a string
+    # "-11.25". A parser that assumes unsigned reads a loss of eleven
+    # dollars as a gain of eleven dollars.
+    source: https://docs.alpaca.markets/reference/getopenposition
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/positions/MSFT
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 200
+      body:
+        unrealized_pl: "-11.25"
+        unrealized_plpc: "-0.0056"
+        # Unsigned, with the direction in side rather than the sign, so code
+        # that negates on sign gets a short position backwards.
+        qty: "5"
+        side: long
+
+  - name: an error code is eight digits and is not the status
+    # 40410000. The first three digits look like a status, which is how it
+    # gets mistaken for one by code that truncates.
+    source: https://docs.alpaca.markets/reference/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders/00000000-0000-4000-8000-000000000000
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 404
+      body:
+        code: 40410000
+
+  - name: a malformed order is 422, not 400
+    source: https://docs.alpaca.markets/reference/postorder
+    fixture: small-account
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v2/orders
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 422
+      body:
+        code: 42210000
+        message: "qty must be greater than 0"
+
+  - name: not enough buying power is 403, so retrying will not help
+    source: https://docs.alpaca.markets/reference/postorder
+    fixture: small-account
+    arm: insufficient_buying_power
+    request:
+      method: GET
+      path: /v2/orders
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 403
+      body:
+        code: 40310000
+
+  - name: the key id must be present even though the secret is what proves it
+    source: https://docs.alpaca.markets/reference/authentication-1
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders
+      headers:
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 401
+      body:
+        code: 40110000
+
+  - name: a wrong secret is refused
+    source: https://docs.alpaca.markets/reference/authentication-1
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/orders
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: wrong
+    expect:
+      status: 401
+      body:
+        code: 40110000
+
+  - name: a new order has not filled and says so with nulls
+    # Submitting answers 200 rather than 201, with filled_qty at "0" and
+    # every timestamp of a thing that has not happened present and null. An
+    # emulator that stamped those would report a fill time for an order
+    # that has not filled.
+    source: https://docs.alpaca.markets/reference/postorder
+    fixture: small-account
+    request:
+      method: POST
+      path: /v2/orders
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+      json:
+        symbol: TSLA
+        qty: "4"
+        side: buy
+        type: market
+        order_type: market
+        time_in_force: day
+    expect:
+      status: 200
+      body:
+        symbol: TSLA
+        status: new
+        filled_qty: "0"
+        filled_at: null
+        canceled_at: null
+        expired_at: null
+
+  - name: a cancel is accepted, which is not the same as cancelled
+    # 204 and no body. An order can fill between the request and the cancel
+    # reaching the exchange, and the only way to find out is to read it
+    # back.
+    source: https://docs.alpaca.markets/reference/deleteorderbyorderid
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /v2/orders/9e1a4b67-8c25-4d31-b7f0-2a94c5e18d63
+      headers:
+        APCA-API-KEY-ID: cauldron-alpaca-key-id
+        APCA-API-SECRET-KEY: cauldron-alpaca-secret-key
+    expect:
+      status: 204
+      no_body: true

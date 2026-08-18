@@ -610,7 +610,7 @@ An order is not a fill, and the gap between them is where the bugs live.
 
 | Provider | Why |
 |---|---|
-| Alpaca | An order is accepted, then partially filled, then filled, and a partial fill is a real position at a price nobody asked for. filled_avg_price is null until it is not |
+| ~~Alpaca~~ | Shipped. A partially filled order is a real position that is still open, the listing hides everything that finished, and every number is a string |
 | Tradier | The same order in two accounts is two objects, and the account is a path segment rather than a field |
 | Polygon.io | Aggregates are bucketed and a bucket with no trades is absent rather than zero, so a chart drawn from the response has invisible gaps |
 | Finnhub | The free tier truncates history rather than refusing, so a backtest runs on less data than it asked for and says nothing |
@@ -726,13 +726,15 @@ GitHub and Basecamp are done. The rest are known and open.
 | ~~Basecamp~~ | Projects list active only, and there is no value that asks for everything. Applied |
 | Bitbucket | Pull requests list OPEN only. Applying it needs an open pull request in the fixture, which the fixture does not have, and it would rewrite the case that asserts three terminal states in one listing |
 | ClickUp | Tasks exclude closed ones unless include_closed=true. The parameter is a boolean that inverts rather than a value that matches, which the filter cannot express yet |
-| PagerDuty | Incidents default to triggered and acknowledged, excluding resolved. Two values in a repeated array parameter, which the filter cannot express yet |
+| PagerDuty | Incidents default to triggered and acknowledged, excluding resolved. Two values in a repeated array parameter. The filter can carry a set of values now, so what is left is the repeated parameter itself |
 | Sentry | Issues default to is:unresolved through a query DSL rather than a parameter, so the filter would have to parse a query language |
 | Front | Conversations exclude archived in some views and not others, which needs checking before anything is declared |
 
-The three shapes the filter cannot describe are worth having: a boolean that
-inverts, a repeated parameter carrying several values, and a default expressed
-inside a query language. None of them should be guessed at.
+Two shapes the filter still cannot describe are worth having: a boolean that
+inverts, and a default expressed inside a query language. Neither should be
+guessed at. The third, a parameter value covering several field values, exists
+now: Alpaca needed it, because status=open means new or partially_filled and
+matching the word literally would have hidden every partially filled order.
 
 ## Assessed and deliberately not done
 
