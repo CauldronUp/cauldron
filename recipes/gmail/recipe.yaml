@@ -1,0 +1,594 @@
+# Gmail Recipe for Cauldron
+#
+# Google has no Gmail sandbox. Testing against it means a real mailbox, an
+# OAuth consent screen, and a refresh token that expires while nobody is
+# looking. The mailbox fills with test messages that are indistinguishable
+# from real ones, and the destructive operations are destructive: messages.
+# delete is permanent and does not go to the bin.
+#
+# The reason to emulate it is that Gmail's API is shaped nothing like a
+# mailbox, and the first four things anybody assumes about it are wrong.
+#
+# Five things worth modelling exactly:
+#
+#   1. A listing carries no message. messages.list answers with identifiers
+#      and thread identifiers and nothing else: no subject, no sender, no
+#      snippet, no date. Rendering an inbox from it is impossible, and the
+#      fix is one fetch per message, which is where the quota goes. Almost
+#      every first Gmail integration is written expecting a subject here.
+#   2. Headers are an array of name and value pairs, not an object. There is
+#      no headers.Subject: there is a list to search, the names arrive in
+#      whatever case the sending client used, and the same name can appear
+#      more than once.
+#   3. A multipart message has no body at the top. payload.body.size is
+#      nought and payload.body has no data at all; the content lives in
+#      payload.parts, base64url encoded, with a different alphabet from
+#      ordinary base64. Decoding with the wrong one fails on any message
+#      containing the right bytes, which is most of them eventually.
+#   4. There is no read flag. Unread is the presence of the UNREAD label in
+#      labelIds, so a message is read when a label is missing, and code
+#      looking for a boolean finds nothing to read.
+#   5. Trash is not delete. messages.trash adds a TRASH label and the message
+#      is still there, still fetchable, still in the thread. messages.delete
+#      is permanent and skips the bin entirely, which is a distinction worth
+#      knowing before writing a cleanup routine.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No search. The q parameter is accepted and ignored, exactly as Cauldron
+#     does not execute SOQL for Salesforce or JQL for Jira. Every listing
+#     returns the fixture in its own order.
+#   - Sending is not modelled. messages.send delivers mail to real people,
+#     and this Recipe takes the position it takes for Mercury and RingCentral:
+#     the endpoint that reaches outside the codebase is not here at all.
+#   - Nothing is decoded. The base64url bodies below are real encodings of
+#     real text so a client can decode them, but Cauldron does not parse MIME
+#     or assemble a message from its parts.
+#   - History, watch, push notifications, drafts, filters and settings are
+#     not modelled.
+#   - OAuth is not modelled: the consent screen, the refresh token and the
+#     scope upgrade are the parts a fixture cannot teach you anything about.
+#
+# Tokens below are fixtures, not secrets, and every address is invented.
+
+recipe: gmail
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.google.com/gmail/api/reference/rest
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ya29.cauldron-gmail-access-token
+
+responses:
+  list:
+    style: wrapped
+    key: messages
+    cursor_field: nextPageToken
+    # An estimate, and Google says so in the name. It is not the number of
+    # results and it moves between identical requests, so a pagination UI
+    # built on it shows a total that changes while nothing does.
+    count_field: resultSizeEstimate
+  resource:
+    style: bare
+  # The older Google envelope, the same one the Calendar API uses: a numeric
+  # code and no string status.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    status_field: code
+
+resources:
+  # What a listing returns, which is not a message. Two identifiers and
+  # nothing else, in its own resource because pretending it is a message with
+  # missing fields would be the wrong shape rather than a smaller one.
+  message_ref:
+    collection: messages
+    id:
+      style: hex
+      length: 16
+    fields:
+      threadId:
+        type: string
+
+  message:
+    collection: messages
+    id:
+      style: hex
+      length: 16
+    fields:
+      threadId:
+        type: string
+      # There is no read flag anywhere in this API. UNREAD present means
+      # unread, so a message is read when a label is missing.
+      labelIds:
+        type: list
+      # The first hundred or so characters of the body, and the only piece of
+      # content a message carries outside its parts.
+      snippet:
+        type: string
+      # Milliseconds since the epoch, as a string. A number written as text,
+      # so arithmetic on it concatenates and parsing it as seconds lands in
+      # 1970.
+      internalDate:
+        type: string
+      # An array of name and value pairs. Not an object, so there is no
+      # headers.Subject to read: there is a list to search, and the same name
+      # can appear more than once.
+      headers:
+        type: list
+        in: payload
+      mimeType:
+        type: string
+        in: payload
+      # Nought on a multipart message, because the content is in the parts.
+      # The field is here and the data beside it is not.
+      body_size:
+        type: integer
+        in: payload.body
+        as: size
+      # Present only on a message that is not multipart. Its absence is what
+      # sends a client to the parts.
+      body_data:
+        type: string
+        in: payload.body
+        as: data
+      part_mime:
+        type: string
+        in: payload.parts[0]
+        as: mimeType
+      # base64url, which is not base64: minus and underscore rather than plus
+      # and slash, and the padding is often gone. Decoding with the ordinary
+      # alphabet fails on any message containing the right bytes.
+      part_data:
+        type: string
+        in: payload.parts[0].body
+        as: data
+      part_size:
+        type: integer
+        in: payload.parts[0].body
+        as: size
+      sizeEstimate:
+        type: integer
+
+routes:
+  - method: GET
+    path: /gmail/v1/users/me/messages
+    resource: message_ref
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: maxResults
+      cursor_param: pageToken
+
+  - method: GET
+    path: /gmail/v1/users/me/messages/{id}
+    resource: message
+    operation: get
+
+webhooks:
+  events:
+    - message.created
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: "User-rate limit exceeded.  Retry after 2026-08-17T00:00:00.000Z"
+
+  authentication_error:
+    status: 401
+    message: "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential."
+
+  resource_missing:
+    status: 404
+    message: "Requested entity was not found."
+
+  parameter_missing:
+    status: 400
+    message: "Invalid {detail} value."
+
+  # A token minted for gmail.readonly cannot modify anything, and the failure
+  # names the scope rather than the endpoint, so the fix is in the consent
+  # screen and not the code.
+  insufficient_scope:
+    status: 403
+    message: "Request had insufficient authentication scopes."
+
+  # The quota that is not a rate limit. A project has a daily allowance of
+  # quota units and each method costs a different number of them, so a
+  # listing followed by a fetch per message spends far more than it looks.
+  quota_exceeded:
+    status: 429
+    message: "Quota exceeded for quota metric 'Queries' and limit 'Queries per minute per user'"
+
+fixtures:
+  empty: {}
+
+  small-mailbox:
+    message_ref:
+      - id: "18f2c1a9b3e7d450"
+        threadId: "18f2c1a9b3e7d450"
+      - id: "18f2c1b04c19e661"
+        threadId: "18f2c1a9b3e7d450"
+      - id: "18f2c1c15d2af772"
+        threadId: "18f2c1c15d2af772"
+
+    message:
+      # Multipart and unread. The content is in the parts and the top-level
+      # body has a size of nought and no data at all.
+      - id: "18f2c1a9b3e7d450"
+        threadId: "18f2c1a9b3e7d450"
+        labelIds:
+          - INBOX
+          - UNREAD
+          - IMPORTANT
+        snippet: The quarterly figures are attached, and the totals moved since
+        internalDate: "1786435200000"
+        mimeType: multipart/alternative
+        headers:
+          - name: Delivered-To
+            value: work@cauldron.test
+          # Lower case, because the sending client wrote it that way. The
+          # protocol is case-insensitive and the API returns what it was
+          # given, so an exact match on "From" misses this one.
+          - name: from
+            value: Ada Lovelace <ada@cauldron.test>
+          - name: To
+            value: work@cauldron.test
+          - name: Subject
+            value: Quarterly figures
+          # Twice, which an object could not represent at all.
+          - name: Received
+            value: by 10.0.0.1 with SMTP id abc; Tue, 12 May 2026 09:00:00 -0700
+          - name: Received
+            value: from mail.cauldron.test by 10.0.0.2; Tue, 12 May 2026 09:00:01 -0700
+        body_size: 0
+        part_mime: text/plain
+        # base64url of "The quarterly figures are attached." with the padding
+        # left on, which real messages often drop.
+        part_data: VGhlIHF1YXJ0ZXJseSBmaWd1cmVzIGFyZSBhdHRhY2hlZC4=
+        part_size: 35
+        sizeEstimate: 4821
+      # Read, because UNREAD is not in the list. There is no field saying so.
+      - id: "18f2c1b04c19e661"
+        threadId: "18f2c1a9b3e7d450"
+        labelIds:
+          - INBOX
+        snippet: Thanks, looking now
+        internalDate: "1786438800000"
+        mimeType: text/plain
+        headers:
+          - name: From
+            value: Grace Hopper <grace@cauldron.test>
+          - name: To
+            value: work@cauldron.test
+          - name: Subject
+            value: "Re: Quarterly figures"
+        # Not multipart, so the body is at the top and there are no parts at
+        # all. A client that always reads parts[0] finds nothing here.
+        body_size: 19
+        body_data: VGhhbmtzLCBsb29raW5nIG5vdw
+        sizeEstimate: 1204
+      # Trashed, and still here. It is fetchable, it is still in its thread,
+      # and only the label says anything happened.
+      - id: "18f2c1c15d2af772"
+        threadId: "18f2c1c15d2af772"
+        labelIds:
+          - TRASH
+        snippet: Win a free holiday
+        internalDate: "1786442400000"
+        mimeType: text/plain
+        headers:
+          - name: From
+            value: offers@cauldron.test
+          - name: Subject
+            value: Win a free holiday
+        body_size: 17
+        body_data: V2luIGEgZnJlZSBob2xpZGF5
+        sizeEstimate: 902
+
+# Conformance cases, read from the Gmail API reference rather than observed
+# against a live mailbox. The verify report says so.
+conformance:
+  - name: a listing carries no message
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Two identifiers, and that is the entire object. Rendering an inbox
+        # from this is impossible, and the fix is one fetch per message, which
+        # is where the quota goes.
+        messages[0].id: "18f2c1a9b3e7d450"
+        messages[0].threadId: "18f2c1a9b3e7d450"
+      absent:
+        - messages[0].snippet
+        - messages[0].payload
+        - messages[0].labelIds
+        - messages[0].internalDate
+
+  - name: the count is an estimate and says so
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Not a count. It moves between identical requests against a real
+        # mailbox, so a pagination UI built on it shows a total that changes
+        # while nothing does.
+        resultSizeEstimate: 3
+
+  - name: a page token appears only while there is more
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      query:
+        maxResults: "2"
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      matches:
+        # Two of three, so there is a third to come. maxResults is the
+        # spelling; limit is not accepted and is ignored, which for a small
+        # mailbox means a paging loop that runs once and never takes its own
+        # branch.
+        nextPageToken: '.'
+      body:
+        messages[1].id: "18f2c1b04c19e661"
+      absent:
+        - messages[2]
+
+  - name: headers are an array to search, not an object to index
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message.MessagePart
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # A list of name and value pairs. There is no payload.headers.Subject
+        # to read, and finding the subject means walking the array.
+        payload.headers[3].name: Subject
+        payload.headers[3].value: Quarterly figures
+      absent:
+        - payload.headers.Subject
+        - payload.headers.From
+
+  - name: a header name arrives in whatever case the sender used
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message.MessagePart
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Lower case, because the sending client wrote it that way. The
+        # protocol is case-insensitive and the API returns what it was given,
+        # so an exact match on "From" misses this message entirely.
+        payload.headers[1].name: from
+        payload.headers[1].value: Ada Lovelace <ada@cauldron.test>
+
+  - name: the same header can appear twice
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message.MessagePart
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Received twice, which an object could not represent at all. Turning
+        # this array into a map loses one of them silently.
+        payload.headers[4].name: Received
+        payload.headers[5].name: Received
+
+  - name: a multipart message has no body at the top
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message.MessagePartBody
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Size nought and no data beside it. The field exists, which is why a
+        # presence check on payload.body passes and reading the data finds
+        # nothing.
+        payload.mimeType: multipart/alternative
+        payload.body.size: 0
+      absent:
+        - payload.body.data
+
+  - name: and the content is in the parts, base64url encoded
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message.MessagePartBody
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # base64url, which is not base64: minus and underscore rather than
+        # plus and slash. Decoding with the ordinary alphabet fails on any
+        # message containing the right bytes, which is most of them
+        # eventually.
+        payload.parts[0].mimeType: text/plain
+        payload.parts[0].body.data: VGhlIHF1YXJ0ZXJseSBmaWd1cmVzIGFyZSBhdHRhY2hlZC4=
+
+  - name: a simple message has its body at the top and no parts
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1b04c19e661
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # The opposite arrangement from the message above, in the same
+        # mailbox, from the same endpoint. A client that always reads parts[0]
+        # finds nothing here and one that always reads body.data finds nothing
+        # there.
+        payload.body.data: VGhhbmtzLCBsb29raW5nIG5vdw
+        payload.body.size: 19
+      absent:
+        - payload.parts
+
+  - name: unread is a label rather than a flag
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # There is no read field anywhere in this API. Code looking for a
+        # boolean finds nothing to read, and the answer is in an array.
+        labelIds[1]: UNREAD
+      absent:
+        - read
+        - isRead
+        - unread
+
+  - name: and read is the absence of one
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1b04c19e661
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # One label, and it is not UNREAD. A message is read when something is
+        # missing, which is the hardest kind of state to notice.
+        labelIds[0]: INBOX
+      absent:
+        - labelIds[1]
+
+  - name: a trashed message is still there
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/trash
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1c15d2af772
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # Fetchable, with its content, still in its thread. Only the label
+        # says anything happened, and messages.delete is a different call that
+        # skips the bin entirely.
+        labelIds[0]: TRASH
+        snippet: Win a free holiday
+        threadId: "18f2c1c15d2af772"
+
+  - name: a date is milliseconds written as text
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages#Message
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/18f2c1a9b3e7d450
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # A number as a string, so arithmetic on it concatenates. Parsing it
+        # as seconds lands in 1970 and the value still looks plausible.
+        internalDate: "1786435200000"
+
+  - name: two messages in one thread are two objects
+    source: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 200
+      body:
+        # The first two share a thread and the third does not. A listing is of
+        # messages rather than of conversations, so an inbox rendered from it
+        # shows the same conversation twice.
+        messages[0].threadId: "18f2c1a9b3e7d450"
+        messages[1].threadId: "18f2c1a9b3e7d450"
+        messages[2].threadId: "18f2c1c15d2af772"
+
+  - name: failures nest a numeric code and no status string
+    source: https://developers.google.com/gmail/api/guides/handle-errors
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/0000000000000000
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      status: 404
+      body:
+        error.code: 404
+      matches:
+        error.message: 'not found'
+      absent:
+        - error.status
+        - message
+
+  - name: the quota failure is a 429 that is not a rate limit
+    source: https://developers.google.com/gmail/api/reference/quota
+    arm: quota_exceeded
+    fixture: small-mailbox
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      headers:
+        Authorization: Bearer ya29.cauldron-gmail-access-token
+    expect:
+      # Each method costs a different number of quota units, so a listing
+      # followed by a fetch per message spends far more than the request count
+      # suggests. Backing off by request rate does not help with this one.
+      status: 429
+      matches:
+        error.message: 'Quota exceeded'
