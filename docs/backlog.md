@@ -678,7 +678,7 @@ what normalisation does not fix.
 |---|---|
 | Fivetran | A sync is triggered and the result polled, and a sync already running answers success without starting a new one |
 | Airbyte | A job has attempts, and an attempt failing is not the job failing |
-| Hightouch | A run reports rows attempted and rows rejected separately, so a run with every row rejected is still successful |
+| ~~Hightouch~~ | Shipped. A run with every row rejected finishes as success, warning is neither an error nor a success, the reasons live on an endpoint the run does not link to, and disabled and paused are different things that both stop a sync |
 | dbt Cloud | A run has steps, and the run status is not the step status |
 | Snowflake SQL API | A statement answers with a handle instead of results when it is slow, and the same endpoint returns both shapes |
 | ClickHouse Cloud | Results are paged by the client rather than the server, and the format is chosen by a parameter |
