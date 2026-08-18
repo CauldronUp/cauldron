@@ -409,6 +409,56 @@ func (s *Store) ListWhere(resource string, where map[string]any, after string, l
 	return page, nil
 }
 
+// ListFrom returns a page starting at a numeric offset rather than after an
+// identifier.
+//
+// Offset and page numbering are how most providers page, and until the runtime
+// could honour them, 149 shipped routes declared a style the emulator ignored:
+// a client sending offset=2 got the first page back, so a loop reading until
+// it had seen total_count records never finished, and one sending page=2 got
+// page one and processed the same records twice. For a payments or messaging
+// integration that is repeated side effects rather than a slow test.
+func (s *Store) ListFrom(resource string, where map[string]any, offset, limit int) (Page, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	c, ok := s.collections[resource]
+	if !ok {
+		return Page{}, fmt.Errorf("%w: %s", ErrUnknownResource, resource)
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	matching := make([]string, 0, len(c.order))
+
+	for _, id := range c.order {
+		if Matches(c.records[id], where) {
+			matching = append(matching, id)
+		}
+	}
+
+	page := Page{Records: []Record{}, Total: len(matching)}
+
+	// An offset past the end is an empty page rather than an error. That is
+	// what providers do, and it is what stops a paging loop rather than
+	// breaking it.
+	for i := offset; i < len(matching) && len(page.Records) < limit; i++ {
+		page.Records = append(page.Records, c.records[matching[i]].Clone())
+	}
+
+	if offset+len(page.Records) < len(matching) {
+		page.HasMore = true
+	}
+
+	return page, nil
+}
+
 // Matches reports whether a record satisfies every filter.
 //
 // Comparison is on the string form, because a path parameter arrives as text

@@ -401,6 +401,29 @@ the header says so.
 | Zuora | Assess — very large, and the object model predates REST conventions |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
 
+## Known gap: paging parameter names
+
+Offset and page numbering are now implemented, having been declarable and
+ignored on 149 shipped routes. Implementing the styles was half the fix. The
+other half is that each of those routes has to declare what its provider calls
+the two parameters, and most of them still do not.
+
+Without `limit_param` and `cursor_param` the runtime reads `limit` and the
+style's own name. That is right for some providers and wrong for plenty:
+GitLab wants `per_page` and `page`, GitHub wants `per_page`, Shopify wants
+`page_info`. A route whose names are wrong ignores the page size the caller
+asked for and answers with a full page, so the paging loop runs once and every
+test of it passes without taking the branch.
+
+GitLab's three routes are declared and tested. The remaining ones need their
+names read from each provider's documentation rather than guessed, which is
+the same standard every other field in a Recipe is held to, and is why they
+were not filled in with a plausible default.
+
+The end state is a validator rule refusing `style: offset` or `style: page`
+without both names. It is not in yet because turning it on today would refuse
+146 routes at once.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
