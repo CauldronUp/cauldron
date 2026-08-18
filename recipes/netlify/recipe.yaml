@@ -1,0 +1,465 @@
+# Netlify Recipe for Cauldron
+#
+# Netlify has no sandbox. A token reaches real sites, and the destructive
+# calls are destructive: deleting a site takes the domain with it, and
+# publishing a deploy changes what the public sees, immediately, with no
+# confirmation step.
+#
+# The reason to emulate it is that a deploy is asynchronous and the API hands
+# you an identifier for it long before it exists in any useful sense. Every
+# deployment script written against this API contains a polling loop, and the
+# interesting states are the ones that loop passes through in the ten to
+# ninety seconds nobody waits out while writing it.
+#
+# Five things worth modelling exactly:
+#
+#   1. A deploy has an identifier before it has a site. The create response
+#      carries an id, a state of "new", and no deploy_ssl_url at all, so code
+#      that creates a deploy and immediately reads its URL gets nothing.
+#   2. ready is not published. A deploy can build successfully, be entirely
+#      ready, and not be the one being served, because publishing is a
+#      separate act. The site's published_deploy_id is the only thing that
+#      says which one is live, and it is on the site rather than on the
+#      deploy.
+#   3. The failure state is called error and the reason is in
+#      error_message, which is prose. There is no code, so a script deciding
+#      whether to retry has to match on a sentence.
+#   4. A deploy that is building and one that failed both have no URL, so
+#      absence means two different things and the state is the only way to
+#      tell them apart.
+#   5. Sites and deploys have different identifier shapes on purpose. A site
+#      id is a UUID and a deploy id is a hex string, and both appear in the
+#      same paths, so passing one where the other belongs gets a 404 that
+#      says only that nothing was found.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is built. Which state a deploy holds is what a fixture puts
+#     there, and the transition from building to ready happens somewhere
+#     Cauldron cannot reproduce.
+#   - Publishing a deploy and deleting a site are deliberately not modelled.
+#     Both change what the public sees with no confirmation step, and this
+#     Recipe takes the same position as Mercury and RingCentral: the call
+#     that reaches outside the codebase is not here at all.
+#   - File digest uploads, which is how a deploy actually gets its content,
+#     are not modelled.
+#   - Build hooks, functions, forms, DNS zones and the Blobs API are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: netlify
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://open-api.netlify.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - nfp_cauldron000000000000000000000000
+
+responses:
+  # A bare array with paging in Link headers, which Cauldron does not model,
+  # so a client following rel=next has nothing to follow.
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  site:
+    collection: sites
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      # The subdomain, which is the name plus a suffix and is not the custom
+      # domain. Two different fields answer "where is this served from".
+      url:
+        type: string
+      custom_domain:
+        type: string
+      # The only thing that says which deploy is live. It is on the site
+      # rather than on the deploy, so asking a deploy whether it is published
+      # is asking the wrong object.
+      published_deploy_id:
+        type: string
+      account_slug:
+        type: string
+      created_at:
+        type: string
+      updated_at:
+        type: string
+
+  deploy:
+    collection: deploys
+    id:
+      style: hex
+      length: 24
+    fields:
+      site_id:
+        type: string
+      # new, building, uploading, uploaded, preparing, prepared, processing,
+      # ready, error. ready means it built, not that it is being served.
+      state:
+        type: string
+        default: new
+      # Absent until the deploy is ready, and absent for ever on one that
+      # failed, so its absence means two different things.
+      deploy_ssl_url:
+        type: string
+      # The permalink for this specific deploy, which exists even when the
+      # deploy is not the published one. This is how a preview is shared.
+      deploy_url:
+        type: string
+      branch:
+        type: string
+        default: main
+      commit_ref:
+        type: string
+      # Prose, and there is no code beside it, so a script deciding whether
+      # to retry has to match on a sentence somebody wrote.
+      error_message:
+        type: string
+      created_at:
+        type: string
+      # Set when the build finished, whether it succeeded or not, so its
+      # presence says the build is over and nothing about the outcome.
+      published_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/sites
+    resource: site
+    operation: list
+
+  - method: GET
+    path: /api/v1/sites/{id}
+    resource: site
+    operation: get
+
+  - method: GET
+    path: /api/v1/sites/{site_id}/deploys
+    resource: deploy
+    operation: list
+    scope: [site_id]
+
+  - method: GET
+    path: /api/v1/sites/{site_id}/deploys/{id}
+    resource: deploy
+    operation: get
+    scope: [site_id]
+
+  - method: POST
+    path: /api/v1/sites/{site_id}/deploys
+    resource: deploy
+    operation: create
+    scope: [site_id]
+    status: 201
+
+webhooks:
+  events:
+    - deploy_created
+    - deploy_building
+    - deploy_failed
+    - deploy_succeeded
+  signing:
+    scheme: hmac-sha256
+    header: X-Webhook-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: "API rate limit exceeded"
+    headers:
+      X-RateLimit-Limit: "500"
+      X-RateLimit-Remaining: "0"
+      X-RateLimit-Reset: "1767225600"
+
+  authentication_error:
+    status: 401
+    message: "You must be authenticated to access this resource"
+
+  resource_missing:
+    status: 404
+    message: "Not Found"
+
+  parameter_missing:
+    status: 422
+    message: "Validation failed: {detail}"
+
+  # A token belonging to a member rather than an owner cannot change site
+  # settings, and the failure names neither the role nor the setting.
+  insufficient_scope:
+    status: 403
+    message: "You don't have permission to do that"
+
+  # The build minutes ran out. Deploys are accepted and never build, which is
+  # the state that looks like a stuck queue rather than a billing problem.
+  build_minutes_exhausted:
+    status: 402
+    message: "Your account has run out of build minutes for this billing period"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    site:
+      - id: 9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+        name: cauldron-docs
+        url: https://cauldron-docs.netlify.app
+        custom_domain: docs.cauldron.test
+        # The live one, and it is not the newest deploy. Something newer
+        # built successfully and was never published.
+        published_deploy_id: a1b2c3d4e5f60718293a4b5c
+        account_slug: cauldron
+        created_at: "2026-01-14T10:00:00.000Z"
+        updated_at: "2026-06-08T16:41:02.000Z"
+
+    deploy:
+      # Live. Older than the ready one below, and serving.
+      - id: a1b2c3d4e5f60718293a4b5c
+        site_id: 9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+        state: ready
+        deploy_ssl_url: https://cauldron-docs.netlify.app
+        deploy_url: https://a1b2c3d4e5f60718293a4b5c--cauldron-docs.netlify.app
+        branch: main
+        commit_ref: 4f1e9c0
+        created_at: "2026-06-08T16:38:11.000Z"
+        published_at: "2026-06-08T16:41:02.000Z"
+      # Built, ready, and not being served. The site points at the older one
+      # above, so asking this deploy whether it is live has no answer here.
+      - id: b2c3d4e5f60718293a4b5c6d
+        site_id: 9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+        state: ready
+        deploy_ssl_url: https://cauldron-docs.netlify.app
+        deploy_url: https://b2c3d4e5f60718293a4b5c6d--cauldron-docs.netlify.app
+        branch: main
+        commit_ref: 7a2b3c4
+        created_at: "2026-06-09T09:15:00.000Z"
+        published_at: "2026-06-09T09:17:44.000Z"
+      # Failed. No URL, and the reason is a sentence with no code beside it.
+      - id: c3d4e5f60718293a4b5c6d7e
+        site_id: 9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+        state: error
+        branch: fix/broken-build
+        commit_ref: 9c8d7e6
+        error_message: "Build script returned non-zero exit code: 1"
+        created_at: "2026-06-09T11:02:00.000Z"
+        published_at: "2026-06-09T11:03:19.000Z"
+      # Still going. Also no URL, for a completely different reason.
+      - id: d4e5f60718293a4b5c6d7e8f
+        site_id: 9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+        state: building
+        branch: main
+        commit_ref: 1f2e3d4
+        created_at: "2026-06-09T12:30:00.000Z"
+
+# Conformance cases, read from Netlify's OpenAPI description rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a new deploy has an identifier and no site
+    source: https://open-api.netlify.com/#tag/deploy/operation/createSiteDeploy
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys
+      json:
+        branch: main
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 201
+      body:
+        # It starts at new. Nothing has been built, so there is nowhere to
+        # point at and the URL fields are simply not there.
+        state: new
+      absent:
+        - deploy_ssl_url
+        - deploy_url
+        - published_at
+
+  - name: ready is not published
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/b2c3d4e5f60718293a4b5c6d
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Built successfully, has a URL, has a published_at, and is not the
+        # one being served. Nothing on this object says so.
+        state: ready
+        published_at: "2026-06-09T09:17:44.000Z"
+
+  - name: and the site says which deploy is live
+    source: https://open-api.netlify.com/#tag/site
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The older deploy. Something newer built successfully a day later
+        # and was never published, so "latest ready deploy" is not "what the
+        # public sees".
+        published_deploy_id: a1b2c3d4e5f60718293a4b5c
+
+  - name: published_at is set on a deploy that failed
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/c3d4e5f60718293a4b5c6d7e
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # So the field says the build is over and says nothing about whether
+        # it worked. Treating its presence as success publishes nothing and
+        # reports that it did.
+        state: error
+        published_at: "2026-06-09T11:03:19.000Z"
+
+  - name: the failure reason is prose with no code beside it
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/c3d4e5f60718293a4b5c6d7e
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        error_message: "Build script returned non-zero exit code: 1"
+      # No code anywhere, so a script deciding whether to retry has to match
+      # on a sentence somebody wrote and may rewrite.
+      absent:
+        - error_code
+        - code
+
+  - name: a failed deploy has no URL
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/c3d4e5f60718293a4b5c6d7e
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      absent:
+        - deploy_ssl_url
+        - deploy_url
+
+  - name: and neither does one that is still building
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/d4e5f60718293a4b5c6d7e8f
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The same absence for a completely different reason, so the missing
+        # URL is not a signal on its own and the state is the only way to
+        # tell a build in progress from a build that failed.
+        state: building
+      absent:
+        - deploy_ssl_url
+        - published_at
+
+  - name: a deploy has a permalink even when it is not the live one
+    source: https://open-api.netlify.com/#tag/deploy
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys/b2c3d4e5f60718293a4b5c6d
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two URLs on one object. One is where the site is served and one is
+        # where this build is, and they are different things.
+        deploy_url: https://b2c3d4e5f60718293a4b5c6d--cauldron-docs.netlify.app
+        deploy_ssl_url: https://cauldron-docs.netlify.app
+
+  - name: a site has a subdomain and a custom domain, and they differ
+    source: https://open-api.netlify.com/#tag/site
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two fields answering "where is this served from", and the one
+        # somebody typed into a browser is the second.
+        url: https://cauldron-docs.netlify.app
+        custom_domain: docs.cauldron.test
+
+  - name: a listing is a bare array with no envelope at all
+    source: https://open-api.netlify.com/#tag/deploy/operation/listSiteDeploys
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # No count, no wrapper, no paging in the body. It is in Link headers,
+        # which is a place most clients do not look.
+        "[0].id": a1b2c3d4e5f60718293a4b5c
+        "[3].state": building
+      absent:
+        - deploys
+        - total
+        - next
+
+  - name: running out of build minutes is a 402
+    source: https://open-api.netlify.com/
+    arm: build_minutes_exhausted
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v1/sites/9e1c4b7a-3d2f-4e8a-9c6b-5f0a1d2e3b4c/deploys
+      json:
+        branch: main
+      headers:
+        Authorization: Bearer nfp_cauldron000000000000000000000000
+    expect:
+      # Payment required, which is not a status most deployment scripts have
+      # a branch for. It reads as a stuck queue rather than as a billing
+      # problem.
+      status: 402
+      matches:
+        message: 'build minutes'

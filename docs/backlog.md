@@ -558,7 +558,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Netlify | A deploy has an identifier before the site is live, so a deploy that exists is not a deploy that is serving |
+| ~~Netlify~~ | Shipped. A deploy has an id before it has a site, ready is not published, and a missing URL means two different things |
 | Render | Services, deploys, and the gap between build finished and live |
 | Fly.io | The Machines API and the older platform API are different shapes for the same account |
 | Heroku | The API still wants `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
