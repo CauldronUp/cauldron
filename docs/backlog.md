@@ -468,7 +468,7 @@ wrong in the direction that shows up locally.
 
 ## Second sweep
 
-Fifty more, chosen for behaviour rather than for surface area. The same
+Sixty-one, chosen for behaviour rather than for surface area. The same
 convention applies: an entry whose reason starts with **Assess** names a
 surface, and somebody still has to read the documentation and decide whether
 there is a lie in there worth reproducing.
