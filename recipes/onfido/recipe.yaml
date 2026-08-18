@@ -1,0 +1,536 @@
+# Onfido Recipe for Cauldron
+#
+# Onfido has a sandbox, and it is the kind that answers instantly with a
+# result you chose by uploading a specially named document. That is useful for
+# a demo and misleading for a test, because the thing that makes this API hard
+# is that a real check takes minutes to hours and its outcome is not binary.
+#
+# The reason to emulate it is that identity checks are the wrong place to be
+# confidently wrong. A check that comes back "complete" has finished; whether
+# the person passed is a different field, and it has three values rather than
+# two. Code that treats completion as approval lets people through, and code
+# that treats anything not-clear as rejection turns away customers who needed
+# a human to look.
+#
+# Five things worth modelling exactly:
+#
+#   1. complete is not clear. status says whether Onfido has finished and
+#      result says what it found, and they are different fields answering
+#      different questions. A check is in_progress, then complete, and only
+#      then does result mean anything.
+#   2. There are three results, not two. clear, consider, and unidentified.
+#      consider means a human has to look: it is neither a pass nor a
+#      failure, and it is the most common non-clear outcome. Treating it as
+#      either is wrong in a way somebody eventually complains about.
+#   3. A check is made of reports and the check's result is not simply the
+#      worst of them. Each report has its own status and result, and a check
+#      can be consider because one report was consider while every other one
+#      was clear. The reason lives on the report, not on the check.
+#   4. sub_result exists only on a document report and says why. clear,
+#      rejected, suspected, caution. rejected and suspected both look like
+#      failure and mean very different things: one is a bad photograph and
+#      one is a suspected forgery.
+#   5. Nothing is decided when the check is created. The create response has
+#      no result at all, and the fields that will carry it are absent rather
+#      than null, so a client reading them gets undefined and one checking
+#      for null finds nothing.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No check is run. Which state a check holds is what a fixture puts
+#     there, and the transition from in_progress to complete happens
+#     somewhere Cauldron cannot reproduce.
+#   - Document and photo uploads are not modelled. The binary half of this
+#     API is most of it, and a fixture cannot teach anything about a
+#     multipart upload.
+#   - Onfido's webhook signing is HMAC-SHA256 over the raw body with a hex
+#     digest, and Cauldron's scheme is its own. Signature-handling code
+#     written against this is not the code that will run.
+#   - Workflow Runs, Studio, and the applicant consent endpoints are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets, and every person here is invented.
+
+recipe: onfido
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: v3.6
+  docs: https://documentation.onfido.com/
+
+auth:
+  scheme: header
+  header: Authorization
+  # Onfido's own scheme word. Sending Bearer reads as a bad key rather than
+  # as the wrong scheme, so the search that follows is for the wrong thing.
+  prefix: "Token token="
+  keys:
+    - api_sandbox.cauldron.000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: checks
+  resource:
+    style: bare
+  # A type, a message, and a fields object carrying per-field problems. The
+  # actionable half is inside the nested object rather than in the message.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: type
+    type_field: "-"
+
+resources:
+  applicant:
+    collection: applicants
+    id:
+      style: uuid
+    fields:
+      first_name:
+        type: string
+        required: true
+      last_name:
+        type: string
+        required: true
+      email:
+        type: string
+      created_at:
+        type: string
+      # Set when the applicant is scheduled for deletion. They are still
+      # returned until it happens, so a listing includes people who are on
+      # their way out.
+      delete_at:
+        type: string
+
+  check:
+    collection: checks
+    id:
+      style: uuid
+    fields:
+      applicant_id:
+        type: string
+      # in_progress, awaiting_applicant, complete, withdrawn, paused,
+      # reopened. complete means Onfido has finished, and nothing more.
+      status:
+        type: string
+        default: in_progress
+      # clear, consider, unidentified. Absent until the check is complete,
+      # and consider means a human has to look rather than that the person
+      # failed.
+      result:
+        type: string
+      # Which reports the check is made of. The check's result is not simply
+      # the worst of theirs.
+      report_ids:
+        type: list
+      redirect_uri:
+        type: string
+      created_at:
+        type: string
+
+  report:
+    collection: reports
+    id:
+      style: uuid
+    fields:
+      check_id:
+        type: string
+      # document, facial_similarity_photo, watchlist_standard,
+      # proof_of_address. Each has its own status and its own result.
+      name:
+        type: string
+      status:
+        type: string
+        default: awaiting_data
+      result:
+        type: string
+      # Only on a document report, and it is where the reason lives.
+      # rejected is a bad photograph and suspected is a suspected forgery,
+      # and both read as failure.
+      sub_result:
+        type: string
+      created_at:
+        type: string
+
+routes:
+  - method: POST
+    path: /v3.6/applicants
+    resource: applicant
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v3.6/applicants/{id}
+    resource: applicant
+    operation: get
+
+  - method: POST
+    path: /v3.6/checks
+    resource: check
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v3.6/checks/{id}
+    resource: check
+    operation: get
+
+  - method: GET
+    path: /v3.6/checks
+    resource: check
+    operation: list
+
+  - method: GET
+    path: /v3.6/reports/{id}
+    resource: report
+    operation: get
+
+webhooks:
+  events:
+    - check.completed
+    - check.started
+    - report.completed
+    - report.withdrawn
+  signing:
+    scheme: hmac-sha256
+    header: X-SHA2-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: authorization_error
+    message: "Authorization error: please re-check your credentials"
+
+  resource_missing:
+    status: 404
+    code: resource_not_found
+    message: "Resource not found"
+
+  parameter_missing:
+    status: 422
+    code: validation_error
+    message: "There was a validation error on this request"
+
+  # A check cannot be created for an applicant with no document uploaded, and
+  # the failure names the applicant rather than the document.
+  incomplete_applicant:
+    status: 422
+    code: validation_error
+    message: "There was a validation error on this request"
+    fields:
+      error:
+        fields:
+          document_ids: "no document uploaded for this applicant"
+
+  # A sandbox key cannot touch live data and the failure says so in a way
+  # that is easy to read past.
+  wrong_environment:
+    status: 401
+    code: authorization_error
+    message: "Authorization error: this API token is for the sandbox environment"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    applicant:
+      - id: 6e4a1f2b-9c3d-4e5f-8a7b-1c2d3e4f5a6b
+        first_name: Ada
+        last_name: Lovelace
+        email: ada@cauldron.test
+        created_at: "2026-06-01T09:00:00Z"
+      - id: 7f5b2a3c-0d4e-5f6a-9b8c-2d3e4f5a6b7c
+        first_name: Grace
+        last_name: Hopper
+        email: grace@cauldron.test
+        created_at: "2026-06-01T09:04:12Z"
+
+    check:
+      # Finished and passed. This is the only one of the three where
+      # complete and clear line up, and it is the one everybody codes for.
+      - id: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+        applicant_id: 6e4a1f2b-9c3d-4e5f-8a7b-1c2d3e4f5a6b
+        status: complete
+        result: clear
+        report_ids:
+          - aa11bb22-cc33-4d44-8e55-ff6677889900
+        created_at: "2026-06-01T09:10:00Z"
+      # Finished, and not a pass. consider means a human has to look. Code
+      # that treats complete as approval lets this through and code that
+      # treats not-clear as rejection turns away somebody who was probably
+      # fine.
+      - id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+        applicant_id: 7f5b2a3c-0d4e-5f6a-9b8c-2d3e4f5a6b7c
+        status: complete
+        result: consider
+        report_ids:
+          - bb22cc33-dd44-4e55-8f66-001122334455
+          - cc33dd44-ee55-4f66-8007-112233445566
+        created_at: "2026-06-01T09:12:30Z"
+      # Still running. No result at all, and the field is absent rather than
+      # null, so a client reading it gets undefined.
+      - id: 3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f
+        applicant_id: 6e4a1f2b-9c3d-4e5f-8a7b-1c2d3e4f5a6b
+        status: in_progress
+        report_ids:
+          - dd44ee55-ff66-4007-8118-223344556677
+        created_at: "2026-06-01T09:20:00Z"
+
+    report:
+      - id: aa11bb22-cc33-4d44-8e55-ff6677889900
+        check_id: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+        name: document
+        status: complete
+        result: clear
+        sub_result: clear
+        created_at: "2026-06-01T09:10:00Z"
+      # The one report that made the whole check consider. A bad photograph
+      # rather than a forgery, and the sub_result is the only thing that says
+      # which.
+      - id: bb22cc33-dd44-4e55-8f66-001122334455
+        check_id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+        name: document
+        status: complete
+        result: consider
+        sub_result: rejected
+        created_at: "2026-06-01T09:12:30Z"
+      # And the report beside it, which was clear. So the check is consider
+      # while one of its two reports passed outright.
+      - id: cc33dd44-ee55-4f66-8007-112233445566
+        check_id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+        name: facial_similarity_photo
+        status: complete
+        result: clear
+        created_at: "2026-06-01T09:12:30Z"
+      # Still waiting for the document. Neither a status nor a result that
+      # means anything yet.
+      - id: dd44ee55-ff66-4007-8118-223344556677
+        check_id: 3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f
+        name: document
+        status: awaiting_data
+        created_at: "2026-06-01T09:20:00Z"
+
+# Conformance cases, read from the Onfido API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: complete is not clear
+    source: https://documentation.onfido.com/api/latest/#checks
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/checks/2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # Onfido has finished and the person did not pass. Two fields
+        # answering two questions, and code that reads the first and
+        # branches on it lets this through.
+        status: complete
+        result: consider
+
+  - name: and complete and clear do line up sometimes
+    source: https://documentation.onfido.com/api/latest/#checks
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/checks/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # Which is why treating them as one thing survives testing: the case
+        # everybody writes is this one.
+        status: complete
+        result: clear
+
+  - name: a running check has no result at all
+    source: https://documentation.onfido.com/api/latest/#checks
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/checks/3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        status: in_progress
+      # Absent rather than null, so a client reading it gets undefined and
+      # one checking for null finds nothing to check.
+      absent:
+        - result
+
+  - name: creating a check decides nothing
+    source: https://documentation.onfido.com/api/latest/#create-check
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3.6/checks
+      json:
+        applicant_id: 6e4a1f2b-9c3d-4e5f-8a7b-1c2d3e4f5a6b
+        report_names:
+          - document
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 201
+      body:
+        # It starts running. Anything that reads a result off this response
+        # is reading a decision nobody has made.
+        status: in_progress
+      absent:
+        - result
+        - sub_result
+
+  - name: the check is consider while one of its reports was clear
+    source: https://documentation.onfido.com/api/latest/#reports
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/reports/cc33dd44-ee55-4f66-8007-112233445566
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # This one passed outright. The check it belongs to did not, so the
+        # check's result is not a summary of its reports and reading either
+        # one alone is reading half the answer.
+        name: facial_similarity_photo
+        result: clear
+        check_id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+
+  - name: and the reason lives on the report that was not
+    source: https://documentation.onfido.com/api/latest/#reports
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/reports/bb22cc33-dd44-4e55-8f66-001122334455
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # rejected, which is a bad photograph. The check said consider and
+        # said nothing about why, so the only way to tell a poor scan from a
+        # suspected forgery is to fetch the report.
+        result: consider
+        sub_result: rejected
+
+  - name: a clear document report carries a sub_result too
+    source: https://documentation.onfido.com/api/latest/#reports
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/reports/aa11bb22-cc33-4d44-8e55-ff6677889900
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # So its presence is not a signal of failure, only its value is.
+        result: clear
+        sub_result: clear
+
+  - name: a report that is not a document has no sub_result
+    source: https://documentation.onfido.com/api/latest/#reports
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/reports/cc33dd44-ee55-4f66-8007-112233445566
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        name: facial_similarity_photo
+      # The field only exists on one kind of report, so generic code reading
+      # it across a check's reports finds nothing on most of them.
+      absent:
+        - sub_result
+
+  - name: a report waiting for data has neither
+    source: https://documentation.onfido.com/api/latest/#reports
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/reports/dd44ee55-ff66-4007-8118-223344556677
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        status: awaiting_data
+      absent:
+        - result
+        - sub_result
+
+  - name: a check names its reports and carries none of them
+    source: https://documentation.onfido.com/api/latest/#checks
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/checks/2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 200
+      body:
+        # Identifiers only. Finding out why a check said consider is one
+        # request per report, and there is no expand parameter.
+        report_ids:
+          - bb22cc33-dd44-4e55-8f66-001122334455
+          - cc33dd44-ee55-4f66-8007-112233445566
+      absent:
+        - reports
+
+  - name: a validation failure puts the reason in a nested fields object
+    source: https://documentation.onfido.com/api/latest/#errors
+    arm: incomplete_applicant
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3.6/checks
+      json:
+        applicant_id: 6e4a1f2b-9c3d-4e5f-8a7b-1c2d3e4f5a6b
+      headers:
+        Authorization: Token token=api_sandbox.cauldron.000000000000
+    expect:
+      status: 422
+      body:
+        # The message is the same sentence for every validation problem
+        # there is. The actionable half is one level down, keyed by the field
+        # that was wrong.
+        error.type: validation_error
+        error.fields.document_ids: "no document uploaded for this applicant"
+      matches:
+        error.message: 'validation error'
+
+  - name: the wrong authorisation scheme reads as a bad key
+    source: https://documentation.onfido.com/api/latest/#authentication
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3.6/checks
+      headers:
+        # Bearer, which is what everything else uses. The failure blames the
+        # credentials rather than the scheme.
+        Authorization: Bearer api_sandbox.cauldron.000000000000
+    expect:
+      status: 401
+      body:
+        error.type: authorization_error
+      matches:
+        error.message: 're-check your credentials'
