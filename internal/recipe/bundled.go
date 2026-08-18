@@ -64,12 +64,13 @@ func Open(name string) (*Recipe, error) {
 
 // Summary is the condensed view `cauldron recipe list` prints.
 type Summary struct {
-	Name      string
-	Version   string
-	API       string
-	Resources int
-	Routes    int
-	Events    int
+	Name       string
+	Capability string
+	Version    string
+	API        string
+	Resources  int
+	Routes     int
+	Events     int
 }
 
 // Summarise loads every bundled Recipe and reduces it to a listing row.
@@ -84,12 +85,13 @@ func Summarise() ([]Summary, error) {
 		}
 
 		out = append(out, Summary{
-			Name:      r.Name,
-			Version:   r.Version,
-			API:       r.Upstream.API,
-			Resources: len(r.Resources),
-			Routes:    len(r.Routes),
-			Events:    len(r.Webhooks.Events),
+			Name:       r.Name,
+			Capability: r.Capability,
+			Version:    r.Version,
+			API:        r.Upstream.API,
+			Resources:  len(r.Resources),
+			Routes:     len(r.Routes),
+			Events:     len(r.Webhooks.Events),
 		})
 	}
 

@@ -20,16 +20,30 @@ import (
 
 // Recipe is a complete emulation description for one provider.
 type Recipe struct {
-	Name      string              `yaml:"recipe"`
-	Version   string              `yaml:"version"`
-	Upstream  Upstream            `yaml:"upstream"`
-	Auth      Auth                `yaml:"auth"`
-	Resources map[string]Resource `yaml:"resources"`
-	Routes    []Route             `yaml:"routes"`
-	Webhooks  Webhooks            `yaml:"webhooks"`
-	Responses Responses           `yaml:"responses"`
-	Errors    map[string]Error    `yaml:"errors"`
-	Fixtures  map[string]Fixture  `yaml:"fixtures"`
+	Name    string `yaml:"recipe"`
+	Version string `yaml:"version"`
+	// Capability is what kind of thing this provider is, so a hundred Recipes
+	// can be found by what they do rather than by whether you remember the
+	// company's name.
+	//
+	// One word from a fixed list, not a free string. The value of a category
+	// is that two people reaching for it independently land on the same one,
+	// and a free string gives you "payments", "payment", "billing" and "money"
+	// within a month. Adding a word is a deliberate change to the list.
+	//
+	// Deliberately not part of the Recipe's name. Renaming stripe to
+	// payments.stripe would break every configuration and every command
+	// anybody has already written, to buy a grouping a field gives for
+	// nothing.
+	Capability string              `yaml:"capability"`
+	Upstream   Upstream            `yaml:"upstream"`
+	Auth       Auth                `yaml:"auth"`
+	Resources  map[string]Resource `yaml:"resources"`
+	Routes     []Route             `yaml:"routes"`
+	Webhooks   Webhooks            `yaml:"webhooks"`
+	Responses  Responses           `yaml:"responses"`
+	Errors     map[string]Error    `yaml:"errors"`
+	Fixtures   map[string]Fixture  `yaml:"fixtures"`
 	// RequiredHeaders are headers a request must carry, mapped to the error
 	// name to raise when one is missing. Forgetting Notion-Version is the
 	// classic Notion integration bug, and a fake that does not enforce it lets
@@ -811,9 +825,23 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-	validSchemes     = []string{"bearer", "basic", "header", "query", "none"}
-	validOperations  = []string{"create", "get", "list", "update", "delete"}
-	validPagination  = []string{"", "cursor", "offset", "page"}
+	validSchemes    = []string{"bearer", "basic", "header", "query", "none"}
+	validOperations = []string{"create", "get", "list", "update", "delete"}
+	validPagination = []string{"", "cursor", "offset", "page"}
+	// The categories a Recipe may declare. Kept short on purpose: a taxonomy
+	// with sixty words in it is a taxonomy nobody can hold in their head, and
+	// the point of this field is that somebody looking for a payments
+	// emulator finds all of them at once.
+	validCapabilities = []string{
+		"payments", "banking", "accounting", "tax", "payroll",
+		"email", "sms", "chat", "push", "voice",
+		"auth", "identity", "crm", "support", "marketing",
+		"commerce", "shipping", "storage", "database", "queue",
+		"search", "cdn", "hosting", "observability", "analytics",
+		"flags", "ci", "vcs", "issues", "docs",
+		"calendar", "files", "media", "ai", "signing",
+		"scheduling", "hr", "forms", "cms", "infrastructure",
+	}
 	validDeletedBody = []string{"", "receipt", "record"}
 	validSigning     = []string{"", "none", "hmac-sha256"}
 	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
@@ -895,6 +923,12 @@ func (r *Recipe) Validate() error {
 
 	if r.Upstream.API == "" {
 		add("upstream.api is required so the Recipe records which API version it targets")
+	}
+
+	if r.Capability == "" {
+		add("capability is required: a hundred Recipes are only findable by what they do")
+	} else if !contains(validCapabilities, r.Capability) {
+		add("capability %q must be one of %s", r.Capability, strings.Join(validCapabilities, ", "))
 	}
 
 	if r.Auth.Scheme != "" && !contains(validSchemes, r.Auth.Scheme) {
