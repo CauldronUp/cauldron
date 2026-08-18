@@ -1,0 +1,467 @@
+# Snowflake SQL API Recipe for Cauldron
+#
+# One endpoint, two entirely different response bodies, and which one you get
+# depends on how fast the query was.
+#
+# POST a statement. If it finishes quickly you get 200 and the results. If it
+# does not, you get 202, a statement handle and no data at all, and you are
+# expected to poll. Nothing in the request decides which; the same query
+# against the same warehouse answers one way when the warehouse is warm and
+# the other when it is not. So the code path that handles 202 is the one
+# nobody exercises locally and everybody meets in production, on the day the
+# warehouse was cold.
+#
+# Four more worth modelling exactly:
+#
+#   1. Every value is a string. A number is "42", a boolean is "true", a
+#      timestamp is a string of epoch seconds with a fraction. The types are
+#      in the metadata, not the data, so a client that reads a row without
+#      reading rowType has an array of strings and no idea what any of them
+#      mean.
+#   2. A row is an array, not an object. Column names live in
+#      resultSetMetaData.rowType and the row is positional, so the two halves
+#      of a result are only meaningful together and reordering a SELECT
+#      silently reorders everything downstream.
+#   3. NULL is a real JSON null inside that array of strings. So the array is
+#      not an array of strings after all, and code that maps over it calling
+#      a string method on each element throws on the first empty column.
+#   4. A big result comes back in partitions and the first response holds
+#      only the first one. The rest are separate requests, and a client that
+#      reads data and stops has however many rows fitted in one partition.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No SQL is executed. Whatever a fixture holds is what comes back
+#     regardless of the statement sent, so this describes the envelope rather
+#     than the database. The envelope is the part that surprises people.
+#   - The 202 path is armed rather than timed. Cauldron answers immediately,
+#     so there is no way to make a query slow; arming it is how the branch
+#     nobody exercises gets exercised.
+#   - Partitions are described and only the first is served, which is stated
+#     again where it happens.
+#   - Multi-statement requests, bind variables and the async cancel endpoint
+#     are not modelled.
+#
+# Credentials below are fixtures, not secrets, and every figure is invented.
+
+recipe: snowflake
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.snowflake.com/en/developer-guide/sql-api/reference
+
+auth:
+  # A key-pair JWT. Snowflake wants its own token type declared in a second
+  # header, and a request with a valid JWT and no X-Snowflake-Authorization-
+  # Token-Type is refused, which reads as a credential problem and is not.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-snowflake-jwt
+
+required_headers:
+  X-Snowflake-Authorization-Token-Type:
+    error: missing_token_type
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # Zero-padded and quoted. Parsing "000904" as a number loses the padding
+    # and comparing the result to the documented code never matches.
+    code_field: code
+    code_type: string
+    type_field: "-"
+
+resources:
+  # A finished statement, with its results inline. This is the 200 shape, and
+  # the one every local test sees.
+  statement:
+    collection: data
+    id:
+      style: uuid
+      # Snowflake calls it statementHandle everywhere, and a client reading
+      # response.id finds nothing on any endpoint.
+      field: statementHandle
+    fields:
+      message:
+        type: string
+        default: Statement executed successfully.
+      code:
+        type: string
+        default: "090001"
+      # The column names and types, without which a row is an array of
+      # strings and nothing else. The two halves of a result are only
+      # meaningful together.
+      columns:
+        type: list
+        in: resultSetMetaData
+        as: rowType
+      # How many rows there are in total, which is not how many arrived: a
+      # big result comes back in partitions and only the first is here.
+      numRows:
+        type: integer
+        in: resultSetMetaData
+        as: numRows
+      # The partitions, described. A client that reads data and stops has
+      # however many rows fitted in the first one.
+      partitionInfo:
+        type: list
+        in: resultSetMetaData
+        as: partitionInfo
+      # Rows. An array of arrays, every value a string, and a NULL is a real
+      # JSON null inside it, so it is not an array of strings after all.
+      data:
+        type: list
+      createdOn:
+        type: timestamp_ms
+
+routes:
+  - method: GET
+    path: /api/v2/statements/{id}
+    resource: statement
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: "000630"
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: "390144"
+    message: "JWT token is invalid"
+
+  resource_missing:
+    status: 404
+    code: "000605"
+    message: "The statement handle was not found"
+
+  parameter_missing:
+    status: 400
+    code: "000904"
+    message: "SQL compilation error: invalid identifier"
+
+  # A valid JWT and no token type header. Refused with a message about the
+  # token, which reads as a credential problem and is not.
+  missing_token_type:
+    status: 401
+    code: "390144"
+    message: "JWT token is invalid"
+
+  # The same endpoint, the other shape. 202 with a handle and no data,
+  # because the query did not finish quickly enough, and nothing in the
+  # request decided that. Armed rather than timed, because Cauldron answers
+  # immediately and the branch nobody exercises has to be reachable somehow.
+  execution_in_progress:
+    status: 202
+    code: "333334"
+    message: "Asynchronous execution in progress. Use provided query id to perform query monitoring and management."
+    fields:
+      statementHandle: 01b7c9f4-0000-4d21-0000-000100000e3f
+      statementStatusUrl: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+
+  # The warehouse is suspended and resuming it takes time. Not a failure of
+  # the statement and not something a retry helps for the first minute.
+  warehouse_suspended:
+    status: 503
+    code: "000608"
+    message: "Warehouse is suspended and auto-resume is disabled for this warehouse"
+
+fixtures:
+  empty: {}
+
+  small-warehouse:
+    statement:
+      # Three rows of four columns. Every value a string, including the
+      # number and the boolean, and one NULL that is a real JSON null inside
+      # the array of strings.
+      - id: 01b7c9f4-0000-4d21-0000-000100000e3f
+        message: Statement executed successfully.
+        code: "090001"
+        columns:
+          - name: ID
+            type: fixed
+            nullable: false
+          - name: EMAIL
+            type: text
+            nullable: false
+          - name: BALANCE
+            type: fixed
+            nullable: true
+          - name: ACTIVE
+            type: boolean
+            nullable: false
+        numRows: 3
+        data:
+          - ["1", "ada@example.com", "4820", "true"]
+          - ["2", "bede@example.com", null, "false"]
+          - ["3", "caro@example.com", "-115", "true"]
+        createdOn: 1786492800000
+
+      # A big result, described honestly: numRows says forty thousand and
+      # data holds one row, because the rest are in partitions that are
+      # separate requests. A client that reads data and stops has one row and
+      # believes it has the answer.
+      - id: 02c8daf5-1111-4e32-1111-000200000f4a
+        message: Statement executed successfully.
+        code: "090001"
+        columns:
+          - name: ORDER_ID
+            type: fixed
+            nullable: false
+          - name: TOTAL
+            type: fixed
+            nullable: false
+        numRows: 40000
+        partitionInfo:
+          - rowCount: 10000
+            uncompressedSize: 1240000
+          - rowCount: 10000
+            uncompressedSize: 1238000
+          - rowCount: 10000
+            uncompressedSize: 1241000
+          - rowCount: 10000
+            uncompressedSize: 1237000
+        data:
+          - ["100001", "4999"]
+        createdOn: 1786496400000
+
+# Every case below is derived from Snowflake's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: every value is a string, including the numbers
+    # "4820" and "true". The types are in the metadata, not the data, so a
+    # client that reads a row without reading rowType has an array of strings
+    # and no idea what any of them mean.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        data[0][0]: "1"
+        data[0][2]: "4820"
+        data[0][3]: "true"
+
+  - name: a row is positional and the names are somewhere else
+    # Column names live in resultSetMetaData.rowType and the row is an array,
+    # so the two halves of a result are only meaningful together and
+    # reordering a SELECT silently reorders everything downstream.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        resultSetMetaData.rowType[1].name: EMAIL
+        resultSetMetaData.rowType[2].type: fixed
+        data[0][1]: ada@example.com
+      absent:
+        - data[0].EMAIL
+        - columns
+
+  - name: NULL is a real null inside the array of strings
+    # So it is not an array of strings after all, and code that maps over it
+    # calling a string method on each element throws on the first empty
+    # column.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        data[1][2]: null
+        data[1][1]: bede@example.com
+
+  - name: a negative number is a string with a sign in it
+    # "-115". Sorting these as text puts every negative balance in the wrong
+    # place, and the column type says fixed rather than anything about the
+    # sign.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        data[2][2]: "-115"
+
+  - name: numRows is not how many rows arrived
+    # Forty thousand in the metadata and one in the data, because the rest
+    # are in partitions that are separate requests. A client that reads data
+    # and stops has one row and believes it has the answer.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/02c8daf5-1111-4e32-1111-000200000f4a
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        resultSetMetaData.numRows: 40000
+        data[0][0]: "100001"
+      absent:
+        - data[1]
+
+  - name: the partitions are described and only the first is here
+    # Four of ten thousand each. The description is in the first response and
+    # the rows are not, so a client has to know to go and get them.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/02c8daf5-1111-4e32-1111-000200000f4a
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        resultSetMetaData.partitionInfo[0].rowCount: 10000
+        resultSetMetaData.partitionInfo[3].rowCount: 10000
+      absent:
+        - resultSetMetaData.partitionInfo[4]
+        - partitionInfo
+
+  - name: a small result describes no partitions at all
+    # So a client that reads partitionInfo.length to decide whether to fetch
+    # more reads undefined on every fast query and works, until the day one
+    # is slow.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        resultSetMetaData.numRows: 3
+      absent:
+        - resultSetMetaData.partitionInfo
+
+  - name: the same endpoint answers 202 with no data when the query is slow
+    # Nothing in the request decides which. The same query against the same
+    # warehouse answers one way when it is warm and the other when it is
+    # not, so this branch is the one nobody exercises locally and everybody
+    # meets in production on the day the warehouse was cold.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/submitting-requests
+    fixture: small-warehouse
+    arm: execution_in_progress
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 202
+      body:
+        code: "333334"
+        statementHandle: 01b7c9f4-0000-4d21-0000-000100000e3f
+        statementStatusUrl: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      absent:
+        - data
+        - resultSetMetaData
+
+  - name: the identifier is a statementHandle
+    # Not an id, on any endpoint, so a client reading response.id finds
+    # nothing whichever shape it got.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 200
+      body:
+        statementHandle: 01b7c9f4-0000-4d21-0000-000100000e3f
+      absent:
+        - id
+
+  - name: a valid JWT without the token type header is refused
+    # And the message is about the token, which reads as a credential
+    # problem and is not.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/authenticating
+    fixture: small-warehouse
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+    expect:
+      status: 401
+      body:
+        code: "390144"
+        message: "JWT token is invalid"
+
+  - name: a suspended warehouse is a 503, not a statement failure
+    # Not something a retry helps with for the first minute, and nothing
+    # about the SQL was wrong.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    arm: warehouse_suspended
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 503
+      body:
+        code: "000608"
+
+  - name: an error code is a zero-padded string
+    # "000904". Parsing it as a number loses the padding and comparing the
+    # result to the documented code never matches.
+    source: https://docs.snowflake.com/en/developer-guide/sql-api/handling-responses
+    fixture: small-warehouse
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /api/v2/statements/01b7c9f4-0000-4d21-0000-000100000e3f
+      headers:
+        Authorization: Bearer cauldron-snowflake-jwt
+        X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
+    expect:
+      status: 400
+      body:
+        code: "000904"
+        message: "SQL compilation error: invalid identifier"
