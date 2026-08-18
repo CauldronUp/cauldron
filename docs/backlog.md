@@ -711,6 +711,29 @@ what normalisation does not fix.
 | Elastic Cloud | A deployment is created before it is reachable, and the endpoint appears in a later read than the one that created it |
 | Rootly | An incident timeline is append-only and events arrive out of order, so the last write is not the latest event |
 
+## Listings that narrow themselves
+
+A listing that quietly returns a subset is the worst-shaped failure there is:
+nothing errors, and the list is correct. An emulator that returns everything
+is being helpful in exactly the direction that hides it.
+
+Route filters exist now, so this is a list of where they still need applying.
+GitHub and Basecamp are done. The rest are known and open.
+
+| Provider | The default, and why it is not applied yet |
+|---|---|
+| ~~GitHub~~ | Issues list open only. Applied |
+| ~~Basecamp~~ | Projects list active only, and there is no value that asks for everything. Applied |
+| Bitbucket | Pull requests list OPEN only. Applying it needs an open pull request in the fixture, which the fixture does not have, and it would rewrite the case that asserts three terminal states in one listing |
+| ClickUp | Tasks exclude closed ones unless include_closed=true. The parameter is a boolean that inverts rather than a value that matches, which the filter cannot express yet |
+| PagerDuty | Incidents default to triggered and acknowledged, excluding resolved. Two values in a repeated array parameter, which the filter cannot express yet |
+| Sentry | Issues default to is:unresolved through a query DSL rather than a parameter, so the filter would have to parse a query language |
+| Front | Conversations exclude archived in some views and not others, which needs checking before anything is declared |
+
+The three shapes the filter cannot describe are worth having: a boolean that
+inverts, a repeated parameter carrying several values, and a default expressed
+inside a query language. None of them should be guessed at.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |

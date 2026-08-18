@@ -361,6 +361,29 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	where := scopeVars(matched, vars)
 
+	// A listing that narrows itself whether or not the caller asked. The
+	// filter joins the scope because it does the same job: both decide which
+	// records this request is allowed to see.
+	for _, f := range matched.spec.Filters {
+		value := r.URL.Query().Get(f.Param)
+		if value == "" {
+			value = f.Default
+		}
+
+		// The escape value, for the providers that have one. Without it there
+		// is no way to ask a listing for everything, which is worth knowing
+		// about a provider and is not something to invent on its behalf.
+		if value == "" || (f.All != "" && value == f.All) {
+			continue
+		}
+
+		if where == nil {
+			where = map[string]any{}
+		}
+
+		where[f.Field] = value
+	}
+
 	switch matched.spec.Pagination.Style {
 	case "offset", "page":
 		offset := positionOf(r, matched.spec.Pagination, limit)
