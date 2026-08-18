@@ -1139,7 +1139,15 @@ func (r *Recipe) Validate() error {
 
 			if resource, ok := r.Resources[route.Resource]; ok {
 				for _, field := range route.Returns {
-					if _, declared := resource.Fields[field]; !declared && field != "id" {
+					// Constants count. They are stamped onto the record and
+					// trimmed with everything else, so a route that answers
+					// with one has to name it. Braze stamps "message":
+					// "success" on every object, and leaving it out of a
+					// trimmed response drops the only field a Braze client
+					// checks.
+					_, constant := resource.Constants[field]
+
+					if _, declared := resource.Fields[field]; !declared && !constant && field != "id" {
 						add("%s: returns %q, which is not a field on resource %q", where, field, route.Resource)
 					}
 				}

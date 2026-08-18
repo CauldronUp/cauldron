@@ -166,21 +166,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 		return status
 	}
 
-	// A route that answers with less than the record it touched. Jira's create
-	// hands back an id and a key and nothing else, so anything reading
-	// created.fields.summary gets undefined. The trim happens before shaping,
-	// so a kept field still nests where the Recipe says it does.
-	if len(matched.spec.Returns) > 0 {
-		kept := store.Record{}
-
-		for _, field := range matched.spec.Returns {
-			if value, ok := record[field]; ok {
-				kept[field] = value
-			}
-		}
-
-		record = kept
-	}
+	record = trim(matched.spec, record)
 
 	writeJSON(w, status, s.resourceBody(matched.spec.Resource, record))
 
@@ -214,6 +200,40 @@ func identifier(matched route, r *http.Request, vars map[string]string) string {
 	return ""
 }
 
+// trim reduces a record to the fields a route answers with. The trim happens
+// before shaping, so a kept field still nests where the Recipe says it does.
+//
+// Jira's create hands back an id and a key and nothing else, so anything
+// reading created.fields.summary gets undefined. That is the shape this was
+// written for, and for a long time it was the only one it served: the trim
+// lived inside the create path, so a Recipe declaring returns on a get, an
+// update or a list was declaring nothing. The validator accepted it, the
+// emulator ignored it, and the Recipe read as though a smaller body had been
+// described when the full record was still going out.
+//
+// A listing is where that matters most. Braze's /campaigns/list hands back
+// five properties and /campaigns/details hands back a different, larger set,
+// so code reading channels off a list entry gets undefined against the real
+// API and a populated array against an emulator that ignored the trim. GitHub
+// does the same thing between its issue list and its issue detail, and so do
+// enough providers that a listing being a summary should be the assumption
+// rather than the surprise.
+func trim(spec recipe.Route, record store.Record) store.Record {
+	if len(spec.Returns) == 0 {
+		return record
+	}
+
+	kept := make(store.Record, len(spec.Returns))
+
+	for _, field := range spec.Returns {
+		if value, ok := record[field]; ok {
+			kept[field] = value
+		}
+	}
+
+	return kept
+}
+
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id := identifier(matched, r, vars)
 
@@ -231,7 +251,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 			matched.spec.Resource+": "+id)
 	}
 
-	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, record))
+	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, trim(matched.spec, record)))
 
 	return http.StatusOK
 }
@@ -367,6 +387,10 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
+	}
+
+	for i, record := range page.Records {
+		page.Records[i] = trim(matched.spec, record)
 	}
 
 	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource, r.URL.Path))
