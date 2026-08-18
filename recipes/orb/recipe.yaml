@@ -1,0 +1,547 @@
+# Orb Recipe for Cauldron
+#
+# Orb has a sandbox and the reason to emulate it anyway is that usage billing
+# is a moving target by design. An invoice for the period you are in is a
+# draft, its amount changes every time an event arrives, and reading it is
+# reading a running total rather than a bill.
+#
+# That is fine once you know it and expensive until you do. The failure is
+# always the same: somebody reads amount_due, shows it to a customer or
+# writes it into their own ledger, and the number is different an hour later
+# with nothing having gone wrong.
+#
+# Five things worth modelling exactly:
+#
+#   1. A draft invoice is not a bill. status is draft, amount_due moves as
+#      usage arrives, and the only invoice that will not change is one that
+#      has been issued. Nothing about the object announces that difference
+#      except a word.
+#   2. A closed period can still change. A backfill amends usage that has
+#      already been invoiced, so an issued invoice can be superseded and the
+#      one that replaces it carries a different total for the same dates.
+#   3. Money is a decimal string. Orb sends "1284.50" rather than 128450 or
+#      1284.5, because floating point cannot be trusted with a bill, and a
+#      client that parses it into a float has undone the reason it is a
+#      string.
+#   4. Reporting the same event twice is sometimes one event. Deduplication
+#      is by idempotency key within a window, so a retry inside the window is
+#      free and the same retry an hour later is a double charge.
+#   5. The period boundary is exclusive at the end. An invoice for the first
+#      of June to the first of July does not include the first of July, and
+#      an event at midnight on the first belongs to the next invoice.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No usage is aggregated and no total is computed. The amounts below are
+#     what a fixture puts there rather than a sum Cauldron performs, so this
+#     reproduces the shapes and the transitions and not the arithmetic.
+#   - Reporting usage events is not modelled. It is the write path that costs
+#     money, and this Recipe takes the position the other billing Recipes
+#     take.
+#   - Plan versioning, price intervals, credit ledgers and coupons are not
+#     modelled.
+#   - Orb pages by an opaque cursor with a limit, which is modelled, but its
+#     rate limits are not counted.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: orb
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.withorb.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - orb_test_cauldron0000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    cursor_field: pagination_metadata.next_cursor
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: type
+    type_field: "-"
+    status_field: status
+
+resources:
+  customer:
+    collection: data
+    id:
+      style: opaque
+      length: 20
+    fields:
+      name:
+        type: string
+        required: true
+      email:
+        type: string
+      # Yours. The only identifier in this exchange that means anything on
+      # your side of it, and the one Orb will happily let you omit.
+      external_customer_id:
+        type: string
+      currency:
+        type: string
+        default: USD
+      created_at:
+        type: string
+
+  subscription:
+    collection: data
+    id:
+      style: opaque
+      length: 20
+    fields:
+      customer_id:
+        type: string
+      # active, ended, upcoming. An ended subscription still has invoices,
+      # and the last one arrives after it ended.
+      status:
+        type: string
+        default: active
+      plan_name:
+        type: string
+        in: plan
+        as: name
+      # The period you are in. The end is exclusive, so an event at midnight
+      # on that date belongs to the next invoice rather than this one.
+      current_billing_period_start_date:
+        type: string
+      current_billing_period_end_date:
+        type: string
+      start_date:
+        type: string
+
+  invoice:
+    collection: data
+    id:
+      style: opaque
+      length: 20
+    fields:
+      customer_id:
+        type: string
+      subscription_id:
+        type: string
+      # draft, issued, paid, void, synced. Only issued and beyond are stable;
+      # a draft is a running total.
+      status:
+        type: string
+        default: draft
+      # A decimal string, because floating point cannot be trusted with a
+      # bill. Parsing it into a float undoes the reason it is a string.
+      amount_due:
+        type: string
+      currency:
+        type: string
+        default: USD
+      invoice_number:
+        type: string
+      # The dates the invoice covers. The end is exclusive.
+      period_start:
+        type: string
+        in: invoice_period
+        as: start_date
+      period_end:
+        type: string
+        in: invoice_period
+        as: end_date
+      # Set when the invoice stopped being a draft. Absent on a draft, so its
+      # presence is the reliable signal rather than the status word.
+      issued_at:
+        type: string
+      # Present when a later invoice replaced this one after a backfill, and
+      # the replacement covers the same dates with a different total.
+      voided_at:
+        type: string
+      created_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1/customers
+    resource: customer
+    operation: list
+
+  - method: GET
+    path: /v1/customers/{id}
+    resource: customer
+    operation: get
+
+  - method: GET
+    path: /v1/subscriptions
+    resource: subscription
+    operation: list
+
+  - method: GET
+    path: /v1/subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: GET
+    path: /v1/invoices
+    resource: invoice
+    operation: list
+
+  - method: GET
+    path: /v1/invoices/{id}
+    resource: invoice
+    operation: get
+
+webhooks:
+  events:
+    - invoice.issued
+    - invoice.payment_succeeded
+    - invoice.payment_failed
+    - subscription.started
+  signing:
+    scheme: hmac-sha256
+    header: X-Orb-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: "Rate limit exceeded"
+    headers:
+      Retry-After: "30"
+
+  authentication_error:
+    status: 401
+    code: authentication_error
+    message: "Invalid API key"
+
+  resource_missing:
+    status: 404
+    code: resource_not_found
+    message: "The requested resource was not found"
+
+  parameter_missing:
+    status: 400
+    code: request_validation_error
+    message: "The request was invalid"
+
+  # A draft cannot be paid, because there is nothing final to pay. The
+  # failure names the status rather than the invoice.
+  invoice_not_issued:
+    status: 400
+    code: request_validation_error
+    message: "This invoice is a draft and cannot be paid until it is issued"
+
+  # Reporting the same event twice outside the deduplication window is
+  # accepted as two events. Inside it, the second is discarded. This failure
+  # is the one that fires when a backfill overlaps a closed period.
+  backfill_overlaps:
+    status: 400
+    code: request_validation_error
+    message: "A backfill already exists for an overlapping period"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    customer:
+      - id: cus_cauldron000000001
+        name: Ada Lovelace
+        email: ada@cauldron.test
+        external_customer_id: account-8891
+        currency: USD
+        created_at: "2026-01-04T09:00:00+00:00"
+      # A second customer, so a listing has something the first one's
+      # invoices must not include.
+      - id: cus_cauldron000000002
+        name: Grace Hopper
+        email: grace@cauldron.test
+        external_customer_id: account-8892
+        currency: USD
+        created_at: "2026-02-11T09:00:00+00:00"
+
+    subscription:
+      - id: sub_cauldron000000001
+        customer_id: cus_cauldron000000001
+        status: active
+        plan_name: Metered Pro
+        current_billing_period_start_date: "2026-08-01T00:00:00+00:00"
+        # Exclusive. An event at midnight on the first of September belongs
+        # to the next invoice rather than this one.
+        current_billing_period_end_date: "2026-09-01T00:00:00+00:00"
+        start_date: "2026-01-04T09:00:00+00:00"
+
+    invoice:
+      # The period you are in. A running total, not a bill: this number moves
+      # every time an event arrives, and nothing announces that except the
+      # word draft.
+      - id: inv_cauldron000000001
+        customer_id: cus_cauldron000000001
+        subscription_id: sub_cauldron000000001
+        status: draft
+        amount_due: "1284.50"
+        currency: USD
+        period_start: "2026-08-01T00:00:00+00:00"
+        period_end: "2026-09-01T00:00:00+00:00"
+        created_at: "2026-08-01T00:05:00+00:00"
+      # July, issued and stable. The one that will not change.
+      - id: inv_cauldron000000002
+        customer_id: cus_cauldron000000001
+        subscription_id: sub_cauldron000000001
+        status: paid
+        amount_due: "1190.00"
+        currency: USD
+        invoice_number: INV-2026-07-0001
+        period_start: "2026-07-01T00:00:00+00:00"
+        period_end: "2026-08-01T00:00:00+00:00"
+        issued_at: "2026-08-01T00:05:00+00:00"
+        created_at: "2026-07-01T00:05:00+00:00"
+      # June, issued and then superseded. A backfill amended usage that had
+      # already been invoiced, so this was voided after the fact.
+      - id: inv_cauldron000000003
+        customer_id: cus_cauldron000000001
+        subscription_id: sub_cauldron000000001
+        status: void
+        amount_due: "980.00"
+        currency: USD
+        invoice_number: INV-2026-06-0001
+        period_start: "2026-06-01T00:00:00+00:00"
+        period_end: "2026-07-01T00:00:00+00:00"
+        issued_at: "2026-07-01T00:05:00+00:00"
+        voided_at: "2026-07-14T11:20:00+00:00"
+        created_at: "2026-06-01T00:05:00+00:00"
+      # The replacement, covering exactly the same dates with a larger total.
+      - id: inv_cauldron000000004
+        customer_id: cus_cauldron000000001
+        subscription_id: sub_cauldron000000001
+        status: issued
+        amount_due: "1042.75"
+        currency: USD
+        invoice_number: INV-2026-06-0002
+        period_start: "2026-06-01T00:00:00+00:00"
+        period_end: "2026-07-01T00:00:00+00:00"
+        issued_at: "2026-07-14T11:20:00+00:00"
+        created_at: "2026-07-14T11:20:00+00:00"
+
+# Conformance cases, read from the Orb API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: a draft invoice is a running total
+    source: https://docs.withorb.com/reference/invoice-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000001
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # The period is still open. This number moves every time an event
+        # arrives, and showing it to a customer shows them a figure that will
+        # be different in an hour.
+        status: draft
+        amount_due: "1284.50"
+      # Not issued, so there is no moment it became final and no number to
+      # quote.
+      absent:
+        - issued_at
+        - invoice_number
+
+  - name: and an issued one is the same shape and will not change
+    source: https://docs.withorb.com/reference/invoice-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000002
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # Identical fields, one different word, and the presence of issued_at
+        # is the reliable signal rather than the status.
+        status: paid
+        issued_at: "2026-08-01T00:05:00+00:00"
+        invoice_number: INV-2026-07-0001
+
+  - name: money is a decimal string
+    source: https://docs.withorb.com/reference/invoice-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000002
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # Not 119000 and not 1190.0. Parsing it into a float undoes the
+        # reason it is a string, and adding two of them concatenates.
+        amount_due: "1190.00"
+        currency: USD
+
+  - name: a closed period can still change
+    source: https://docs.withorb.com/reference/backfills
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000003
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # Issued on the first of July and voided a fortnight later, because a
+        # backfill amended usage that had already been invoiced. Anything
+        # that treated the issue as final has the wrong number in its ledger.
+        status: void
+        issued_at: "2026-07-01T00:05:00+00:00"
+        voided_at: "2026-07-14T11:20:00+00:00"
+        amount_due: "980.00"
+
+  - name: and the replacement covers the same dates for a different total
+    source: https://docs.withorb.com/reference/backfills
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000004
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # The same month, sixty-two pounds seventy-five more, and a different
+        # invoice number. Two invoices exist for June and only one of them
+        # counts.
+        invoice_period.start_date: "2026-06-01T00:00:00+00:00"
+        invoice_period.end_date: "2026-07-01T00:00:00+00:00"
+        amount_due: "1042.75"
+        invoice_number: INV-2026-06-0002
+
+  - name: the period end is exclusive
+    source: https://docs.withorb.com/reference/subscription-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions/sub_cauldron000000001
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # The first of September is where this period stops rather than where
+        # it ends, so an event at midnight on that date belongs to the next
+        # invoice. Rendering the range as written shows a month and a day.
+        current_billing_period_start_date: "2026-08-01T00:00:00+00:00"
+        current_billing_period_end_date: "2026-09-01T00:00:00+00:00"
+
+  - name: and July's invoice stops where August's period starts
+    source: https://docs.withorb.com/reference/invoice-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000002
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # The same instant is the end of one and the start of the next, so
+        # summing invoices by counting days double-counts a day per month
+        # unless the boundary is read as exclusive.
+        invoice_period.end_date: "2026-08-01T00:00:00+00:00"
+
+  - name: the external identifier is the one that means anything to you
+    source: https://docs.withorb.com/reference/customer-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/customers/cus_cauldron000000001
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two identifiers on one object. Orb's is opaque and yours is the one
+        # that finds the account in your own database, and it is optional, so
+        # it can be absent on a customer created through the dashboard.
+        id: cus_cauldron000000001
+        external_customer_id: account-8891
+
+  - name: a listing pages by an opaque cursor under its own object
+    source: https://docs.withorb.com/reference/pagination
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # Four invoices, two returned, and the cursor is nested rather than
+        # sitting at the top level where a client would look first.
+        data[0].id: inv_cauldron000000001
+      matches:
+        pagination_metadata.next_cursor: '.'
+
+  - name: two invoices exist for June and both are in the listing
+    source: https://docs.withorb.com/reference/invoice-model
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 200
+      body:
+        # The voided one and its replacement, side by side, with nothing
+        # separating them but a status. Summing amount_due across this array
+        # bills June twice.
+        data[2].status: void
+        data[2].amount_due: "980.00"
+        data[3].status: issued
+        data[3].amount_due: "1042.75"
+
+  - name: a draft cannot be paid
+    source: https://docs.withorb.com/reference/invoice-model
+    arm: invoice_not_issued
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices/inv_cauldron000000001
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      # There is nothing final to pay. The failure names the status rather
+      # than the invoice, and the status repeats in the body.
+      status: 400
+      body:
+        status: 400
+        type: request_validation_error
+      matches:
+        detail: 'draft and cannot be paid'
+
+  - name: a backfill over an already-amended period is refused
+    source: https://docs.withorb.com/reference/backfills
+    arm: backfill_overlaps
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/invoices
+      headers:
+        Authorization: Bearer orb_test_cauldron0000000000000000000
+    expect:
+      status: 400
+      matches:
+        detail: 'overlapping period'
