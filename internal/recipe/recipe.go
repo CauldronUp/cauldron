@@ -1148,6 +1148,18 @@ func (r *Recipe) Validate() error {
 					_, constant := resource.Constants[field]
 
 					if _, declared := resource.Fields[field]; !declared && !constant && field != "id" {
+						// The identifier is held as "id" whatever the provider
+						// calls it on the wire, and returns names the record's
+						// own keys rather than the rendered ones. Writing the
+						// wire name here is the obvious mistake, so say so
+						// instead of reporting an unknown field.
+						if field == resource.ID.Field {
+							add("%s: returns %q, which is what the identifier is called on the wire; name it \"id\", because the trim runs before the rename",
+								where, field)
+
+							continue
+						}
+
 						add("%s: returns %q, which is not a field on resource %q", where, field, route.Resource)
 					}
 				}
