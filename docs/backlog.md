@@ -103,7 +103,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Provider | Why |
 |---|---|
 | ~~LaunchDarkly~~ | Shipped. Per-environment state, variations as indices |
-| PostHog | Events, persons, feature flags |
+| ~~PostHog~~ | Shipped. A property is nested under properties and a flag is a string, a boolean or false, all in the same field |
 | Mixpanel | Events, profiles, exports |
 | Amplitude | Events, cohorts, user properties |
 
@@ -233,9 +233,9 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Increase | Assess — the state machine is the product. A transfer is pending, then submitted, then it settles or returns days later, and a return can arrive after everything downstream has treated it as done |
-| Modern Treasury | Assess — payment orders, ledgers, reconciliation. Double-entry means an amount appears twice with opposite signs and summing naively gives zero |
-| Column | Assess — ACH returns and their reason codes |
+| ~~Increase~~ | Shipped. A return is a new object days later and the transfer stays unmarked |
+| ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, and one direction means the opposite sign |
+| ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two different problems |
 | Dwolla | Assess — transfers, funding sources, micro-deposit verification |
 | Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
 | ~~Marqeta~~ | Shipped. An authorization and its clearing are two transactions for different amounts; three balances and only one is spendable; the PAN never leaves. JIT funding is not modelled and the Recipe says why |
@@ -263,7 +263,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Bugsnag | Assess — errors, events, the difference between an error and its occurrences |
+| ~~Bugsnag~~ | Shipped. An error is not its occurrences, and the counts are on the error |
 | Honeybadger | Assess — faults and notices |
 | Grafana Cloud | Assess — dashboards, alert rules, the Prometheus-shaped query API |
 | Honeycomb | Assess — datasets, triggers, query results |
@@ -275,15 +275,15 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Netlify | Assess — deploys are asynchronous and a deploy id exists before the site is live |
+| ~~Netlify~~ | Shipped. A deploy id exists long before the site is live |
 | Render | Assess — services, deploys, the build-then-live gap |
 | Fly.io | Assess — machines, apps, the Machines API against the older platform API |
 | Heroku | Assess — the API still uses `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
 | Linode | Assess — instances and the async provisioning lifecycle, beside Vultr and DigitalOcean |
 | Hetzner Cloud | Assess — servers, actions. Every mutation returns an action object you have to poll, rather than the thing you changed |
 | Scaleway | Assess — instances and object storage |
-| Docker Hub | Assess — repositories, tags, the rate limit that is counted per IP and not per token |
-| npm registry | Assess — packages, versions, dist-tags. Unpublished versions leave a tombstone |
+| ~~Docker Hub~~ | Shipped. The rate limit is counted per IP, not per token |
+| ~~npm registry~~ | Shipped. Unpublished versions leave a tombstone, and dist-tags are a flat map |
 | PyPI | Assess — the JSON API is read-only and upload is a separate protocol entirely |
 | Codecov | Assess — coverage reports and the commit they attach to |
 | SonarCloud | Assess — issues, quality gates, the gate status arriving after analysis finishes |
@@ -303,7 +303,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Svix | Assess — the delivery-attempt model, exponential backoff, the endpoint that gets disabled after repeated failure |
+| ~~Svix~~ | Shipped. Delivery attempts, backoff, and the endpoint disabled after repeated failure |
 | Knock | Assess — workflows, preferences, batching |
 | Courier | Assess — routing across channels and the fallback that fires silently |
 | Novu | Assess — subscribers, workflows, digest |
@@ -354,8 +354,8 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Persona | Assess — inquiries, verifications, the decision that arrives by webhook minutes later |
-| Onfido | Assess — applicants, checks, reports. A check is complete and its report can still be `consider` rather than `clear` |
+| ~~Persona~~ | Shipped. The decision arrives by webhook minutes after the inquiry is created |
+| ~~Onfido~~ | Shipped. A check is complete and its report can still be consider rather than clear |
 | Veriff | Assess — sessions and decisions |
 | Middesk | Assess — business verification and its partial matches |
 | Alloy | Assess — evaluations and their outcomes |
@@ -381,7 +381,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Firecrawl | Assess — crawl jobs are asynchronous and partial results are readable before the job finishes |
+| ~~Firecrawl~~ | Shipped. Partial results are readable before the crawl finishes |
 | Apify | Assess — actor runs, datasets, the run that succeeds with zero items |
 | ScrapingBee | Assess — a failed fetch is a successful API call |
 | Browserless | Assess — sessions and timeouts |
@@ -397,7 +397,7 @@ the header says so.
 | Lemon Squeezy | Assess — orders, subscriptions, the merchant-of-record tax handling |
 | Gumroad | Assess — products and sales |
 | Polar | Assess — subscriptions and benefits |
-| Orb | Assess — usage-based billing where an invoice is not final until the period closes |
+| ~~Orb~~ | Shipped. An invoice is not final until the period closes |
 | Metronome | Assess — usage events and their deduplication window |
 | Lago | Assess — open source usage billing, self-hosted and cloud behaving differently |
 | Zuora | Assess — very large, and the object model predates REST conventions |
@@ -596,6 +596,120 @@ transfers alone, and say so in the header.
 |---|---|
 | ~~Docker Hub~~ | Shipped. The rate limit is a count and a window glued together, latest can be older, two tags can be one image |
 | ~~npm registry~~ | Shipped. A tombstone in time that is absent from versions, latest is not the highest, deprecation is the presence of a string |
+
+## Third sweep
+
+Fifty-two more, none of them already above. The bar is the same as the first two
+sweeps: a provider earns a row by having something specific an emulator can
+pin and a mock cannot, not by being popular. A row that says "the usual CRUD"
+is a row that should not be here.
+
+### Brokerage and market data
+
+An order is not a fill, and the gap between them is where the bugs live.
+
+| Provider | Why |
+|---|---|
+| Alpaca | An order is accepted, then partially filled, then filled, and a partial fill is a real position at a price nobody asked for. filled_avg_price is null until it is not |
+| Tradier | The same order in two accounts is two objects, and the account is a path segment rather than a field |
+| Polygon.io | Aggregates are bucketed and a bucket with no trades is absent rather than zero, so a chart drawn from the response has invisible gaps |
+| Finnhub | The free tier truncates history rather than refusing, so a backtest runs on less data than it asked for and says nothing |
+
+### Open banking and financial aggregation
+
+| Provider | Why |
+|---|---|
+| TrueLayer | Consent expires on a schedule the bank sets, not you, and a working connection stops working on a date you were told once |
+| GoCardless Bank Account Data | Pending and booked are two lists for the same transaction, and moving between them changes its id |
+| Salt Edge | A refresh is asynchronous and the connection reports success before the new transactions exist |
+| Codat | Sync status and data are separate reads, so data is queryable while the sync that would change it is still running |
+
+### Unified APIs
+
+The normalisation is the product, which means the emulation has to reproduce
+what normalisation does not fix.
+
+| Provider | Why |
+|---|---|
+| Merge.dev | A field present for one downstream provider is null for another and the shape does not say which. remote_data is opt-in and differently shaped per provider |
+| Finch | Employment data arrives at different completeness per payroll provider, and a missing field and an unsupported field are the same null |
+| Nango | The proxy passes the provider's own errors through unchanged, so error handling has to know both vocabularies |
+| Argyle | An account is connected before it is scanned, and the payroll history arrives over minutes |
+
+### Payments outside the usual five
+
+| Provider | Why |
+|---|---|
+| Razorpay | Capture is a separate call and an uncaptured authorisation is auto-refunded after a fixed window, so doing nothing is a decision |
+| Paystack | Amounts are in kobo, the smallest unit of a currency whose smallest unit most code has never met |
+| Flutterwave | The verify endpoint is the source of truth and the redirect parameters are not, which is the whole of the fraud surface |
+| Mercado Pago | A payment can sit in in_process for days, and the status detail rather than the status says why |
+| dLocal | The settlement currency is not the charge currency and the rate is fixed at a moment you did not choose |
+| Rapyd | Payouts and payments have separate id namespaces that look identical |
+| Worldpay | Two APIs, one modern and one not, and the older one is what most accounts are still on |
+| FastSpring | One purchase is an order, a subscription and a sale, with three different ids, and which one a webhook names depends on the event |
+
+### Notification and messaging infrastructure
+
+| Provider | Why |
+|---|---|
+| Xendit | A virtual account exists before it can receive money, and the callback is the only signal that it can |
+| Midtrans | transaction_status and fraud_status are two fields, and a payment is only safe when both agree |
+| PayU | The same merchant has different endpoints per country and the response fields differ between them |
+| Gorgias | A ticket and its messages page separately, so a message can arrive between the two reads and belong to neither |
+| Kustomer | A conversation is a customer timeline rather than a thread, so assignment is a state of the conversation and not of any message |
+| Jotform | Form fields are keyed by numeric ids that change when the form is edited, so yesterday's submission maps to today's form incorrectly |
+
+### AI and inference
+
+| Provider | Why |
+|---|---|
+| Cohere | Token counts come back per response and billing is on both directions, so a client counting its own prompt is counting wrong |
+| Mistral | Streaming and non-streaming answer with different shapes for the same request |
+| Together AI | Model names change and a retired model answers 404 rather than falling back |
+| Groq | Rate limits are on tokens per minute as well as requests, and the headers report both |
+| Meilisearch | Indexing is asynchronous with a task id, so a document is accepted and not yet searchable, and the write returns before the read would find it |
+| Hugging Face Inference | A cold model answers 503 with an estimated_time, and the correct behaviour is to wait rather than retry |
+| Langfuse | Traces are ingested asynchronously and are not readable immediately after being written |
+
+### Data movement and warehousing
+
+| Provider | Why |
+|---|---|
+| Fivetran | A sync is triggered and the result polled, and a sync already running answers success without starting a new one |
+| Airbyte | A job has attempts, and an attempt failing is not the job failing |
+| Hightouch | A run reports rows attempted and rows rejected separately, so a run with every row rejected is still successful |
+| dbt Cloud | A run has steps, and the run status is not the step status |
+| Snowflake SQL API | A statement answers with a handle instead of results when it is slow, and the same endpoint returns both shapes |
+| ClickHouse Cloud | Results are paged by the client rather than the server, and the format is chosen by a parameter |
+
+### Incident response and observability
+
+| Provider | Why |
+|---|---|
+| incident.io | Status and severity move independently and both have custom values per workspace, so neither is an enum you can hard-code |
+| Opsgenie | An alert and an incident are separate objects with separate lifecycles, and closing one does not close the other |
+| Checkly | A check run has assertions, and a passing run containing a failed assertion is possible |
+| Rev.ai | A job is asynchronous and the transcript is a separate fetch with its own content types, so the job being done is not the transcript being readable |
+| Perplexity | Citations are a separate array whose indices point into the text, so dropping either half makes the other meaningless |
+
+### Auth, one more time
+
+| Provider | Why |
+|---|---|
+| PropelAuth | Org membership and role are separate reads, and a user in no org is valid |
+| Helicone | It is a proxy, so a single call can fail as the upstream provider or as Helicone, and the two error shapes are unrelated |
+| Fireworks AI | Model names are paths rather than identifiers, and a cold deployment answers slowly rather than failing |
+| SurveyMonkey | A response in progress is returned and then changes, so a page read twice is not the same page |
+
+### Storage and media
+
+| Provider | Why |
+|---|---|
+| Bunny.net | Purging is eventually consistent and the API confirms the request rather than the purge |
+| Transloadit | An assembly is asynchronous and partial results are readable, which is a crawl's trap in a different shape |
+| Elastic Cloud | A deployment is created before it is reachable, and the endpoint appears in a later read than the one that created it |
+| Rootly | An incident timeline is append-only and events arrive out of order, so the last write is not the latest event |
 
 ## Assessed and deliberately not done
 
