@@ -62,12 +62,12 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
 			w.Header().Set("Allow", strings.Join(allowed, ", "))
-			exchange.Status = s.writeRecipeError(w, "method_not_allowed", 405, "method_not_allowed", "This method is not supported on this path.")
+			exchange.Status = s.writeRecipeError(w, "method_not_allowed", 405, "method_not_allowed", "This method is not supported on this path.", r.Method+" "+r.URL.Path)
 
 			return
 		}
 
-		exchange.Status = s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.")
+		exchange.Status = s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.", r.URL.Path)
 
 		return
 	}
@@ -890,7 +890,7 @@ func (s *Sandbox) collectionName(resource, override string) string {
 
 func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string) int {
 	if errors.Is(err, store.ErrUnknownResource) {
-		return s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.")
+		return s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.", resource)
 	}
 
 	return s.writeRecipeError(
@@ -1010,6 +1010,50 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 //
 // A fourth argument is the request-specific detail, such as the parameter that
 // was missing. A Recipe reaches it through {detail} in its message.
+// builtinFallbacks maps the failures the runtime produces itself onto the
+// declared error whose shape they should borrow.
+//
+// An unrecognised path, a method a route does not take and a body that will
+// not parse are all produced by the handler rather than declared by a Recipe,
+// and they used to carry their own internal name as both the code and the
+// category. No provider has an error type called "unknown_route". Every Stripe
+// 404 said type "unknown_route" where the real one says
+// "invalid_request_error", and no Recipe declared any of these three, so this
+// was live on all 97 of them, on the most commonly exercised error path there
+// is. Retry and branching logic keyed on the category took one path locally
+// and another in production.
+//
+// A Recipe may still declare any of these names itself, and that wins.
+var builtinFallbacks = map[string]string{
+	"unknown_route":      "resource_missing",
+	"method_not_allowed": "resource_missing",
+	"conflict":           "invalid_request",
+	"invalid_request":    "parameter_missing",
+}
+
+// resolveBuiltin follows the fallback chain until it reaches a name the Recipe
+// declares, and returns the original when it reaches none.
+func resolveBuiltin(r *recipe.Recipe, name string) string {
+	seen := map[string]bool{}
+
+	for current := name; !seen[current]; {
+		if _, declared := r.Errors[current]; declared {
+			return current
+		}
+
+		seen[current] = true
+
+		next, ok := builtinFallbacks[current]
+		if !ok {
+			break
+		}
+
+		current = next
+	}
+
+	return name
+}
+
 func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback ...any) int {
 	status := http.StatusInternalServerError
 	code := name
@@ -1035,8 +1079,19 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// Extra body properties this particular failure carries.
 	var extra map[string]any
 
-	if defined, ok := s.recipe.Errors[name]; ok {
-		status = defined.Status
+	resolved := resolveBuiltin(s.recipe, name)
+
+	// A Recipe that declares this failure by name owns all of it. One that
+	// only lends its shape to a built-in lends the category, the code and the
+	// extra fields, and not the status: borrowing a 404's status for a 405
+	// would change what the failure is, which is a worse lie than the invented
+	// category this replaced.
+	borrowed := resolved != name
+
+	if defined, ok := s.recipe.Errors[resolved]; ok {
+		if !borrowed {
+			status = defined.Status
+		}
 
 		if defined.Code != "" {
 			code = defined.Code
@@ -1051,7 +1106,11 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		// nothing else. A Recipe that wants the request-specific detail asks
 		// for it with {detail}, so the choice is the Recipe author's rather
 		// than a hardcoded guess in the handler.
-		if defined.Message != "" {
+		// The wording travels only when the lender describes the same status.
+		// GitHub's 404 really does say "Not Found" and nothing else, and that
+		// is worth having; its wording on a 405 would be a sentence about the
+		// wrong thing.
+		if defined.Message != "" && (!borrowed || defined.Status == status) {
 			message = strings.ReplaceAll(defined.Message, "{detail}", detail)
 		}
 
