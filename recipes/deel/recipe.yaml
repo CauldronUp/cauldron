@@ -1,0 +1,510 @@
+# Deel Recipe for Cauldron
+#
+# Deel has a sandbox and it is behind a partner application: you ask for
+# access and somebody decides. It is also a shared demo organisation, so a
+# suite running against it competes with whatever the last run left behind.
+#
+# The reason to emulate it is that this API employs people. A contract is a
+# legal agreement with a human being in another country, and signing one, or
+# terminating one, is not something a test should be able to do by accident.
+# It joins Gusto, Bill.com and Mercury as the fourth API here where a mistake
+# in a test has consequences outside the codebase.
+#
+# Four things worth modelling exactly:
+#
+#   1. A contract that is in_progress is signed and running. The word reads
+#      like a draft and means the opposite: work is happening and invoices
+#      are accruing. waiting_for_client_sign is the one that means nothing has
+#      started, and it sorts nowhere near it alphabetically or logically.
+#   2. Amounts are decimal strings with a separate currency, and a contract's
+#      currency is not the organisation's. A team paying in four currencies
+#      gets four different scales in one list, and summing the amounts without
+#      converting produces a number with no meaning at all.
+#   3. An employee and a contractor are the same endpoint and different
+#      objects. A contractor has a contract and no employment record; an
+#      employee has both. Code that reads the employment fields finds nothing
+#      on half a workforce.
+#   4. A terminated contract keeps its invoices and its history, and the
+#      termination date is not the last payment date. Final invoices arrive
+#      after it, so a report cut off at the termination date loses the last
+#      one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is signed or terminated here. Which state a contract holds is
+#     what a fixture puts there.
+#   - Contract creation and termination are deliberately not modelled, for the
+#     same reason Mercury's payment creation is not: an emulator that makes
+#     employing or dismissing somebody easy to exercise is inviting the
+#     mistake its own header warns about.
+#   - Deel's OAuth flow, scopes and token refresh are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: deel
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.deel.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_deel_token_000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # Under page, not at the top level, and the total is of everything that
+    # matched rather than of what arrived.
+    count_field: page.total_rows
+    cursor_field: page.cursor
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  contract:
+    collection: data
+    id:
+      style: opaque
+      length: 12
+    fields:
+      title:
+        type: string
+        required: true
+      # in_progress means signed and running, which reads like a draft and
+      # is the opposite. waiting_for_client_sign is the one where nothing has
+      # started.
+      status:
+        type: string
+        default: waiting_for_client_sign
+      # ongoing_time_based, milestones, pay_as_you_go, eor. The type decides
+      # what the amount below even means: a rate, a total, or nothing.
+      type:
+        type: string
+        default: ongoing_time_based
+      # A decimal string with the currency beside it, and the currency is the
+      # contract's rather than the organisation's.
+      rate_amount:
+        type: string
+        in: rate
+        as: amount
+      rate_currency:
+        type: string
+        in: rate
+        as: currency
+      rate_scale:
+        type: string
+        in: rate
+        as: scale
+      worker_name:
+        type: string
+        in: worker
+        as: name
+      worker_country:
+        type: string
+        in: worker
+        as: country
+      # Absent on a contractor, present on an employee. The same endpoint
+      # returns both, so code reading the employment fields finds nothing on
+      # half a workforce.
+      employment_id:
+        type: string
+      start_date:
+        type: string
+      # Set on a terminated contract, and it is not the last payment date.
+      # Final invoices arrive after it.
+      completion_date:
+        type: string
+
+  invoice:
+    collection: data
+    id:
+      style: opaque
+      length: 12
+    fields:
+      contract_id:
+        type: string
+      # A decimal string again, in the contract's currency rather than the
+      # organisation's.
+      total:
+        type: string
+      currency:
+        type: string
+        default: USD
+      # approved, paid, processing, pending. Approved is not paid: it means
+      # somebody signed it off and the money has not moved.
+      status:
+        type: string
+        default: pending
+      issued_at:
+        type: string
+      # Set when the money actually moved, and absent otherwise, so its
+      # presence is the reliable signal rather than the status.
+      paid_at:
+        type: string
+      label:
+        type: string
+
+routes:
+  - method: GET
+    path: /rest/v2/contracts
+    resource: contract
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /rest/v2/contracts/{id}
+    resource: contract
+    operation: get
+
+  - method: GET
+    path: /rest/v2/invoice-adjustments
+    resource: invoice
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+
+  - method: GET
+    path: /rest/v2/invoice-adjustments/{id}
+    resource: invoice
+    operation: get
+
+webhooks:
+  events:
+    - contract.created
+    - contract.signed
+    - contract.terminated
+    - invoice.paid
+  signing:
+    scheme: hmac-sha256
+    header: X-Deel-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: Too many requests
+
+  authentication_error:
+    status: 401
+    message: "The access token is invalid or has expired."
+
+  resource_missing:
+    status: 404
+    message: "Resource not found: {detail}"
+
+  parameter_missing:
+    status: 422
+    message: "{detail} is required"
+
+  # A token scoped to read cannot change anything, and the failure names the
+  # permission rather than the token.
+  insufficient_scope:
+    status: 403
+    message: "The token does not have permission to perform this action."
+
+  # A contract that is not signed cannot be invoiced against. It exists, it
+  # is listed, and nothing can be billed to it.
+  contract_not_signed:
+    status: 422
+    message: "The contract has not been signed and cannot be invoiced."
+
+  # A worker whose compliance documents are outstanding blocks payment. The
+  # contract is signed and the money cannot move.
+  compliance_incomplete:
+    status: 422
+    message: "The worker has outstanding compliance requirements and cannot be paid."
+
+fixtures:
+  empty: {}
+
+  small-org:
+    contract:
+      # Signed and running. in_progress reads like a draft and means work is
+      # happening and invoices are accruing.
+      - id: con000000001
+        title: Backend engineering
+        status: in_progress
+        type: ongoing_time_based
+        rate_amount: "6500.00"
+        rate_currency: USD
+        rate_scale: monthly
+        worker_name: Ada Lovelace
+        worker_country: GB
+        start_date: "2025-09-01"
+      # Nothing has started. Sent and unsigned, and the word for it sorts
+      # nowhere near the one above.
+      - id: con000000002
+        title: Design contract
+        status: waiting_for_client_sign
+        type: pay_as_you_go
+        rate_amount: "450.00"
+        # A different currency from the contract above, in the same list. The
+        # amounts cannot be summed without converting them.
+        rate_currency: EUR
+        rate_scale: daily
+        worker_name: Grace Hopper
+        worker_country: NL
+      # An employee rather than a contractor, so it has an employment record
+      # the others do not.
+      - id: con000000003
+        title: Operations lead
+        status: in_progress
+        type: eor
+        rate_amount: "7200.00"
+        rate_currency: GBP
+        rate_scale: monthly
+        worker_name: Katherine Johnson
+        worker_country: GB
+        employment_id: emp000000001
+        start_date: "2025-11-01"
+      # Terminated. It keeps its invoices, and the final one below is dated
+      # after this.
+      - id: con000000004
+        title: Former contractor
+        status: completed
+        type: ongoing_time_based
+        rate_amount: "3000.00"
+        rate_currency: USD
+        rate_scale: monthly
+        worker_name: Former Worker
+        worker_country: US
+        start_date: "2025-03-01"
+        completion_date: "2026-01-09"
+
+    invoice:
+      # Approved is not paid. Somebody signed it off and the money has not
+      # moved.
+      - id: inv000000001
+        contract_id: con000000001
+        total: "6500.00"
+        currency: USD
+        status: approved
+        issued_at: "2026-01-01"
+        label: January
+      - id: inv000000002
+        contract_id: con000000001
+        total: "6500.00"
+        currency: USD
+        status: paid
+        issued_at: "2025-12-01"
+        paid_at: "2025-12-05"
+        label: December
+      # The final invoice for the terminated contract, issued after the
+      # termination date. A report cut off at that date loses this.
+      - id: inv000000003
+        contract_id: con000000004
+        total: "1500.00"
+        currency: USD
+        status: paid
+        issued_at: "2026-01-15"
+        paid_at: "2026-01-20"
+        label: Final
+
+# Conformance cases, read from the Deel API reference rather than observed
+# against a live organisation. The verify report says so.
+conformance:
+  - name: in_progress means signed and running
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000001
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Work is happening and invoices are accruing. The word reads like a
+        # draft and means the opposite.
+        data.status: in_progress
+        data.start_date: "2025-09-01"
+
+  - name: the status that means nothing has started is a different word
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000002
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Sent and unsigned. Nothing is accruing, and this sorts nowhere near
+        # in_progress alphabetically or logically.
+        data.status: waiting_for_client_sign
+      absent:
+        - data.start_date
+
+  - name: one list carries several currencies
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Dollars, euros and pounds in one response. Summing the amounts
+        # without converting produces a number with no meaning at all.
+        data[0].rate.currency: USD
+        data[1].rate.currency: EUR
+        data[2].rate.currency: GBP
+
+  - name: a rate is a decimal string with a scale beside it
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000002
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Four hundred and fifty a day, not a month. The scale changes what
+        # the number means by a factor of twenty, and the amount is text so
+        # adding two concatenates.
+        data.rate:
+          amount: "450.00"
+          scale: daily
+
+  - name: an employee has an employment record and a contractor does not
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000003
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # An EOR employee. The same endpoint returns contractors with no such
+        # field, so code reading it finds nothing on half a workforce.
+        data.employment_id: emp000000001
+        data.type: eor
+
+  - name: the contractor beside them has no such field
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000001
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        data.type: ongoing_time_based
+      absent:
+        - data.employment_id
+
+  - name: approved is not paid
+    source: https://developer.deel.com/reference/getinvoiceadjustmentlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/invoice-adjustments/inv000000001
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Signed off, and the money has not moved. The absence below is the
+        # reliable signal rather than the status word.
+        data.status: approved
+        data.total: "6500.00"
+      absent:
+        - data.paid_at
+
+  - name: a final invoice is dated after the termination
+    source: https://developer.deel.com/reference/getinvoiceadjustmentlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/invoice-adjustments/inv000000003
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # The contract completed on the ninth and this was issued on the
+        # fifteenth and paid on the twentieth. A report cut off at the
+        # termination date loses it entirely.
+        data.contract_id: con000000004
+        data.issued_at: "2026-01-15"
+        data.paid_at: "2026-01-20"
+
+  - name: the terminated contract it belongs to
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con000000004
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Completed on the ninth, six days before the invoice above was even
+        # issued. The completion date is not the last payment date.
+        data.status: completed
+        data.completion_date: "2026-01-09"
+
+  - name: the paging fields are named page.total_rows and page.cursor
+    source: https://developer.deel.com/reference/getcontractlist
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 200
+      body:
+        # Four matched, one returned. The total is of everything rather than
+        # of what arrived, so a progress bar sized from the array length is
+        # wrong by three.
+        page.total_rows: 4
+      matches:
+        page.cursor: '.'
+
+  - name: failures are an array with no code
+    source: https://developer.deel.com/reference
+    fixture: small-org
+    request:
+      method: GET
+      path: /rest/v2/contracts/con999999999
+      headers:
+        Authorization: Bearer cauldron_deel_token_000000000000
+    expect:
+      status: 404
+      matches:
+        errors[0].message: 'Resource not found'
+      # No code and no type, so anything that needs to branch has to match on
+      # prose.
+      absent:
+        - errors[0].code
+        - message
+        - error
