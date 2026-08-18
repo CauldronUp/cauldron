@@ -568,7 +568,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Bugsnag | An error and its occurrences are different objects, and the counts on the first are of the second |
+| ~~Bugsnag~~ | Shipped. An error carries counts and no stack trace, fixed is not terminal, and severity is a different question from unhandled |
 | Grafana Cloud | Assess — dashboards, alert rules, and a Prometheus-shaped query API that is not REST |
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | PostHog | Events, persons, and feature flags in one product, where flag evaluation is local and the API is only the source |
