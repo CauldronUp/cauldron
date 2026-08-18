@@ -81,6 +81,18 @@ func commands() map[string]command {
 			usage:   "cauldron recipe list | cauldron recipe info <name>",
 			run:     runRecipe,
 		},
+		"import": {
+			name:    "import",
+			summary: "Draft a Recipe from an OpenAPI description",
+			usage:   "cauldron import [--name x] [--out path] <spec.yaml|spec.json>",
+			run:     runImport,
+		},
+		"check": {
+			name:    "check",
+			summary: "Report where a Recipe and an OpenAPI description disagree",
+			usage:   "cauldron check [-a] [--base /v1] <recipe> <spec.yaml|spec.json>",
+			run:     runCheck,
+		},
 		"verify": {
 			name:    "verify",
 			summary: "Check a Recipe against what the provider is documented to do",
