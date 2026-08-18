@@ -70,7 +70,9 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 
 	sandbox, ok := s.Sandbox(head)
 	if !ok {
-		s.writeError(w, http.StatusNotFound, "No recipe "+head+" is running.")
+		// Naming what is mounted, because a misspelling is the usual reason
+		// and the answer costs nothing to include.
+		s.writeError(w, http.StatusNotFound, capitalise(s.notRunning(head).Error())+".")
 		return
 	}
 
@@ -421,4 +423,14 @@ func intFrom(value any) int {
 	}
 
 	return 0
+}
+
+// capitalise renders an error as the start of a sentence, because the control
+// plane's messages are sentences and Go's errors are not.
+func capitalise(text string) string {
+	if text == "" {
+		return text
+	}
+
+	return strings.ToUpper(text[:1]) + text[1:]
 }

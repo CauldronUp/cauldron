@@ -109,11 +109,7 @@ func recipeInfo(ctx *context, args []string) int {
 		var notBundled *recipe.ErrNotBundled
 
 		if asNotBundled(err, &notBundled) {
-			fmt.Fprintf(ctx.stderr, "cauldron: no recipe named %q\n", name)
-
-			if available := recipe.Bundled(); len(available) > 0 {
-				fmt.Fprintf(ctx.stderr, "available: %s\n", strings.Join(available, ", "))
-			}
+			fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
 
 			return 1
 		}
