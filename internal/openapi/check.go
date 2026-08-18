@@ -119,6 +119,78 @@ func Check(r *recipe.Recipe, doc *Document, basePath string) []Finding {
 	return findings
 }
 
+// Paging reports the query parameters a description declares for the routes a
+// Recipe models, so a paging declaration can be verified rather than guessed.
+//
+// This exists because 146 routes shipped declaring a paging style with no
+// parameter names on it. That was harmless while the style was read by
+// nothing, and became a claim the moment it was implemented: without names the
+// runtime reads "limit" and the style's own word, which is right for some
+// providers and wrong for plenty. Filling in sixty-one providers' names from
+// memory is exactly the guessing this project refuses to do anywhere else, and
+// a description states them outright.
+func Paging(r *recipe.Recipe, doc *Document, basePath string) []PagingReport {
+	declared := indexPaths(doc, basePath)
+
+	var out []PagingReport
+
+	for _, route := range r.Routes {
+		if route.Operation != "list" {
+			continue
+		}
+
+		match, ok := declared.find(route.Path)
+		if !ok {
+			out = append(out, PagingReport{Path: route.Path, Found: false})
+
+			continue
+		}
+
+		op := operationFor(doc.Paths[match.template], route.Method)
+		if op == nil {
+			out = append(out, PagingReport{Path: route.Path, Found: false})
+
+			continue
+		}
+
+		report := PagingReport{
+			Path:     route.Path,
+			Found:    true,
+			Declared: route.Pagination,
+		}
+
+		for _, parameter := range append(append([]Parameter{}, doc.Paths[match.template].Parameters...), op.Parameters...) {
+			// Resolved, because a description that declares its paging
+			// parameters once and references them everywhere is the common
+			// case rather than the exception. DigitalOcean's reported no
+			// parameters at all until this was followed, which would have made
+			// the tool answer "the description does not say" about a
+			// description that says it plainly.
+			parameter = doc.ResolveParameter(parameter)
+
+			if parameter.In != "query" {
+				continue
+			}
+
+			report.Query = append(report.Query, parameter.Name)
+		}
+
+		sort.Strings(report.Query)
+
+		out = append(out, report)
+	}
+
+	return out
+}
+
+// PagingReport is what a description says about one listing's parameters.
+type PagingReport struct {
+	Path     string
+	Found    bool
+	Query    []string
+	Declared recipe.Pagination
+}
+
 // checkStatus compares a route's declared status against the description's.
 func checkStatus(doc *Document, route recipe.Route, op *Operation, where string) []Finding {
 	declared := route.Status

@@ -89,6 +89,7 @@ func runCheck(ctx *context, args []string) int {
 	set.SetOutput(ctx.stderr)
 
 	base := set.String("base", "", "a path prefix the description omits, e.g. /v1")
+	paging := set.Bool("paging", false, "report the query parameters each listing declares, for filling in paging names")
 	all := set.Bool("a", false, "report what the description has and the Recipe does not, as well as disagreements")
 
 	if err := set.Parse(args); err != nil {
@@ -113,6 +114,22 @@ func runCheck(ctx *context, args []string) int {
 		fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
 
 		return 1
+	}
+
+	if *paging {
+		for _, report := range openapi.Paging(r, doc, *base) {
+			if !report.Found {
+				fmt.Fprintf(ctx.stdout, "  %s: not in the description\n", report.Path)
+
+				continue
+			}
+
+			fmt.Fprintf(ctx.stdout, "  %s\n    declares: style=%q limit=%q cursor=%q\n    query:    %s\n",
+				report.Path, report.Declared.Style, report.Declared.LimitParam, report.Declared.CursorParam,
+				strings.Join(report.Query, ", "))
+		}
+
+		return 0
 	}
 
 	findings := openapi.Check(r, doc, *base)

@@ -1055,6 +1055,22 @@ func (r *Recipe) Validate() error {
 			add("%s: declares deleted_body on a %s, which never deletes anything", where, route.Operation)
 		}
 
+		// Offset and page numbering are only paging if the runtime reads the
+		// parameter the caller sends, and there is no universal spelling: one
+		// provider says per_page, another PageSize, another count. Without
+		// both names the runtime reads "limit" and the style's own word, which
+		// is right for some and wrong for plenty, and the wrongness is
+		// invisible — the page size is ignored, one full page comes back, and
+		// the caller's paging loop runs once and passes.
+		//
+		// 146 routes declared a style with no names, which was harmless while
+		// nothing read the style and became a claim the moment something did.
+		if s := route.Pagination.Style; s == "offset" || s == "page" {
+			if route.Pagination.LimitParam == "" || route.Pagination.CursorParam == "" {
+				add("%s: declares %s paging without naming the provider's parameters, so the runtime would read `limit` and %q, which is a guess; set limit_param and cursor_param", where, s, s)
+			}
+		}
+
 		if len(route.Returns) > 0 {
 			if route.EmptyBody {
 				add("%s: declares returns and empty_body, and there is no body for the fields to be in", where)

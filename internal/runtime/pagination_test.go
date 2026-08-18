@@ -40,31 +40,36 @@ func pagedSandbox(t *testing.T, name, fixture string) *Sandbox {
 // processes page one a second time — which for a payments or messaging
 // integration is repeated side effects rather than a wasted request.
 func TestAnOffsetPagedListingHonoursTheOffset(t *testing.T) {
-	s := pagedSandbox(t, "clerk", "small-instance")
+	// PagerDuty, whose own OpenAPI description declares limit and offset, so
+	// the parameter names this exercises are verified rather than assumed.
+	// Clerk was here first and its paging style has been withdrawn: it was
+	// declared without naming its parameters, and nobody had checked what
+	// Clerk calls them.
+	s := pagedSandbox(t, "pagerduty", "small-account")
 
 	get := func(query string) []any {
-		req := httptest.NewRequest(http.MethodGet, "/v1/users"+query, nil)
-		req.Header.Set("Authorization", "Bearer sk_test_cauldron")
+		req := httptest.NewRequest(http.MethodGet, "/incidents"+query, nil)
+		req.Header.Set("Authorization", "Token token=cauldron_api_key")
 
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
-			t.Fatalf("GET /v1/users%s = %d\n%s", query, rec.Code, rec.Body)
+			t.Fatalf("GET /incidents%s = %d\n%s", query, rec.Code, rec.Body)
 		}
 
 		var body struct {
-			Data []any `json:"data"`
+			Incidents []any `json:"incidents"`
 		}
 
 		decodeInto(t, rec, &body)
 
-		return body.Data
+		return body.Incidents
 	}
 
 	all := get("?limit=100")
 	if len(all) < 3 {
-		t.Fatalf("expected the fixture to seed at least 3 users, got %d", len(all))
+		t.Fatalf("expected the fixture to seed at least 3 incidents, got %d", len(all))
 	}
 
 	// Walking one at a time must visit every record exactly once, which is the
