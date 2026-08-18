@@ -1085,7 +1085,13 @@ func (r *Recipe) Validate() error {
 			add("resource %q must declare an id.prefix, or use id.style opaque if the provider's identifiers have none", name)
 		}
 
-		if len(resource.Fields) == 0 {
+		// A resource with no fields is almost always an unfinished one, and
+		// the exception is narrow enough to name: a receipt. Knock's trigger
+		// answers with a workflow_run_id and nothing else, and describing
+		// that as a resource with one invented field would put a property on
+		// the wire the provider never sends. A receipt is created and never
+		// read back, so if anything reads this resource it is not one.
+		if len(resource.Fields) == 0 && len(resource.Constants) == 0 && !onlyCreated(r, name) {
 			add("resource %q has no fields", name)
 		}
 
@@ -1393,6 +1399,17 @@ func (r *Recipe) Validate() error {
 				add("%s: defaults to %q and no fixture holds a %s the default would hide, so the listing looks the same with the filter and without it",
 					fwhere, f.Default, route.Resource)
 			}
+		}
+
+		// A receipt has no fields, so nothing filters the request on the way
+		// in and the whole payload comes back out. That is the helpful kind
+		// of wrong: a client reads its own request back and believes the
+		// provider confirmed it, locally, for as long as the test suite is
+		// the only thing calling.
+		if route.Operation == "create" && len(route.Returns) == 0 &&
+			len(r.Resources[route.Resource].Fields) == 0 {
+			add("%s: resource %q declares no fields, so this create would echo the request body back; set returns to say what the provider actually sends",
+				where, route.Resource)
 		}
 
 		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" {
@@ -1717,6 +1734,30 @@ func (r *Recipe) Events() []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// onlyCreated reports whether every route touching a resource creates it.
+//
+// Such a resource is a receipt: the provider hands back an identifier and
+// nothing else, and there is nowhere to go and read it. Knock's trigger is
+// one. A resource that is read anywhere is not, and a resource with no fields
+// that is read anywhere is describing a response nobody can use.
+func onlyCreated(r *Recipe, resource string) bool {
+	touched := false
+
+	for _, route := range r.Routes {
+		if route.Resource != resource {
+			continue
+		}
+
+		touched = true
+
+		if route.Operation != "create" {
+			return false
+		}
+	}
+
+	return touched
 }
 
 // styleName renders an id style for a message, naming the default rather than
