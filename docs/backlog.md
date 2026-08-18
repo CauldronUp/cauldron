@@ -486,7 +486,7 @@ transfers alone, and say so in the header.
 | ~~Dwolla~~ | Shipped. Three attempts and then the funding source is finished, not rate limited and not retryable tomorrow |
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
 | Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
-| Airwallex | Multi-currency balances where the settlement currency is not the charge currency, and the conversion happens somewhere the API does not show you |
+| ~~Airwallex~~ | Shipped. The settlement currency is not the charge currency and the rate was fixed at a moment nobody picked, there is a separate balance per currency so a payout can fail on a funded account, and a partial capture leaves two amounts different forever |
 | ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two characters apart with opposite obligations |
 | Moov | Transfers across rails, where the rail decides the settlement time and nothing else does |
 | Unit | An authorisation is not a transaction and the two carry different identifiers for the same purchase |
