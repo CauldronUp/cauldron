@@ -586,7 +586,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Firecrawl | A crawl is asynchronous and partial results are readable before it finishes, so an early read is a real answer that is incomplete |
+| ~~Firecrawl~~ | Shipped. A running crawl already has results, total is an estimate completed never reaches, and a 200 can carry a failed fetch |
 | Apify | A run can succeed with zero items, which is not the same as failing and is handled as if it were |
 | ScrapingBee | A failed fetch is a successful API call, so the status code says nothing about whether you got the page |
 

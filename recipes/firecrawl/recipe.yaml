@@ -1,0 +1,501 @@
+# Firecrawl Recipe for Cauldron
+#
+# Firecrawl has no sandbox, and every request it serves costs credits and
+# fetches somebody else's website. A test suite pointed at it is a small
+# crawler aimed at a third party, run on every commit, and the bill arrives
+# monthly.
+#
+# The reason to emulate it is that a crawl is a long-running job whose partial
+# results are readable while it runs. That is an unusual shape, and almost
+# every client gets it wrong the same way: it polls until status is not
+# scraping, reads data, and never notices that data was populated and growing
+# the entire time.
+#
+# Five things worth modelling exactly:
+#
+#   1. A running crawl has results. status is scraping and data already holds
+#      the pages fetched so far, so a read taken early is a real answer that
+#      is incomplete. Nothing distinguishes some from all except the status.
+#   2. completed and total move independently, and total is an estimate. It
+#      rises as the crawler discovers links, so a progress bar computed from
+#      completed over total goes backwards, and a loop waiting for the two to
+#      be equal can wait for ever.
+#   3. Starting a crawl returns an identifier and nothing else. No status, no
+#      counts, no data. Code that reads a page count off the start response
+#      is reading a field that does not exist yet.
+#   4. A failed page is not a failed crawl. The crawl completes, the count of
+#      completed pages is lower than the number discovered, and the pages
+#      that failed are simply not in data. Nothing lists them.
+#   5. A scrape that answers HTTP 200 can carry success false, and the reason
+#      is a nested string. The status code says the API call worked and says
+#      nothing about whether the page was fetched.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is crawled. Which state a job holds is what a fixture puts
+#     there, and the transition from scraping to completed happens somewhere
+#     Cauldron cannot reproduce.
+#   - The credit system is real and is not modelled. Running out is declared
+#     as an armable failure rather than counted, so the 402 is something a
+#     test asks for rather than something it earns.
+#   - Markdown extraction, LLM extraction and the schema-driven extract
+#     endpoint are not modelled: they turn a page into a shape, and a fixture
+#     cannot teach anything about that.
+#
+# Tokens below are fixtures, not secrets, and every page here is invented.
+
+recipe: firecrawl
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.firecrawl.dev/api-reference/introduction
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - fc-cauldron000000000000000000000000
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: data
+  # success is a boolean beside the payload and it can be false on a 200.
+  # The reason is in error, which is prose.
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+    fields:
+      success: false
+
+resources:
+  crawl:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      # scraping, completed, failed, cancelled. scraping does not mean empty.
+      status:
+        type: string
+        default: scraping
+      # An estimate that moves as links are discovered, so a progress bar
+      # computed from completed over this goes backwards.
+      total:
+        type: integer
+        default: 0
+      completed:
+        type: integer
+        default: 0
+      creditsUsed:
+        type: integer
+        default: 0
+      # When the job stops being readable at all, which is sooner than most
+      # people expect and is why results are worth storing yourself.
+      expiresAt:
+        type: string
+      # The pages fetched so far. Present and growing while the status is
+      # scraping, which is the whole point.
+      data:
+        type: list
+      # Present only when the crawl itself failed, rather than when pages
+      # within it did.
+      error:
+        type: string
+
+  scrape:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      # A scrape can answer 200 with this false.
+      success:
+        type: boolean
+        default: true
+      markdown:
+        type: string
+        in: data
+        as: markdown
+      sourceURL:
+        type: string
+        in: data.metadata
+        as: sourceURL
+      # The page's own status code, nested two levels down. This is the one
+      # that says whether the fetch worked.
+      statusCode:
+        type: integer
+        in: data.metadata
+        as: statusCode
+      title:
+        type: string
+        in: data.metadata
+        as: title
+      error:
+        type: string
+
+routes:
+  - method: POST
+    path: /v1/crawl
+    resource: crawl
+    operation: create
+    status: 200
+    # An identifier to poll. No status, no counts, no data, because none of
+    # it exists yet.
+    returns: [id]
+
+  - method: GET
+    path: /v1/crawl/{id}
+    resource: crawl
+    operation: get
+
+  - method: POST
+    path: /v1/scrape
+    resource: scrape
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/scrape/{id}
+    resource: scrape
+    operation: get
+
+webhooks:
+  events:
+    - crawl.started
+    - crawl.page
+    - crawl.completed
+    - crawl.failed
+  signing:
+    scheme: hmac-sha256
+    header: X-Firecrawl-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Rate limit exceeded. Consumed 60 requests this minute, 0 remaining."
+    headers:
+      Retry-After: "42"
+
+  authentication_error:
+    status: 401
+    message: "Unauthorized: Invalid token"
+
+  resource_missing:
+    status: 404
+    message: "Job not found"
+
+  parameter_missing:
+    status: 400
+    message: "Bad Request: {detail}"
+
+  # Credits are consumed per page rather than per request, so a single crawl
+  # of a large site can exhaust a plan in one call. Waiting does not help,
+  # which is what separates this from the rate limit.
+  out_of_credits:
+    status: 402
+    message: "Insufficient credits to perform this request. Please upgrade your plan or purchase additional credits."
+
+  # A site that refuses the crawler. The API call succeeded and the fetch did
+  # not, which is the distinction this whole Recipe is about.
+  blocked_by_robots:
+    status: 403
+    message: "URL is blocked by robots.txt. Enable ignoreRobotsTxt if you have permission to crawl this site."
+
+fixtures:
+  empty: {}
+
+  small-site:
+    crawl:
+      # Still going, and already useful. Two pages of an estimated five, and
+      # data is populated right now.
+      - id: 3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c
+        status: scraping
+        total: 5
+        completed: 2
+        creditsUsed: 2
+        expiresAt: "2026-08-19T10:00:00.000Z"
+        data:
+          - markdown: "# Cauldron docs"
+            metadata:
+              sourceURL: https://docs.cauldron.test/
+              statusCode: 200
+              title: Cauldron docs
+          - markdown: "# Getting started"
+            metadata:
+              sourceURL: https://docs.cauldron.test/start
+              statusCode: 200
+              title: Getting started
+      # Finished, and two of the five discovered pages are missing. Nothing
+      # lists what failed, so the only way to know is to compare against what
+      # you asked for.
+      - id: 4a3b2c1d-0e9f-4a8b-9c7d-6e5f4a3b2c1d
+        status: completed
+        total: 5
+        completed: 3
+        creditsUsed: 3
+        expiresAt: "2026-08-19T11:00:00.000Z"
+        data:
+          - markdown: "# Cauldron docs"
+            metadata:
+              sourceURL: https://docs.cauldron.test/
+              statusCode: 200
+              title: Cauldron docs
+          - markdown: "# Getting started"
+            metadata:
+              sourceURL: https://docs.cauldron.test/start
+              statusCode: 200
+              title: Getting started
+          - markdown: "# Recipes"
+            metadata:
+              sourceURL: https://docs.cauldron.test/recipes
+              statusCode: 200
+              title: Recipes
+      # The crawl itself failed, which is a different thing from pages
+      # failing within it. Here the error field on the job is populated.
+      - id: 5b4c3d2e-1f0a-4b9c-8d7e-6f5a4b3c2d1e
+        status: failed
+        total: 0
+        completed: 0
+        creditsUsed: 0
+        expiresAt: "2026-08-19T12:00:00.000Z"
+        data: []
+        error: "Failed to resolve host: docs.nonexistent.test"
+
+    scrape:
+      - id: 6c5d4e3f-2a1b-4c0d-9e8f-7a6b5c4d3e2f
+        success: true
+        markdown: "# Cauldron docs"
+        sourceURL: https://docs.cauldron.test/
+        statusCode: 200
+        title: Cauldron docs
+      # HTTP 200 from the API and a failed fetch. success is false, the page
+      # status is 404, and the whole point is in a string.
+      - id: 7d6e5f4a-3b2c-4d1e-8f9a-8b7c6d5e4f3a
+        success: false
+        sourceURL: https://docs.cauldron.test/missing
+        statusCode: 404
+        error: "This website returned a 404 status code"
+
+# Conformance cases, read from the Firecrawl API reference rather than
+# observed against a live account. The verify report says so, and observing
+# these would mean crawling somebody else's website.
+conformance:
+  - name: a running crawl already has results
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Still scraping, and two pages are already readable. A client that
+        # polls until the status changes and only then reads data has been
+        # ignoring a real answer for the whole run.
+        status: scraping
+        completed: 2
+        data[0].metadata.sourceURL: https://docs.cauldron.test/
+        data[1].metadata.sourceURL: https://docs.cauldron.test/start
+
+  - name: total is an estimate that completed never has to reach
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/4a3b2c1d-0e9f-4a8b-9c7d-6e5f4a3b2c1d
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Finished with three of five. A loop that waits for completed to
+        # equal total waits for ever on this job, and it has already
+        # finished.
+        status: completed
+        total: 5
+        completed: 3
+
+  - name: and the pages that failed are simply absent
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/4a3b2c1d-0e9f-4a8b-9c7d-6e5f4a3b2c1d
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Three entries for five discovered pages. Nothing lists what was
+        # missed, so the only way to find out is to compare against the URLs
+        # you expected.
+        data[2].metadata.sourceURL: https://docs.cauldron.test/recipes
+      absent:
+        - data[3]
+        - failed
+        - errors
+
+  - name: a completed crawl carries no error even when pages failed
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/4a3b2c1d-0e9f-4a8b-9c7d-6e5f4a3b2c1d
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      absent:
+        - error
+
+  - name: a crawl that failed outright says so on the job
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/5b4c3d2e-1f0a-4b9c-8d7e-6f5a4b3c2d1e
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A different failure from pages failing within a crawl. Here the
+        # error is on the job, and data is empty rather than partial.
+        status: failed
+        error: "Failed to resolve host: docs.nonexistent.test"
+        data: []
+
+  - name: starting a crawl returns an identifier and nothing else
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-post
+    fixture: small-site
+    request:
+      method: POST
+      path: /v1/crawl
+      json:
+        url: https://docs.cauldron.test
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      matches:
+        id: '.'
+      # No status, no counts, no data. Code that reads a page count off this
+      # response is reading a field that does not exist yet.
+      absent:
+        - status
+        - total
+        - completed
+        - data
+        - creditsUsed
+
+  - name: a scrape can succeed as an API call and fail as a fetch
+    source: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/scrape/7d6e5f4a-3b2c-4d1e-8f9a-8b7c6d5e4f3a
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      # 200 from the API, and the page was not fetched. The status code says
+      # the call worked and says nothing about the outcome.
+      status: 200
+      body:
+        success: false
+        error: "This website returned a 404 status code"
+      absent:
+        - data.markdown
+
+  - name: the page status code is two levels down in the metadata
+    source: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/scrape/7d6e5f4a-3b2c-4d1e-8f9a-8b7c6d5e4f3a
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Not at the top level, where the HTTP status of the API call would
+        # be, and it is the one that says whether the page was fetched.
+        data.metadata.statusCode: 404
+        data.metadata.sourceURL: https://docs.cauldron.test/missing
+
+  - name: a successful scrape puts the content beside the metadata
+    source: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/scrape/6c5d4e3f-2a1b-4c0d-9e8f-7a6b5c4d3e2f
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        success: true
+        data.metadata.statusCode: 200
+        data.metadata.title: Cauldron docs
+      absent:
+        - error
+
+  - name: a job expires and stops being readable
+    source: https://docs.firecrawl.dev/api-reference/endpoint/crawl-get
+    fixture: small-site
+    request:
+      method: GET
+      path: /v1/crawl/3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A day away in the fixture. Results are not kept for you, so
+        # anything that wants them later has to store them itself.
+        expiresAt: "2026-08-19T10:00:00.000Z"
+
+  - name: running out of credits is a 402 rather than a rate limit
+    source: https://docs.firecrawl.dev/api-reference/introduction
+    arm: out_of_credits
+    fixture: small-site
+    request:
+      method: POST
+      path: /v1/crawl
+      json:
+        url: https://docs.cauldron.test
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      # Credits are consumed per page, so one crawl of a large site can
+      # exhaust a plan in a single call. Waiting does not help, which is what
+      # separates this from the 429.
+      status: 402
+      body:
+        success: false
+      matches:
+        error: 'Insufficient credits'
+
+  - name: a site that refuses the crawler is a failure the call caused
+    source: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+    arm: blocked_by_robots
+    fixture: small-site
+    request:
+      method: POST
+      path: /v1/scrape
+      json:
+        url: https://docs.cauldron.test/private
+      headers:
+        Authorization: Bearer fc-cauldron000000000000000000000000
+    expect:
+      status: 403
+      matches:
+        error: 'robots.txt'
