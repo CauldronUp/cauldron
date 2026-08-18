@@ -101,6 +101,16 @@ var ErrNotFound = errors.New("not found")
 // Recipe. Creating one on the fly would let a typo invent an endpoint.
 var ErrUnknownResource = errors.New("unknown resource")
 
+// ErrConflict is returned when a create names an identifier that is already
+// held.
+//
+// It used to be a silent in-place replacement, which is the worst of the three
+// available behaviours: the existing record was destroyed, the collection did
+// not grow, and the caller was handed a 201 saying a record had been made. A
+// suite that seeded three issues and created three more finished with three
+// issues and no complaint.
+var ErrConflict = errors.New("identifier already exists")
+
 // collection is one resource type's records plus their insertion order.
 type collection struct {
 	order   []string
@@ -173,14 +183,28 @@ func (s *Store) Create(resource string, record Record) (Record, error) {
 
 	id, _ := stored["id"].(string)
 	if id == "" {
-		id = s.ids.Next(resource)
+		// Skip anything the collection already holds. A numeric counter starts
+		// at zero and fixtures routinely pin id "1", so the first record the
+		// API created was handed an identifier a seeded record already had.
+		// Every provider that mints sequential ids allocates the next unused
+		// one, so this is fidelity as much as it is safety.
+		for {
+			id = s.ids.Next(resource)
+
+			if _, taken := c.records[id]; !taken {
+				break
+			}
+		}
+
 		stored["id"] = id
+	} else if _, taken := c.records[id]; taken {
+		// A caller naming an identifier that exists means a conflict. Real
+		// providers answer 409 or an equivalent; none of them quietly replaces
+		// the record and reports a creation.
+		return nil, fmt.Errorf("%w: %s %s", ErrConflict, resource, id)
 	}
 
-	if _, exists := c.records[id]; !exists {
-		c.order = append(c.order, id)
-	}
-
+	c.order = append(c.order, id)
 	c.records[id] = stored
 
 	return stored.Clone(), nil
@@ -380,6 +404,56 @@ func (s *Store) ListWhere(resource string, where map[string]any, after string, l
 		if len(page.Records) > 0 {
 			page.NextCursor = matching[end-1]
 		}
+	}
+
+	return page, nil
+}
+
+// ListFrom returns a page starting at a numeric offset rather than after an
+// identifier.
+//
+// Offset and page numbering are how most providers page, and until the runtime
+// could honour them, 149 shipped routes declared a style the emulator ignored:
+// a client sending offset=2 got the first page back, so a loop reading until
+// it had seen total_count records never finished, and one sending page=2 got
+// page one and processed the same records twice. For a payments or messaging
+// integration that is repeated side effects rather than a slow test.
+func (s *Store) ListFrom(resource string, where map[string]any, offset, limit int) (Page, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	c, ok := s.collections[resource]
+	if !ok {
+		return Page{}, fmt.Errorf("%w: %s", ErrUnknownResource, resource)
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	matching := make([]string, 0, len(c.order))
+
+	for _, id := range c.order {
+		if Matches(c.records[id], where) {
+			matching = append(matching, id)
+		}
+	}
+
+	page := Page{Records: []Record{}, Total: len(matching)}
+
+	// An offset past the end is an empty page rather than an error. That is
+	// what providers do, and it is what stops a paging loop rather than
+	// breaking it.
+	for i := offset; i < len(matching) && len(page.Records) < limit; i++ {
+		page.Records = append(page.Records, c.records[matching[i]].Clone())
+	}
+
+	if offset+len(page.Records) < len(matching) {
+		page.HasMore = true
 	}
 
 	return page, nil

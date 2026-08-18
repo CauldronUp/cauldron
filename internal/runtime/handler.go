@@ -127,6 +127,15 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	created, err := s.store.Create(matched.spec.Resource, record)
 	if err != nil {
+		// A caller naming an identifier that already exists is a conflict, and
+		// every provider says so with its own status. A Recipe declaring a
+		// conflict gets its own shape; the fallback is the 409 the situation
+		// deserves rather than the 400 an internal message used to leak
+		// through.
+		if errors.Is(err, store.ErrConflict) {
+			return s.writeRecipeError(w, "conflict", http.StatusConflict, "conflict", "A record with that identifier already exists.")
+		}
+
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
@@ -300,26 +309,117 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		limit = queryInt(r, "limit", limit)
 	}
 
-	cursor := ""
+	// The declared style decides what the position parameter means. It was
+	// never read, so 149 shipped routes declaring offset or page numbering were
+	// paged as though they were cursor based, which meant not paged at all: the
+	// parameter went unrecognised and every request answered with the first
+	// page. A client looping until it had collected total_count records never
+	// finished, and one asking for page two processed page one twice.
+	var (
+		page store.Page
+		err  error
+	)
 
-	if name := matched.spec.Pagination.CursorParam; name != "" {
-		cursor = r.URL.Query().Get(name)
-	} else if cursor = r.URL.Query().Get("starting_after"); cursor == "" {
-		cursor = r.URL.Query().Get("cursor")
-	}
+	where := scopeVars(matched, vars)
 
-	page, err := s.store.ListWhere(matched.spec.Resource, scopeVars(matched, vars), cursor, limit)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+	switch matched.spec.Pagination.Style {
+	case "offset", "page":
+		offset := positionOf(r, matched.spec.Pagination, limit)
+
+		page, err = s.store.ListFrom(matched.spec.Resource, where, offset, limit)
+
+		// A Recipe declaring cursor_field alongside offset or page numbering
+		// means the pointer to the next page, and for these styles that
+		// pointer is a position rather than an identifier. It used to be the
+		// last record's id, which was wrong for every provider that pages this
+		// way, and wrong in the direction that reads as working.
+		if err == nil && page.HasMore {
+			page.NextCursor = nextPosition(matched.spec.Pagination, offset, limit)
+		}
+	default:
+		cursor := cursorOf(r, matched.spec.Pagination)
+
+		page, err = s.store.ListWhere(matched.spec.Resource, where, cursor, limit)
+
+		if err != nil && errors.Is(err, store.ErrNotFound) {
 			return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", "No such cursor: "+cursor+".")
 		}
+	}
 
+	if err != nil {
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
 	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource, r.URL.Path))
 
 	return http.StatusOK
+}
+
+// cursorOf reads the identifier a cursor-paged listing resumes after.
+func cursorOf(r *http.Request, spec recipe.Pagination) string {
+	if name := spec.CursorParam; name != "" {
+		return r.URL.Query().Get(name)
+	}
+
+	if cursor := r.URL.Query().Get("starting_after"); cursor != "" {
+		return cursor
+	}
+
+	return r.URL.Query().Get("cursor")
+}
+
+// positionOf turns an offset or page parameter into a record offset.
+//
+// The two styles differ only in what the number counts. An offset counts
+// records and starts at nought; a page counts pages and starts at one, so page
+// two begins one page-length in. Getting that boundary wrong by one page is
+// the classic way to lose or duplicate a record at every page break, which is
+// exactly the bug an emulator is supposed to catch rather than commit.
+func positionOf(r *http.Request, spec recipe.Pagination, limit int) int {
+	name := spec.CursorParam
+	if name == "" {
+		name = spec.Style
+	}
+
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return 0
+	}
+
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+
+	if spec.Style != "page" {
+		return n
+	}
+
+	// Page one and page nought are both the first page. Providers disagree
+	// about whether nought is an error, and answering with the first page is
+	// the reading that cannot silently skip records.
+	if n <= 1 {
+		return 0
+	}
+
+	return (n - 1) * limit
+}
+
+// nextPosition renders the position of the page after this one.
+//
+// An offset counts records, so the next one starts a page-length further in. A
+// page counts pages from one, so the offset has to be turned back into a page
+// number before adding to it.
+func nextPosition(spec recipe.Pagination, offset, limit int) string {
+	if spec.Style == "page" {
+		if limit <= 0 {
+			limit = 1
+		}
+
+		return strconv.Itoa(offset/limit + 2)
+	}
+
+	return strconv.Itoa(offset + limit)
 }
 
 // missingHeader reports the first required header a request does not carry.
