@@ -115,7 +115,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Anthropic | Messages, content blocks, tool use, streaming |
 | Google Gemini | Generation, multimodal requests, safety responses |
 | Pinecone | Indexes, namespaces, vectors, metadata filtering |
-| Replicate | Predictions, async jobs, failures |
+| ~~Replicate~~ | Shipped. A created prediction has no output property at all rather than a null one, succeeded is not the same as produced something, a cold start is a minute with no signal but a boot_time, and the output is a link to a file deleted after an hour |
 | Hugging Face | Inference endpoints and model responses |
 | ElevenLabs | Speech generation, voices, async jobs |
 | ~~Deepgram~~ | Shipped. Four-level nesting, seconds against milliseconds, err_code |
