@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -556,5 +557,154 @@ func TestACollectionCanBeKeyedRatherThanOrdered(t *testing.T) {
 	// A channel nobody is on is not in the object at all.
 	if _, present := channels["quiet"]; present {
 		t.Error("an unoccupied channel should be absent rather than zeroed")
+	}
+}
+
+// jiraSandbox seeds the project fixture and returns the sandbox. Every test
+// below needs the same three issues.
+func jiraSandbox(t *testing.T) *Sandbox {
+	t.Helper()
+
+	r, err := recipe.Open("jira")
+	if err != nil {
+		t.Fatalf("open jira: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("platform-project"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	return s
+}
+
+func jiraGet(t *testing.T, s *Sandbox, method, path string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, body)
+	req.SetBasicAuth("work@cauldron.test", "cauldron-jira-api-token-0000")
+
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	return rec
+}
+
+// Jira addresses an issue by a numeric id and by a project key, and both work
+// on the same path. They are not interchangeable underneath: the id is
+// permanent and the key changes when the issue moves project, which is exactly
+// why storing the readable one is the tempting mistake. An emulator accepting
+// only one of them would reject half the calls that work for real.
+func TestAResourceCanAnswerToASecondIdentifier(t *testing.T) {
+	s := jiraSandbox(t)
+
+	byID := jiraGet(t, s, http.MethodGet, "/rest/api/3/issue/10001", nil)
+	if byID.Code != http.StatusOK {
+		t.Fatalf("by id: status = %d, want 200\n%s", byID.Code, byID.Body)
+	}
+
+	byKey := jiraGet(t, s, http.MethodGet, "/rest/api/3/issue/PLAT-42", nil)
+	if byKey.Code != http.StatusOK {
+		t.Fatalf("by key: status = %d, want 200\n%s", byKey.Code, byKey.Body)
+	}
+
+	if got, want := decode(t, byKey)["id"], decode(t, byID)["id"]; got != want {
+		t.Errorf("the two paths returned different issues: %v against %v", got, want)
+	}
+
+	// An alias must not make everything findable. A key belonging to no issue
+	// is still absent, and a value from a different field is not an address.
+	missing := jiraGet(t, s, http.MethodGet, "/rest/api/3/issue/PLAT-999", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Errorf("an unknown key: status = %d, want 404\n%s", missing.Code, missing.Body)
+	}
+
+	bySummary := jiraGet(t, s, http.MethodGet, "/rest/api/3/issue/Rotate%20the%20signing%20keys", nil)
+	if bySummary.Code != http.StatusNotFound {
+		t.Errorf("only the declared alias should address a record, got %d", bySummary.Code)
+	}
+}
+
+// Jira's create hands back an id and a key and none of it is the issue, so
+// anything reading created.fields.summary gets undefined. Echoing the whole
+// record would be the helpful kind of wrong: the caller reads fields back that
+// the provider never sends, locally, for as long as tests are the only caller.
+func TestACreateCanAnswerWithLessThanTheRecord(t *testing.T) {
+	s := jiraSandbox(t)
+
+	rec := jiraGet(t, s, http.MethodPost, "/rest/api/3/issue",
+		strings.NewReader(`{"key":"PLAT-45","summary":"Added by a test","status_name":"Backlog"}`))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201\n%s", rec.Code, rec.Body)
+	}
+
+	body := decode(t, rec)
+
+	if body["key"] != "PLAT-45" {
+		t.Errorf("key = %v, want the key back", body["key"])
+	}
+
+	if body["id"] == nil || body["id"] == "" {
+		t.Error("the create should still answer with the identifier it minted")
+	}
+
+	// The whole point: nothing sent in comes back, so a suite asserting on the
+	// create response is asserting on almost nothing.
+	if _, present := body["fields"]; present {
+		t.Errorf("returns limited the response to id and key, so fields must be absent: %v", body)
+	}
+
+	// And the record itself is unharmed. The trim is a response concern, not a
+	// storage one, so fetching it back finds everything.
+	fetched := jiraGet(t, s, http.MethodGet, "/rest/api/3/issue/PLAT-45", nil)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("fetch: status = %d, want 200\n%s", fetched.Code, fetched.Body)
+	}
+
+	fields, _ := decode(t, fetched)["fields"].(map[string]any)
+	if fields["summary"] != "Added by a test" {
+		t.Errorf("the stored record lost a field the response merely omitted: %v", fields)
+	}
+}
+
+// Jira's old search path answers 410 Gone, and 410 rather than 404 is the
+// entire message: the path was right, the endpoint is gone, and retrying will
+// not help. Falling through to the unknown-route handler would answer 404, and
+// a client branching on the difference takes one branch locally and the other
+// in production.
+func TestARouteCanExistOnlyToFail(t *testing.T) {
+	s := jiraSandbox(t)
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		rec := jiraGet(t, s, method, "/rest/api/3/search?jql=project%20%3D%20PLAT", nil)
+
+		if rec.Code != http.StatusGone {
+			t.Errorf("%s: status = %d, want 410\n%s", method, rec.Code, rec.Body)
+		}
+
+		messages, _ := decode(t, rec)["errorMessages"].([]any)
+		if len(messages) != 1 {
+			t.Fatalf("%s: errorMessages = %#v, want the sentence", method, decode(t, rec)["errorMessages"])
+		}
+
+		if text, _ := messages[0].(string); !strings.Contains(text, "search/jql") {
+			t.Errorf("%s: the failure should name the replacement, got %q", method, text)
+		}
+	}
+
+	// The replacement is not affected by its predecessor being routed to a
+	// failure, which is the part a shared prefix could easily break.
+	live := jiraGet(t, s, http.MethodGet, "/rest/api/3/search/jql", nil)
+	if live.Code != http.StatusOK {
+		t.Fatalf("the replacement endpoint: status = %d, want 200\n%s", live.Code, live.Body)
 	}
 }

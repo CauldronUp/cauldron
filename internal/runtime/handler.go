@@ -74,6 +74,18 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	exchange.Resource = matched.spec.Resource
 	exchange.Op = matched.spec.Operation
 
+	// A route that exists only to fail. Jira's old search endpoint answers 410
+	// Gone to a path thousands of integrations still call, and the distinction
+	// between that and a 404 is the whole message: the path was right, and it
+	// is not coming back. Routing it as an ordinary unknown path would make an
+	// emulator that quietly disagrees with the provider about which failure
+	// this is.
+	if name := matched.spec.Error; name != "" {
+		exchange.Status = s.writeRecipeError(w, name)
+
+		return
+	}
+
 	switch matched.spec.Operation {
 	case "create":
 		exchange.Status = s.create(w, r, matched, vars)
@@ -144,6 +156,22 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 		return status
 	}
 
+	// A route that answers with less than the record it touched. Jira's create
+	// hands back an id and a key and nothing else, so anything reading
+	// created.fields.summary gets undefined. The trim happens before shaping,
+	// so a kept field still nests where the Recipe says it does.
+	if len(matched.spec.Returns) > 0 {
+		kept := store.Record{}
+
+		for _, field := range matched.spec.Returns {
+			if value, ok := record[field]; ok {
+				kept[field] = value
+			}
+		}
+
+		record = kept
+	}
+
 	writeJSON(w, status, s.resourceBody(matched.spec.Resource, record))
 
 	return status
@@ -179,7 +207,7 @@ func identifier(matched route, r *http.Request, vars map[string]string) string {
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id := identifier(matched, r, vars)
 
-	record, err := s.store.Get(matched.spec.Resource, id)
+	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
 		return s.notFound(w, err, matched.spec.Resource, id)
 	}
