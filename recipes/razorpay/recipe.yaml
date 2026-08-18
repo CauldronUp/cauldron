@@ -1,0 +1,616 @@
+# Razorpay Recipe for Cauldron
+#
+# Razorpay has one behaviour that catches every integration written by
+# somebody used to Stripe: capture is a separate call, and not making it is a
+# decision.
+#
+# A payment that authorises sits at "authorized". If you do not capture it
+# within the window configured on the account, Razorpay refunds it
+# automatically. The customer sees a charge and then a refund, your order
+# stays unpaid, and nothing in your logs records a failure, because there
+# wasn't one. Doing nothing was the choice that refunded the money.
+#
+# Four more worth modelling exactly:
+#
+#   1. Amounts are in paise, which is the smallest unit of a currency whose
+#      smallest unit most code has never met. 50000 is five hundred rupees.
+#      Every amount on every object, including the fee and the tax, and a
+#      client that divides by a hundred once and not everywhere reports one
+#      of them a hundredfold wrong.
+#   2. An order is not a payment and a payment is not a capture. One order
+#      can have several payment attempts against it, most of them failed,
+#      and the order's own status only says whether it is paid.
+#   3. The signature on the checkout callback is over order_id and
+#      payment_id joined with a pipe, and verifying it is the entire
+#      security boundary. Code that reads the callback parameters without
+#      verifying accepts a payment anybody can forge by hand.
+#   4. A refund is asynchronous and can fail after being accepted. Its status
+#      goes pending, then processed, and a refund that fails leaves the money
+#      with you and the customer told otherwise.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is charged, captured or refunded. Which state a payment is in
+#     is what a fixture puts there, and no auto-refund timer runs, which is
+#     the honest half of the trap: the point is that a client must capture,
+#     and the fixture holds an authorised payment waiting for it.
+#   - The signature is not computed. Verifying it is the security boundary
+#     and a fake that accepted any signature would teach the opposite of the
+#     lesson, so this Recipe does not offer the verification endpoint at all.
+#   - Subscriptions, smart collect, route and the settlement APIs are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: razorpay
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://razorpay.com/docs/api/
+
+auth:
+  # Basic, with the key id as the username and the key secret as the
+  # password. The key id is public and appears in the checkout script on the
+  # page, so checking it rather than the secret would accept any request from
+  # anybody who viewed source.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron_razorpay_key_secret
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+    # Razorpay stamps the entity name on the collection as well as on each
+    # object, so a client checking entity == "payment" on the list body finds
+    # "collection" instead.
+    fields:
+      entity: collection
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: error
+    message_field: description
+    code_field: code
+    type_field: reason
+
+resources:
+  order:
+    collection: items
+    id:
+      style: prefixed
+      prefix: order_
+      length: 14
+    constants:
+      entity: order
+    fields:
+      # Paise. 50000 is five hundred rupees, and so is every other amount on
+      # every other object here.
+      amount:
+        type: integer
+      amount_paid:
+        type: integer
+        default: 0
+      # What is left. An order partly paid has this above zero and a status
+      # that says attempted, which is neither paid nor failed.
+      amount_due:
+        type: integer
+      currency:
+        type: string
+        default: INR
+      receipt:
+        type: string
+      # created, attempted, paid. attempted means somebody tried and it did
+      # not work, which is not a failure state: they can try again.
+      status:
+        type: string
+        default: created
+      # How many payment attempts have been made against this order. Most of
+      # them failed, and the order does not list them.
+      attempts:
+        type: integer
+        default: 0
+      created_at:
+        type: timestamp
+
+  payment:
+    collection: items
+    id:
+      style: prefixed
+      prefix: pay_
+      length: 14
+    constants:
+      entity: payment
+    fields:
+      # created, authorized, captured, refunded, failed. authorized is the
+      # one that matters: the money is held and not taken, and if you do not
+      # capture it Razorpay refunds it for you.
+      status:
+        type: string
+        default: created
+      amount:
+        type: integer
+      currency:
+        type: string
+        default: INR
+      order_id:
+        type: string
+      # Present on a captured payment and absent before, so a client reading
+      # it to decide whether money moved reads undefined on the payments
+      # where the question matters.
+      captured:
+        type: boolean
+        default: false
+      method:
+        type: string
+      # Razorpay's fee and the tax on it, both in paise, both absent until
+      # the payment is captured. Subtracting them from the amount before
+      # capture subtracts nothing.
+      fee:
+        type: integer
+        null_when_unset: true
+      tax:
+        type: integer
+        null_when_unset: true
+      # Why it failed. Present only on a failed payment, and the description
+      # is written for the customer rather than for you.
+      error_code:
+        type: string
+      error_description:
+        type: string
+      error_reason:
+        type: string
+      created_at:
+        type: timestamp
+
+  refund:
+    collection: items
+    id:
+      style: prefixed
+      prefix: rfnd_
+      length: 14
+    constants:
+      entity: refund
+    fields:
+      amount:
+        type: integer
+      currency:
+        type: string
+        default: INR
+      payment_id:
+        type: string
+      # pending, processed, failed. A refund is accepted and then happens
+      # later, and one that fails leaves the money with you and the customer
+      # told otherwise.
+      status:
+        type: string
+        default: pending
+      # normal or optimum. optimum picks the cheapest route and can take
+      # days longer, which is a choice made at refund time and visible only
+      # here.
+      speed_processed:
+        type: string
+      created_at:
+        type: timestamp
+
+routes:
+  - method: POST
+    path: /v1/orders
+    resource: order
+    operation: create
+
+  - method: GET
+    path: /v1/orders
+    resource: order
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+      limit_param: count
+      cursor_param: skip
+
+  - method: GET
+    path: /v1/orders/{id}
+    resource: order
+    operation: get
+
+  - method: GET
+    path: /v1/payments
+    resource: payment
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+      limit_param: count
+      cursor_param: skip
+
+  - method: GET
+    path: /v1/payments/{id}
+    resource: payment
+    operation: get
+
+  # The call that has to be made. Not making it refunds the customer.
+  - method: POST
+    path: /v1/payments/{id}/capture
+    resource: payment
+    operation: update
+
+  - method: POST
+    path: /v1/payments/{payment_id}/refund
+    resource: refund
+    operation: create
+    scope:
+      - payment_id
+    status: 200
+
+  - method: GET
+    path: /v1/refunds/{id}
+    resource: refund
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: BAD_REQUEST_ERROR
+    type: rate_limit_exceeded
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: BAD_REQUEST_ERROR
+    # The code is the same on almost everything. reason is the machine value
+    # that differs, and it is the only thing worth branching on.
+    type: authentication_failed
+    message: "The api key/secret provided is invalid"
+
+  resource_missing:
+    status: 400
+    # 400, not 404. A payment id that does not exist is a bad request rather
+    # than a missing resource, so a client branching on 404 never sees it.
+    code: BAD_REQUEST_ERROR
+    type: invalid_id
+    message: "The id provided does not exist"
+
+  parameter_missing:
+    status: 400
+    code: BAD_REQUEST_ERROR
+    type: input_validation_failed
+    message: "The amount field is required"
+
+  # Capturing twice, or capturing something already refunded. The payment is
+  # in a state this cannot be done from, and the message says which.
+  payment_not_capturable:
+    status: 400
+    code: BAD_REQUEST_ERROR
+    type: payment_already_captured
+    message: "This payment has already been captured"
+
+  # A capture for more than was authorised. Razorpay allows less and refuses
+  # more, and the difference is not obvious from the API surface.
+  capture_amount_mismatch:
+    status: 400
+    code: BAD_REQUEST_ERROR
+    type: input_validation_failed
+    message: "The capture amount must be equal to the authorized amount"
+
+  # Razorpay's own systems, not the bank's. Retrying is correct and the code
+  # is the only thing that says so.
+  server_error:
+    status: 500
+    code: SERVER_ERROR
+    type: server_error
+    message: "We are facing some trouble completing your request at the moment"
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    order:
+      # Paid. amount_due is zero and amount_paid matches.
+      - id: order_cauldron0001
+        amount: 50000
+        amount_paid: 50000
+        amount_due: 0
+        currency: INR
+        receipt: rcpt-1001
+        status: paid
+        attempts: 1
+        created_at: 1786500000
+
+      # Attempted and not paid. Three tries, all failed, and the order can
+      # still be paid: attempted is not a failure state.
+      - id: order_cauldron0002
+        amount: 129900
+        amount_paid: 0
+        amount_due: 129900
+        currency: INR
+        receipt: rcpt-1002
+        status: attempted
+        attempts: 3
+        created_at: 1786503600
+
+    payment:
+      # Captured. The fee and the tax exist now and are in paise: 1180 is
+      # eleven rupees eighty paise, and 180 of that is tax.
+      - id: pay_cauldron0001
+        status: captured
+        amount: 50000
+        currency: INR
+        order_id: order_cauldron0001
+        captured: true
+        method: card
+        fee: 1180
+        tax: 180
+        created_at: 1786500060
+
+      # Authorised and not captured. The money is held and not taken, and if
+      # nobody calls capture Razorpay refunds it and the order stays unpaid.
+      # There is no fee yet, because nothing has been charged.
+      - id: pay_cauldron0002
+        status: authorized
+        amount: 129900
+        currency: INR
+        order_id: order_cauldron0002
+        method: upi
+        created_at: 1786503660
+
+      # Failed, with a reason written for the customer rather than for you.
+      - id: pay_cauldron0003
+        status: failed
+        amount: 129900
+        currency: INR
+        order_id: order_cauldron0002
+        method: card
+        error_code: BAD_REQUEST_ERROR
+        error_description: "Payment failed because the card was declined by the issuing bank"
+        error_reason: payment_failed
+        created_at: 1786503620
+
+    refund:
+      # Accepted and not yet done. A refund that fails from here leaves the
+      # money with you and the customer already told otherwise.
+      - id: rfnd_cauldron0001
+        amount: 20000
+        currency: INR
+        payment_id: pay_cauldron0001
+        status: pending
+        speed_processed: normal
+        created_at: 1786510000
+
+# Every case below is derived from Razorpay's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: an authorised payment has not been paid
+    # The money is held and not taken. If nobody calls capture, Razorpay
+    # refunds it and the order stays unpaid, and nothing in your logs records
+    # a failure because there was not one.
+    source: https://razorpay.com/docs/api/payments/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments/pay_cauldron0002
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: authorized
+        captured: false
+        amount: 129900
+      absent:
+        - error_code
+        - error_description
+
+  - name: there is no fee until there is a capture
+    # fee and tax are null on an authorised payment, so subtracting them
+    # from the amount before capture subtracts nothing and reports the
+    # merchant a hundred per cent of the money.
+    source: https://razorpay.com/docs/api/payments/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments/pay_cauldron0002
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        fee: null
+        tax: null
+
+  - name: and both are in paise once there is
+    # 1180 is eleven rupees eighty paise, of which 180 is tax. Every amount
+    # on every object here is in the same unit, including these.
+    source: https://razorpay.com/docs/api/payments/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments/pay_cauldron0001
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: captured
+        captured: true
+        amount: 50000
+        fee: 1180
+        tax: 180
+
+  - name: attempted is neither paid nor failed
+    # Three payment attempts, all failed, and the order can still be paid.
+    # An integration that treats anything other than paid as abandoned
+    # cancels an order somebody is about to retry.
+    source: https://razorpay.com/docs/api/orders/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/orders/order_cauldron0002
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: attempted
+        attempts: 3
+        amount_paid: 0
+        amount_due: 129900
+
+  - name: an order lists no payments
+    # One order can have several payment attempts against it and the order
+    # does not carry them. Reading an order tells you whether it is paid and
+    # nothing about what was tried.
+    source: https://razorpay.com/docs/api/orders/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/orders/order_cauldron0001
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: paid
+        amount_paid: 50000
+        amount_due: 0
+      absent:
+        - payments
+        - items
+
+  - name: a collection counts and calls itself a collection
+    # entity is "collection" on the list body and "payment" on each object
+    # inside it, so a client checking entity == "payment" on the response
+    # finds the wrong string.
+    source: https://razorpay.com/docs/api/payments/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        count: 3
+        entity: collection
+        items[0].entity: payment
+      absent:
+        - items[3]
+
+  - name: a failed payment says why, in words meant for the customer
+    source: https://razorpay.com/docs/api/payments/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments/pay_cauldron0003
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: failed
+        error_reason: payment_failed
+        error_description: "Payment failed because the card was declined by the issuing bank"
+
+  - name: a refund is accepted before it happens
+    # pending, and it can still fail. A refund that fails leaves the money
+    # with you and the customer already told otherwise.
+    source: https://razorpay.com/docs/api/refunds/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/refunds/rfnd_cauldron0001
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        status: pending
+        amount: 20000
+        speed_processed: normal
+        payment_id: pay_cauldron0001
+
+  - name: capturing twice is a 400 with the reason in the body
+    source: https://razorpay.com/docs/errors/
+    fixture: small-merchant
+    arm: payment_not_capturable
+    request:
+      method: GET
+      path: /v1/payments/pay_cauldron0001
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 400
+      body:
+        error.code: BAD_REQUEST_ERROR
+        error.description: "This payment has already been captured"
+        # The code is BAD_REQUEST_ERROR on almost every failure Razorpay
+        # has. reason is the machine value that differs, and it is the only
+        # thing worth branching on.
+        error.reason: payment_already_captured
+
+  - name: a missing id is a 400, not a 404
+    # So a client branching on 404 never sees it, and a typo in an id looks
+    # like a malformed request.
+    source: https://razorpay.com/docs/errors/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments/pay_doesnotexist
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 400
+      body:
+        error.code: BAD_REQUEST_ERROR
+      absent:
+        - code
+        - description
+        - message
+
+  - name: a server error is Razorpay's and is worth retrying
+    # SERVER_ERROR rather than BAD_REQUEST_ERROR, which is the only thing
+    # that distinguishes a retryable failure from one that will never work.
+    source: https://razorpay.com/docs/errors/
+    fixture: small-merchant
+    arm: server_error
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldA==
+    expect:
+      status: 500
+      body:
+        error.code: SERVER_ERROR
+
+  - name: the key secret is the half that is checked
+    # The key id is public and sits in the checkout script on the page, so
+    # checking it rather than the secret would accept a request from anybody
+    # who viewed source.
+    source: https://razorpay.com/docs/api/authentication/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        Authorization: Basic cnpwX3Rlc3RfY2F1bGRyb246d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        error.code: BAD_REQUEST_ERROR
+
+  - name: swapping the two halves is rejected
+    source: https://razorpay.com/docs/api/authentication/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        Authorization: Basic Y2F1bGRyb25fcmF6b3JwYXlfa2V5X3NlY3JldDpyenBfdGVzdF9jYXVsZHJvbg==
+    expect:
+      status: 401
