@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,12 +97,19 @@ func TestNumericIdentifiersAreSequential(t *testing.T) {
 	_ = json.Unmarshal(first.Body.Bytes(), &a)
 	_ = json.Unmarshal(second.Body.Bytes(), &b)
 
-	if a["id"] != "1" || b["id"] != "2" {
-		t.Errorf("numeric ids should be sequential; got %v then %v", a["id"], b["id"])
+	// Numbers, not strings. GitHub sends an issue id as 1, and this test used
+	// to assert "1", which is to say it was pinning the bug in place. Every
+	// JSON number decodes into any as a float64, so the assertion is on the
+	// value and the type together.
+	if a["id"] != float64(1) || b["id"] != float64(2) {
+		t.Errorf("numeric ids should be sequential numbers; got %v (%T) then %v (%T)",
+			a["id"], a["id"], b["id"], b["id"])
 	}
 
-	if strings.Contains(a["id"].(string), "_") {
-		t.Errorf("a numeric id must not carry a prefix; got %v", a["id"])
+	// And no prefix, which for a number can only mean it did not arrive as a
+	// string at all.
+	if _, quoted := a["id"].(string); quoted {
+		t.Errorf("a numeric id must not be a string; got %v", a["id"])
 	}
 }
 
@@ -153,7 +161,17 @@ func TestPatchIsRoutedForProvidersThatUseIt(t *testing.T) {
 	var issue map[string]any
 	_ = json.Unmarshal(created.Body.Bytes(), &issue)
 
-	rec := ghCall(t, s, http.MethodPatch, "/repos/octocat/hello-world/issues/"+issue["id"].(string), `{"state":"closed"}`)
+	// A number on the wire and a path segment in the URL. A client holding
+	// this response has to render it back to text to build the next request,
+	// which is the round trip the type change has to survive.
+	id, ok := issue["id"].(float64)
+	if !ok {
+		t.Fatalf("id should be a JSON number, got %T (%v)", issue["id"], issue["id"])
+	}
+
+	path := "/repos/octocat/hello-world/issues/" + strconv.FormatInt(int64(id), 10)
+
+	rec := ghCall(t, s, http.MethodPatch, path, `{"state":"closed"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)
