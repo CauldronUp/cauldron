@@ -1086,3 +1086,52 @@ func TestAFieldlessResourceThatIsReadIsStillRefused(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// The key is a fallback for resources that do not name their own collection.
+// When every one of them does, it is unreachable, and an unreachable
+// declaration reads as a description of the provider while describing nothing.
+// Fifty-eight Recipes shipped with one before this rule existed, each found by
+// mutating it and watching nothing fail.
+const wrappedRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+responses:
+  list:
+    style: wrapped
+    key: data
+resources:
+  customer:
+    collection: customers
+    id:
+      prefix: cus_
+      length: 14
+    fields:
+      email:
+        type: string
+routes:
+  - method: GET
+    path: /v1/customers
+    resource: customer
+    operation: list
+`
+
+func TestAnUnreachableListKeyIsRefused(t *testing.T) {
+	got := problems(t, wrappedRecipe)
+
+	if !strings.Contains(got, "nothing reads it") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAListKeyIsKeptWhenAResourceNeedsIt(t *testing.T) {
+	// Drop the collection and the key becomes the only thing naming the
+	// wrapper, which is what it is for.
+	yaml := strings.Replace(wrappedRecipe, "    collection: customers\n", "", 1)
+
+	if _, err := parse(t, yaml); err != nil {
+		t.Errorf("a key that something reads should be allowed: %v", err)
+	}
+}
