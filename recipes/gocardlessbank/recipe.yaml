@@ -1,0 +1,542 @@
+# GoCardless Bank Account Data Recipe for Cauldron
+#
+# This is the API formerly called Nordigen, and it is not the GoCardless
+# direct debit API. Same company, different product, different base URL and
+# different credentials. Naming the Recipe after the company would be the
+# first thing to get wrong, so it is named after the product.
+#
+# It sits one layer below TrueLayer: you get the bank's own data with less
+# smoothing over, which makes the rough edges visible rather than removed.
+#
+# Five things worth modelling exactly:
+#
+#   1. The access token lasts a day and the refresh token lasts thirty. Both
+#      are short enough to expire during a normal deployment gap, and the
+#      failure is a 401 that a retry does not fix.
+#   2. Booked and pending are two arrays inside one response, not two
+#      endpoints. The same purchase appears in pending first and booked
+#      later, with a different transactionId, and code that merges the two
+#      arrays counts it twice.
+#   3. transactionId is optional. Some banks do not send one at all, and for
+#      those the only thing identifying a transaction is the combination of
+#      date, amount and remittance text. Deduplicating on transactionId
+#      silently keeps every duplicate from those banks.
+#   4. transactionAmount.amount is a string, and it is signed. A debit is a
+#      negative string, so parsing it as unsigned or comparing it as text
+#      both fail, in opposite directions.
+#   5. A requisition is the consent, and it has a status that is not a
+#      boolean: CR, GC, UA, RJ, SA, GA, LN. Only LN means linked, only the
+#      two-letter code appears in the response, and nothing in it says what
+#      the codes mean.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing expires and nothing settles. Which state a requisition or a
+#     transaction is in is what a fixture puts there.
+#   - The token endpoints are not modelled. They are the part every
+#     integration gets right eventually, and the expiry behaviour that makes
+#     them interesting cannot be reproduced without a clock this Recipe does
+#     not drive.
+#   - Only 90 days of transactions are available from most banks and this
+#     Recipe does not enforce a window, because the window is per-bank and
+#     per-consent rather than a property of the API.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: gocardlessbank
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.gocardless.com/bank-account-data/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-gocardless-bank-access-token
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # The consent. Created before the customer has agreed to anything, and its
+  # status says how far they got.
+  requisition:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      # CR created, GC giving consent, UA undergoing authentication, RJ
+      # rejected, SA selecting accounts, GA granting access, LN linked. Only
+      # LN works. The response carries the two-letter code and nothing that
+      # says what it means.
+      status:
+        type: string
+        default: CR
+      institution_id:
+        type: string
+      agreement:
+        type: string
+      # The accounts the customer chose. Empty until they have chosen, which
+      # is most of the statuses above.
+      accounts:
+        type: list
+      # Where to send the customer. Single use: following it twice does not
+      # work, and there is nothing in the response that says so.
+      link:
+        type: string
+      reference:
+        type: string
+      created:
+        type: datetime
+
+  account:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      institution_id:
+        type: string
+      # DISCOVERED, PROCESSING, ERROR, EXPIRED, READY, SUSPENDED. Only READY
+      # can be read from, and a freshly linked account is PROCESSING for
+      # minutes while the bank is scraped.
+      status:
+        type: string
+        default: DISCOVERED
+      iban:
+        type: string
+      owner_name:
+        type: string
+      created:
+        type: datetime
+      # When the account's data was last fetched from the bank. Not now:
+      # GoCardless caches, and reading twice in a minute returns the same
+      # data with the same timestamp.
+      last_accessed:
+        type: datetime
+
+  # A booked transaction. Settled, and its transactionId will not change
+  # again for the banks that send one.
+  booked_transaction:
+    # Nested. The response is {"transactions": {"booked": [...], "pending":
+    # [...]}}, so a client reading response.results or response.transactions
+    # as an array finds an object.
+    collection: transactions.booked
+    id:
+      # A long numeric string that must not be parsed as a number. Twenty-two
+      # digits exceeds what a JavaScript number can hold, so reading it as
+      # one rounds the last few away and two transactions become the same
+      # transaction.
+      style: digits
+      length: 22
+      field: transactionId
+    fields:
+      account_id:
+        type: string
+      bookingDate:
+        type: string
+      valueDate:
+        type: string
+      # A signed decimal string. "-58.40" for a debit, and parsing it as
+      # unsigned or comparing it as text both fail, in opposite directions.
+      amount:
+        type: string
+        in: transactionAmount
+        as: amount
+      currency:
+        type: string
+        in: transactionAmount
+        as: currency
+      # What the bank wrote on the statement. For banks that send no
+      # transactionId this, the date and the amount are the only identity a
+      # transaction has.
+      remittanceInformationUnstructured:
+        type: string
+      creditorName:
+        type: string
+
+  # The same purchase before it settles. A different array, a different
+  # transactionId, and an amount that can still change.
+  pending_transaction:
+    collection: transactions.pending
+    id:
+      style: digits
+      length: 22
+      field: transactionId
+    fields:
+      account_id:
+        type: string
+      valueDate:
+        type: string
+      amount:
+        type: string
+        in: transactionAmount
+        as: amount
+      currency:
+        type: string
+        in: transactionAmount
+        as: currency
+      remittanceInformationUnstructured:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v2/requisitions/
+    resource: requisition
+    operation: list
+
+  - method: GET
+    path: /api/v2/requisitions/{id}/
+    resource: requisition
+    operation: get
+
+  - method: GET
+    path: /api/v2/accounts/{id}/
+    resource: account
+    operation: get
+
+  # One endpoint, two arrays. The same purchase is in pending first and
+  # booked later, with a different transactionId, so code that merges the two
+  # counts it twice.
+  - method: GET
+    path: /api/v2/accounts/{account_id}/transactions/
+    resource: booked_transaction
+    operation: list
+    scope:
+      - account_id
+    beside:
+      - pending_transaction
+    # Everything except account_id, which is in the path and not in the
+    # object the bank sends back.
+    returns:
+      - id
+      - bookingDate
+      - valueDate
+      - amount
+      - currency
+      - remittanceInformationUnstructured
+      - creditorName
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Request was throttled. Expected available in 3600 seconds."
+
+  authentication_error:
+    status: 401
+    message: "Given token not valid for any token type"
+
+  resource_missing:
+    status: 404
+    message: "Not found."
+
+  parameter_missing:
+    status: 400
+    message: "This field is required."
+
+  # The account is linked and the bank has not been scraped yet. Minutes,
+  # sometimes longer, and every read before then is this.
+  account_processing:
+    status: 409
+    message: "Account is in PROCESSING status. Please try again later."
+
+  # Ninety days elapsed on the end user agreement. The requisition is still
+  # there and reading from it is not, and the fix is the customer going
+  # through the link flow again.
+  account_expired:
+    status: 401
+    message: "Access to account has expired as set in the End User Agreement"
+
+  # The bank is down. GoCardless passes it through, the consent is fine, and
+  # a client that re-links on any failure sends the customer through the
+  # flow for nothing.
+  institution_error:
+    status: 503
+    message: "The institution is temporarily unavailable"
+
+fixtures:
+  empty: {}
+
+  small-customer:
+    requisition:
+      # Linked. The customer got all the way through and chose one account.
+      - id: 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+        status: LN
+        institution_id: MONZO_MONZGB2L
+        agreement: 2c9e7b45-1f60-4a83-b7d2-4e18c95f0a36
+        accounts:
+          - a7c31f95-2e84-4d60-9b17-5c02e8a41d73
+        link: https://ob.gocardless.com/psd2/start/4f8a2c61/MONZO_MONZGB2L
+        reference: cauldron-ref-0001
+        created: "2026-07-02T14:22:00Z"
+
+      # Created and abandoned. The customer opened the link and closed it,
+      # so the requisition exists, has no accounts, and reading from it is a
+      # 404 rather than an empty list. GC is not a failure and not a success.
+      - id: 6b1d5e83-7c29-4f14-a950-2e83b4c07f61
+        status: GC
+        institution_id: BARCLAYS_BUKBGB22
+        agreement: 8d3f1a67-5b92-4c08-9e41-6a25f7d03b19
+        accounts: []
+        link: https://ob.gocardless.com/psd2/start/6b1d5e83/BARCLAYS_BUKBGB22
+        reference: cauldron-ref-0002
+        created: "2026-08-14T09:05:00Z"
+
+    account:
+      - id: a7c31f95-2e84-4d60-9b17-5c02e8a41d73
+        institution_id: MONZO_MONZGB2L
+        status: READY
+        iban: GB29MONZ04000412345678
+        owner_name: Ada Okonkwo
+        created: "2026-07-02T14:23:11Z"
+        # Not now. GoCardless caches, so reading twice in a minute returns
+        # the same data with the same timestamp.
+        last_accessed: "2026-08-15T06:00:00Z"
+
+    booked_transaction:
+      # Settled. Signed and a string: this is a debit of fifty-eight forty.
+      - id: "2026081201004466011000"
+        account_id: a7c31f95-2e84-4d60-9b17-5c02e8a41d73
+        bookingDate: "2026-08-12"
+        valueDate: "2026-08-12"
+        amount: "-58.40"
+        currency: GBP
+        remittanceInformationUnstructured: "BELLWETHER DINER"
+        creditorName: "Bellwether Diner"
+
+      # A credit, so the sign is the only thing distinguishing it. A client
+      # parsing the amount as unsigned makes this and the one above the same
+      # direction.
+      - id: "2026080101004466011000"
+        account_id: a7c31f95-2e84-4d60-9b17-5c02e8a41d73
+        bookingDate: "2026-08-01"
+        valueDate: "2026-08-01"
+        amount: "2100.00"
+        currency: GBP
+        remittanceInformationUnstructured: "SALARY"
+        creditorName: ""
+
+    pending_transaction:
+      # The same fuel stop, before it settles, in the same response as the
+      # two above and under a different key. When it settles it moves to the
+      # booked array and gets a different transactionId, so merging the two
+      # arrays counts it twice and matching on the id loses it.
+      - id: "2026081501004466099000"
+        account_id: a7c31f95-2e84-4d60-9b17-5c02e8a41d73
+        valueDate: "2026-08-15"
+        amount: "-100.00"
+        currency: GBP
+        remittanceInformationUnstructured: "NORTHGATE FUEL"
+
+# Every case below is derived from GoCardless Bank Account Data's published
+# documentation. None has been run against a real connection. The verify
+# report says so.
+conformance:
+  - name: booked and pending arrive in one response under two keys
+    # The same purchase is in pending first and booked later, with a
+    # different transactionId. Code that merges the two arrays counts it
+    # twice, and code that matches on the id across them loses it.
+    source: https://developer.gocardless.com/bank-account-data/transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/transactions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        transactions.booked[0].transactionId: "2026081201004466011000"
+        transactions.pending[0].transactionId: "2026081501004466099000"
+        transactions.pending[0].remittanceInformationUnstructured: "NORTHGATE FUEL"
+      absent:
+        - transactions.booked[2]
+        - transactions.pending[1]
+        - results
+        - transactions[0]
+
+  - name: the amount is a signed string nested under transactionAmount
+    # "-58.40". Parsing it as unsigned loses the direction and comparing it
+    # as text sorts "-58.40" before "2100.00", so both readings fail and in
+    # opposite ways.
+    source: https://developer.gocardless.com/bank-account-data/transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/transactions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        transactions.booked[0].transactionAmount.amount: "-58.40"
+        transactions.booked[0].transactionAmount.currency: GBP
+        transactions.booked[1].transactionAmount.amount: "2100.00"
+      absent:
+        - transactions.booked[0].amount
+        - transactions.booked[0].currency
+
+  - name: neither array repeats the account it belongs to
+    # The account is in the path and the objects do not carry it, so a
+    # transaction held on its own cannot say which account it came from.
+    source: https://developer.gocardless.com/bank-account-data/transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/transactions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      absent:
+        - transactions.booked[0].account_id
+        - transactions.pending[0].account_id
+
+  - name: a pending transaction has no booking date
+    # It has not been booked. bookingDate is what a client sorts on, so a
+    # merged list sorts every pending transaction to one end.
+    source: https://developer.gocardless.com/bank-account-data/transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/transactions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        transactions.booked[0].bookingDate: "2026-08-12"
+        transactions.pending[0].valueDate: "2026-08-15"
+      absent:
+        - transactions.pending[0].bookingDate
+        - transactions.pending[0].creditorName
+
+  - name: a requisition status is a two-letter code that explains nothing
+    # LN is linked. GC is giving consent, which is somebody who opened the
+    # link and has not finished, and it is neither a failure nor a success.
+    # The response carries the code and nothing that says what it means.
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/requisitions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        count: 2
+        results[0].status: LN
+        results[1].status: GC
+      absent:
+        - results[2]
+
+  - name: an unfinished requisition has no accounts
+    # The customer opened the link and closed it. The requisition exists, it
+    # is in the listing, and there is nothing behind it.
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/requisitions/6b1d5e83-7c29-4f14-a950-2e83b4c07f61/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        status: GC
+      absent:
+        - accounts[0]
+
+  - name: an account was last read when GoCardless last read it
+    # Not now. GoCardless caches, so reading twice in a minute returns the
+    # same data with the same timestamp, and a client that treats a fetch as
+    # fresh reports data hours old as current.
+    source: https://developer.gocardless.com/bank-account-data/accounts
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 200
+      body:
+        status: READY
+        last_accessed: "2026-08-15T06:00:00Z"
+
+  - name: a freshly linked account answers 409 while it is scraped
+    # Minutes, sometimes longer. Not an error to retry immediately and not a
+    # failure to give up on.
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    arm: account_processing
+    request:
+      method: GET
+      path: /api/v2/accounts/a7c31f95-2e84-4d60-9b17-5c02e8a41d73/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 409
+      body:
+        detail: "Account is in PROCESSING status. Please try again later."
+
+  - name: an expired agreement is a 401 that a new token does not fix
+    # Ninety days elapsed on the end user agreement. Refreshing the token
+    # succeeds and the next read fails the same way, because the token is
+    # fine and the agreement behind it is not.
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    arm: account_expired
+    request:
+      method: GET
+      path: /api/v2/requisitions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 401
+      body:
+        detail: "Access to account has expired as set in the End User Agreement"
+
+  - name: a bank outage is a 503 and the consent is fine
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    arm: institution_error
+    request:
+      method: GET
+      path: /api/v2/requisitions/
+      headers:
+        Authorization: Bearer cauldron-gocardless-bank-access-token
+    expect:
+      status: 503
+      body:
+        detail: "The institution is temporarily unavailable"
+
+  - name: an error carries prose and nothing to branch on
+    source: https://developer.gocardless.com/bank-account-data/statuses
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/v2/requisitions/
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        detail: "Given token not valid for any token type"
+      absent:
+        - code
+        - type
+        - error

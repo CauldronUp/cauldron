@@ -765,6 +765,22 @@ type Route struct {
 	// GitHub's own Recipe had a closed issue in its fixture that the listing
 	// returned and the real API would not.
 	Filters []Filter `yaml:"filters"`
+	// Beside names other resources whose records travel in the same response
+	// body, each under its own collection name.
+	//
+	// One endpoint, several collections, and the fact that it is one endpoint
+	// is the point. GoCardless Bank Account Data answers a request for
+	// transactions with a booked array and a pending array in one body: the
+	// same purchase appears in pending first and booked later, with a
+	// different identifier, so code that merges the two arrays counts it
+	// twice. Describing that as two endpoints would lose the thing worth
+	// describing, and describing only one of the arrays would answer with a
+	// shape no bank sends.
+	//
+	// The scope applies to all of them, because they are one request. Paging
+	// applies only to the route's own resource, because that is the one the
+	// cursor refers to.
+	Beside []string `yaml:"beside"`
 	// Returns limits the response to the named fields, for the routes that
 	// answer with less than the record they touched.
 	//
@@ -1410,6 +1426,48 @@ func (r *Recipe) Validate() error {
 			len(r.Resources[route.Resource].Fields) == 0 {
 			add("%s: resource %q declares no fields, so this create would echo the request body back; set returns to say what the provider actually sends",
 				where, route.Resource)
+		}
+
+		for _, name := range route.Beside {
+			bwhere := fmt.Sprintf("%s: beside %q", where, name)
+
+			if route.Operation != "list" {
+				add("%s: only a listing carries other collections, and this is a %s", bwhere, route.Operation)
+			}
+
+			if name == route.Resource {
+				add("%s: is the route's own resource, so it would be written twice into the same body", bwhere)
+
+				continue
+			}
+
+			beside, ok := r.Resources[name]
+			if !ok {
+				add("%s: is not a resource in this Recipe", bwhere)
+
+				continue
+			}
+
+			// Without its own name it lands wherever the route's resource
+			// landed, and one collection overwrites the other in silence.
+			if beside.Collection == "" {
+				add("%s: needs a collection name of its own, or it would overwrite the collection beside it", bwhere)
+
+				continue
+			}
+
+			if beside.Collection == r.Resources[route.Resource].Collection {
+				add("%s: names the same collection as %q, so one would overwrite the other", bwhere, route.Resource)
+			}
+
+			// The scope is applied to every collection in the body, so a
+			// resource that cannot be partitioned by it would be returned
+			// whole to whoever asked for one slice of it.
+			for _, field := range route.Scope {
+				if _, declared := beside.Fields[field]; !declared {
+					add("%s: has no %q field, so the scope this route applies would not narrow it", bwhere, field)
+				}
+			}
 		}
 
 		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" {

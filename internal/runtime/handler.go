@@ -423,7 +423,43 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		page.Records[i] = trim(matched.spec, record)
 	}
 
-	writeJSON(w, http.StatusOK, s.listBody(page, matched.spec.Resource, r.URL.Path))
+	body := s.listBody(page, matched.spec.Resource, r.URL.Path)
+
+	// Other collections travelling in the same body. One endpoint, several
+	// arrays: GoCardless answers a request for transactions with booked and
+	// pending together, and the same purchase is in one and then the other.
+	if len(matched.spec.Beside) > 0 {
+		object, ok := body.(map[string]any)
+		if !ok {
+			return s.writeRecipeError(w, "invalid_request", 500, "invalid_request",
+				"a route naming beside resources must answer with an object")
+		}
+
+		for _, name := range matched.spec.Beside {
+			// Every record, not a page. The cursor belongs to the route's own
+			// resource, and a second collection paged by the same cursor
+			// would be paged by a pointer into a different list.
+			alongside, err := s.store.ListWhere(name, where, "", 0)
+			if err != nil {
+				return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
+			}
+
+			// The route's returns names the route's own resource's fields
+			// and means nothing here. What every collection in the body does
+			// share is the scope: the partition is in the path, and a
+			// provider that puts it there does not repeat it in the body.
+			records := s.presentAll(name, alongside.Records)
+			for _, field := range matched.spec.Scope {
+				for _, record := range records {
+					delete(record, field)
+				}
+			}
+
+			setPath(object, s.collectionName(name, ""), records)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, body)
 
 	return http.StatusOK
 }

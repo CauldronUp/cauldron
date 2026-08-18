@@ -1135,3 +1135,116 @@ func TestAListKeyIsKeptWhenAResourceNeedsIt(t *testing.T) {
 		t.Errorf("a key that something reads should be allowed: %v", err)
 	}
 }
+
+// A route may carry other collections in the same body, and each of the ways
+// that can be declared wrongly fails differently.
+const besideRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+responses:
+  list:
+    style: wrapped
+resources:
+  charge:
+    collection: charges
+    id:
+      prefix: ch_
+      length: 14
+    fields:
+      account:
+        type: string
+      amount:
+        type: integer
+  hold:
+    collection: holds
+    id:
+      prefix: hld_
+      length: 14
+    fields:
+      account:
+        type: string
+      amount:
+        type: integer
+routes:
+  - method: GET
+    path: /v1/accounts/{account}/charges
+    resource: charge
+    operation: list
+    scope: [account]
+    beside: [hold]
+`
+
+func TestBesideIsAcceptedWhenEachCollectionHasItsOwnName(t *testing.T) {
+	if _, err := parse(t, besideRecipe); err != nil {
+		t.Errorf("two named collections in one body should be allowed: %v", err)
+	}
+}
+
+func TestBesideMustNameAKnownResource(t *testing.T) {
+	got := problems(t, strings.Replace(besideRecipe, "beside: [hold]", "beside: [reserve]", 1))
+
+	if !strings.Contains(got, "not a resource in this Recipe") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestBesideMayNotNameTheRoutesOwnResource(t *testing.T) {
+	got := problems(t, strings.Replace(besideRecipe, "beside: [hold]", "beside: [charge]", 1))
+
+	if !strings.Contains(got, "written twice into the same body") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// Without its own name it lands wherever the route's resource landed, and one
+// collection overwrites the other in silence.
+func TestBesideCollectionsMustNotCollide(t *testing.T) {
+	got := problems(t, strings.Replace(besideRecipe, "    collection: holds", "    collection: charges", 1))
+
+	if !strings.Contains(got, "one would overwrite the other") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// The scope is applied to every collection in the body. A resource that cannot
+// be partitioned by it would be returned whole to whoever asked for one slice.
+func TestBesideMustBeScopableByTheRoutesScope(t *testing.T) {
+	yaml := strings.Replace(besideRecipe, `  hold:
+    collection: holds
+    id:
+      prefix: hld_
+      length: 14
+    fields:
+      account:
+        type: string
+      amount:
+        type: integer`, `  hold:
+    collection: holds
+    id:
+      prefix: hld_
+      length: 14
+    fields:
+      amount:
+        type: integer`, 1)
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "would not narrow it") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestBesideOnlyAppliesToAListing(t *testing.T) {
+	yaml := strings.Replace(
+		strings.Replace(besideRecipe, "path: /v1/accounts/{account}/charges", "path: /v1/accounts/{account}/charges/{id}", 1),
+		"operation: list", "operation: get", 1)
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "only a listing carries other collections") {
+		t.Errorf("got %q", got)
+	}
+}
