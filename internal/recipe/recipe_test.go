@@ -1400,3 +1400,77 @@ func TestCarriedByAndAVisibleIdentifierContradict(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// Arming something and then expecting a status it does not produce means the
+// fault did nothing, and the case passes while proving the opposite of what it
+// says.
+//
+// This rule used to compare against 400, on the reasoning that an armed thing
+// is a failure and a failure is a 4xx or a 5xx. Not every armed thing is a
+// failure: Snowflake's SQL API answers the same endpoint with a 202 and a
+// statement handle when the query is slow, which is an alternate path rather
+// than an error, and a case arming it has to expect the 202 it installs.
+const armedRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+    fields:
+      email:
+        type: string
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+  execution_in_progress:
+    status: 202
+    message: "Asynchronous execution in progress."
+routes:
+  - method: GET
+    path: /v1/customers/{id}
+    resource: customer
+    operation: get
+conformance:
+  - name: the slow path
+    source: https://example.test
+    arm: execution_in_progress
+    request:
+      method: GET
+      path: /v1/customers/cus_000000000001
+    expect:
+      status: 202
+      body:
+        message: "Asynchronous execution in progress."
+`
+
+func TestArmingANonFailureIsAllowedWhenTheCaseExpectsIt(t *testing.T) {
+	if _, err := parse(t, armedRecipe); err != nil {
+		t.Errorf("an armed 202 expecting 202 should be allowed: %v", err)
+	}
+}
+
+func TestArmingSomethingAndExpectingAnotherStatusIsRefused(t *testing.T) {
+	got := problems(t, strings.Replace(armedRecipe, "arm: execution_in_progress", "arm: rate_limit", 1))
+
+	if !strings.Contains(got, "changed nothing") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// The mistake the rule exists for, unchanged: arm a failure, expect success.
+func TestArmingAFailureAndExpectingSuccessIsStillRefused(t *testing.T) {
+	yaml := strings.Replace(armedRecipe, "arm: execution_in_progress", "arm: rate_limit", 1)
+	yaml = strings.Replace(yaml, "      status: 202", "      status: 200", 1)
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "changed nothing") {
+		t.Errorf("got %q", got)
+	}
+}

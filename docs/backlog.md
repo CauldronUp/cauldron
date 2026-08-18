@@ -680,7 +680,7 @@ what normalisation does not fix.
 | Airbyte | A job has attempts, and an attempt failing is not the job failing |
 | ~~Hightouch~~ | Shipped. A run with every row rejected finishes as success, warning is neither an error nor a success, the reasons live on an endpoint the run does not link to, and disabled and paused are different things that both stop a sync |
 | dbt Cloud | A run has steps, and the run status is not the step status |
-| Snowflake SQL API | A statement answers with a handle instead of results when it is slow, and the same endpoint returns both shapes |
+| ~~Snowflake SQL API~~ | Shipped. The same endpoint answers 200 with results or 202 with a handle depending on how fast the query was, every value is a string, a row is positional with the names in the metadata, and NULL is a real null inside the array of strings |
 | ClickHouse Cloud | Results are paged by the client rather than the server, and the format is chosen by a parameter |
 
 ### Incident response and observability

@@ -1524,12 +1524,22 @@ func (r *Recipe) Validate() error {
 				add("conformance[%d] %q: arms %q, which is not in the errors table", i, c.Name, c.Arm)
 			}
 
-			// Arming a failure and expecting success means the fault did
-			// nothing, and the case passes while proving the opposite of what
-			// it says. That is the same class of mistake as a case asserting
-			// its own request back.
-			if c.Expect.Status > 0 && c.Expect.Status < 400 {
-				add("conformance[%d] %q: arms %q and expects %d, so the failure it installed changed nothing", i, c.Name, c.Arm, c.Expect.Status)
+			// Arming something and then expecting a status it does not
+			// produce means the fault did nothing, and the case passes while
+			// proving the opposite of what it says. That is the same class of
+			// mistake as a case asserting its own request back.
+			//
+			// This used to compare against 400, on the reasoning that an
+			// armed thing is a failure and a failure is a 4xx or a 5xx. Not
+			// every armed thing is a failure: Snowflake's SQL API answers the
+			// same endpoint with a 202 and a statement handle when the query
+			// is slow, which is an alternate path rather than an error, and a
+			// case arming it has to expect the 202 it installs. Comparing
+			// against the armed entry's own status catches the real mistake
+			// -- arm a 429, expect a 200 -- and permits the honest one.
+			if armed, ok := r.Errors[c.Arm]; ok && c.Expect.Status > 0 && c.Expect.Status != armed.Status {
+				add("conformance[%d] %q: arms %q, which answers %d, and expects %d, so what it installed changed nothing",
+					i, c.Name, c.Arm, armed.Status, c.Expect.Status)
 			}
 		}
 
