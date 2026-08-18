@@ -87,7 +87,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | Microsoft Graph | Mail, calendars, users, files. Enormous surface area |
 | ~~Google Calendar~~ | Shipped. Listings return the series not the occurrence, all-day events have no time, cancelled instances are almost empty |
-| Gmail | Threads, labels, drafts, messages |
+| ~~Gmail~~ | Shipped. A listing carries no message, headers are an array, no read flag, trash is not delete |
 | Google Drive | Files, permissions, revisions, shared drives |
 | Microsoft OneDrive | Files, sharing, async operations |
 | Microsoft Teams | Channels, messages, members |
