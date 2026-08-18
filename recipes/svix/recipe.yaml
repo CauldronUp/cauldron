@@ -1,0 +1,612 @@
+# Svix Recipe for Cauldron
+#
+# Svix sends webhooks on your behalf, which makes it an unusual thing to
+# emulate: the product is delivery, and delivery is exactly what a test cannot
+# wait for. A message is accepted immediately and attempted for hours
+# afterwards, with backoff between the attempts, and the interesting states
+# only exist during that window.
+#
+# There is a test environment, and it has the same problem the real one does.
+# Watching an endpoint get disabled after repeated failure means arranging
+# repeated failure and then waiting out the schedule, which nobody does, so
+# the code that handles a disabled endpoint is written from the documentation
+# and never run.
+#
+# Five things worth modelling exactly:
+#
+#   1. Accepted is not delivered. Creating a message answers 202 with an
+#      identifier and no delivery information at all, because none exists
+#      yet. Code that treats the create response as proof the customer got
+#      the webhook is reporting on something that has not happened.
+#   2. An attempt is its own object, and there are several per message per
+#      endpoint. The message does not carry a status; the attempts do, and
+#      the useful question is about the last one rather than the message.
+#   3. A failing endpoint gets disabled, and stays disabled until somebody
+#      turns it back on. This is the state that breaks an integration
+#      silently: messages are still accepted, attempts are no longer made,
+#      and nothing tells the sender.
+#   4. The backoff is in the timestamps. Five attempts against one endpoint,
+#      seconds apart and then minutes apart, so anything that assumes a fixed
+#      retry interval reads the gaps wrong.
+#   5. Identifiers are prefixed and typed, and the prefixes look alike.
+#      msg_, app_, ep_ and atmpt_ are all base-something strings of similar
+#      length, so passing the wrong one gets a 404 that says only that
+#      nothing was found.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is delivered. Cauldron does not attempt an outbound request on
+#     Svix's behalf, so the attempts below are what a fixture puts there.
+#     Modelling the schedule would mean modelling time, and the Recipe format
+#     has a clock rather than a scheduler.
+#   - Signature verification is the reason many people use Svix, and the
+#     signing scheme here is Cauldron's rather than Svix's. Code written
+#     against this will not be the code that runs against the real thing.
+#   - Recovery, replay, transformations, rate limits per endpoint and the
+#     application portal are not modelled.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: svix
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.svix.com/docs
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - testsk_cauldron000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # done rather than has_more, so the interesting value is false and code
+    # that ignores it processes a prefix of its own result set.
+    complete_field: done
+    cursor_field: iterator
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: code
+    type_field: "-"
+
+resources:
+  message:
+    collection: data
+    id:
+      style: prefixed
+      prefix: msg_
+      length: 22
+    fields:
+      # Every object belongs to an application, and the identifier is in the
+      # path rather than in the body, so it has to be a field to be filtered
+      # on at all.
+      app_id:
+        type: string
+      # The caller's own identifier for the event, which is the only value in
+      # this exchange that means anything on their side of it.
+      eventId:
+        type: string
+      eventType:
+        type: string
+        required: true
+      # No status field anywhere. A message is accepted or it is not, and
+      # what happened afterwards lives on the attempts.
+      payload:
+        type: list
+      channels:
+        type: list
+      timestamp:
+        type: string
+
+  endpoint:
+    collection: data
+    id:
+      style: prefixed
+      prefix: ep_
+      length: 22
+    fields:
+      app_id:
+        type: string
+      url:
+        type: string
+        required: true
+      description:
+        type: string
+      # Set when Svix gave up on it after repeated failure. This is the state
+      # that breaks an integration silently: messages are still accepted and
+      # nothing is attempted.
+      disabled:
+        type: boolean
+        default: false
+      # Which events this endpoint wants. An empty list means all of them,
+      # which is the opposite of what an empty list usually means.
+      filterTypes:
+        type: list
+      # Increments when the endpoint changes, and the signature is computed
+      # against the current version, so a stale secret fails verification
+      # rather than being refused.
+      version:
+        type: integer
+        default: 1
+      createdAt:
+        type: string
+      updatedAt:
+        type: string
+
+  attempt:
+    collection: data
+    id:
+      style: prefixed
+      prefix: atmpt_
+      length: 22
+    fields:
+      app_id:
+        type: string
+      msgId:
+        type: string
+      endpointId:
+        type: string
+      # success, pending, fail, sending. A message with five attempts has
+      # four fails and one success, or five fails and a disabled endpoint.
+      status:
+        type: string
+        default: pending
+      # What the receiver answered. Zero when nothing answered at all, which
+      # is a timeout rather than a rejection and is the common case.
+      responseStatusCode:
+        type: integer
+      # Truncated by Svix, so a long error page arrives cut off and the part
+      # that says why is often the part that was removed.
+      response:
+        type: string
+      # The backoff is here. Reading the gaps between these is the only way
+      # to know the schedule, and it is not fixed.
+      timestamp:
+        type: string
+      # Increments per attempt against the same endpoint, starting at nought.
+      triggerType:
+        type: string
+        default: scheduled
+
+routes:
+  - method: POST
+    path: /api/v1/app/{app_id}/msg
+    resource: message
+    operation: create
+    scope: [app_id]
+    # Accepted, not delivered. There is no delivery information in this
+    # response because none exists yet.
+    status: 202
+
+  - method: GET
+    path: /api/v1/app/{app_id}/msg
+    resource: message
+    operation: list
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v1/app/{app_id}/msg/{id}
+    resource: message
+    operation: get
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v1/app/{app_id}/endpoint
+    resource: endpoint
+    operation: list
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v1/app/{app_id}/endpoint/{id}
+    resource: endpoint
+    operation: get
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v1/app/{app_id}/attempt/endpoint/{endpointId}
+    resource: attempt
+    operation: list
+    # Scoped by both, or attempts for one endpoint would be returned under
+    # another. The path names the endpoint and it has to mean something.
+    scope: [app_id, endpointId]
+
+webhooks:
+  events:
+    - message.attempt.failing
+    - message.attempt.exhausted
+    - endpoint.disabled
+  signing:
+    scheme: hmac-sha256
+    header: svix-signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: authentication_failed
+    message: "Authentication failed"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Not found"
+
+  parameter_missing:
+    status: 422
+    code: validation_error
+    message: "Input should be a valid string"
+
+  # An event type nobody registered. Svix refuses rather than accepting and
+  # silently delivering to nothing, which is the kinder of the two.
+  unknown_event_type:
+    status: 422
+    code: validation_error
+    message: "Event type does not exist"
+
+  # The endpoint Svix gave up on. Sending is still accepted; this is what a
+  # caller sees when they try to use the endpoint directly.
+  endpoint_disabled:
+    status: 409
+    code: conflict
+    message: "Endpoint is disabled"
+
+fixtures:
+  empty: {}
+
+  small-app:
+    endpoint:
+      # Healthy. Wants two event types, so everything else is silently not
+      # delivered here.
+      - id: ep_cauldron00000000001
+        app_id: app_cauldron0000000001
+        url: https://customer.cauldron.test/webhooks
+        description: Production receiver
+        disabled: false
+        filterTypes:
+          - invoice.paid
+          - invoice.failed
+        version: 1
+        createdAt: "2026-05-01T09:00:00Z"
+        updatedAt: "2026-05-01T09:00:00Z"
+      # Disabled after repeated failure. Messages are still accepted for the
+      # application and nothing is attempted here, and nothing announces it.
+      - id: ep_cauldron00000000002
+        app_id: app_cauldron0000000001
+        url: https://stale.cauldron.test/hooks
+        description: Old receiver
+        disabled: true
+        filterTypes: []
+        version: 3
+        createdAt: "2026-03-14T11:00:00Z"
+        updatedAt: "2026-06-02T04:17:52Z"
+
+    message:
+      - id: msg_cauldron0000000001
+        app_id: app_cauldron0000000001
+        eventId: invoice-1042
+        eventType: invoice.paid
+        payload:
+          - amount: 2500
+        channels: []
+        timestamp: "2026-06-02T04:00:00Z"
+
+    attempt:
+      # Five attempts against one endpoint for one message. The gaps are
+      # seconds, then a minute, then five, so a fixed retry interval read off
+      # the first two is wrong by the fourth.
+      - id: atmpt_cauldron0000001
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000002
+        status: fail
+        # Nothing answered. A timeout rather than a rejection, and the common
+        # case, which is why zero has to be a value the reader expects.
+        responseStatusCode: 0
+        response: ""
+        timestamp: "2026-06-02T04:00:01Z"
+        triggerType: scheduled
+      - id: atmpt_cauldron0000002
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000002
+        status: fail
+        responseStatusCode: 500
+        response: "<html><head><title>500 Internal Server"
+        timestamp: "2026-06-02T04:00:06Z"
+        triggerType: scheduled
+      - id: atmpt_cauldron0000003
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000002
+        status: fail
+        responseStatusCode: 500
+        response: "<html><head><title>500 Internal Server"
+        timestamp: "2026-06-02T04:01:06Z"
+        triggerType: scheduled
+      - id: atmpt_cauldron0000004
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000002
+        status: fail
+        responseStatusCode: 502
+        response: "Bad Gateway"
+        timestamp: "2026-06-02T04:06:06Z"
+        triggerType: scheduled
+      - id: atmpt_cauldron0000005
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000002
+        status: fail
+        responseStatusCode: 502
+        response: "Bad Gateway"
+        timestamp: "2026-06-02T04:17:52Z"
+        triggerType: scheduled
+      # A different endpoint entirely. It is in the same collection, so a
+      # listing that ignored the endpoint in its own path would return this
+      # one too.
+      - id: atmpt_cauldron0000006
+        app_id: app_cauldron0000000001
+        msgId: msg_cauldron0000000001
+        endpointId: ep_cauldron00000000001
+        status: success
+        responseStatusCode: 200
+        response: "OK"
+        timestamp: "2026-06-02T04:00:01Z"
+        triggerType: scheduled
+
+# Conformance cases, read from the Svix API reference rather than observed
+# against a live application. The verify report says so.
+conformance:
+  - name: creating a message says nothing about delivery
+    source: https://api.svix.com/docs#tag/Message/operation/v1.message.create
+    fixture: small-app
+    request:
+      method: POST
+      path: /api/v1/app/app_cauldron0000000001/msg
+      json:
+        eventType: invoice.paid
+        eventId: invoice-1043
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      # Accepted. Nothing has been attempted, so there is nothing to report
+      # and the response says so by omission.
+      status: 202
+      matches:
+        id: '^msg_'
+      absent:
+        - status
+        - attempts
+        - delivered
+        - responseStatusCode
+
+  - name: a message carries no status of its own
+    source: https://api.svix.com/docs#tag/Message
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/msg/msg_cauldron0000000001
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The event, the payload, the time it was accepted. Whether anybody
+        # received it is a different object, and asking the message is asking
+        # the wrong thing.
+        eventType: invoice.paid
+        eventId: invoice-1042
+      absent:
+        - status
+        - delivered
+
+  - name: the attempts are where the outcome lives
+    source: https://api.svix.com/docs#tag/Message-Attempt
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/attempt/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Five attempts for one message against one endpoint, all failed.
+        # The useful question is about the last one, and there is no field
+        # anywhere that answers it directly.
+        data[0].status: fail
+        data[4].status: fail
+        data[0].msgId: msg_cauldron0000000001
+
+  - name: a listing is scoped to the endpoint its path names
+    source: https://api.svix.com/docs#tag/Message-Attempt
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/attempt/endpoint/ep_cauldron00000000001
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # One attempt, and it succeeded. The five failures against the other
+        # endpoint are for the same message in the same application, so a
+        # listing that ignored the endpoint would report this one as failing.
+        data[0].status: success
+        data[0].endpointId: ep_cauldron00000000001
+      absent:
+        - data[1]
+
+  - name: nothing answering is a zero rather than a failure code
+    source: https://api.svix.com/docs#tag/Message-Attempt
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/attempt/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A timeout, which is the common case, and it arrives as nought
+        # rather than as an absent field or a 5xx. Code branching on
+        # responseStatusCode >= 500 misses every timeout there is.
+        data[0].responseStatusCode: 0
+        data[0].response: ""
+        data[1].responseStatusCode: 500
+
+  - name: the backoff is in the gaps between the timestamps
+    source: https://docs.svix.com/retries
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/attempt/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # One second, then five, then a minute, then five minutes, then
+        # eleven. Anything that reads the first gap and assumes a fixed
+        # interval is wrong by the fourth attempt.
+        data[0].timestamp: "2026-06-02T04:00:01Z"
+        data[1].timestamp: "2026-06-02T04:00:06Z"
+        data[2].timestamp: "2026-06-02T04:01:06Z"
+        data[3].timestamp: "2026-06-02T04:06:06Z"
+        data[4].timestamp: "2026-06-02T04:17:52Z"
+
+  - name: a failing endpoint ends up disabled
+    source: https://docs.svix.com/retries#disabling-endpoints
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Disabled at the moment of the last attempt, and it stays that way
+        # until somebody turns it back on. Messages are still accepted for
+        # this application and nothing is attempted here.
+        disabled: true
+        updatedAt: "2026-06-02T04:17:52Z"
+
+  - name: and it is still in the listing, beside the healthy one
+    source: https://api.svix.com/docs#tag/Endpoint
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/endpoint
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Nothing separates them in the listing except a boolean nobody
+        # filters on, so a count of configured endpoints includes one that
+        # receives nothing.
+        data[0].disabled: false
+        data[1].disabled: true
+
+  - name: an empty filter list means every event, not none
+    source: https://api.svix.com/docs#tag/Endpoint
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The opposite of what an empty list usually means. An endpoint that
+        # filters nothing receives everything, and the way to receive nothing
+        # is to be disabled.
+        filterTypes: []
+
+  - name: and a populated one silently excludes the rest
+    source: https://api.svix.com/docs#tag/Endpoint
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/endpoint/ep_cauldron00000000001
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two types wanted. Anything else is accepted by the application and
+        # never attempted here, with no record of the decision.
+        filterTypes:
+          - invoice.paid
+          - invoice.failed
+
+  - name: the endpoint version moves when the endpoint changes
+    source: https://api.svix.com/docs#tag/Endpoint
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/endpoint/ep_cauldron00000000002
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Third version. Signatures are computed against the current one, so
+        # a receiver holding an older secret fails verification rather than
+        # being told the secret is stale.
+        version: 3
+
+  - name: a listing says done rather than has_more
+    source: https://api.svix.com/docs#section/Pagination
+    fixture: small-app
+    request:
+      method: GET
+      path: /api/v1/app/app_cauldron0000000001/attempt/endpoint/ep_cauldron00000000002
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # False is the interesting value, and code that ignores this field
+        # processes a prefix of its own result set and is never told.
+        done: false
+      matches:
+        iterator: '.'
+
+  - name: an unknown event type is refused rather than delivered to nobody
+    source: https://api.svix.com/docs#tag/Message
+    arm: unknown_event_type
+    fixture: small-app
+    request:
+      method: POST
+      path: /api/v1/app/app_cauldron0000000001/msg
+      json:
+        eventType: invoice.imaginary
+      headers:
+        Authorization: Bearer testsk_cauldron000000000000000000000000
+    expect:
+      # Refused, which is the kinder of the two available behaviours: the
+      # alternative is accepting it and delivering it to nothing.
+      status: 422
+      body:
+        code: validation_error
+      matches:
+        detail: 'Event type does not exist'

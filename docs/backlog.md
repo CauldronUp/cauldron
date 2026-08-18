@@ -579,7 +579,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Svix | The delivery-attempt model with exponential backoff, and the endpoint that gets disabled after enough failures — which is the failure nobody tests |
+| ~~Svix~~ | Shipped. Accepted is not delivered, the outcome lives on the attempts, a failing endpoint gets disabled and nothing announces it |
 | Inngest | Assess — events, functions, step state, where a step is durable and a function is not |
 
 ### Web data
