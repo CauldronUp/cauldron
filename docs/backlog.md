@@ -466,6 +466,137 @@ The delete routes on recipes with no published description are still on the
 default. That is a default rather than a verified claim, and it is at least
 wrong in the direction that shows up locally.
 
+## Second sweep
+
+Fifty more, chosen for behaviour rather than for surface area. The same
+convention applies: an entry whose reason starts with **Assess** names a
+surface, and somebody still has to read the documentation and decide whether
+there is a lie in there worth reproducing.
+
+### Money that moves
+
+The standing rule applies to every one of these: model the reads, leave the
+transfers alone, and say so in the header.
+
+| Provider | Why |
+|---|---|
+| Increase | An ACH return arrives days after everything downstream has treated the transfer as settled, and it arrives as a new object rather than as a change to the old one. The whole domain is in that delay |
+| Modern Treasury | Double-entry, so every amount appears twice with opposite signs and a naive sum is nought. Reconciliation is the product |
+| Marqeta | Just-in-time funding puts a webhook in the authorisation path with a response deadline on it. Failing to answer in time declines the card, so a slow test is a declined payment |
+| Dwolla | Micro-deposit verification is a multi-day handshake with a fixed number of attempts, and the failure to model is running out of them |
+| Checkout.com | Authorised is not captured, and the two have separate identifiers |
+| Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
+| Airwallex | Multi-currency balances where the settlement currency is not the charge currency, and the conversion happens somewhere the API does not show you |
+| Column | ACH return reason codes, which are the only thing that says whether retrying is legal |
+| Moov | Transfers across rails, where the rail decides the settlement time and nothing else does |
+| Unit | An authorisation is not a transaction and the two carry different identifiers for the same purchase |
+
+### Billing that accrues
+
+| Provider | Why |
+|---|---|
+| Orb | A usage invoice is not final until the period closes, so the amount changes under you and reading it early is reading a draft |
+| Metronome | Usage events are deduplicated inside a window, so sending the same event twice is sometimes one event and sometimes two |
+| Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
+| Lemon Squeezy | Merchant of record, so the tax is theirs, the payout is net, and the order total is not what arrives |
+| RevenueCat | The entitlement an app reads and the subscription that renews are different objects and can disagree for a whole billing period |
+| Recharge | Subscriptions on top of Shopify, so one order has two sources of truth and they drift |
+| Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
+
+### Payroll, people and hiring
+
+| Provider | Why |
+|---|---|
+| Rippling | Assess — employees, groups, app provisioning. Same standing rule as Gusto and Deel |
+| BambooHR | Assess — employees, time off, custom fields whose ids are per-account |
+| Ashby | Assess — candidate stages, where the stage is configurable per pipeline so branching on its name breaks |
+| Workable | Assess — jobs, candidates, stages |
+
+### Messaging
+
+| Provider | Why |
+|---|---|
+| Plivo | Assess — SMS and voice, beside Twilio and Telnyx |
+| Bandwidth | Number provisioning is asynchronous and takes minutes, so an ordered number is not yet a usable number |
+| Twilio Verify | A code expires and a check consumes an attempt, so verifying twice with the right code fails the second time |
+| Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
+| Braze | The export API is asynchronous: you ask, and the answer arrives somewhere else |
+| Brevo | Contacts and transactional email share one quota, so sending mail exhausts the budget for reading contacts |
+| Kit | Assess — subscribers, sequences, tags |
+| Beehiiv | Assess — publications, posts, subscribers |
+
+### Identity and risk
+
+| Provider | Why |
+|---|---|
+| AWS Cognito | The SDK is the API, and the token lifecycle is the whole integration |
+| Ory | Assess — identities, sessions, flows. The flow object is the unusual part |
+| Kinde | Assess — users, organizations, feature flags in one product |
+| Persona | The decision arrives by webhook minutes after the inquiry completes, so completed is not decided |
+| Onfido | A check can be complete and its report `consider` rather than `clear`, which is neither a pass nor a failure |
+| Sift | The score is computed server side and changes without any request from you |
+
+### Storage and media
+
+| Provider | Why |
+|---|---|
+| Backblaze B2 | S3-compatible and not identical, which is the interesting part: the differences are where a working integration breaks |
+| Uploadcare | Assess — uploads, transformations, the CDN URL that is the product |
+| ImageKit | Assess — transformations and delivery, beside Cloudinary and Imgix |
+| Livepeer | Assess — streams and recordings, asynchronous throughout |
+
+### Data and search
+
+| Provider | Why |
+|---|---|
+| Qdrant | Vector search, where a filter changes which vectors are even considered, so the same query with a filter is not a subset of the same query without one |
+| Weaviate | Assess — objects, classes, hybrid search |
+| Typesense | Assess — collections, documents, search parameters |
+| Convex | Assess — the query and mutation model is not REST-shaped, so this may belong in the not-done table |
+
+### Hosting and deployment
+
+| Provider | Why |
+|---|---|
+| Netlify | A deploy has an identifier before the site is live, so a deploy that exists is not a deploy that is serving |
+| Render | Services, deploys, and the gap between build finished and live |
+| Fly.io | The Machines API and the older platform API are different shapes for the same account |
+| Heroku | The API still wants `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
+| Hetzner Cloud | Every mutation answers with an action to poll rather than with the thing you changed |
+
+### Observability and flags
+
+| Provider | Why |
+|---|---|
+| Bugsnag | An error and its occurrences are different objects, and the counts on the first are of the second |
+| Grafana Cloud | Assess — dashboards, alert rules, and a Prometheus-shaped query API that is not REST |
+| Better Stack | Assess — logs, uptime monitors, incidents |
+| PostHog | Events, persons, and feature flags in one product, where flag evaluation is local and the API is only the source |
+| Statsig | Assess — gates, experiments, exposure logging |
+| Flagsmith | Assess — flags per environment with identity overrides, so the same flag has many answers |
+
+### Webhook infrastructure
+
+| Provider | Why |
+|---|---|
+| Svix | The delivery-attempt model with exponential backoff, and the endpoint that gets disabled after enough failures — which is the failure nobody tests |
+| Inngest | Assess — events, functions, step state, where a step is durable and a function is not |
+
+### Web data
+
+| Provider | Why |
+|---|---|
+| Firecrawl | A crawl is asynchronous and partial results are readable before it finishes, so an early read is a real answer that is incomplete |
+| Apify | A run can succeed with zero items, which is not the same as failing and is handled as if it were |
+| ScrapingBee | A failed fetch is a successful API call, so the status code says nothing about whether you got the page |
+
+### Registries
+
+| Provider | Why |
+|---|---|
+| Docker Hub | The pull rate limit is counted per IP rather than per token, so authenticating does not help a shared runner |
+| npm registry | An unpublished version leaves a tombstone, so a version that does not exist is not the same as a version that never did |
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
