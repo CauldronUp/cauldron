@@ -1,0 +1,522 @@
+# Replicate Recipe for Cauldron
+#
+# Replicate runs models that take seconds to minutes, and it is honest about
+# that in a way that catches people used to APIs which are not.
+#
+# A prediction is created and returns immediately with status "starting" and
+# no output. Not null output: no output property at all. Then it becomes
+# "processing", and only then does output appear, and for a streaming model
+# it appears incrementally as an array that grows. Code that reads
+# prediction.output on the create response reads undefined, and code that
+# waits for output to be non-null waits for a key that does not exist yet.
+#
+# Four more worth modelling exactly:
+#
+#   1. A cold model costs a minute before it costs anything else. Replicate
+#      scales to zero, so the first prediction against an idle model waits
+#      for a container to boot, and the timing difference between a warm run
+#      and a cold one is two orders of magnitude with no signal in the
+#      response.
+#   2. Billing is by the second of compute, reported in metrics.predict_time
+#      on the finished prediction, and it bears no relation to the number of
+#      requests. Two calls to the same model can differ tenfold in cost.
+#   3. "succeeded" is not "produced what you wanted". A model can succeed
+#      and return an empty array, a refusal, or a safety-filtered
+#      placeholder, and the status says succeeded for all of them.
+#   4. Output URLs expire. A succeeded prediction's output is a link to a
+#      file Replicate deletes after an hour, so a client that stores the URL
+#      rather than the bytes stores a link that will 404 tomorrow.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No model runs and nothing progresses. Which status a prediction holds
+#     is what a fixture puts there, and the fixtures hold one starting, one
+#     processing, one succeeded and one failed, which are the four states a
+#     client has to handle.
+#   - No cold start is simulated. The delay is the point and Cauldron
+#     answers immediately, so the Recipe describes the shape of the states
+#     rather than the time between them.
+#   - Paging is not modelled. Replicate's listing pages at a fixed size with
+#     no parameter to change it, so no fixture short enough to read can ever
+#     produce a second page, and a Recipe that declared a cursor name would
+#     be declaring one nothing could observe. Naming it smaller to make a
+#     case pass would be describing a page size Replicate does not have.
+#   - Streaming, model versions as an API, deployments and training are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: replicate
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://replicate.com/docs/reference/http
+
+auth:
+  # Replicate's own scheme word, not Bearer. A client that sends Bearer gets
+  # a 401 that says nothing about the prefix.
+  scheme: bearer
+  header: Authorization
+  prefix: "Token "
+  keys:
+    - r8_cauldron000000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  prediction:
+    collection: results
+    id:
+      # Replicate's own alphabet: lowercase letters and digits, twenty-six
+      # characters, no prefix and no dashes. Nothing about it should be
+      # parsed.
+      style: opaque
+      length: 26
+    fields:
+      # starting, processing, succeeded, failed, canceled. Only the last
+      # three are terminal, and succeeded does not mean it produced what you
+      # wanted.
+      status:
+        type: string
+        default: starting
+      model:
+        type: string
+      version:
+        type: string
+      # Absent until the model produces something. Not null: absent. A
+      # client waiting for output to be non-null waits for a key that does
+      # not exist yet, and one reading it off the create response reads
+      # undefined.
+      output:
+        type: list
+      # Present only on a failure, and the whole diagnosis.
+      error:
+        type: string
+      # How long the model ran, in seconds, and what you are billed for. Two
+      # calls to the same model differ tenfold, and it bears no relation to
+      # the number of requests.
+      predict_time:
+        type: number
+        in: metrics
+        as: predict_time
+      # How long the container took to boot before the model ran. Present
+      # only when there was one, which is the difference between a warm run
+      # and a cold one and the only signal there is.
+      boot_time:
+        type: number
+        in: metrics
+        as: boot_time
+      # The URLs to poll and to stop. Replicate expects you to follow these
+      # rather than build the path, and the cancel one is absent on a
+      # prediction that has already finished.
+      get_url:
+        type: string
+        in: urls
+        as: get
+      cancel_url:
+        type: string
+        in: urls
+        as: cancel
+      created_at:
+        type: datetime
+      started_at:
+        type: datetime
+        null_when_unset: true
+      completed_at:
+        type: datetime
+        null_when_unset: true
+
+  # A model, for the two things worth knowing about one before running it:
+  # what it costs to leave idle, and which version you actually ran.
+  model:
+    collection: results
+    id:
+      style: opaque
+      length: 20
+    fields:
+      owner:
+        type: string
+      name:
+        type: string
+      # The version a bare model reference resolves to. It changes when the
+      # owner pushes, so a prediction created without a version pin is not
+      # reproducible and nothing in the request says so.
+      latest_version_id:
+        type: string
+        in: latest_version
+        as: id
+      run_count:
+        type: integer
+
+routes:
+  # 201, and the prediction has not run. It has a status of starting and no
+  # output at all.
+  - method: POST
+    path: /v1/predictions
+    resource: prediction
+    operation: create
+    status: 201
+    returns:
+      - id
+      - status
+      - model
+      - version
+      - get_url
+      - cancel_url
+      - created_at
+
+  - method: GET
+    path: /v1/predictions
+    resource: prediction
+    operation: list
+
+  - method: GET
+    path: /v1/predictions/{id}
+    resource: prediction
+    operation: get
+
+  - method: GET
+    path: /v1/models/{id}
+    resource: model
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Request was throttled. Expected available in 1 second."
+
+  authentication_error:
+    status: 401
+    message: "You did not provide a valid API token"
+
+  resource_missing:
+    status: 404
+    message: "The requested resource could not be found"
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. An input the model does not accept is unprocessable
+    # rather than malformed, and a client branching on 400 never sees it.
+    message: "The input is invalid: prompt is required"
+
+  # No capacity right now. Not a failure of the request and not something to
+  # give up on, and a client that treats any non-2xx as fatal drops work
+  # that would have run in thirty seconds.
+  capacity_exceeded:
+    status: 429
+    message: "There is no capacity available for this model right now, please try again later"
+
+  # The output file is gone. Replicate deletes prediction outputs after an
+  # hour, so a client that stored the URL rather than the bytes finds this
+  # tomorrow.
+  output_expired:
+    status: 404
+    message: "The prediction output has expired and is no longer available"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    prediction:
+      # Created and not started. No output property at all, no started_at,
+      # no metrics. This is what a create answers with, and a client reading
+      # prediction.output here reads undefined.
+      - id: k7xq2m9vwr4nfp1jt8bch5zd60
+        status: starting
+        model: black-forest-labs/flux-schnell
+        version: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+        get_url: https://api.replicate.com/v1/predictions/k7xq2m9vwr4nfp1jt8bch5zd60
+        cancel_url: https://api.replicate.com/v1/predictions/k7xq2m9vwr4nfp1jt8bch5zd60/cancel
+        created_at: "2026-08-15T09:14:02Z"
+
+      # Running. started_at exists now, output still does not, and there is
+      # a boot time because the container was cold: fifty-one seconds before
+      # the model did anything at all.
+      - id: b3nh8yqf5mtwd2xkc7ars9jv14
+        status: processing
+        model: black-forest-labs/flux-schnell
+        version: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+        boot_time: 51.4
+        get_url: https://api.replicate.com/v1/predictions/b3nh8yqf5mtwd2xkc7ars9jv14
+        cancel_url: https://api.replicate.com/v1/predictions/b3nh8yqf5mtwd2xkc7ars9jv14/cancel
+        created_at: "2026-08-15T09:10:30Z"
+        started_at: "2026-08-15T09:11:21Z"
+
+      # Succeeded, with an output that is a link to a file Replicate deletes
+      # after an hour. No cancel_url: there is nothing left to cancel.
+      # predict_time is what this cost, and it has no relation to the number
+      # of requests.
+      - id: m2vp6dwk9haq3xnr8fc1tsyb57
+        status: succeeded
+        model: black-forest-labs/flux-schnell
+        version: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+        output:
+          - https://replicate.delivery/pbxt/cauldron/out-0.webp
+        predict_time: 1.83
+        get_url: https://api.replicate.com/v1/predictions/m2vp6dwk9haq3xnr8fc1tsyb57
+        created_at: "2026-08-15T08:02:00Z"
+        started_at: "2026-08-15T08:02:01Z"
+        completed_at: "2026-08-15T08:02:03Z"
+
+      # Succeeded and produced nothing. The status is the same as the one
+      # above, output is an empty array rather than absent, and code that
+      # branches on status alone treats this as a result.
+      - id: q8fc4jzn7bvw5thm2xpd93ra16
+        status: succeeded
+        model: meta/meta-llama-3-8b-instruct
+        version: a1c2e3f4b5d6a7c8e9f0b1d2c3a4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2
+        output: []
+        predict_time: 0.42
+        get_url: https://api.replicate.com/v1/predictions/q8fc4jzn7bvw5thm2xpd93ra16
+        created_at: "2026-08-15T07:40:00Z"
+        started_at: "2026-08-15T07:40:01Z"
+        completed_at: "2026-08-15T07:40:02Z"
+
+      # Failed. There is an error and there is no output, and the prediction
+      # still cost whatever it ran for before failing.
+      - id: w5tr9bkm3xqn8vdh2cpf74ay01
+        status: failed
+        model: meta/meta-llama-3-8b-instruct
+        version: a1c2e3f4b5d6a7c8e9f0b1d2c3a4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2
+        error: "CUDA out of memory. Tried to allocate 2.00 GiB"
+        predict_time: 12.7
+        get_url: https://api.replicate.com/v1/predictions/w5tr9bkm3xqn8vdh2cpf74ay01
+        created_at: "2026-08-15T06:30:00Z"
+        started_at: "2026-08-15T06:30:02Z"
+        completed_at: "2026-08-15T06:30:15Z"
+
+    model:
+      - id: flux-schnell
+        owner: black-forest-labs
+        name: flux-schnell
+        # What a bare model reference resolves to today. It changes when the
+        # owner pushes, so a prediction created without a version pin is not
+        # reproducible and nothing in the request says so.
+        latest_version_id: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+        run_count: 41200311
+
+# Every case below is derived from Replicate's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: a created prediction has no output property at all
+    # Not null: absent. A client reading prediction.output on the create
+    # response reads undefined, and one waiting for it to be non-null waits
+    # for a key that does not exist yet.
+    source: https://replicate.com/docs/reference/http#predictions.create
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1/predictions
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+      json:
+        version: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+        model: black-forest-labs/flux-schnell
+    expect:
+      status: 201
+      body:
+        status: starting
+      absent:
+        - output
+        - error
+        - metrics
+        - started_at
+        - completed_at
+
+  - name: a processing prediction still has no output
+    # started_at exists now and output does not. The two states a client has
+    # to survive before there is anything to read are starting and
+    # processing, and neither carries a result.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/b3nh8yqf5mtwd2xkc7ars9jv14
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: processing
+        started_at: "2026-08-15T09:11:21Z"
+        completed_at: null
+      absent:
+        - output
+
+  - name: a cold start is fifty-one seconds before the model runs
+    # boot_time is present only when there was one, and it is the only
+    # signal there is. Two orders of magnitude between a warm run and a cold
+    # one, and the response shape is otherwise identical.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/b3nh8yqf5mtwd2xkc7ars9jv14
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        metrics.boot_time: 51.4
+      absent:
+        - metrics.predict_time
+        - boot_time
+
+  - name: succeeded is not the same as produced something
+    # Same status, empty array. Code branching on status alone treats this
+    # as a result and hands an empty list to whatever comes next.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/q8fc4jzn7bvw5thm2xpd93ra16
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: succeeded
+        metrics.predict_time: 0.42
+      absent:
+        - output[0]
+        - error
+
+  - name: the output is a link to a file that expires
+    # Replicate deletes prediction outputs after an hour, so a client that
+    # stores the URL rather than the bytes stores a link that 404s tomorrow.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/m2vp6dwk9haq3xnr8fc1tsyb57
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: succeeded
+        output[0]: https://replicate.delivery/pbxt/cauldron/out-0.webp
+        metrics.predict_time: 1.83
+      absent:
+        # A warm run. boot_time is present only when a container had to
+        # start, so its absence here is the other half of the cold-start
+        # signal and the only way to tell the two apart.
+        - metrics.boot_time
+
+  - name: a finished prediction has nothing left to cancel
+    # cancel is absent from urls once it is done, so a client that built a
+    # cancel path from the id rather than following the URL calls something
+    # that is not there.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/m2vp6dwk9haq3xnr8fc1tsyb57
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        urls.get: https://api.replicate.com/v1/predictions/m2vp6dwk9haq3xnr8fc1tsyb57
+      absent:
+        - urls.cancel
+        - get_url
+        - cancel_url
+
+  - name: a failed prediction cost what it ran for
+    # There is an error, there is no output, and predict_time is 12.7
+    # seconds of compute that is billed. Failing is not free.
+    source: https://replicate.com/docs/reference/http#predictions.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions/w5tr9bkm3xqn8vdh2cpf74ay01
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: failed
+        error: "CUDA out of memory. Tried to allocate 2.00 GiB"
+        metrics.predict_time: 12.7
+      absent:
+        - output
+
+  - name: a bare model reference resolves to whatever was pushed last
+    # The version changes when the owner pushes, so a prediction created
+    # without a version pin is not reproducible and nothing in the request
+    # says so.
+    source: https://replicate.com/docs/reference/http#models.get
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/models/flux-schnell
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        owner: black-forest-labs
+        latest_version.id: f2ab8a5bfe79f02f0789a146cf5e5230f1d2c0d4d0d1c8a9e6f5b3a72c419d8e
+      absent:
+        - latest_version_id
+
+  - name: no capacity is a 429 worth retrying, not a failure
+    # A client that treats any non-2xx as fatal drops work that would have
+    # run in thirty seconds.
+    source: https://replicate.com/docs/reference/http
+    fixture: small-account
+    arm: capacity_exceeded
+    request:
+      method: GET
+      path: /v1/predictions
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 429
+      body:
+        detail: "There is no capacity available for this model right now, please try again later"
+
+  - name: an invalid input is a 422, not a 400
+    source: https://replicate.com/docs/reference/http
+    fixture: small-account
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v1/predictions
+      headers:
+        Authorization: Token r8_cauldron000000000000000000000000000
+    expect:
+      status: 422
+      body:
+        detail: "The input is invalid: prompt is required"
+
+  - name: the scheme word is Token, not Bearer
+    # A client that sends Bearer gets a 401 that says nothing about the
+    # prefix, which is the hardest kind of authentication failure to read.
+    source: https://replicate.com/docs/reference/http#authentication
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/predictions
+      headers:
+        Authorization: Bearer r8_cauldron000000000000000000000000000
+    expect:
+      status: 401
+      body:
+        detail: "You did not provide a valid API token"
+      absent:
+        - code
+        - type
+        - error
