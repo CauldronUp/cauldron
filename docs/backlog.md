@@ -533,7 +533,7 @@ transfers alone, and say so in the header.
 | Ory | Assess — identities, sessions, flows. The flow object is the unusual part |
 | Kinde | Assess — users, organizations, feature flags in one product |
 | Persona | The decision arrives by webhook minutes after the inquiry completes, so completed is not decided |
-| Onfido | A check can be complete and its report `consider` rather than `clear`, which is neither a pass nor a failure |
+| ~~Onfido~~ | Shipped. complete is not clear, consider is neither a pass nor a failure, and the reason lives on the report rather than the check |
 | Sift | The score is computed server side and changes without any request from you |
 
 ### Storage and media
