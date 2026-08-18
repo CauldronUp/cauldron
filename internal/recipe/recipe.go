@@ -815,10 +815,17 @@ type Error struct {
 type Fixture map[string][]map[string]any
 
 // indexedSegment matches a path segment naming an array position, e.g. to[0].
-var indexedSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\[\d+\])+$`)
+var indexedSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*(\[\d+\])+$`)
 
 // plainSegment matches an ordinary object key.
-var plainSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+//
+// Hyphens are allowed because JSON keys have them: npm sends dist-tags and
+// plenty of providers send header-shaped names. This rule refused the first
+// hyphenated key it ever met, which is what a pattern written against the
+// Recipes that happened to exist will do. A dot is still refused, because the
+// runtime splits on it and a dot inside a segment would silently mean two
+// levels rather than one.
+var plainSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)

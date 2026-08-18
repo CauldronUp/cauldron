@@ -1,0 +1,437 @@
+# npm registry Recipe for Cauldron
+#
+# The npm registry has no sandbox, and it is the one dependency almost every
+# JavaScript project has that nobody thinks of as a dependency. A build reads
+# it, a CI job reads it on every commit, and a publish writes to it
+# permanently: a version number, once used, can never be reused even after
+# the version is unpublished.
+#
+# The reason to emulate it is that its answers are shaped by twelve years of
+# compatibility promises, and the shape surprises people who assume it is a
+# database of packages.
+#
+# Five things worth modelling exactly:
+#
+#   1. An unpublished version leaves a tombstone. It is gone from versions
+#      and still listed in time, so "does this version exist" has two
+#      answers depending on which half you read, and a tool that walks time
+#      to build a release history finds versions it cannot fetch.
+#   2. latest is not the highest version. dist-tags.latest is whatever was
+#      published to it last, so a patch released against an old major moves
+#      it backwards, and installing without a range gets the older code.
+#   3. Deprecation is the presence of a string. There is no boolean: a
+#      version carries a deprecated field holding the message, or it does not
+#      carry the field at all, so a truth test on a message is the check.
+#   4. The packument holds every version ever published, so fetching a
+#      package fetches its entire history. The per-version document is the
+#      small one, and the difference between them is megabytes on a popular
+#      package.
+#   5. A scoped name has a slash in it and travels URL-encoded, so the path
+#      for @scope/name is @scope%2Fname and a client that builds paths by
+#      joining strings gets a 404 that says nothing about why.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Publishing and unpublishing are not modelled. A published version is
+#     permanent and an unpublish is irreversible and rate-limited by policy
+#     rather than by code, which is the same reason Mercury's transfers are
+#     absent.
+#   - Tarballs are not served. The dist.tarball URL is present and points
+#     nowhere, because serving package contents is a different problem from
+#     serving metadata.
+#   - Integrity hashes are fixture values rather than real digests of real
+#     bytes, so anything verifying them will fail, correctly.
+#   - The search endpoint, audit endpoints and the organisation APIs are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets, and every package here is invented.
+
+recipe: npmregistry
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: registry
+  docs: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+
+auth:
+  # Optional for reads of a public package, which is the interesting part: a
+  # 404 from an anonymous request may mean the package is private rather than
+  # that it does not exist.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - npm_cauldron00000000000000000000000000
+
+responses:
+  # A packument is the object itself with no envelope, keyed by name rather
+  # than by an opaque identifier.
+  resource:
+    style: bare
+  list:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  packument:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+      # latest is whatever was published to it last rather than the highest
+      # version, so a patch against an old major moves it backwards. The key
+      # has a hyphen in it, which is ordinary in JSON and unusual in a field
+      # name.
+      dist-tags:
+      # Every version ever published, which is why this document is enormous
+      # on a popular package.
+      versions:
+        type: list
+      # Every version ever published including the ones that were
+      # unpublished, so this and versions disagree and the disagreement is
+      # the tombstone.
+      time:
+      license:
+        type: string
+
+  release:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      version:
+        type: string
+      description:
+        type: string
+      # A string holding the message, or absent. There is no boolean, so a
+      # truth test on the message is the check.
+      deprecated:
+        type: string
+      main:
+        type: string
+      tarball:
+        type: string
+        in: dist
+        as: tarball
+      integrity:
+        type: string
+        in: dist
+        as: integrity
+      dependencies:
+
+routes:
+  # The packument. Fetching this fetches the package's entire history.
+  - method: GET
+    path: /{id}
+    resource: packument
+    operation: get
+
+  # The small one, which is what a resolver should be asking for.
+  - method: GET
+    path: /{name}/{id}
+    resource: release
+    operation: get
+    scope: [name]
+
+webhooks:
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 401
+    message: "Unauthorized"
+
+  # The same answer for a package that does not exist and one that is private
+  # and you are anonymous, which is why an anonymous 404 says less than it
+  # looks like it says.
+  resource_missing:
+    status: 404
+    message: "Not found"
+
+  parameter_missing:
+    status: 400
+    message: "Bad request"
+
+  # A version number cannot be reused, ever, even after the version has been
+  # unpublished. This is the failure that surprises people mid-release.
+  version_already_published:
+    status: 403
+    message: "You cannot publish over the previously published versions: 2.1.0."
+
+  # A scoped package defaults to private, and publishing it without saying so
+  # fails rather than quietly making it public.
+  payment_required:
+    status: 402
+    message: "You must sign up for private packages"
+
+fixtures:
+  empty: {}
+
+  small-registry:
+    packument:
+      - id: cauldron-client
+        name: cauldron-client
+        description: A client for something invented
+        license: MIT
+        dist-tags:
+          # Older than 3.0.0 below. Somebody published a patch against the
+          # 2.x line and moved latest backwards, so installing without a
+          # range gets the older code.
+          latest: 2.1.1
+          next: 3.0.0
+        versions:
+          - "1.0.0"
+          - "2.1.1"
+          - "3.0.0"
+        time:
+          created: "2025-02-01T10:00:00.000Z"
+          modified: "2026-06-14T08:12:00.000Z"
+          "1.0.0": "2025-02-01T10:00:00.000Z"
+          # Present here and absent from versions above. This is the
+          # tombstone: the version was unpublished and its timestamp stayed.
+          "2.0.0": "2025-09-11T14:30:00.000Z"
+          "2.1.1": "2026-06-14T08:12:00.000Z"
+          "3.0.0": "2026-05-02T11:00:00.000Z"
+
+    release:
+      - id: "2.1.1"
+        name: cauldron-client
+        version: "2.1.1"
+        description: A client for something invented
+        main: ./dist/index.js
+        tarball: https://registry.cauldron.test/cauldron-client/-/cauldron-client-2.1.1.tgz
+        integrity: sha512-cauldronFixtureIntegrityValueNotARealDigest==
+        dependencies:
+          undici: ^6.0.0
+      # Deprecated, and the deprecation is a string. There is no boolean
+      # anywhere, so the presence of this field is the whole signal.
+      - id: "1.0.0"
+        name: cauldron-client
+        version: "1.0.0"
+        description: A client for something invented
+        deprecated: "No longer maintained. Use 2.x."
+        main: ./index.js
+        tarball: https://registry.cauldron.test/cauldron-client/-/cauldron-client-1.0.0.tgz
+        integrity: sha512-cauldronFixtureIntegrityOneDotZeroNotReal==
+      # Newer than latest, and tagged next rather than latest, so a plain
+      # install never reaches it.
+      - id: "3.0.0"
+        name: cauldron-client
+        version: "3.0.0"
+        description: A client for something invented
+        main: ./dist/index.js
+        tarball: https://registry.cauldron.test/cauldron-client/-/cauldron-client-3.0.0.tgz
+        integrity: sha512-cauldronFixtureIntegrityThreeDotZeroNope==
+        dependencies:
+          undici: ^7.0.0
+
+# Conformance cases, read from the registry API documentation rather than
+# observed against the live registry. The verify report says so.
+conformance:
+  - name: latest is not the highest version
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # 2.1.1 is latest and 3.0.0 exists. Somebody published a patch
+        # against the 2.x line afterwards and moved the tag backwards, so an
+        # install without a range gets the older code and nothing warns.
+        dist-tags.latest: 2.1.1
+        dist-tags.next: 3.0.0
+
+  - name: an unpublished version leaves a tombstone in time
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # 2.0.0 has a publish timestamp and is not in versions. A tool that
+        # walks time to build a release history finds a version it cannot
+        # fetch.
+        # The dots in the version are escaped, because a key with dots in it
+        # is otherwise unreachable: the path walker would look for time, then
+        # 2, then 0, then 0.
+        time.2\.0\.0: "2025-09-11T14:30:00.000Z"
+        versions[1]: "2.1.1"
+      absent:
+        - versions[3]
+
+  - name: and the two halves disagree about what exists
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Three versions listed, and time carries five entries because it
+        # also holds created, modified and the tombstone. Counting either
+        # one to answer "how many releases" gives a different number.
+        versions[0]: "1.0.0"
+        versions[2]: "3.0.0"
+        time.created: "2025-02-01T10:00:00.000Z"
+
+  - name: deprecation is the presence of a string
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/1.0.0
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A message, not a boolean. A truth test on this field is the check,
+        # and there is nothing else to read.
+        deprecated: "No longer maintained. Use 2.x."
+        version: "1.0.0"
+
+  - name: and a version that is not deprecated has no such field
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/2.1.1
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        version: "2.1.1"
+      # Absent rather than false or null, so code reading it gets undefined
+      # and code comparing it to false never matches.
+      absent:
+        - deprecated
+
+  - name: the per-version document carries no history at all
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/3.0.0
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        version: "3.0.0"
+        dist.tarball: https://registry.cauldron.test/cauldron-client/-/cauldron-client-3.0.0.tgz
+      # No versions, no time, no dist-tags. This is the small document, and
+      # the difference between it and the packument is megabytes on a popular
+      # package.
+      absent:
+        - versions
+        - time
+        - dist-tags
+
+  - name: a version pins its own dependency ranges
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/3.0.0
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Different from the ranges on 2.1.1, which is why resolving against
+        # the packument's latest rather than the version you are installing
+        # produces the wrong tree.
+        dependencies.undici: ^7.0.0
+
+  - name: and the older version wants an older range
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/2.1.1
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        dependencies.undici: ^6.0.0
+
+  - name: integrity travels beside the tarball rather than at the top
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client/2.1.1
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Both under dist. A client that reads integrity from the top level
+        # finds nothing and installs without verifying.
+        dist.integrity: sha512-cauldronFixtureIntegrityValueNotARealDigest==
+      absent:
+        - integrity
+
+  - name: a missing package and a private one answer the same way
+    source: https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-does-not-exist
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      # So an anonymous 404 says less than it looks like it says, and a tool
+      # that treats it as "no such package" is wrong whenever the package is
+      # private.
+      status: 404
+      body:
+        error: Not found
+
+  - name: republishing a version number is refused for ever
+    source: https://docs.npmjs.com/policies/unpublish
+    arm: version_already_published
+    fixture: small-registry
+    request:
+      method: GET
+      path: /cauldron-client
+      headers:
+        Authorization: Bearer npm_cauldron00000000000000000000000000
+    expect:
+      # Even after an unpublish. The tombstone is not only a record, it is a
+      # reservation, and this is the failure that surprises people mid
+      # release.
+      status: 403
+      matches:
+        error: 'cannot publish over the previously published'

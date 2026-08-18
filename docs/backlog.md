@@ -595,7 +595,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Docker Hub~~ | Shipped. The rate limit is a count and a window glued together, latest can be older, two tags can be one image |
-| npm registry | An unpublished version leaves a tombstone, so a version that does not exist is not the same as a version that never did |
+| ~~npm registry~~ | Shipped. A tombstone in time that is absent from versions, latest is not the highest, deprecation is the presence of a string |
 
 ## Assessed and deliberately not done
 
