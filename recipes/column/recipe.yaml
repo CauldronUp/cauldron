@@ -1,0 +1,540 @@
+# Column Recipe for Cauldron
+#
+# Column is a bank with an API rather than a company in front of one, which
+# means its failures are the network's failures rather than a vendor's
+# abstraction over them. That is the reason to emulate it: ACH return codes
+# and notifications of change are a vocabulary somebody has to learn, and
+# learning it in production is expensive in a way that is hard to undo.
+#
+# Increase is already here and covers the delay: a return arriving days after
+# everything downstream treated a transfer as settled. This Recipe covers the
+# vocabulary, and in particular the distinction almost everybody gets wrong
+# the first time.
+#
+# Five things worth modelling exactly:
+#
+#   1. A notification of change is not a failure. A C01 means the money
+#      arrived and the account number you hold is wrong. Treating it as a
+#      return reverses a payment that worked and loses a customer's money for
+#      a week. The corrected data is in the notification and nowhere else.
+#   2. Return codes are three groups wearing one shape. R01 may be retried,
+#      R02 may not because the account is closed, and R07 must never be
+#      because the customer revoked authorisation and retrying is a
+#      regulatory problem rather than a failed request. All three are a
+#      two-character string in the same field.
+#   3. There is a deadline and it is not the same for every code. An
+#      unauthorised return arrives up to sixty days later and an
+#      administrative one within two business days, so "how long must I keep
+#      this reconcilable" has a different answer per code.
+#   4. Amounts are integer minor units with the direction in a separate
+#      field rather than in the sign, so every amount is positive and summing
+#      them without reading the direction gives the total volume rather than
+#      the net.
+#   5. effective_on is a date and settled_at is a timestamp, and they answer
+#      different questions. The first is the banking day the money counts
+#      for, the second is when Column saw it, and reporting on the wrong one
+#      puts a payment in the wrong day.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No money moves. There is no endpoint here that creates a transfer,
+#     which is the position Mercury, Increase and Bill.com take, and the
+#     header says so rather than leaving somebody to find out.
+#   - Return windows are described and not enforced. Cauldron does not know
+#     what a banking day is, so the deadlines above are prose in this file
+#     rather than behaviour.
+#   - Entities, counterparties, book transfers, wires and the loan endpoints
+#     are not modelled.
+#   - Idempotency keys are accepted and ignored, which for a bank is a gap
+#     worth naming loudly.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: column
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://column.com/docs/api
+
+auth:
+  # An API key as the password with an empty username, which is unusual
+  # enough that sending it as a bearer token fails in a way that reads like
+  # a bad key.
+  scheme: basic
+  credential: password
+  keys:
+    - test_cauldron_column_api_key_000000
+
+responses:
+  list:
+    style: wrapped
+    key: transfers
+    has_more_field: has_more
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: type
+
+resources:
+  ach_transfer:
+    collection: transfers
+    id:
+      style: prefixed
+      prefix: acht_
+      length: 24
+    fields:
+      account_number_id:
+        type: string
+      # Always positive. The direction is a separate field, so summing these
+      # gives volume rather than net.
+      amount:
+        type: integer
+      currency_code:
+        type: string
+        default: USD
+      # credit or debit, and this is where the sign lives.
+      type:
+        type: string
+        default: credit
+      # INITIATED, PENDING, SUBMITTED, SETTLED, RETURNED, MANUAL_REVIEW,
+      # CANCELED. SETTLED means the network settled it, which is the
+      # strongest statement available and is still reversible for sixty days.
+      status:
+        type: string
+        default: INITIATED
+      description:
+        type: string
+      # The banking day the money counts for. A date, not a timestamp.
+      effective_on:
+        type: string
+      # When Column saw it settle. A timestamp, and not the same question.
+      settled_at:
+        type: string
+      created_at:
+        type: string
+
+  ach_return:
+    collection: returns
+    id:
+      style: prefixed
+      prefix: achr_
+      length: 24
+    fields:
+      transfer_id:
+        type: string
+      # R01, R02, R07, R10 and forty others. Two characters that decide
+      # whether retrying is allowed, sensible, or a regulatory problem.
+      return_code:
+        type: string
+      # Column's own prose for the code, which is helpful and is not the
+      # thing to branch on.
+      description:
+        type: string
+      created_at:
+        type: string
+
+  ach_noc:
+    collection: notifications
+    id:
+      style: prefixed
+      prefix: achc_
+      length: 24
+    fields:
+      transfer_id:
+        type: string
+      # C01 through C09. The transfer succeeded and something about the
+      # account you hold is wrong.
+      change_code:
+        type: string
+      # The corrected value, which exists nowhere else. Ignoring the
+      # notification means every future transfer to this customer is wrong
+      # in the same way.
+      corrected_data:
+        type: string
+      description:
+        type: string
+      created_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /transfers/ach
+    resource: ach_transfer
+    operation: list
+
+  - method: GET
+    path: /transfers/ach/{id}
+    resource: ach_transfer
+    operation: get
+
+  - method: GET
+    path: /transfers/ach/{transfer_id}/returns
+    resource: ach_return
+    operation: list
+    scope: [transfer_id]
+
+  - method: GET
+    path: /transfers/ach/{transfer_id}/notifications-of-change
+    resource: ach_noc
+    operation: list
+    scope: [transfer_id]
+
+webhooks:
+  events:
+    - ach.outgoing_transfer.settled
+    - ach.outgoing_transfer.returned
+    - ach.outgoing_transfer.notification_of_change
+  signing:
+    scheme: hmac-sha256
+    header: Column-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    type: rate_limit_error
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    type: authentication_error
+    message: "Invalid API key provided"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    type: invalid_request_error
+    message: "No such resource"
+
+  parameter_missing:
+    status: 400
+    code: parameter_missing
+    type: invalid_request_error
+    message: "{detail} is required"
+
+  # A transfer that already settled cannot be cancelled, which is the failure
+  # a retry loop discovers after the money has gone.
+  transfer_not_cancelable:
+    status: 400
+    code: transfer_not_cancelable
+    type: invalid_request_error
+    message: "This transfer has already been submitted and cannot be canceled"
+
+  # The one that stops a reversal being attempted illegally. A transfer
+  # returned as unauthorised must not be represented, and Column refuses
+  # rather than letting the caller decide.
+  representment_not_allowed:
+    status: 400
+    code: representment_not_allowed
+    type: invalid_request_error
+    message: "A transfer returned with code R07 may not be represented"
+
+fixtures:
+  empty: {}
+
+  small-bank:
+    ach_transfer:
+      # Settled, and the money arrived. It also has a notification of change
+      # against it, which is the pair that matters: this succeeded and your
+      # records are wrong.
+      - id: acht_cauldron00000000001
+        account_number_id: acno_cauldron0000000001
+        amount: 45000
+        currency_code: USD
+        type: credit
+        status: SETTLED
+        description: Payroll June
+        effective_on: "2026-06-03"
+        settled_at: "2026-06-03T14:22:07Z"
+        created_at: "2026-06-01T09:00:00Z"
+      # Returned for insufficient funds, which may be retried.
+      - id: acht_cauldron00000000002
+        account_number_id: acno_cauldron0000000001
+        amount: 12500
+        currency_code: USD
+        type: debit
+        status: RETURNED
+        description: Invoice 2041
+        effective_on: "2026-06-04"
+        created_at: "2026-06-02T09:00:00Z"
+      # Returned as unauthorised, which must never be retried. The same
+      # status, the same shape, and a completely different obligation.
+      - id: acht_cauldron00000000003
+        account_number_id: acno_cauldron0000000001
+        amount: 30000
+        currency_code: USD
+        type: debit
+        status: RETURNED
+        description: Invoice 2042
+        effective_on: "2026-06-05"
+        created_at: "2026-06-03T09:00:00Z"
+      # Still going. No settlement timestamp at all, so its absence is the
+      # signal rather than the status word.
+      - id: acht_cauldron00000000004
+        account_number_id: acno_cauldron0000000001
+        amount: 8000
+        currency_code: USD
+        type: credit
+        status: SUBMITTED
+        description: Supplier top-up
+        effective_on: "2026-06-06"
+        created_at: "2026-06-05T09:00:00Z"
+
+    ach_return:
+      # Retryable. The account exists and had no money in it that day.
+      - id: achr_cauldron00000000001
+        transfer_id: acht_cauldron00000000002
+        return_code: R01
+        description: Insufficient funds
+        created_at: "2026-06-05T11:00:00Z"
+      # Never retryable. The customer revoked authorisation, and doing this
+      # again is a regulatory problem rather than a failed request. It
+      # arrived fifty-one days later.
+      - id: achr_cauldron00000000002
+        transfer_id: acht_cauldron00000000003
+        return_code: R07
+        description: Authorization revoked by customer
+        created_at: "2026-07-26T08:15:00Z"
+
+    ach_noc:
+      # The money arrived and the account number is wrong. Treating this as a
+      # failure reverses a payment that worked.
+      - id: achc_cauldron00000000001
+        transfer_id: acht_cauldron00000000001
+        change_code: C01
+        corrected_data: "0000123456789"
+        description: Incorrect account number
+        created_at: "2026-06-04T09:30:00Z"
+      # Belongs to a different transfer, so a listing that ignored the
+      # transfer in its own path would attach this correction to the wrong
+      # customer.
+      - id: achc_cauldron00000000002
+        transfer_id: acht_cauldron00000000004
+        change_code: C02
+        corrected_data: "021000021"
+        description: Incorrect routing number
+        created_at: "2026-06-07T09:30:00Z"
+
+# Conformance cases, read from the Column API reference and the Nacha return
+# code list rather than observed against a live bank. The verify report says
+# so, and observing these would mean moving real money.
+conformance:
+  - name: a notification of change is not a failure
+    source: https://column.com/docs/api/#ach-transfer-notification-of-change
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000001/notifications-of-change
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # C01 against a transfer that settled. The money arrived and the
+        # account number held is wrong, so treating this as a return
+        # reverses a payment that worked.
+        notifications[0].change_code: C01
+        notifications[0].corrected_data: "0000123456789"
+
+  - name: and the transfer it belongs to settled
+    source: https://column.com/docs/api/#ach-transfers
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000001
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # Settled the day before the notification arrived. Nothing on this
+        # object mentions the correction, so a system that reads transfers
+        # and not notifications keeps the wrong account number for ever.
+        status: SETTLED
+        settled_at: "2026-06-03T14:22:07Z"
+
+  - name: the corrected value exists nowhere else
+    source: https://column.com/docs/api/#ach-transfer-notification-of-change
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000001
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      # No corrected data on the transfer, so ignoring the notification means
+      # every future transfer to this customer is wrong in the same way.
+      absent:
+        - corrected_data
+        - change_code
+        - notifications
+
+  - name: a retryable return and a forbidden one look identical
+    source: https://column.com/docs/api/#ach-transfer-return
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000002/returns
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # R01: the account exists and had no money that day, so this may be
+        # retried.
+        returns[0].return_code: R01
+      absent:
+        - returns[1]
+
+  - name: and the one that must never be retried is two characters away
+    source: https://column.com/docs/api/#ach-transfer-return
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000003/returns
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # R07: the customer revoked authorisation. Retrying is a regulatory
+        # problem rather than a failed request, and the only thing separating
+        # it from R01 is a digit.
+        returns[0].return_code: R07
+        returns[0].description: Authorization revoked by customer
+
+  - name: an unauthorised return arrives weeks after settlement
+    source: https://column.com/docs/api/#ach-transfer-return
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000003/returns
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # Fifty-one days after the transfer was created. How long a payment
+        # must stay reconcilable has a different answer per code, and this is
+        # the code with the longest one.
+        returns[0].created_at: "2026-07-26T08:15:00Z"
+
+  - name: every amount is positive and the direction is elsewhere
+    source: https://column.com/docs/api/#ach-transfers
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # A credit and a debit, both positive. Summing these gives volume
+        # rather than net, and the field that carries the sign is called
+        # type.
+        transfers[0].amount: 45000
+        transfers[0].type: credit
+        transfers[1].amount: 12500
+        transfers[1].type: debit
+
+  - name: a page before the last says there is more
+    source: https://column.com/docs/api/
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach
+      query:
+        limit: "2"
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # Two of four, so there is more to come. There is no total anywhere,
+        # so a progress bar cannot be built from this API at all.
+        has_more: true
+      absent:
+        - total
+        - count
+
+  - name: effective_on is a date and settled_at is a timestamp
+    source: https://column.com/docs/api/#ach-transfers
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000001
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # The banking day the money counts for, and the moment Column saw it
+        # settle. Reporting on the wrong one puts a payment in the wrong day.
+        effective_on: "2026-06-03"
+        settled_at: "2026-06-03T14:22:07Z"
+
+  - name: a transfer in flight has no settlement timestamp
+    source: https://column.com/docs/api/#ach-transfers
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000004
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # Submitted to the network and not yet settled, so the absence is the
+        # signal rather than the status word.
+        status: SUBMITTED
+        effective_on: "2026-06-06"
+      absent:
+        - settled_at
+
+  - name: a notifications listing is scoped to its transfer
+    source: https://column.com/docs/api/#ach-transfer-notification-of-change
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000004/notifications-of-change
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        # A routing number correction, for a different transfer from the one
+        # above. A listing that ignored its path would attach a correction to
+        # the wrong customer.
+        notifications[0].change_code: C02
+        notifications[0].corrected_data: "021000021"
+      absent:
+        - notifications[1]
+
+  - name: representing an unauthorised return is refused
+    source: https://column.com/docs/api/
+    arm: representment_not_allowed
+    fixture: small-bank
+    request:
+      method: GET
+      path: /transfers/ach/acht_cauldron00000000003
+      headers:
+        Authorization: Basic OnRlc3RfY2F1bGRyb25fY29sdW1uX2FwaV9rZXlfMDAwMDAw
+    expect:
+      # Column refuses rather than letting the caller decide, which is the
+      # right side of a rule that is a regulatory obligation rather than a
+      # preference.
+      status: 400
+      body:
+        code: representment_not_allowed
+        type: invalid_request_error
+      matches:
+        message: 'R07'

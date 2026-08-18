@@ -487,7 +487,7 @@ transfers alone, and say so in the header.
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
 | Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
 | Airwallex | Multi-currency balances where the settlement currency is not the charge currency, and the conversion happens somewhere the API does not show you |
-| Column | ACH return reason codes, which are the only thing that says whether retrying is legal |
+| ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two characters apart with opposite obligations |
 | Moov | Transfers across rails, where the rail decides the settlement time and nothing else does |
 | Unit | An authorisation is not a transaction and the two carry different identifiers for the same purchase |
 
