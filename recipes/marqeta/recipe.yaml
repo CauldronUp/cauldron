@@ -1,0 +1,666 @@
+# Marqeta Recipe for Cauldron
+#
+# Marqeta has a sandbox and it is a reasonable one. The reason to emulate it
+# anyway is that card processing has a shape almost nobody has met before,
+# and the sandbox does not make that shape easier to see: it makes it easier
+# to produce, which is not the same thing.
+#
+# The shape is that a card payment is two events, days apart, for different
+# amounts. The authorization holds money. The clearing takes it. They are
+# separate objects with separate identifiers, and the amount can change
+# between them, legitimately, without anybody doing anything wrong.
+#
+# Five things worth modelling exactly:
+#
+#   1. An authorization is not a transaction that happened. It is a hold. The
+#      clearing is a second transaction pointing back at the first, and a
+#      ledger built by summing transactions counts the same payment twice.
+#   2. The cleared amount is not the authorized amount. A restaurant
+#      authorises the bill and clears the bill plus a tip; a fuel pump
+#      authorises a round number and clears what was pumped. Both are normal
+#      and both break code that reconciles on amount.
+#   3. Three balances, and only one of them is spendable. available_balance
+#      is what can be spent, ledger_balance includes holds that have not
+#      cleared, and pending_credits is money arriving that cannot be used
+#      yet. Reading the wrong one authorises a payment that will be declined.
+#   4. The card number is never returned. Only the last four and a masked
+#      form, so anything storing a card from an API response is storing a
+#      string that cannot be used and does not need to be protected.
+#   5. A declined transaction is a transaction. It is in the listing, it has
+#      an amount, and it moved no money, so a total that does not filter on
+#      state is wrong by the sum of everything that failed.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Just-in-time funding is the most interesting thing Marqeta does and it
+#     is not modelled. It puts a webhook in the authorization path with a
+#     response deadline on it: your endpoint decides whether the card is
+#     approved, and answering slowly declines it. Cauldron delivers webhooks
+#     and does not wait for an answer, so this Recipe cannot reproduce the
+#     one behaviour that would most repay reproducing. That is a limitation
+#     of the format rather than an oversight.
+#   - No webhooks. Marqeta's events would have to come from its simulate
+#     endpoints, and those answer with the transaction wrapped in a
+#     "transaction" key while every read endpoint answers bare. This format
+#     sets the single-resource envelope once for the whole Recipe, so the
+#     simulate routes cannot be described without misdescribing the reads.
+#     Declaring the events anyway would put a webhooks block in the Recipe
+#     that no case could exercise, which is a claim rather than a behaviour.
+#   - No card is charged and no transaction is created. Which state a
+#     transaction holds is what a fixture puts there.
+#   - Card products, velocity controls, KYC and the digital wallet endpoints
+#     are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: marqeta
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://www.marqeta.com/docs/core-api
+
+auth:
+  # An application token as the username and an admin access token as the
+  # password, which is unusual enough that checking the wrong half means a
+  # bad credential is never rejected.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron_marqeta_admin_access_token
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: count
+    # The number that matched, which is not the number returned, and it sits
+    # beside a count that is.
+    has_more_field: is_more
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_message
+    # Quoted in the body. Marqeta's codes look like integers and are sent as
+    # strings, so a client comparing against 1016 never matches.
+    code_field: error_code
+    code_type: string
+    type_field: "-"
+
+resources:
+  transaction:
+    collection: data
+    id:
+      style: uuid
+      # Marqeta calls every identifier a token, so code reading response.id
+      # against it finds nothing.
+      field: token
+    fields:
+      # authorization, authorization.clearing, authorization.reversal,
+      # refund. The clearing is a separate object pointing at the auth, so a
+      # ledger built by summing this collection counts one payment twice.
+      type:
+        type: string
+        default: authorization
+      # PENDING, CLEARED, DECLINED, ERROR. A declined transaction is still a
+      # transaction and is still in the listing.
+      state:
+        type: string
+        default: PENDING
+      # Minor units as a decimal number, which is Marqeta's own choice and
+      # not the integer minor units most card platforms use.
+      amount:
+        type: number
+      currency_code:
+        type: string
+        default: USD
+      card_token:
+        type: string
+      user_token:
+        type: string
+      # The authorization this clearing settles. Present only on the second
+      # object, and it is the only link between the two.
+      preceding_related_transaction_token:
+        type: string
+      # Why it was declined, and absent on everything that was not.
+      response_code:
+        type: string
+        in: response
+        as: code
+      response_memo:
+        type: string
+        in: response
+        as: memo
+      merchant_name:
+        type: string
+        in: card_acceptor
+        as: name
+      created_time:
+        type: string
+
+  card:
+    collection: data
+    id:
+      style: uuid
+      field: token
+    fields:
+      user_token:
+        type: string
+      # The only two representations that leave Marqeta. The full number is
+      # not one of them, so anything storing a card from a response is
+      # storing something unusable.
+      last_four:
+        type: string
+      pan:
+        type: string
+      state:
+        type: string
+        default: ACTIVE
+      expiration:
+        type: string
+      created_time:
+        type: string
+
+  balance:
+    id:
+      # Marqeta addresses a balance by the user's token and then does not
+      # put that token anywhere in the body it sends back, so the record is
+      # keyed by it internally and the wire shape carries no identifier.
+      style: opaque
+      field: "-"
+    fields:
+      currency_code:
+        type: string
+        default: USD
+        in: gpa
+        as: currency_code
+      # What can be spent right now.
+      available_balance:
+        type: number
+        in: gpa
+        as: available_balance
+      # Includes holds that have not cleared, so it is larger and is the one
+      # that gets read.
+      ledger_balance:
+        type: number
+        in: gpa
+        as: ledger_balance
+      # Money arriving that cannot be used yet.
+      pending_credits:
+        type: number
+        in: gpa
+        as: pending_credits
+
+routes:
+  - method: GET
+    path: /v3/transactions
+    resource: transaction
+    operation: list
+
+  - method: GET
+    path: /v3/transactions/{id}
+    resource: transaction
+    operation: get
+
+  - method: GET
+    path: /v3/cards/{id}
+    resource: card
+    operation: get
+
+  - method: GET
+    path: /v3/balances/{id}
+    resource: balance
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: "401"
+    message: "Unauthorized"
+
+  resource_missing:
+    status: 404
+    code: "404"
+    message: "Resource not found"
+
+  parameter_missing:
+    status: 400
+    code: "400"
+    message: "Invalid request"
+
+  # The card had a hold on it that has not cleared, so the ledger balance
+  # looks sufficient and the available one is not. This is what reading the
+  # wrong balance produces.
+  insufficient_funds:
+    status: 400
+    code: "1016"
+    message: "Insufficient funds available on this account"
+
+  # A card in a state that cannot transact. Suspended is reversible and
+  # terminated is not, and the message says neither.
+  card_not_active:
+    status: 400
+    code: "1503"
+    message: "Card is not in an active state"
+
+fixtures:
+  empty: {}
+
+  small-program:
+    # Three transactions telling one story. A restaurant authorises the bill,
+    # clears the bill plus a tip, and a second card is declined for
+    # insufficient funds while its ledger balance looks fine.
+    transaction:
+      - id: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+        type: authorization
+        state: PENDING
+        amount: 48.5
+        currency_code: USD
+        card_token: a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+        user_token: 4c9b1e57-8a3d-4f02-b6c8-9d1e35a70f24
+        response_code: null
+        response_memo: null
+        merchant_name: "Bellwether Diner"
+        created_time: "2026-08-11T19:04:22Z"
+
+      # The clearing. A separate object, a different id, a different amount,
+      # and the only thing tying it to the authorization is the preceding
+      # token. Summing this collection charges the diner 106.90.
+      - id: 0b83d6c1-47af-4a9e-9a02-c5f8e31d7b42
+        type: authorization.clearing
+        state: CLEARED
+        amount: 58.4
+        currency_code: USD
+        card_token: a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+        user_token: 4c9b1e57-8a3d-4f02-b6c8-9d1e35a70f24
+        preceding_related_transaction_token: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+        response_code: null
+        response_memo: null
+        merchant_name: "Bellwether Diner"
+        created_time: "2026-08-13T04:11:07Z"
+
+      # Declined, and still here. It has an amount and it moved nothing, so
+      # a total that does not filter on state is 91.20 too high.
+      - id: d24e9f70-1c8a-4b36-b7e5-8a09f6c2d513
+        type: authorization
+        state: DECLINED
+        amount: 91.2
+        currency_code: USD
+        card_token: ee50b28d-3f19-4c72-8ad6-1b94e07f2c85
+        user_token: 7fd2a640-b5c3-4e19-a80f-3c62d94b1e57
+        response_code: "1016"
+        response_memo: "Insufficient funds"
+        merchant_name: "Northgate Fuel"
+        created_time: "2026-08-14T08:52:40Z"
+
+    card:
+      - id: a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+        user_token: 4c9b1e57-8a3d-4f02-b6c8-9d1e35a70f24
+        last_four: "4291"
+        pan: "111111______4291"
+        state: ACTIVE
+        expiration: "1229"
+        created_time: "2026-02-03T10:00:00Z"
+
+      - id: ee50b28d-3f19-4c72-8ad6-1b94e07f2c85
+        user_token: 7fd2a640-b5c3-4e19-a80f-3c62d94b1e57
+        last_four: "7734"
+        pan: "111111______7734"
+        state: SUSPENDED
+        expiration: "0330"
+        created_time: "2026-05-19T14:22:00Z"
+
+    balance:
+      # The second card's holder. 91.20 was declined against a ledger
+      # balance of 140.00, because 98.75 of it is held by an authorization
+      # that has not cleared and 40.00 more is a credit that has not landed.
+      - id: 7fd2a640-b5c3-4e19-a80f-3c62d94b1e57
+        currency_code: USD
+        available_balance: 41.25
+        ledger_balance: 140.0
+        pending_credits: 40.0
+
+      - id: 4c9b1e57-8a3d-4f02-b6c8-9d1e35a70f24
+        currency_code: USD
+        available_balance: 812.6
+        ledger_balance: 861.1
+        pending_credits: 0.0
+
+# Every case below is derived from Marqeta's published documentation. None
+# has been run against a real Marqeta account. The verify report says so.
+conformance:
+  - name: an identifier is a token, not an id
+    # Nothing Marqeta returns has an "id" property. Code written against a
+    # platform that does reads undefined and carries it forward as the
+    # reference to a payment.
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        token: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+      absent:
+        - id
+
+  - name: an authorization is a hold, not a payment
+    # PENDING, with the clearing still days away. Treating this as revenue
+    # books the same meal twice once the clearing lands.
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        type: authorization
+        state: PENDING
+        amount: 48.5
+      absent:
+        - preceding_related_transaction_token
+
+  - name: the clearing is a separate transaction for a different amount
+    # 58.40 against an authorization of 48.50, which is a tip and not an
+    # error. Reconciling a clearing to its authorization on amount fails at
+    # every restaurant and every fuel pump.
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/0b83d6c1-47af-4a9e-9a02-c5f8e31d7b42
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        token: 0b83d6c1-47af-4a9e-9a02-c5f8e31d7b42
+        type: authorization.clearing
+        state: CLEARED
+        amount: 58.4
+        preceding_related_transaction_token: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+
+  - name: a declined transaction is in the listing and moved no money
+    # 91.20 with state DECLINED. A total that sums amount without filtering
+    # on state is exactly that much too high.
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/d24e9f70-1c8a-4b36-b7e5-8a09f6c2d513
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        state: DECLINED
+        amount: 91.2
+        response.code: "1016"
+        response.memo: "Insufficient funds"
+
+  - name: the decline reason is nested under response
+    # response_code is not a top-level property. It sits inside a response
+    # object, and reading it flat gets undefined on every declined payment.
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/d24e9f70-1c8a-4b36-b7e5-8a09f6c2d513
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      absent:
+        - response_code
+        - response_memo
+
+  - name: the merchant is nested under card_acceptor
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/d24e9f70-1c8a-4b36-b7e5-8a09f6c2d513
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        card_acceptor.name: "Northgate Fuel"
+      absent:
+        - merchant_name
+
+  - name: a listing counts what matched and says whether more remain
+    source: https://www.marqeta.com/docs/core-api/transactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        count: 3
+        is_more: false
+        # The authorization and its clearing are two rows here, for one
+        # meal. Summing this collection charges the diner 106.90.
+        data[0].token: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+        data[1].preceding_related_transaction_token: 6f1c0a34-9e2b-4f57-8f3a-2b1d5c7e0a11
+      absent:
+        - data[3]
+
+  - name: the card number never leaves Marqeta
+    # last_four and a masked pan, and nothing that can be charged. Anything
+    # storing a card from this response is storing six digits of issuer,
+    # six underscores and four digits of card.
+    source: https://www.marqeta.com/docs/core-api/cards
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/cards/a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        token: a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+        last_four: "4291"
+        pan: "111111______4291"
+        state: ACTIVE
+      absent:
+        - id
+        - card_number
+        - number
+        - cvv_number
+
+  - name: a suspended card is not a terminated one
+    # SUSPENDED is reversible and TERMINATED is not, and treating them alike
+    # either strands a customer or reissues against a card that is gone.
+    source: https://www.marqeta.com/docs/core-api/cards
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/cards/ee50b28d-3f19-4c72-8ad6-1b94e07f2c85
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        token: ee50b28d-3f19-4c72-8ad6-1b94e07f2c85
+        state: SUSPENDED
+        last_four: "7734"
+
+  - name: an expiration is four digits with no separator
+    # MMYY, so parsing it as a date fails and reading it the other way round
+    # produces a card that expired twenty-nine years ago.
+    source: https://www.marqeta.com/docs/core-api/cards
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/cards/a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        expiration: "1229"
+
+  - name: only the available balance can be spent
+    # 41.25 available against a ledger balance of 140.00. The difference is
+    # a hold that has not cleared plus a credit that has not landed, and
+    # reading ledger_balance authorises a payment that will be declined.
+    source: https://www.marqeta.com/docs/core-api/balances
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/balances/7fd2a640-b5c3-4e19-a80f-3c62d94b1e57
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        gpa.available_balance: 41.25
+        gpa.ledger_balance: 140.0
+        gpa.pending_credits: 40.0
+
+  - name: a balance carries no identifier of its own
+    # It is addressed by the user's token and the body never repeats it, so
+    # a balance held on its own cannot say whose it is.
+    source: https://www.marqeta.com/docs/core-api/balances
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/balances/7fd2a640-b5c3-4e19-a80f-3c62d94b1e57
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      absent:
+        - token
+        - id
+        - user_token
+
+  - name: balances are nested under gpa
+    source: https://www.marqeta.com/docs/core-api/balances
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/balances/4c9b1e57-8a3d-4f02-b6c8-9d1e35a70f24
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 200
+      body:
+        gpa.available_balance: 812.6
+        gpa.currency_code: USD
+      absent:
+        - available_balance
+        - ledger_balance
+        - currency_code
+
+  - name: the admin access token is the half that is checked
+    # Marqeta puts the application token in the username and the admin
+    # access token in the password. Checking the wrong half means a wrong
+    # credential is never rejected.
+    source: https://www.marqeta.com/docs/core-api/authentication
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions
+      headers:
+        # The right application token, and a wrong access token.
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        error_code: "401"
+
+  - name: swapping the two halves is rejected
+    # The same two strings in the other order. A Recipe checking whichever
+    # half it found would accept this.
+    source: https://www.marqeta.com/docs/core-api/authentication
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW4=
+    expect:
+      status: 401
+
+  - name: an error code is a string of digits, not a number
+    # "1016" quoted. Comparing it to 1016 fails in every language that does
+    # not coerce, which is most of them.
+    source: https://www.marqeta.com/docs/core-api/errors
+    fixture: small-program
+    arm: insufficient_funds
+    request:
+      method: GET
+      path: /v3/transactions
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 400
+      body:
+        error_code: "1016"
+        error_message: "Insufficient funds available on this account"
+
+  - name: an inactive card reports 1503 rather than a distinct status
+    # A card that cannot transact answers 400 with a code in the body, which
+    # is the same 400 a malformed request gets. Branching on HTTP status
+    # alone cannot tell a dead card from a typo.
+    source: https://www.marqeta.com/docs/core-api/errors
+    fixture: small-program
+    arm: card_not_active
+    request:
+      method: GET
+      path: /v3/cards/a3c7e912-6d40-4e88-9b21-77f0ac4e5d36
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 400
+      body:
+        error_code: "1503"
+
+  - name: a missing resource says 404 in the body as well as the status
+    source: https://www.marqeta.com/docs/core-api/errors
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 404
+      body:
+        error_code: "404"
+
+  - name: errors are flat with no wrapper
+    # error_code and error_message at the top level, not under an "error"
+    # object, so code unwrapping one finds nothing to unwrap.
+    source: https://www.marqeta.com/docs/core-api/errors
+    fixture: small-program
+    request:
+      method: GET
+      path: /v3/transactions/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbWFycWV0YV9hcHBfdG9rZW46Y2F1bGRyb25fbWFycWV0YV9hZG1pbl9hY2Nlc3NfdG9rZW4=
+    expect:
+      status: 404
+      absent:
+        - error
+        - type
+        - errors

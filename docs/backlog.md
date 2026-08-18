@@ -238,7 +238,7 @@ the header says so.
 | Column | Assess — ACH returns and their reason codes |
 | Dwolla | Assess — transfers, funding sources, micro-deposit verification |
 | Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
-| Marqeta | Assess — card issuing, JIT funding, authorisation webhooks with a response deadline |
+| ~~Marqeta~~ | Shipped. An authorization and its clearing are two transactions for different amounts; three balances and only one is spendable; the PAN never leaves. JIT funding is not modelled and the Recipe says why |
 | Checkout.com | Assess — payments, 3DS, the difference between authorised and captured |
 | Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
 | Klarna | Assess — order lifecycle across authorise, capture and refund, with a session that expires |
@@ -482,7 +482,7 @@ transfers alone, and say so in the header.
 |---|---|
 | ~~Increase~~ | Shipped. A return is a new object days later, the transfer stays unmarked, and the reason decides whether retrying is legal |
 | ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, one direction means opposite things on two accounts, three balances disagree on purpose |
-| Marqeta | Just-in-time funding puts a webhook in the authorisation path with a response deadline on it. Failing to answer in time declines the card, so a slow test is a declined payment |
+| ~~Marqeta~~ | Shipped, without the JIT funding path. It puts a webhook in the authorisation with a response deadline on it, so a slow test is a declined payment, and Cauldron delivers webhooks without waiting for an answer. The Recipe states the gap rather than pretending to close it |
 | Dwolla | Micro-deposit verification is a multi-day handshake with a fixed number of attempts, and the failure to model is running out of them |
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
 | Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
