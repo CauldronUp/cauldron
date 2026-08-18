@@ -736,6 +736,61 @@ guessed at. The third, a parameter value covering several field values, exists
 now: Alpaca needed it, because status=open means new or partially_filled and
 matching the word literally would have hidden every partially filled order.
 
+## Detection coverage
+
+A Recipe that ships and that no dependency maps to still works: `cauldron up
+<name>` and a config entry both reach it. What it does not do is turn up on its
+own when somebody runs `cauldron detect` in a repository that uses it, which is
+the thing the front of the README promises.
+
+The table went from 12 Recipes to 91 in one pass. These twenty-six are left,
+and each needs its published client libraries checked rather than remembered,
+because a package name written from memory is exactly the guess the detection
+rule forbids.
+
+| Recipe | Note |
+|---|---|
+| Alpaca | alpaca-trade-api and alpaca-py exist; the Node and Go names need checking |
+| Bandwidth | Official SDKs exist for several languages under names that have changed at least once |
+| Basecamp | No official SDK. Community clients only, so a mapping may not be justifiable |
+| Bill.com | No widely used client |
+| Braze | Server-side use is usually raw HTTP; the SDKs are mobile |
+| Buildkite | go-buildkite is the obvious one |
+| Column | No official SDK |
+| Deel | No official SDK |
+| Docker Hub | No SDK; usually the docker CLI or raw HTTP |
+| Documenso | Has a TypeScript SDK |
+| Greenhouse | Community clients only |
+| Gusto | Has an official Node SDK |
+| Help Scout | Community clients |
+| Increase | Official SDKs in several languages |
+| Marqeta | Official SDKs exist and are generated |
+| Mercury | No official SDK |
+| Modern Treasury | Official SDKs in several languages |
+| npm registry | Usually npm itself or raw HTTP |
+| Onfido | Official SDKs in several languages |
+| Orb | Official SDKs in several languages |
+| Persona | Community clients |
+| Ramp | No official SDK |
+| Shortcut | Community clients |
+| Svix | Official SDKs in several languages |
+| WooCommerce | Official REST clients in PHP and JS |
+| WordPress | Usually raw HTTP or wp-cli |
+
+**OpenAI is mapped on purpose without a Recipe.** A dependency Cauldron
+recognises and cannot emulate is reported by name, so a developer is told
+which calls will still reach the real network, which is more useful than the
+"looks like an API client" heuristic that would otherwise catch it. Removing
+the mapping made the warning vaguer, not safer, and two tests in the CLI
+package said so.
+
+What that arrangement cannot do on its own is tell a deliberate
+forward-mapping from a typo: a mapping naming "postmarkk" would quietly become
+a warning about a provider nobody has heard of. Every mapped name that does not
+ship is now declared as intentional, and a test refuses the ones that are not.
+
+An OpenAI Recipe is worth writing on its own merits.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |

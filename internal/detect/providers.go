@@ -79,12 +79,437 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// No Recipe ships for OpenAI yet, and the mapping is here on
+			// purpose. A dependency Cauldron recognises and cannot emulate is
+			// reported by name, so the developer is told those calls will
+			// still reach the real network. Without the mapping it falls
+			// through to the "looks like an API client" heuristic and the
+			// warning is vaguer than it needs to be.
 			recipe:   "openai",
 			composer: []string{"openai-php/client", "openai-php/laravel"},
 			npm:      []string{"openai"},
 			gomod:    []string{"github.com/sashabaranov/go-openai"},
 		},
+		{
+			recipe:   "ably",
+			npm:      []string{"ably"},
+			composer: []string{"ably/ably-php"},
+			gomod:    []string{"github.com/ably/ably-go"},
+		},
+		{
+			recipe: "airtable",
+			npm:    []string{"airtable"},
+		},
+		{
+			recipe:   "algolia",
+			npm:      []string{"algoliasearch"},
+			composer: []string{"algolia/algoliasearch-client-php"},
+			gomod:    []string{"github.com/algolia/algoliasearch-client-go"},
+		},
+		{
+			recipe:   "asana",
+			npm:      []string{"asana"},
+			composer: []string{"asana/asana"},
+		},
+		{
+			recipe: "assemblyai",
+			npm:    []string{"assemblyai"},
+			gomod:  []string{"github.com/AssemblyAI/assemblyai-go-sdk"},
+		},
+		{
+			recipe:   "auth0",
+			npm:      []string{"auth0", "@auth0/auth0-spa-js", "express-openid-connect"},
+			composer: []string{"auth0/auth0-php"},
+			gomod:    []string{"github.com/auth0/go-auth0"},
+		},
+		{
+			recipe: "bitbucket",
+			npm:    []string{"bitbucket"},
+		},
+		{
+			recipe: "box",
+			npm:    []string{"box-node-sdk", "box-typescript-sdk-gen"},
+		},
+		{
+			recipe: "brex",
+			npm:    []string{"@brexhq/protocol"},
+		},
+		{
+			recipe:   "bugsnag",
+			npm:      []string{"@bugsnag/js", "@bugsnag/node"},
+			composer: []string{"bugsnag/bugsnag-laravel", "bugsnag/bugsnag"},
+			gomod:    []string{"github.com/bugsnag/bugsnag-go"},
+		},
+		{
+			recipe: "calendly",
+			npm:    []string{"react-calendly"},
+		},
+		{
+			recipe:   "chargebee",
+			npm:      []string{"chargebee"},
+			composer: []string{"chargebee/chargebee-php"},
+			gomod:    []string{"github.com/chargebee/chargebee-go"},
+		},
+		{
+			recipe: "circleci",
+			npm:    []string{"circleci-api"},
+		},
+		{
+			recipe: "clickup",
+			npm:    []string{"clickup.js"},
+		},
+		{
+			recipe:   "cloudflare",
+			npm:      []string{"cloudflare"},
+			composer: []string{"cloudflare/sdk"},
+			gomod:    []string{"github.com/cloudflare/cloudflare-go"},
+		},
+		{
+			recipe:   "cloudinary",
+			npm:      []string{"cloudinary"},
+			composer: []string{"cloudinary/cloudinary_php"},
+			gomod:    []string{"github.com/cloudinary/cloudinary-go"},
+		},
+		{
+			recipe:   "contentful",
+			npm:      []string{"contentful", "contentful-management"},
+			composer: []string{"contentful/contentful-management"},
+			gomod:    []string{"github.com/labd/contentful-go"},
+		},
+		{
+			recipe:   "datadog",
+			npm:      []string{"@datadog/datadog-api-client", "dd-trace"},
+			composer: []string{"datadog/php-datadogstatsd"},
+			gomod:    []string{"github.com/DataDog/datadog-api-client-go"},
+		},
+		{
+			recipe: "deepgram",
+			npm:    []string{"@deepgram/sdk"},
+			gomod:  []string{"github.com/deepgram/deepgram-go-sdk"},
+		},
+		{
+			recipe: "digitalocean",
+			npm:    []string{"do-wrapper"},
+			gomod:  []string{"github.com/digitalocean/godo"},
+		},
+		{
+			recipe:   "discord",
+			npm:      []string{"discord.js", "@discordjs/rest"},
+			composer: []string{"team-reflex/discord-php"},
+			gomod:    []string{"github.com/bwmarrin/discordgo"},
+		},
+		{
+			recipe:   "docusign",
+			npm:      []string{"docusign-esign"},
+			composer: []string{"docusign/esign-client"},
+		},
+		{
+			recipe:   "dropbox",
+			npm:      []string{"dropbox"},
+			composer: []string{"spatie/flysystem-dropbox"},
+		},
+		{
+			recipe: "dynamodb",
+			npm:    []string{"@aws-sdk/client-dynamodb", "@aws-sdk/lib-dynamodb", "dynamoose"},
+			gomod:  []string{"github.com/aws/aws-sdk-go-v2/service/dynamodb"},
+		},
+		{
+			recipe: "firecrawl",
+			npm:    []string{"@mendable/firecrawl-js"},
+		},
+		{
+			recipe: "freshdesk",
+			npm:    []string{"freshdesk-api"},
+		},
+		{
+			recipe: "front",
+			npm:    []string{"@frontapp/plugin-sdk"},
+		},
+		{
+			recipe: "ghost",
+			npm:    []string{"@tryghost/content-api", "@tryghost/admin-api"},
+		},
+		{
+			recipe:   "gitlab",
+			npm:      []string{"@gitbeaker/rest", "@gitbeaker/node"},
+			composer: []string{"m4tthumphrey/php-gitlab-api"},
+			gomod:    []string{"github.com/xanzy/go-gitlab"},
+		},
+		{
+			recipe:   "gmail",
+			npm:      []string{"@googleapis/gmail"},
+			composer: []string{"google/apiclient"},
+			gomod:    []string{"google.golang.org/api/gmail/v1"},
+		},
+		{
+			recipe: "googlecalendar",
+			npm:    []string{"@googleapis/calendar"},
+			gomod:  []string{"google.golang.org/api/calendar/v3"},
+		},
+		{
+			recipe:   "intercom",
+			npm:      []string{"intercom-client"},
+			composer: []string{"intercom/intercom-php"},
+			gomod:    []string{"github.com/intercom/intercom-go"},
+		},
+		{
+			recipe:   "jira",
+			npm:      []string{"jira.js", "jira-client"},
+			composer: []string{"lesstif/php-jira-rest-client"},
+			gomod:    []string{"github.com/andygrunwald/go-jira"},
+		},
+		{
+			recipe:   "klaviyo",
+			npm:      []string{"klaviyo-api"},
+			composer: []string{"klaviyo/api"},
+		},
+		{
+			recipe:   "launchdarkly",
+			npm:      []string{"launchdarkly-node-server-sdk", "@launchdarkly/node-server-sdk"},
+			composer: []string{"launchdarkly/server-sdk"},
+			gomod:    []string{"github.com/launchdarkly/go-server-sdk"},
+		},
+		{
+			recipe:   "lob",
+			npm:      []string{"lob"},
+			composer: []string{"lob/lob-php"},
+		},
+		{
+			recipe:   "mailchimp",
+			npm:      []string{"@mailchimp/mailchimp_marketing", "@mailchimp/mailchimp_transactional"},
+			composer: []string{"mailchimp/marketing"},
+		},
+		{
+			recipe: "miro",
+			npm:    []string{"@mirohq/miro-api"},
+		},
+		{
+			recipe:   "mollie",
+			npm:      []string{"@mollie/api-client"},
+			composer: []string{"mollie/mollie-api-php", "mollie/laravel-mollie"},
+		},
+		{
+			recipe:   "mux",
+			npm:      []string{"@mux/mux-node"},
+			composer: []string{"muxinc/mux-php"},
+			gomod:    []string{"github.com/muxinc/mux-go"},
+		},
+		{
+			recipe: "netlify",
+			npm:    []string{"netlify"},
+		},
+		{
+			recipe: "notion",
+			npm:    []string{"@notionhq/client"},
+			gomod:  []string{"github.com/jomei/notionapi"},
+		},
+		{
+			recipe: "okta",
+			npm:    []string{"@okta/okta-sdk-nodejs"},
+			gomod:  []string{"github.com/okta/okta-sdk-golang"},
+		},
+		{
+			recipe:   "onesignal",
+			npm:      []string{"@onesignal/node-onesignal"},
+			composer: []string{"onesignal/onesignal-php-api"},
+		},
+		{
+			recipe:   "paddle",
+			npm:      []string{"@paddle/paddle-node-sdk"},
+			composer: []string{"laravel/cashier-paddle"},
+		},
+		{
+			recipe: "pagerduty",
+			npm:    []string{"@pagerduty/pdjs"},
+			gomod:  []string{"github.com/PagerDuty/go-pagerduty"},
+		},
+		{
+			recipe:   "paypal",
+			npm:      []string{"@paypal/paypal-server-sdk", "@paypal/checkout-server-sdk"},
+			composer: []string{"paypal/paypal-checkout-sdk", "paypal/rest-api-sdk-php"},
+		},
+		{
+			recipe: "pipedrive",
+			npm:    []string{"pipedrive"},
+		},
+		{
+			recipe:   "plaid",
+			npm:      []string{"plaid"},
+			composer: []string{"plaid/plaid-php"},
+			gomod:    []string{"github.com/plaid/plaid-go"},
+		},
+		{
+			recipe:   "posthog",
+			npm:      []string{"posthog-node", "posthog-js"},
+			composer: []string{"posthog/posthog-php"},
+			gomod:    []string{"github.com/posthog/posthog-go"},
+		},
+		{
+			recipe:   "postmark",
+			npm:      []string{"postmark"},
+			composer: []string{"wildbit/postmark-php"},
+		},
+		{
+			recipe:   "pubsub",
+			npm:      []string{"@google-cloud/pubsub"},
+			composer: []string{"google/cloud-pubsub"},
+			gomod:    []string{"cloud.google.com/go/pubsub"},
+		},
+		{
+			recipe:   "pusher",
+			npm:      []string{"pusher", "pusher-js"},
+			composer: []string{"pusher/pusher-php-server"},
+			gomod:    []string{"github.com/pusher/pusher-http-go"},
+		},
+		{
+			recipe:   "quickbooks",
+			npm:      []string{"node-quickbooks", "intuit-oauth"},
+			composer: []string{"quickbooks/v3-php-sdk"},
+		},
+		{
+			recipe:   "recurly",
+			npm:      []string{"recurly"},
+			composer: []string{"recurly/recurly-client"},
+			gomod:    []string{"github.com/recurly/recurly-client-go"},
+		},
+		{
+			recipe:   "resend",
+			npm:      []string{"resend"},
+			composer: []string{"resend/resend-php", "resend/resend-laravel"},
+			gomod:    []string{"github.com/resend/resend-go"},
+		},
+		{
+			recipe:   "ringcentral",
+			npm:      []string{"@ringcentral/sdk"},
+			composer: []string{"ringcentral/ringcentral-php"},
+		},
+		{
+			recipe:   "rollbar",
+			npm:      []string{"rollbar"},
+			composer: []string{"rollbar/rollbar", "rollbar/rollbar-laravel"},
+			gomod:    []string{"github.com/rollbar/rollbar-go"},
+		},
+		{
+			recipe:   "salesforce",
+			npm:      []string{"jsforce"},
+			composer: []string{"omniphx/forrest"},
+			gomod:    []string{"github.com/simpleforce/simpleforce"},
+		},
+		{
+			recipe: "sanity",
+			npm:    []string{"@sanity/client"},
+		},
+		{
+			recipe: "secretsmanager",
+			npm:    []string{"@aws-sdk/client-secrets-manager"},
+			gomod:  []string{"github.com/aws/aws-sdk-go-v2/service/secretsmanager"},
+		},
+		{
+			recipe:   "segment",
+			npm:      []string{"@segment/analytics-node", "analytics-node"},
+			composer: []string{"segmentio/analytics-php"},
+			gomod:    []string{"github.com/segmentio/analytics-go"},
+		},
+		{
+			recipe:   "sentry",
+			npm:      []string{"@sentry/node", "@sentry/browser", "@sentry/nextjs"},
+			composer: []string{"sentry/sentry", "sentry/sentry-laravel", "sentry/sentry-symfony"},
+			gomod:    []string{"github.com/getsentry/sentry-go"},
+		},
+		{
+			recipe:   "ses",
+			npm:      []string{"@aws-sdk/client-ses", "@aws-sdk/client-sesv2"},
+			composer: []string{"aws/aws-sdk-php"},
+			gomod:    []string{"github.com/aws/aws-sdk-go-v2/service/sesv2"},
+		},
+		{
+			recipe: "shippo",
+			npm:    []string{"shippo"},
+		},
+		{
+			recipe: "snyk",
+			npm:    []string{"snyk"},
+		},
+		{
+			recipe: "sqs",
+			npm:    []string{"@aws-sdk/client-sqs", "sqs-consumer"},
+			gomod:  []string{"github.com/aws/aws-sdk-go-v2/service/sqs"},
+		},
+		{
+			recipe:   "square",
+			npm:      []string{"square"},
+			composer: []string{"square/square"},
+			gomod:    []string{"github.com/square/square-go-sdk"},
+		},
+		{
+			recipe: "statuspage",
+			npm:    []string{"statuspage-api"},
+		},
+		{
+			recipe: "stytch",
+			npm:    []string{"stytch"},
+			gomod:  []string{"github.com/stytchauth/stytch-go"},
+		},
+		{
+			recipe:   "taxjar",
+			npm:      []string{"taxjar"},
+			composer: []string{"taxjar/taxjar-php"},
+		},
+		{
+			recipe:   "telnyx",
+			npm:      []string{"telnyx"},
+			composer: []string{"telnyx/telnyx-php"},
+		},
+		{
+			recipe: "trello",
+			npm:    []string{"trello.js", "node-trello"},
+		},
+		{
+			recipe: "typeform",
+			npm:    []string{"@typeform/api-client"},
+		},
+		{
+			recipe: "vercel",
+			npm:    []string{"@vercel/client", "@vercel/sdk"},
+		},
+		{
+			recipe:   "vonage",
+			npm:      []string{"@vonage/server-sdk"},
+			composer: []string{"vonage/client"},
+		},
+		{
+			recipe: "webflow",
+			npm:    []string{"webflow-api"},
+		},
+		{
+			recipe:   "workos",
+			npm:      []string{"@workos-inc/node"},
+			composer: []string{"workos/workos-php"},
+			gomod:    []string{"github.com/workos/workos-go"},
+		},
+		{
+			recipe:   "zendesk",
+			npm:      []string{"node-zendesk"},
+			composer: []string{"zendesk/zendesk_api_client_php"},
+			gomod:    []string{"github.com/nukosuke/go-zendesk"},
+		},
+		{
+			recipe: "zoom",
+			npm:    []string{"@zoom/appssdk"},
+		},
 	}
+}
+
+// unshipped names the Recipes a mapping points at deliberately even though no
+// Recipe ships for them. Detection reports those by name so a developer is told
+// which calls will still reach the real network, which is more useful than the
+// "looks like an API client" heuristic that would otherwise catch them.
+//
+// It exists so that a typo cannot pass for an intention. Without it, a mapping
+// naming "postmarkk" would quietly become a warning about a provider nobody has
+// heard of, and nothing would fail.
+var unshipped = map[string]string{
+	"openai": "worth a Recipe on its own merits; until then the warning is the value",
 }
 
 // suspectedAPIClient matches dependency names that look like third-party API
