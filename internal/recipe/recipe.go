@@ -616,6 +616,21 @@ type ID struct {
 	// the wire shape of every shipped Recipe at once, and each one has to be
 	// checked against its provider rather than assumed.
 	Type string `yaml:"type"`
+	// CarriedBy names the field that holds the identifier when the provider
+	// does not send it under a name of its own.
+	//
+	// Dwolla is HAL: there is no id property on anything, and identity lives
+	// in _links.self.href with the identifier as its last segment. So the
+	// record is addressable and the id is genuinely absent, which are two
+	// things that are usually not true together, and a Recipe that only said
+	// field: "-" would be claiming a listing hands back records nothing can
+	// identify.
+	//
+	// It is a declaration rather than a behaviour: nothing reads it at
+	// runtime. What it does is answer the question a reader of the Recipe
+	// asks first -- if there is no id, how do I address one of these -- and
+	// let the validator tell a described absence from an undescribed one.
+	CarriedBy string `yaml:"carried_by"`
 }
 
 // Filter is a query parameter that narrows a listing to records whose field
@@ -1070,6 +1085,20 @@ func (r *Recipe) Validate() error {
 			add("resource %q has id.style %q, which must be one of %s", name, resource.ID.Style, strings.Join(validIDStyles[1:], ", "))
 		}
 
+		if resource.ID.CarriedBy != "" {
+			if _, declared := resource.Fields[resource.ID.CarriedBy]; !declared {
+				add("resource %q says its identifier is carried by %q, which is not a field on it", name, resource.ID.CarriedBy)
+			}
+
+			// Carried by something means not sent under its own name. A
+			// resource that sends both is not describing this shape, and the
+			// declaration would read as though it were.
+			if resource.ID.Field != "-" {
+				add("resource %q says its identifier is carried by %q and also sends it as %q; carried_by is for the providers that send it in one place only",
+					name, resource.ID.CarriedBy, identifierFieldName(resource.ID.Field))
+			}
+		}
+
 		if !contains(validIDTypes, resource.ID.Type) {
 			add("resource %q has id.type %q, which must be one of %s", name, resource.ID.Type, strings.Join(validIDTypes[1:], ", "))
 		}
@@ -1482,8 +1511,9 @@ func (r *Recipe) Validate() error {
 		// does, the identifier exists and hiding it from the listing is
 		// inconsistent. If none does, position is all there is and saying so
 		// is the honest description.
-		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" && fetchedByID(r, route.Resource) {
-			add("%s: resource %q hides its identifier and %s fetches one by id, so the listing withholds an identifier that exists",
+		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" &&
+			r.Resources[route.Resource].ID.CarriedBy == "" && fetchedByID(r, route.Resource) {
+			add("%s: resource %q hides its identifier and %s fetches one by id, so the listing withholds an identifier that exists; name the field that carries it with carried_by, or stop hiding it",
 				where, route.Resource, fetchRoute(r, route.Resource))
 		}
 	}
@@ -1879,6 +1909,16 @@ func onlyCreated(r *Recipe, resource string) bool {
 	}
 
 	return touched
+}
+
+// identifierFieldName renders the property an identifier goes out under, for a
+// message, naming the default rather than reporting an empty string.
+func identifierFieldName(field string) string {
+	if field == "" {
+		return "id"
+	}
+
+	return field
 }
 
 // styleName renders an id style for a message, naming the default rather than

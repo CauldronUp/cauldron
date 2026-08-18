@@ -236,7 +236,7 @@ the header says so.
 | ~~Increase~~ | Shipped. A return is a new object days later and the transfer stays unmarked |
 | ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, and one direction means the opposite sign |
 | ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two different problems |
-| Dwolla | Assess — transfers, funding sources, micro-deposit verification |
+| ~~Dwolla~~ | Shipped. A create answers 201 with no body and the id only in a Location header, nothing has an id field at all, and micro-deposit verification has three attempts before the funding source is permanently unverifiable |
 | Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
 | ~~Marqeta~~ | Shipped. An authorization and its clearing are two transactions for different amounts; three balances and only one is spendable; the PAN never leaves. JIT funding is not modelled and the Recipe says why |
 | Checkout.com | Assess — payments, 3DS, the difference between authorised and captured |
@@ -483,7 +483,7 @@ transfers alone, and say so in the header.
 | ~~Increase~~ | Shipped. A return is a new object days later, the transfer stays unmarked, and the reason decides whether retrying is legal |
 | ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, one direction means opposite things on two accounts, three balances disagree on purpose |
 | ~~Marqeta~~ | Shipped, without the JIT funding path. It puts a webhook in the authorisation with a response deadline on it, so a slow test is a declined payment, and Cauldron delivers webhooks without waiting for an answer. The Recipe states the gap rather than pretending to close it |
-| Dwolla | Micro-deposit verification is a multi-day handshake with a fixed number of attempts, and the failure to model is running out of them |
+| ~~Dwolla~~ | Shipped. Three attempts and then the funding source is finished, not rate limited and not retryable tomorrow |
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
 | Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
 | Airwallex | Multi-currency balances where the settlement currency is not the charge currency, and the conversion happens somewhere the API does not show you |
