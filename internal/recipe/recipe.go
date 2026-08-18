@@ -596,6 +596,26 @@ type ID struct {
 	// has to be found somehow, but emitting an identifier the provider never
 	// sends would put a field on the wire that real code cannot rely on.
 	Field string `yaml:"field"`
+	// Type is the JSON type the identifier travels as: "string" (the default)
+	// or "number".
+	//
+	// Identifiers are minted and stored as strings, because that is the only
+	// form every style shares and the only form a path parameter arrives in.
+	// What they are on the wire is a separate question, and the two answers
+	// disagree more often than they agree. GitHub sends an issue id as the
+	// number 1. HubSpot sends a contact id as the string "1". Meilisearch
+	// sends a task uid as a number and Jira sends an issue id as a string.
+	//
+	// It is not cosmetic. id === 1 fails against a string, typeof id ===
+	// "number" fails, and a schema declaring "type": "integer" rejects the
+	// response outright. An emulator answering with a string where the
+	// provider answers with a number commits the exact class of bug it exists
+	// to catch.
+	//
+	// The default stays "string" because changing it silently would rewrite
+	// the wire shape of every shipped Recipe at once, and each one has to be
+	// checked against its provider rather than assumed.
+	Type string `yaml:"type"`
 }
 
 // Filter is a query parameter that narrows a listing to records whose field
@@ -918,6 +938,7 @@ var (
 	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
 	validErrStyles   = []string{"", "nested", "flat", "list", "string_list", "text"}
 	validCodeTypes   = []string{"", "string", "number"}
+	validIDTypes     = []string{"", "string", "number"}
 	validIDStyles    = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
 	validFieldTypes  = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime", "list"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
@@ -1031,6 +1052,29 @@ func (r *Recipe) Validate() error {
 
 		if !contains(validIDStyles, resource.ID.Style) {
 			add("resource %q has id.style %q, which must be one of %s", name, resource.ID.Style, strings.Join(validIDStyles[1:], ", "))
+		}
+
+		if !contains(validIDTypes, resource.ID.Type) {
+			add("resource %q has id.type %q, which must be one of %s", name, resource.ID.Type, strings.Join(validIDTypes[1:], ", "))
+		}
+
+		// A number on the wire has to be a number in the store too, or the
+		// response disagrees with the declaration and the disagreement shows
+		// up as a string where a number was promised. The styles that mint
+		// something with letters in it cannot be numbers, and saying so here
+		// is cheaper than finding out from a response.
+		if resource.ID.Type == "number" && !contains([]string{"numeric", "digits"}, resource.ID.Style) {
+			add("resource %q says its identifier is a number and mints it with the %s style, which does not produce one",
+				name, styleName(resource.ID.Style))
+		}
+
+		// digits exists for identifiers that are numeric and must not be
+		// parsed as numbers, because they exceed what a JavaScript number can
+		// hold. Declaring one a number is asking for the rounding bug the
+		// style was added to prevent.
+		if resource.ID.Type == "number" && resource.ID.Style == "digits" {
+			add("resource %q mints a long numeric string and declares it a number, which is the rounding bug the digits style exists to avoid",
+				name)
 		}
 
 		// A prefix is required for the prefixed style precisely because
@@ -1673,6 +1717,16 @@ func (r *Recipe) Events() []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// styleName renders an id style for a message, naming the default rather than
+// reporting an empty string nobody wrote.
+func styleName(style string) string {
+	if style == "" {
+		return "prefixed"
+	}
+
+	return style
 }
 
 func contains(haystack []string, needle string) bool {

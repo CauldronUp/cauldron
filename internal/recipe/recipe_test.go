@@ -978,3 +978,53 @@ func TestNullWhenUnsetConflictsWithRequired(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A number on the wire has to be a number in the store too, or the response
+// disagrees with the declaration. The styles that mint something with letters
+// in it cannot produce one, and saying so at parse time is cheaper than
+// finding out from a response.
+func TestANumberIdentifierNeedsANumericStyle(t *testing.T) {
+	got := problems(t, strings.Replace(minimal, "      prefix: cus_",
+		"      type: number\n      prefix: cus_", 1))
+
+	if !strings.Contains(got, "does not produce one") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestANumberIdentifierIsAcceptedOnTheNumericStyle(t *testing.T) {
+	yaml := strings.Replace(minimal,
+		"      prefix: cus_\n      length: 14",
+		"      style: numeric\n      type: number", 1)
+
+	if _, err := parse(t, yaml); err != nil {
+		t.Errorf("a numeric id declared a number should be allowed: %v", err)
+	}
+}
+
+// digits exists for identifiers that are numeric and must not be parsed as
+// numbers, because they exceed what a JavaScript number can hold. Declaring
+// one a number asks for the rounding bug the style was added to prevent.
+func TestALongNumericStringMayNotBeDeclaredANumber(t *testing.T) {
+	yaml := strings.Replace(minimal,
+		"      prefix: cus_\n      length: 14",
+		"      style: digits\n      length: 19\n      type: number", 1)
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "rounding bug") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAnUnknownIdentifierTypeIsRefused(t *testing.T) {
+	yaml := strings.Replace(minimal,
+		"      prefix: cus_\n      length: 14",
+		"      style: numeric\n      type: integer", 1)
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "id.type") {
+		t.Errorf("got %q", got)
+	}
+}

@@ -544,7 +544,13 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 	hidden := spec.ID.Field == "-"
 	renamed := spec.ID.Field != "" && spec.ID.Field != "id" && !hidden
 
-	if !renamed && !hidden && !s.nests(spec) {
+	// A provider whose identifier is a JSON number. The store keeps it as a
+	// string, because that is the only form every style shares and the only
+	// form a path parameter arrives in, so the conversion belongs here at the
+	// edge rather than anywhere a lookup happens.
+	retyped := spec.ID.Type == "number"
+
+	if !renamed && !hidden && !retyped && !s.nests(spec) {
 		return record
 	}
 
@@ -552,6 +558,12 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 
 	for key, value := range record {
 		if key == "id" && hidden {
+			continue
+		}
+
+		if key == "id" && retyped {
+			setPath(out, identifierName(spec), numeric(value))
+
 			continue
 		}
 
@@ -760,10 +772,39 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 	return record
 }
 
+// identifierName is the property the identifier goes out under, which is "id"
+// unless the Recipe says otherwise.
+func identifierName(spec recipe.Resource) string {
+	if spec.ID.Field == "" {
+		return "id"
+	}
+
+	return spec.ID.Field
+}
+
+// numeric renders an identifier as a JSON number.
+//
+// A value that will not parse is left as it is rather than replaced or
+// dropped. That only happens when a fixture holds an identifier the declared
+// type cannot describe, and the useful outcome is a response that plainly
+// disagrees with the declaration rather than a silent zero.
+func numeric(value any) any {
+	text, ok := value.(string)
+	if !ok {
+		return value
+	}
+
+	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return n
+	}
+
+	return value
+}
+
 // presentAll renames identifiers across a page.
 func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Record {
 	spec, ok := s.recipe.Resources[resource]
-	if !ok || ((spec.ID.Field == "" || spec.ID.Field == "id") && !s.nests(spec)) {
+	if !ok || ((spec.ID.Field == "" || spec.ID.Field == "id") && spec.ID.Type != "number" && !s.nests(spec)) {
 		return records
 	}
 
