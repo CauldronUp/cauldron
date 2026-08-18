@@ -542,13 +542,16 @@ func TestAnInPathSegmentMustBeSomethingTheRuntimeCanWalk(t *testing.T) {
         as: phoneNumber`, 1)
 	}
 
-	for _, in := range []string{"to[0]", "to", "message.to[0]", "a.b.c", "to[0][1]"} {
+	// Hyphens are ordinary in JSON keys and this rule refused the first one it
+	// ever met: npm sends dist-tags. A pattern written against the Recipes
+	// that happened to exist will do that.
+	for _, in := range []string{"to[0]", "to", "message.to[0]", "a.b.c", "to[0][1]", "dist-tags", "x-request-id", "a.dist-tags[0]"} {
 		if _, err := parse(t, nested(in)); err != nil {
 			t.Errorf("in: %q was refused: %v", in, err)
 		}
 	}
 
-	for _, in := range []string{"to[]", "to[a]", "to[-1]", "to.", "to[0", "0to", "to bar", "to-bar"} {
+	for _, in := range []string{"to[]", "to[a]", "to[-1]", "to.", "to[0", "0to", "to bar", "-to", "to.bar."} {
 		_, err := parse(t, nested(in))
 		if err == nil {
 			t.Errorf("in: %q was accepted, and would be sent as a property spelled that", in)
