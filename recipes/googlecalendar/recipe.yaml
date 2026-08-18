@@ -1,0 +1,735 @@
+# Google Calendar Recipe for Cauldron
+#
+# Google has no Calendar sandbox. Testing against it means a real Google
+# account with real events in it, an OAuth consent screen, and refresh tokens
+# that expire while nobody is looking. Teams end up testing against a
+# throwaway account that slowly fills with rubbish, or against nothing.
+#
+# The reason to emulate it is that this is the most confidently misread API in
+# common use. Almost every calendar integration has, at some point, shipped a
+# view that shows a weekly standup as happening once, two years ago, and the
+# reason is a default nobody read.
+#
+# Five things worth modelling exactly:
+#
+#   1. A listing returns the recurring series, not its occurrences. The
+#      master event's start is the date the series began, so a query for this
+#      week hands back an event dated 2024 with an RRULE beside it. Rendering
+#      it directly puts a daily standup on one day, in the past, once. The
+#      expansion is opt in, and this is what the API does when nobody opts.
+#   2. An all-day event has no time on it at all. start.date, not
+#      start.dateTime, and the two never appear together. Code that reads
+#      start.dateTime finds undefined on every holiday, birthday and leave
+#      day in the calendar.
+#   3. An all-day end date is exclusive. A one-day event on the 18th ends on
+#      the 19th, so anything that renders the range as written shows two days,
+#      and anything that subtracts to get a duration is off by one in the
+#      direction that looks plausible.
+#   4. A cancelled occurrence is still in the response, and it is almost
+#      empty. No summary, no start, no end: an id, a status, the series it
+#      came from and the time it was going to be. A loop reading .summary off
+#      every item throws on the one meeting somebody called off.
+#   5. A sync token arrives only on the last page. Every page before it
+#      carries a page token and no sync token, so code that stores whichever
+#      token it finds on the first response stores the wrong one, and the
+#      next incremental sync either replays everything or fails.
+#
+# And one smaller trap that costs an afternoon: the calendar's own id is an
+# email address. "primary" is an alias the path accepts, never a value the API
+# returns, so an id fetched from calendarList never equals the string the
+# integration hardcoded.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - singleEvents=true is not honoured. Cauldron does not expand an RRULE,
+#     and pretending to would mean implementing recurrence, exceptions and
+#     time zones convincingly enough to be worth trusting. The instances
+#     endpoint below serves the expansion for the one series that has one,
+#     which is the faithful half. A suite that passes singleEvents=true gets
+#     the unexpanded listing, which is wrong.
+#   - The "primary" alias is not resolved. It is the only calendar id the
+#     event paths accept, and the alias does not map to the address that
+#     calendarList reports.
+#   - Google's older error envelope carries a nested errors array beside the
+#     code, with a domain and a reason in each entry. Only the outer object is
+#     modelled. The reason strings are the machine-readable part, so anything
+#     branching on them cannot be exercised here.
+#   - Free/busy, reminders, conference data, working locations and push
+#     notification channels are not modelled.
+#   - OAuth itself is not modelled: token exchange, refresh, incremental
+#     consent and scope upgrades are exactly the parts a fixture cannot teach
+#     you anything about.
+#
+# Tokens below are fixtures, not secrets, and every address is invented.
+
+recipe: googlecalendar
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.google.com/calendar/api/v3/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ya29.cauldron-google-calendar-access-token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    cursor_field: nextPageToken
+    # Only on the last page, and never beside nextPageToken. The two tokens
+    # do different jobs and code that treats them as one field stores a page
+    # token and calls it a sync token.
+    final_field: nextSyncToken
+  resource:
+    style: bare
+  # The older Google envelope, which the Calendar API still uses and Pub/Sub
+  # does not. There is no string status here: the code is the HTTP status
+  # repeated as a number, and it is the only machine-readable field the outer
+  # object carries.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    status_field: code
+
+resources:
+  calendar:
+    collection: items
+    id:
+      style: opaque
+      length: 16
+    fields:
+      # The calendar's name. An event has a field of the same name meaning its
+      # own title, and both appear in one events listing.
+      summary:
+        type: string
+      # True on exactly one entry, and the way to find it. The id is an email
+      # address rather than the string the path alias uses.
+      primary:
+        type: boolean
+      # owner, writer, reader, freeBusyReader. A calendar somebody shared
+      # read-only is listed exactly like one you own, and the difference only
+      # shows up when a write fails.
+      accessRole:
+        type: string
+        default: reader
+      timeZone:
+        type: string
+        default: UTC
+      selected:
+        type: boolean
+
+  event:
+    collection: items
+    id:
+      style: opaque
+      length: 16
+    fields:
+      calendarId:
+        type: string
+      # Absent on a cancelled event. Present on everything else, which is why
+      # nobody notices until somebody calls a meeting off.
+      summary:
+        type: string
+      # confirmed, tentative, cancelled.
+      status:
+        type: string
+        default: confirmed
+      # A timed event has this and no date. An all-day event has the date and
+      # no dateTime. They never appear together, so exactly one of the two
+      # reads below returns undefined on any given event.
+      start_dateTime:
+        type: string
+        in: start
+        as: dateTime
+      start_date:
+        type: string
+        in: start
+        as: date
+      # The offset is already in the dateTime above, so this is not needed to
+      # place the instant. It is what recurrence expands against, which means
+      # dropping it changes when future occurrences happen and nothing about
+      # when this one does.
+      start_timeZone:
+        type: string
+        in: start
+        as: timeZone
+      end_dateTime:
+        type: string
+        in: end
+        as: dateTime
+      # Exclusive. A one-day event on the 18th ends on the 19th.
+      end_date:
+        type: string
+        in: end
+        as: date
+      # Present on the series master and on nothing else. Its presence is how
+      # you know the start above is a series beginning rather than an
+      # appointment.
+      recurrence:
+        type: list
+      organizer_email:
+        type: string
+        in: organizer
+        as: email
+      # Not the same person as the organizer. Whoever pressed the button is
+      # the creator; whose calendar owns it is the organizer.
+      creator_email:
+        type: string
+        in: creator
+        as: email
+      # Declining removes nothing. The attendee stays on the event with a
+      # responseStatus saying no, and the event stays on their calendar.
+      attendees:
+        type: list
+      # default, outOfOffice, focusTime, workingLocation. An out-of-office
+      # block is an event, and it makes the person busy.
+      eventType:
+        type: string
+        default: default
+
+  instance:
+    collection: items
+    id:
+      style: opaque
+      length: 16
+    fields:
+      calendarId:
+        type: string
+      eventId:
+        type: string
+      # Absent on the cancelled one, along with the start, the end and
+      # everything else worth rendering.
+      summary:
+        type: string
+      status:
+        type: string
+        default: confirmed
+      start_dateTime:
+        type: string
+        in: start
+        as: dateTime
+      end_dateTime:
+        type: string
+        in: end
+        as: dateTime
+      # The series this came from. Present on every instance, including the
+      # cancelled one, where it is most of what there is.
+      recurringEventId:
+        type: string
+      # When it was going to happen, which is the only time a cancelled
+      # instance carries. Matching it against the series is how a client
+      # works out which occurrence disappeared.
+      originalStartTime_dateTime:
+        type: string
+        in: originalStartTime
+        as: dateTime
+
+routes:
+  - method: GET
+    path: /calendar/v3/users/me/calendarList
+    resource: calendar
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+      limit_param: maxResults
+      cursor_param: pageToken
+
+  - method: GET
+    path: /calendar/v3/calendars/{calendarId}/events
+    resource: event
+    operation: list
+    scope: [calendarId]
+    pagination:
+      style: cursor
+      limit: 250
+      # Not limit. Google ignores that spelling, and so does this.
+      limit_param: maxResults
+      cursor_param: pageToken
+
+  - method: GET
+    path: /calendar/v3/calendars/{calendarId}/events/{id}
+    resource: event
+    operation: get
+    scope: [calendarId]
+
+  - method: POST
+    path: /calendar/v3/calendars/{calendarId}/events
+    resource: event
+    operation: create
+    scope: [calendarId]
+    status: 200
+
+  - method: DELETE
+    path: /calendar/v3/calendars/{calendarId}/events/{id}
+    resource: event
+    operation: delete
+    scope: [calendarId]
+    status: 204
+    empty_body: true
+
+  # The expansion, served separately because it is a separate endpoint rather
+  # than a flag. Cancelled occurrences are in here, which is the point of it.
+  - method: GET
+    path: /calendar/v3/calendars/{calendarId}/events/{eventId}/instances
+    resource: instance
+    operation: list
+    scope: [calendarId]
+    pagination:
+      style: cursor
+      limit: 250
+      limit_param: maxResults
+      cursor_param: pageToken
+
+webhooks:
+  events:
+    - calendar#event.created
+    - calendar#event.updated
+    - calendar#event.cancelled
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 403
+    message: "Rate Limit Exceeded"
+
+  authentication_error:
+    status: 401
+    message: "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential."
+
+  resource_missing:
+    status: 404
+    message: "Not Found"
+
+  parameter_missing:
+    status: 400
+    message: "Missing required parameter: {detail}"
+
+  # A calendar shared read-only is listed beside one you own and looks
+  # identical until something tries to write to it.
+  insufficient_permission:
+    status: 403
+    message: "You need to have writer access to this calendar."
+
+  # The one that is not a 404 and is not a 400. An expired sync token means
+  # start again from nothing, and code that retries the same token retries
+  # forever.
+  sync_token_expired:
+    status: 410
+    message: "Sync token is no longer valid, a full sync is required."
+
+  # Sending both a date and a dateTime, or neither, on the same end of an
+  # event. The message names the field and not which of the two is wrong.
+  invalid_time:
+    status: 400
+    message: "Invalid value for: Invalid format: date or dateTime is required."
+
+fixtures:
+  empty: {}
+
+  work-calendar:
+    calendar:
+      # The id is an address. "primary" is an alias the path accepts and the
+      # API never returns, so a hardcoded comparison against it never matches.
+      - id: work@cauldron.test
+        summary: Matthew Cauldron
+        primary: true
+        accessRole: owner
+        timeZone: America/Toronto
+        selected: true
+      # Shared read-only. Listed exactly like the one above, and a write to it
+      # is a 403 that nothing in the listing warned about.
+      - id: team-holidays@group.calendar.cauldron.test
+        summary: Team holidays
+        primary: false
+        accessRole: reader
+        timeZone: America/Toronto
+        selected: true
+
+    event:
+      # The series master. Its start is the day the standup began, in March
+      # 2024, and a listing for this week hands this back unchanged. Rendering
+      # it puts a daily meeting on one day, two years ago, once.
+      - id: 5g8k2m4p9q1r3s7t
+        calendarId: primary
+        summary: Team standup
+        status: confirmed
+        start_dateTime: "2024-03-04T09:30:00-05:00"
+        start_timeZone: America/Toronto
+        end_dateTime: "2024-03-04T09:45:00-05:00"
+        recurrence:
+          - "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+        organizer_email: work@cauldron.test
+        creator_email: work@cauldron.test
+        eventType: default
+      # All day. No dateTime anywhere on it, and the end is the day after the
+      # one it falls on, because the range is exclusive.
+      - id: 7h3j5n8v2w4x6y9z
+        calendarId: primary
+        summary: Victoria Day
+        status: confirmed
+        start_date: "2026-05-18"
+        end_date: "2026-05-19"
+        organizer_email: team-holidays@group.calendar.cauldron.test
+        creator_email: team-holidays@group.calendar.cauldron.test
+        eventType: default
+      # A one-off with two attendees, one of whom said no and is still here.
+      # The organizer and the creator are different people.
+      - id: 2b4d6f8h1k3m5p7r
+        calendarId: primary
+        summary: Quarterly review
+        status: confirmed
+        start_dateTime: "2026-08-20T14:00:00-04:00"
+        start_timeZone: America/Toronto
+        end_dateTime: "2026-08-20T15:00:00-04:00"
+        organizer_email: work@cauldron.test
+        creator_email: assistant@cauldron.test
+        attendees:
+          - email: work@cauldron.test
+            responseStatus: accepted
+            self: true
+            organizer: true
+          - email: ada@cauldron.test
+            responseStatus: declined
+          - email: grace@cauldron.test
+            responseStatus: needsAction
+        eventType: default
+      # Out of office is an event. It has no attendees, it is not a meeting,
+      # and it makes the person busy for the whole day.
+      - id: 9w7v5t3s1r8q6p4n
+        calendarId: primary
+        summary: Out of office
+        status: confirmed
+        start_date: "2026-08-24"
+        end_date: "2026-08-29"
+        organizer_email: work@cauldron.test
+        creator_email: work@cauldron.test
+        eventType: outOfOffice
+
+    instance:
+      - id: 5g8k2m4p9q1r3s7t_20260817T133000Z
+        calendarId: primary
+        eventId: 5g8k2m4p9q1r3s7t
+        summary: Team standup
+        status: confirmed
+        start_dateTime: "2026-08-17T09:30:00-04:00"
+        end_dateTime: "2026-08-17T09:45:00-04:00"
+        recurringEventId: 5g8k2m4p9q1r3s7t
+        originalStartTime_dateTime: "2026-08-17T09:30:00-04:00"
+      # Called off. An id, a status, the series it came from and the time it
+      # was going to be, and nothing else at all. A loop reading .summary off
+      # every item throws here.
+      - id: 5g8k2m4p9q1r3s7t_20260818T133000Z
+        calendarId: primary
+        eventId: 5g8k2m4p9q1r3s7t
+        status: cancelled
+        recurringEventId: 5g8k2m4p9q1r3s7t
+        originalStartTime_dateTime: "2026-08-18T09:30:00-04:00"
+      - id: 5g8k2m4p9q1r3s7t_20260819T133000Z
+        calendarId: primary
+        eventId: 5g8k2m4p9q1r3s7t
+        summary: Team standup
+        status: confirmed
+        start_dateTime: "2026-08-19T09:30:00-04:00"
+        end_dateTime: "2026-08-19T09:45:00-04:00"
+        recurringEventId: 5g8k2m4p9q1r3s7t
+        originalStartTime_dateTime: "2026-08-19T09:30:00-04:00"
+
+# Conformance cases, read from the Google Calendar API reference rather than
+# observed against a live account. The verify report says so.
+conformance:
+  - name: a listing hands back the series, not this week's occurrence
+    source: https://developers.google.com/calendar/api/v3/reference/events/list
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # March 2024, in a listing asked for today. This is the master, and
+        # its start is the day the standup began rather than the next time it
+        # happens. Rendering it directly is the single most common Calendar
+        # integration bug there is.
+        items[0].summary: Team standup
+        items[0].start.dateTime: "2024-03-04T09:30:00-05:00"
+
+  - name: the recurrence rule is the only sign the date is a series beginning
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/5g8k2m4p9q1r3s7t
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Present here and absent on every other event in the calendar. There
+        # is no flag saying "this is a template": the array is the flag.
+        recurrence:
+          - "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+        start.timeZone: America/Toronto
+
+  - name: an all-day event has no time on it at all
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/7h3j5n8v2w4x6y9z
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # date, not dateTime, and the two never appear together. Code reading
+        # start.dateTime finds undefined on every holiday in the calendar.
+        start.date: "2026-05-18"
+      absent:
+        - start.dateTime
+        - end.dateTime
+        - start.timeZone
+
+  - name: an all-day end date is the day after the last day
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/7h3j5n8v2w4x6y9z
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # One day long, on the 18th. Rendering the range as written shows two
+        # days, and subtracting to get a duration gives one day too many in a
+        # way that looks entirely reasonable.
+        start.date: "2026-05-18"
+        end.date: "2026-05-19"
+
+  - name: a cancelled occurrence is still in the response
+    source: https://developers.google.com/calendar/api/v3/reference/events/instances
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/5g8k2m4p9q1r3s7t/instances
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Three occurrences came back and the middle one was called off. It is
+        # not filtered out, it is not marked with a flag anyone looks at, and
+        # it sits between two ordinary ones.
+        items[1].status: cancelled
+        items[1].recurringEventId: 5g8k2m4p9q1r3s7t
+        items[0].status: confirmed
+
+  - name: and it carries almost nothing
+    source: https://developers.google.com/calendar/api/v3/reference/events/instances
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/5g8k2m4p9q1r3s7t/instances
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # The time it was going to happen is the only time on it. A loop
+        # reading .summary off every item throws here, and one reading
+        # .start.dateTime throws one line earlier.
+        items[1].originalStartTime.dateTime: "2026-08-18T09:30:00-04:00"
+      absent:
+        - items[1].summary
+        - items[1].start
+        - items[1].end
+
+  - name: a declined attendee is still on the event
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/2b4d6f8h1k3m5p7r
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Saying no removes nobody. Counting the array to size a room books it
+        # for one person too many, and the field that says so is a string
+        # rather than anything a truth test catches.
+        attendees:
+          - email: work@cauldron.test
+            responseStatus: accepted
+            self: true
+            organizer: true
+          - email: ada@cauldron.test
+            responseStatus: declined
+          - email: grace@cauldron.test
+            responseStatus: needsAction
+
+  - name: the organizer is not the creator
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/2b4d6f8h1k3m5p7r
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Whoever pressed the button is the creator; whose calendar owns it is
+        # the organizer. An assistant booking on someone's behalf makes these
+        # two different people on an event that looks ordinary.
+        organizer.email: work@cauldron.test
+        creator.email: assistant@cauldron.test
+
+  - name: an out of office block is an event
+    source: https://developers.google.com/calendar/api/v3/reference/events
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/9w7v5t3s1r8q6p4n
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Five days of unavailability, in the same collection as the meetings,
+        # with no attendees and an eventType nobody filters on. Scheduling
+        # code that ignores the field books straight through it.
+        eventType: outOfOffice
+        start.date: "2026-08-24"
+        end.date: "2026-08-29"
+      absent:
+        - attendees
+
+  - name: a page before the last has a page token and no sync token
+    source: https://developers.google.com/calendar/api/v3/guides/sync
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events
+      query:
+        maxResults: "2"
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      matches:
+        # Two of four, so there is more to come and no sync token yet. Code
+        # that stores whichever token it finds here stores a page token and
+        # calls it a sync token.
+        nextPageToken: '.'
+      absent:
+        - nextSyncToken
+
+  - name: the last page has a sync token and no page token
+    source: https://developers.google.com/calendar/api/v3/guides/sync
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events
+      query:
+        maxResults: "50"
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      matches:
+        # All four fit, so this is the last page and the tokens swap over. The
+        # two fields never appear together, which is why one variable holding
+        # "the token" is always holding the wrong one.
+        nextSyncToken: '.'
+      absent:
+        - nextPageToken
+
+  - name: maxResults is the page size and limit is ignored
+    source: https://developers.google.com/calendar/api/v3/reference/events/list
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # limit=1 was sent and four came back, because Google does not accept
+        # that spelling and neither does this. A suite that passes the wrong
+        # parameter name gets one page of everything, so its paging loop runs
+        # once and every test of it passes.
+        items[3].id: 9w7v5t3s1r8q6p4n
+      absent:
+        - nextPageToken
+
+  - name: the calendar's own id is an email address
+    source: https://developers.google.com/calendar/api/v3/reference/calendarList/list
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/users/me/calendarList
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # "primary" is an alias the path accepts and the API never returns, so
+        # an id read from here never equals the string the integration
+        # hardcoded. The boolean beside it is the only way to find the one.
+        items[0].id: work@cauldron.test
+        items[0].primary: true
+
+  - name: a read-only calendar is listed exactly like one you own
+    source: https://developers.google.com/calendar/api/v3/reference/calendarList
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/users/me/calendarList
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 200
+      body:
+        # Same shape, same fields, one word different, and the difference only
+        # surfaces when a write to it comes back 403.
+        items[1].accessRole: reader
+        items[1].primary: false
+        items[0].accessRole: owner
+
+  - name: failures nest a numeric code and no status string
+    source: https://developers.google.com/calendar/api/guides/errors
+    fixture: work-calendar
+    request:
+      method: GET
+      path: /calendar/v3/calendars/primary/events/doesnotexist000
+      headers:
+        Authorization: Bearer ya29.cauldron-google-calendar-access-token
+    expect:
+      status: 404
+      body:
+        # The Calendar API uses Google's older envelope. Pub/Sub sends a
+        # string status beside the code and this does not, so one Google
+        # client cannot read both without checking which it is talking to.
+        error.code: 404
+      matches:
+        error.message: 'Not Found'
+      absent:
+        - error.status
+        - error.type
+        - message

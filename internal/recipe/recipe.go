@@ -450,6 +450,22 @@ type ListResponse struct {
 	// input. An emulator sending [] is the helpful kind of wrong: every test
 	// passes and the first quiet minute in production does not.
 	OmitWhenEmpty bool `yaml:"omit_when_empty"`
+	// FinalField names a field sent only on the last page of a list, and left
+	// out of every page before it.
+	//
+	// Google Calendar sends nextSyncToken this way and Microsoft Graph sends
+	// @odata.deltaLink. The two tokens are not interchangeable: a page token
+	// resumes the listing you are in the middle of, and a sync token starts a
+	// later incremental one. Only one of them is ever present, so code that
+	// reads whichever it finds on the first response and calls it "the token"
+	// stores a page token, and the next sync either replays from the
+	// beginning or fails with an error that names neither field.
+	//
+	// Sending it on every page would be the helpful kind of wrong. The
+	// caller's storage logic would work locally against any list short enough
+	// to fit one page, and break on the first calendar busy enough to need
+	// two.
+	FinalField string `yaml:"final_field"`
 	// CompleteField names a boolean saying the opposite: that no pages remain.
 	//
 	// Salesforce sends done, and false is the interesting value. Modelling it
@@ -604,6 +620,27 @@ type Pagination struct {
 	// Style is one of: cursor, offset, page.
 	Style string `yaml:"style"`
 	Limit int    `yaml:"limit"`
+	// LimitParam names the query parameter carrying the page size, for the
+	// providers that do not call it "limit". Google Calendar calls it
+	// maxResults, GitHub calls it per_page, Salesforce does not accept one at
+	// all.
+	//
+	// It matters more than it looks. An emulator that only understands "limit"
+	// ignores the size the caller asked for and answers with its own default,
+	// and for a fixture of four records that default is the whole collection.
+	// The response has no next page in it, so the paging loop the client
+	// carefully wrote executes exactly once and every test of it passes
+	// without ever taking the branch. The first collection large enough to
+	// page is in production.
+	//
+	// Declaring it also makes "limit" inert, which is the faithful part:
+	// Google does not accept limit, and an emulator that quietly honours both
+	// spellings lets a typo work locally.
+	LimitParam string `yaml:"limit_param"`
+	// CursorParam names the query parameter carrying the position to resume
+	// from, for the providers that call it neither cursor nor starting_after.
+	// Google calls it pageToken and Shopify calls it page_info.
+	CursorParam string `yaml:"cursor_param"`
 }
 
 // Webhooks describes what the provider sends back, and how it signs it.
@@ -939,6 +976,7 @@ func (r *Recipe) Validate() error {
 		{"count_field", r.Responses.List.CountField},
 		{"has_more_field", r.Responses.List.HasMoreField},
 		{"complete_field", r.Responses.List.CompleteField},
+		{"final_field", r.Responses.List.FinalField},
 	} {
 		if declared.name == "" || assertsName(r.Conformance, declared.name) {
 			continue
@@ -950,6 +988,13 @@ func (r *Recipe) Validate() error {
 
 	if r.Responses.List.HasMoreField != "" && r.Responses.List.CompleteField != "" {
 		add("responses.list declares both has_more_field and complete_field, which are the same flag with opposite senses")
+	}
+
+	// The whole point of a final field is that it is not the cursor. Naming
+	// them the same thing would emit one key that changes meaning depending on
+	// which page you are looking at, which is worse than either field alone.
+	if f := r.Responses.List.FinalField; f != "" && f == r.Responses.List.CursorField {
+		add("responses.list declares cursor_field and final_field as the same name %q, so one key would mean a page token on one page and a sync token on the next", f)
 	}
 
 	if r.Responses.Error.Key == "-" && r.Responses.Error.Style != "list" {
