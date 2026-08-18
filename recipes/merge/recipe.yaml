@@ -1,0 +1,576 @@
+# Merge Recipe for Cauldron
+#
+# Merge is a unified API: one shape over dozens of HR, CRM, ticketing and
+# accounting providers. The normalisation is the product, which makes it an
+# unusual thing to emulate, because the interesting part is not the shape.
+# The shape is easy. The interesting part is everything normalisation cannot
+# fix, and a mock built from the documentation's example response hides all
+# of it.
+#
+# Five things worth modelling exactly:
+#
+#   1. A field is null because the provider does not have it, or null because
+#      this account did not fill it in, and the response is identical either
+#      way. Code that treats a null as "not set" is right half the time. The
+#      other half it is looking at a field the downstream system has never
+#      supported and never will.
+#   2. Every object carries remote_data, and it is null unless the linked
+#      account was configured to include it. So the escape hatch for the
+#      normalisation exists, is differently shaped per provider, and is
+#      absent by default in a way that only shows up in production.
+#   3. A linked account is not a connection. It exists from the moment
+#      somebody starts the link flow, with status INCOMPLETE, and reading
+#      data from it answers 400 rather than empty. Counting linked accounts
+#      counts abandoned attempts.
+#   4. First sync is asynchronous and takes minutes to hours. Between
+#      linking and the first sync finishing, every list is empty and
+#      correct, which is indistinguishable from a customer with no data.
+#   5. field_mappings and the origin_type on a remote field mean the same
+#      logical value can arrive as a string from one provider and a number
+#      from another, through the same normalised property.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No syncing. A linked account's sync status is what a fixture says it
+#     is, and nothing moves it along. The point is that a client must handle
+#     the not-yet-synced state, and a client handling it against this Recipe
+#     finds whatever the fixture holds.
+#   - remote_data is a fixed shape per fixture rather than a real
+#     passthrough. A real one is whatever the downstream provider returned,
+#     which is the part no Recipe can describe for everybody.
+#   - Only the HRIS category is modelled. The others share the envelope, the
+#     paging and the linked-account model, and differ in every resource.
+#   - Webhooks, field mappings as an API, and the async passthrough are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: merge
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.merge.dev/hris/overview/
+
+auth:
+  # Two credentials on every request: the API key identifies you and the
+  # account token identifies which of your customers' systems to talk to.
+  # Sending only the first is the most common mistake and answers 400 rather
+  # than 401, so it does not look like an auth problem.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_merge_api_key
+
+required_headers:
+  X-Account-Token:
+    error: missing_account_token
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # next and previous, both full URLs rather than opaque cursors, and both
+    # null on the last page. A client concatenating a base URL to next builds
+    # a URL that does not exist.
+    cursor_field: next
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  employee:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      # Merge's own identifier. remote_id is the downstream system's, and
+      # they are not interchangeable: remote_id is unique per linked account
+      # rather than globally, so using it as a key collides across customers.
+      remote_id:
+        type: string
+      employee_number:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      work_email:
+        type: string
+      # Null because Workday does not expose it, or null because this
+      # employee has no manager. The response is identical.
+      manager:
+        type: string
+        null_when_unset: true
+      # ACTIVE, PENDING, INACTIVE, LEAVE. Not a boolean, and PENDING means
+      # hired and not started, which is neither.
+      employment_status:
+        type: string
+      start_date:
+        type: datetime
+        null_when_unset: true
+      termination_date:
+        type: datetime
+        null_when_unset: true
+      # True when the record was deleted in the downstream system. The object
+      # stays in the listing, so a sync that does not filter on this
+      # resurrects people who have left.
+      remote_was_deleted:
+        type: boolean
+        default: false
+      # Null unless the linked account was configured to include it. The
+      # escape hatch from the normalisation is absent by default, and only in
+      # production does anybody find out.
+      remote_data:
+        type: list
+        null_when_unset: true
+      modified_at:
+        type: datetime
+
+  # A customer's connection to one downstream system. It exists from the
+  # moment somebody starts the link flow, which is before it works.
+  linked_account:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      end_user_organization_name:
+        type: string
+      end_user_email_address:
+        type: string
+      # bamboohr, workday, gusto. The normalisation means your code does not
+      # branch on this, and the differences it papers over do not disappear.
+      integration_slug:
+        type: string
+      category:
+        type: string
+        default: hris
+      # COMPLETE, INCOMPLETE, RELINK_NEEDED, IDLE. Only COMPLETE works, and
+      # an INCOMPLETE one is somebody who opened the link dialog and closed
+      # it again.
+      status:
+        type: string
+        default: INCOMPLETE
+      # Null until the first sync finishes, which takes minutes to hours.
+      # Before then every list is empty and correct, which is not
+      # distinguishable from a customer with no employees.
+      completed_at:
+        type: datetime
+        null_when_unset: true
+      webhook_listener_url:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/hris/v1/employees
+    resource: employee
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: page_size
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/hris/v1/employees/{id}
+    resource: employee
+    operation: get
+
+  - method: GET
+    path: /api/hris/v1/linked-accounts
+    resource: linked_account
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: page_size
+      cursor_param: cursor
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Request was throttled."
+
+  authentication_error:
+    status: 401
+    message: "Invalid token."
+
+  resource_missing:
+    status: 404
+    message: "Not found."
+
+  parameter_missing:
+    status: 400
+    message: "Invalid query parameters."
+
+  # No account token. 400 rather than 401, so it does not look like an auth
+  # problem, and the message says nothing about which header is missing.
+  missing_account_token:
+    status: 400
+    message: "You must provide an account token."
+
+  # The linked account exists and is not finished. Reading from it is a 400,
+  # not an empty list, which is the one merciful thing here: an empty list
+  # would be indistinguishable from a customer with no employees.
+  account_incomplete:
+    status: 400
+    message: "The linked account is not fully authenticated."
+
+  # The customer changed a password or revoked access downstream. Merge keeps
+  # serving the last synced data and marks the account RELINK_NEEDED, so
+  # everything works and is quietly out of date.
+  relink_needed:
+    status: 400
+    message: "The linked account requires re-authentication."
+
+fixtures:
+  empty: {}
+
+  small-customer:
+    employee:
+      # A complete record, from a linked account configured to include
+      # remote_data. Most are not.
+      - id: 7b9c1e04-3a58-4d21-9f06-2c8e5b71a34d
+        remote_id: "1001"
+        employee_number: E-1001
+        first_name: Ada
+        last_name: Okonkwo
+        work_email: ada@example.com
+        manager: 9d2f8a15-6b47-4c93-a018-5e73f2c94b60
+        employment_status: ACTIVE
+        start_date: "2024-03-04T00:00:00Z"
+        remote_data:
+          - bamboohr
+        modified_at: "2026-08-14T02:11:04Z"
+
+      # No manager, and no way to tell whether that means the field is
+      # unsupported by this provider or simply empty for this person. Merge
+      # sends null for both.
+      - id: 9d2f8a15-6b47-4c93-a018-5e73f2c94b60
+        remote_id: "1002"
+        employee_number: E-1002
+        first_name: Bede
+        last_name: Marchetti
+        work_email: bede@example.com
+        employment_status: ACTIVE
+        start_date: "2022-11-14T00:00:00Z"
+        modified_at: "2026-08-14T02:11:04Z"
+
+      # Hired and not started. PENDING is neither active nor inactive, and
+      # code treating employment_status as a boolean puts this person on the
+      # wrong side of whichever line it drew.
+      - id: 4a7e2c60-8d19-4f35-b6a2-1c94e08d5f37
+        remote_id: "1003"
+        employee_number: E-1003
+        first_name: Caro
+        last_name: Nwachukwu
+        work_email: caro@example.com
+        employment_status: PENDING
+        start_date: "2026-09-01T00:00:00Z"
+        modified_at: "2026-08-10T09:00:00Z"
+
+      # Deleted downstream and still here. A sync that does not filter on
+      # remote_was_deleted resurrects people who have left.
+      - id: 1f6b3d92-5c04-4a78-8e51-7b29a6c03e84
+        remote_id: "1004"
+        employee_number: E-1004
+        first_name: Dara
+        last_name: Fontaine
+        work_email: dara@example.com
+        employment_status: INACTIVE
+        start_date: "2021-06-01T00:00:00Z"
+        termination_date: "2026-05-30T00:00:00Z"
+        remote_was_deleted: true
+        modified_at: "2026-06-01T11:20:00Z"
+
+    linked_account:
+      - id: 3c8f5a71-2e64-4b09-9d13-6a07f5b28c94
+        end_user_organization_name: Northgate Logistics
+        end_user_email_address: ops@northgate.example
+        integration_slug: bamboohr
+        category: hris
+        status: COMPLETE
+        completed_at: "2026-07-02T14:22:00Z"
+        webhook_listener_url: https://api.merge.dev/api/integrations/webhook-listener/cauldron
+
+      # Somebody opened the link dialog and closed it again. This is a linked
+      # account, it is in the listing, and reading from it answers 400.
+      # Counting linked accounts counts abandoned attempts.
+      - id: 5e0a9c38-7b12-4d56-a94f-3f81c26b0d75
+        end_user_organization_name: Bellwether Foods
+        end_user_email_address: hr@bellwether.example
+        integration_slug: workday
+        category: hris
+        status: INCOMPLETE
+        webhook_listener_url: https://api.merge.dev/api/integrations/webhook-listener/cauldron2
+
+      # Linked, authenticated, and the first sync has not finished. Every
+      # list for this account is empty and correct, which is exactly what a
+      # customer with no employees looks like.
+      - id: 8d4c1b67-9a25-4e30-b78c-2d95f4a71e63
+        end_user_organization_name: Corvid Studios
+        end_user_email_address: people@corvid.example
+        integration_slug: gusto
+        category: hris
+        status: COMPLETE
+        webhook_listener_url: https://api.merge.dev/api/integrations/webhook-listener/cauldron3
+
+# Every case below is derived from Merge's published documentation. None has
+# been run against a real Merge account. The verify report says so.
+conformance:
+  - name: null means unsupported or unset, and the response is identical
+    # Bede has no manager. Whether that is because this provider does not
+    # expose the field or because he has none, Merge sends null, and code
+    # treating null as "not set" is right about half the time.
+    source: https://docs.merge.dev/hris/employees/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/9d2f8a15-6b47-4c93-a018-5e73f2c94b60
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        first_name: Bede
+        manager: null
+        termination_date: null
+
+  - name: remote_data is null unless the account was configured for it
+    # The escape hatch from the normalisation is absent by default, which
+    # only shows up when somebody needs a field the unified model does not
+    # carry, in production.
+    source: https://docs.merge.dev/basics/remote-data/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/9d2f8a15-6b47-4c93-a018-5e73f2c94b60
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        remote_data: null
+
+  - name: and it is present when the account was
+    source: https://docs.merge.dev/basics/remote-data/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/7b9c1e04-3a58-4d21-9f06-2c8e5b71a34d
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        remote_data[0]: bamboohr
+
+  - name: a deleted employee is still in the listing
+    # remote_was_deleted is true and the record is here. A sync that does not
+    # filter on it resurrects people who have left.
+    source: https://docs.merge.dev/basics/syncing-data/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        results[3].remote_was_deleted: true
+        results[3].first_name: Dara
+        results[0].remote_was_deleted: false
+      absent:
+        - results[4]
+
+  - name: employment_status is not a boolean
+    # PENDING is hired and not started, which is neither active nor
+    # inactive. Code that drew a line put this person on the wrong side of
+    # it.
+    source: https://docs.merge.dev/hris/employees/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/4a7e2c60-8d19-4f35-b6a2-1c94e08d5f37
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        employment_status: PENDING
+        start_date: "2026-09-01T00:00:00Z"
+        termination_date: null
+
+  - name: remote_id is the downstream identifier and is not unique
+    # It is unique per linked account rather than globally, so using it as a
+    # key collides the moment a second customer's system numbers from one.
+    source: https://docs.merge.dev/basics/remote-data/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/7b9c1e04-3a58-4d21-9f06-2c8e5b71a34d
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        id: 7b9c1e04-3a58-4d21-9f06-2c8e5b71a34d
+        remote_id: "1001"
+
+  - name: the paging pointer is a full URL called next
+    # Not an opaque cursor. A client concatenating a base URL to it builds
+    # something that does not exist, and one storing it as a cursor stores
+    # an absolute URL including the host.
+    source: https://docs.merge.dev/basics/pagination/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees
+      query:
+        page_size: "2"
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      matches:
+        next: '.'
+      absent:
+        - cursor
+        - after
+        - page_info
+
+  - name: a linked account exists before it works
+    # INCOMPLETE is somebody who opened the link dialog and closed it again.
+    # It is in this listing, so counting linked accounts counts abandoned
+    # attempts.
+    source: https://docs.merge.dev/basics/linked-accounts/overview/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/linked-accounts
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        results[0].status: COMPLETE
+        results[1].status: INCOMPLETE
+        results[1].end_user_organization_name: Bellwether Foods
+      absent:
+        - results[3]
+
+  - name: an incomplete account has no completion time
+    source: https://docs.merge.dev/basics/linked-accounts/overview/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/linked-accounts
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        results[0].completed_at: "2026-07-02T14:22:00Z"
+        results[1].completed_at: null
+
+  - name: a linked account can be authenticated and not yet synced
+    # COMPLETE with no completed_at. Every list for this account is empty
+    # and correct, which is exactly what a customer with no employees looks
+    # like, and the first sync takes minutes to hours.
+    source: https://docs.merge.dev/basics/syncing-data/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/linked-accounts
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 200
+      body:
+        results[2].status: COMPLETE
+        results[2].completed_at: null
+        results[2].integration_slug: gusto
+
+  - name: reading from an incomplete account is a 400, not an empty list
+    # The one merciful thing here. An empty list would be indistinguishable
+    # from a customer who has no employees.
+    source: https://docs.merge.dev/basics/linked-accounts/overview/
+    fixture: small-customer
+    arm: account_incomplete
+    request:
+      method: GET
+      path: /api/hris/v1/employees
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 400
+      body:
+        detail: "The linked account is not fully authenticated."
+
+  - name: revoked access keeps serving stale data
+    # The customer changed a password downstream. Merge marks the account
+    # RELINK_NEEDED and keeps serving the last synced data, so everything
+    # works and is quietly out of date.
+    source: https://docs.merge.dev/basics/linked-accounts/overview/
+    fixture: small-customer
+    arm: relink_needed
+    request:
+      method: GET
+      path: /api/hris/v1/employees
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 400
+      body:
+        detail: "The linked account requires re-authentication."
+
+  - name: a missing account token is a 400, not a 401
+    # So it does not look like an auth problem, and the message says nothing
+    # about which header is missing.
+    source: https://docs.merge.dev/basics/authentication/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+    expect:
+      status: 400
+      body:
+        detail: "You must provide an account token."
+
+  - name: an error carries prose and nothing to branch on
+    source: https://docs.merge.dev/basics/errors/
+    fixture: small-customer
+    request:
+      method: GET
+      path: /api/hris/v1/employees/00000000-0000-4000-8000-000000000000
+      headers:
+        Authorization: Bearer cauldron_merge_api_key
+        X-Account-Token: acct_cauldron_northgate
+    expect:
+      status: 404
+      absent:
+        - code
+        - type
+        - error
+        - errors
