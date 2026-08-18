@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/detect"
+	projectconfig "github.com/CauldronUp/cauldron/internal/project"
 )
 
 func runDetect(ctx *context, args []string) int {
@@ -27,6 +29,22 @@ func runDetect(ctx *context, args []string) int {
 	}
 
 	writePlan(ctx.stdout, project)
+
+	// What detection found is not what will be mounted once the project has
+	// said otherwise, and printing the one without the other is how somebody
+	// spends an afternoon wondering why a provider they can see here is not
+	// running.
+	config, existed, err := projectconfig.Load(dir)
+	if err != nil {
+		fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
+
+		return 1
+	}
+
+	if existed {
+		fmt.Fprintf(ctx.stdout, "\n%s decides what runs, not the above: %s\n",
+			projectconfig.FileName, strings.Join(config.Recipes, ", "))
+	}
 
 	return 0
 }

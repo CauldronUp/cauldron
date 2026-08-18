@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/CauldronUp/cauldron/internal/detect"
+	projectconfig "github.com/CauldronUp/cauldron/internal/project"
 	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/server"
 )
@@ -82,6 +83,36 @@ func parseServeFlags(args []string, stderr io.Writer) (serveOptions, error) {
 func plan(opts serveOptions) ([]string, []string, error) {
 	if len(opts.recipes) > 0 {
 		return opts.recipes, nil, nil
+	}
+
+	// What the project said, if it said anything. Detection covers the common
+	// case and cannot cover all of it: a provider talked to over raw HTTP has
+	// no dependency to find, and neither has one of the Recipes no package
+	// maps to yet.
+	if config, existed, err := projectconfig.Load(opts.dir); err != nil {
+		return nil, nil, err
+	} else if existed {
+		if len(config.Recipes) == 0 {
+			return nil, nil, fmt.Errorf("%s lists no recipes. Add one with 'cauldron add <recipe>', or delete the file to go back to detecting them", projectconfig.FileName)
+		}
+
+		var mount, missing []string
+
+		for _, name := range config.Recipes {
+			if _, err := recipe.Open(name); err != nil {
+				missing = append(missing, name)
+
+				continue
+			}
+
+			mount = append(mount, name)
+		}
+
+		if len(mount) == 0 {
+			return nil, nil, fmt.Errorf("%s names only recipes that do not ship: %s", projectconfig.FileName, strings.Join(missing, ", "))
+		}
+
+		return mount, missing, nil
 	}
 
 	project, err := detect.Detect(opts.dir)
