@@ -672,3 +672,69 @@ routes:
 		t.Errorf("a hidden identifier on a get should be allowed: %v", err)
 	}
 }
+
+// A constant is stamped onto the record and trimmed with everything else, so a
+// route that answers with one has to be able to name it. Braze stamps
+// "message": "success" on every object and it is the only field a Braze client
+// reliably checks, because a failure puts its prose in the same place.
+func TestReturnsMayNameAConstant(t *testing.T) {
+	yaml := `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+    constants:
+      message: success
+    fields:
+      email:
+        type: string
+routes:
+  - method: POST
+    path: /v1/customers
+    resource: customer
+    operation: create
+    returns: [message, id]
+`
+
+	if _, err := parse(t, yaml); err != nil {
+		t.Errorf("returns should accept a declared constant: %v", err)
+	}
+}
+
+func TestReturnsStillRefusesAnUndeclaredName(t *testing.T) {
+	yaml := `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+    constants:
+      message: success
+    fields:
+      email:
+        type: string
+routes:
+  - method: POST
+    path: /v1/customers
+    resource: customer
+    operation: create
+    returns: [nickname]
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "not a field on resource") {
+		t.Errorf("got %q", got)
+	}
+}

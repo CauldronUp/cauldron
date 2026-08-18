@@ -328,7 +328,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | Customer.io | Assess — the Track and App APIs are separate hosts with separate credentials, which is the sort of thing that only fails in one environment |
-| Braze | Assess — users, campaigns, the export API being asynchronous |
+| ~~Braze~~ | Shipped. "message" is both the success channel and the error channel, a listing entry is a smaller object than the detail, and the export answers with a prefix instead of data |
 | Iterable | Assess — users, campaigns, catalogues |
 | ActiveCampaign | Assess — contacts, deals, automations |
 | Brevo | Assess — contacts, transactional email, the shared quota between them |
@@ -520,7 +520,7 @@ transfers alone, and say so in the header.
 | Bandwidth | Number provisioning is asynchronous and takes minutes, so an ordered number is not yet a usable number |
 | Twilio Verify | A code expires and a check consumes an attempt, so verifying twice with the right code fails the second time |
 | Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
-| Braze | The export API is asynchronous: you ask, and the answer arrives somewhere else |
+| ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
 | Brevo | Contacts and transactional email share one quota, so sending mail exhausts the budget for reading contacts |
 | Kit | Assess — subscribers, sequences, tags |
 | Beehiiv | Assess — publications, posts, subscribers |

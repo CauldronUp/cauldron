@@ -1,0 +1,555 @@
+# Braze Recipe for Cauldron
+#
+# Braze's REST API has one design decision that shapes everything else: the
+# same "message" property carries both the word success and the text of a
+# failure. There is no separate error object, no code, and no type. A client
+# that checks the status and moves on is right most of the time and silently
+# wrong the rest of it, because Braze answers some rejections with a 2xx and
+# an explanation in the field it also uses to say nothing went wrong.
+#
+# Four things worth modelling exactly:
+#
+#   1. "message" is both channels. Success is the literal string "success".
+#      A failure puts prose in the same place. Reading response.message and
+#      logging it produces a log full of the word success and, occasionally,
+#      an error nobody notices.
+#   2. A campaign in a listing is not the campaign. /campaigns/list hands
+#      back five properties; /campaigns/details hands back a different and
+#      larger set, and the two do not even agree on the timestamp: the list
+#      calls it last_edited and the detail calls it updated_at. Code that
+#      reads channels or description off a list entry gets undefined.
+#   3. The identifier arrives in the query string, not the path. Every
+#      detail endpoint is /campaigns/details?campaign_id=..., so a client
+#      built around path-shaped URLs has nowhere to put it.
+#   4. The export is asynchronous and the answer arrives somewhere else.
+#      POST /users/export/segment answers 201 with a success message and an
+#      object prefix, and the data lands in cloud storage minutes later. A
+#      test that reads users off that response reads nothing, forever.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The export writes no file. Cauldron mints the prefix and stops there,
+#     which is the point of the case rather than a shortcoming of it: the
+#     response genuinely contains no data.
+#   - /users/track is not modelled. It answers 201 with "success" and an
+#     errors array describing the parts it rejected, which is the sharpest
+#     trap Braze has, and this format cannot put a per-request array of
+#     rejections beside a record it did not reject.
+#   - Rate limits differ per endpoint and are not modelled per endpoint.
+#   - Canvases, analytics data series, and the subscription endpoints are
+#     not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: braze
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.braze.com/docs/api/basics
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-braze-rest-api-key
+
+responses:
+  list:
+    style: wrapped
+    # Every listing carries the same success message beside the data, in the
+    # same property a failure would put its explanation in.
+    fields:
+      message: success
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # There is no code and no type. The prose is the whole diagnosis, and
+    # matching on it is the only way to branch, which means a wording change
+    # upstream is a breaking change downstream.
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  campaign:
+    collection: campaigns
+    id:
+      style: hex
+      length: 36
+    constants:
+      # The detail endpoint says success too, alongside the record itself,
+      # so "message" is a property of the campaign as far as a client
+      # deserialising into a struct is concerned.
+      message: success
+    fields:
+      name:
+        type: string
+      # A campaign not created through the API cannot be triggered through
+      # it. The listing tells you, and nothing else does.
+      is_api_campaign:
+        type: boolean
+        default: false
+      tags:
+        type: list
+      # The listing calls the timestamp last_edited. The detail calls the
+      # same instant updated_at. Both are below, and each route sends only
+      # the ones its own endpoint sends.
+      last_edited:
+        type: datetime
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      description:
+        type: string
+      schedule_type:
+        type: string
+      channels:
+        type: list
+      first_sent:
+        type: datetime
+
+  segment:
+    collection: segments
+    id:
+      style: hex
+      length: 36
+    constants:
+      message: success
+    fields:
+      name:
+        type: string
+      # A segment with analytics tracking off reports nothing, and the only
+      # sign is this flag on the listing.
+      analytics_tracking_enabled:
+        type: boolean
+        default: true
+      tags:
+        type: list
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      description:
+        type: string
+      # Braze's own rendering of the segment filters as English prose. It
+      # is not machine-readable and it is the only description of the
+      # membership rules the API returns.
+      text_description:
+        type: string
+
+  export:
+    collection: exports
+    id:
+      # The response carries an object prefix and nothing else that
+      # identifies the job. There is no export id to poll, because there is
+      # nothing to poll: the file appears in cloud storage when it appears.
+      style: opaque
+      length: 24
+      field: object_prefix
+    constants:
+      message: success
+    fields:
+      segment_id:
+        type: string
+      fields_to_export:
+        type: list
+
+routes:
+  - method: GET
+    path: /campaigns/list
+    resource: campaign
+    operation: list
+    # Five properties, and none of the six the detail endpoint adds. This is
+    # the whole of what a listing knows.
+    returns:
+      - id
+      - name
+      - is_api_campaign
+      - tags
+      - last_edited
+
+  - method: GET
+    path: /campaigns/details
+    resource: campaign
+    operation: get
+    # The identifier is a query parameter. Braze has no path-shaped detail
+    # endpoint at all.
+    id_from: query:campaign_id
+    returns:
+      - message
+      - name
+      - description
+      - schedule_type
+      - channels
+      - tags
+      - created_at
+      - updated_at
+      - first_sent
+
+  - method: GET
+    path: /segments/list
+    resource: segment
+    operation: list
+    returns:
+      - id
+      - name
+      - analytics_tracking_enabled
+      - tags
+
+  - method: GET
+    path: /segments/details
+    resource: segment
+    operation: get
+    id_from: query:segment_id
+    returns:
+      - message
+      - name
+      - description
+      - text_description
+      - tags
+      - created_at
+      - updated_at
+
+  - method: POST
+    path: /users/export/segment
+    resource: export
+    operation: create
+    status: 201
+    # A prefix and a success message. No users, no count, no job to poll.
+    returns:
+      - message
+      - id
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    message: "Invalid API key"
+
+  resource_missing:
+    status: 400
+    # 400 rather than 404, so a client branching on status treats a campaign
+    # that does not exist and a request it got wrong as the same thing.
+    message: "Campaign not found"
+
+  parameter_missing:
+    status: 400
+    message: "Bad Request"
+
+  # The key was valid and the app group it belongs to may not do this. The
+  # status is 403 and the only description is prose.
+  insufficient_permissions:
+    status: 403
+    message: "Provided API key not authorized for this endpoint"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    campaign:
+      # An API campaign, so it can be triggered. The listing is the only
+      # place that says so.
+      - id: 0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b
+        name: "Winback — dormant 90 days"
+        is_api_campaign: true
+        tags:
+          - lifecycle
+          - winback
+        last_edited: "2026-08-04T16:20:11Z"
+        created_at: "2026-03-12T09:00:00Z"
+        updated_at: "2026-08-04T16:20:11Z"
+        description: "Three touches over eight days for users with no session since May."
+        schedule_type: action_based
+        channels:
+          - email
+          - push
+        first_sent: "2026-03-14T14:00:00Z"
+
+      # Not an API campaign. Triggering it answers 400, and nothing in the
+      # detail response distinguishes it from the one above.
+      - id: 1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c
+        name: "Weekly digest"
+        is_api_campaign: false
+        tags:
+          - digest
+        last_edited: "2026-07-29T11:02:44Z"
+        created_at: "2026-01-08T13:30:00Z"
+        updated_at: "2026-07-29T11:02:44Z"
+        description: "Every Tuesday at 09:00 in the user's local time."
+        schedule_type: time_based
+        channels:
+          - email
+        first_sent: "2026-01-15T09:00:00Z"
+
+    segment:
+      - id: 2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d
+        name: "Dormant 90 days"
+        analytics_tracking_enabled: true
+        tags:
+          - lifecycle
+        created_at: "2026-03-11T08:45:00Z"
+        updated_at: "2026-06-02T10:15:00Z"
+        description: "Users with no session in 90 days."
+        text_description: "last_used_app more than 90 days ago AND email_subscribe is not unsubscribed"
+
+      # Analytics tracking off. Every metric for this segment reports zero,
+      # and this flag on the listing is the only warning.
+      - id: 3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e
+        name: "Internal testers"
+        analytics_tracking_enabled: false
+        tags:
+          - internal
+        created_at: "2026-02-01T12:00:00Z"
+        updated_at: "2026-02-01T12:00:00Z"
+        description: "Staff devices."
+        text_description: "email ends with @example.com"
+
+    export: []
+
+# Every case below is derived from Braze's published documentation. None has
+# been run against a real Braze workspace. The verify report says so.
+conformance:
+  - name: success is a string in the same field a failure explains itself in
+    # There is no code, no type and no separate error object. A client that
+    # logs response.message gets a log full of the word success and, now and
+    # then, an error nobody notices.
+    source: https://www.braze.com/docs/api/basics
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/list
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        message: success
+      absent:
+        - code
+        - type
+        - errors
+
+  - name: a listing entry is not the campaign
+    # Five properties. channels, description, schedule_type, created_at,
+    # updated_at and first_sent are all on the detail endpoint and none of
+    # them is here, so code reading them off a list entry gets undefined.
+    source: https://www.braze.com/docs/api/endpoints/campaigns/get_campaigns
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/list
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        campaigns[0].id: 0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b
+        campaigns[0].name: "Winback — dormant 90 days"
+        campaigns[0].is_api_campaign: true
+        campaigns[0].last_edited: "2026-08-04T16:20:11Z"
+      absent:
+        # The success message belongs to the response, not to each campaign
+        # in it. A client mapping over the array and reading message on every
+        # entry finds it undefined.
+        - campaigns[0].message
+        - campaigns[0].channels
+        - campaigns[0].description
+        - campaigns[0].schedule_type
+        - campaigns[0].created_at
+        - campaigns[0].updated_at
+        - campaigns[0].first_sent
+        - campaigns[2]
+
+  - name: the two endpoints disagree on what the timestamp is called
+    # last_edited on the listing, updated_at on the detail, same instant.
+    # A client normalising one name finds nothing under it half the time.
+    source: https://www.braze.com/docs/api/endpoints/campaigns/get_campaign_details
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/details?campaign_id=0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        updated_at: "2026-08-04T16:20:11Z"
+      absent:
+        - last_edited
+
+  - name: the identifier is a query parameter, not a path segment
+    # /campaigns/details?campaign_id=. There is no /campaigns/{id} at all,
+    # so a client built around path-shaped URLs has nowhere to put it.
+    source: https://www.braze.com/docs/api/endpoints/campaigns/get_campaign_details
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/details?campaign_id=1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        # The detail endpoint says success too, beside the record, so a
+        # client deserialising into a struct finds "message" is a property
+        # of the campaign as far as the wire is concerned.
+        message: success
+        name: "Weekly digest"
+        schedule_type: time_based
+        channels[0]: email
+
+  - name: the detail endpoint will not tell you whether a campaign is triggerable
+    # is_api_campaign is on the listing and nowhere else. A campaign that
+    # cannot be triggered through the API looks identical here to one that
+    # can, and the difference only shows up as a 400 at trigger time.
+    source: https://www.braze.com/docs/api/endpoints/campaigns/get_campaign_details
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/details?campaign_id=1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      absent:
+        - is_api_campaign
+
+  - name: a segment listing says whether its analytics are even being recorded
+    # A segment with tracking off reports zero for everything, and this flag
+    # is the only place that difference appears.
+    source: https://www.braze.com/docs/api/endpoints/export/segments/get_segment
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /segments/list
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        segments[0].name: "Dormant 90 days"
+        segments[0].analytics_tracking_enabled: true
+        segments[1].analytics_tracking_enabled: false
+      absent:
+        - segments[0].text_description
+        - segments[0].description
+        - segments[2]
+
+  - name: the membership rules come back as English prose
+    # text_description is Braze's own rendering of the filters. It is not
+    # machine-readable and it is the only description of the rules the API
+    # returns, so a client that wants to diff two segments cannot.
+    source: https://www.braze.com/docs/api/endpoints/export/segments/get_segment_details
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /segments/details?segment_id=2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 200
+      body:
+        message: success
+        text_description: "last_used_app more than 90 days ago AND email_subscribe is not unsubscribed"
+      absent:
+        - analytics_tracking_enabled
+
+  - name: the export answers with a prefix and no data
+    # 201 and a success message, and the users land in cloud storage minutes
+    # later. A test that reads users off this response reads nothing, and
+    # goes on reading nothing however long it waits.
+    source: https://www.braze.com/docs/api/endpoints/export/user_data/post_users_segment
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /users/export/segment
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+      json:
+        segment_id: 2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d
+        fields_to_export:
+          - external_id
+          - email
+    expect:
+      status: 201
+      body:
+        message: success
+      matches:
+        object_prefix: '^[A-Za-z0-9]{24}$'
+      absent:
+        - users
+        - data
+        - count
+        - segment_id
+        - fields_to_export
+
+  - name: a missing campaign answers 400, not 404
+    # A client branching on status treats a campaign that does not exist and
+    # a request it got wrong as the same thing, because Braze does.
+    source: https://www.braze.com/docs/api/errors
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/details?campaign_id=ffffffffffffffffffffffffffffffffffff
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 400
+      body:
+        message: "Campaign not found"
+
+  - name: an error carries prose and nothing to branch on
+    # No code, no type, no error object. Matching on the wording is the only
+    # way to tell one failure from another, which makes a wording change
+    # upstream a breaking change downstream.
+    source: https://www.braze.com/docs/api/errors
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/details?campaign_id=ffffffffffffffffffffffffffffffffffff
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 400
+      absent:
+        - code
+        - type
+        - error
+        - errors
+
+  - name: an unauthorised key is refused
+    source: https://www.braze.com/docs/api/errors
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /campaigns/list
+      headers:
+        Authorization: Bearer wrong-key
+    expect:
+      status: 401
+      body:
+        message: "Invalid API key"
+
+  - name: a key that is valid but not entitled says so at 403
+    # The difference between a wrong key and a right key without permission
+    # is the status and the wording, and nothing else.
+    source: https://www.braze.com/docs/api/errors
+    fixture: small-workspace
+    arm: insufficient_permissions
+    request:
+      method: GET
+      path: /segments/list
+      headers:
+        Authorization: Bearer cauldron-braze-rest-api-key
+    expect:
+      status: 403
+      body:
+        message: "Provided API key not authorized for this endpoint"
