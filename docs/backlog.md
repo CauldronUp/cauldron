@@ -619,7 +619,7 @@ An order is not a fill, and the gap between them is where the bugs live.
 
 | Provider | Why |
 |---|---|
-| TrueLayer | Consent expires on a schedule the bank sets, not you, and a working connection stops working on a date you were told once |
+| ~~TrueLayer~~ | Shipped. Consent expires ninety days from when it was granted rather than from last use, expired and revoked are both 403 with different fixes, pending and settled are two lists with different ids for the same money, and a balance never reconciles to either |
 | GoCardless Bank Account Data | Pending and booked are two lists for the same transaction, and moving between them changes its id |
 | Salt Edge | A refresh is asynchronous and the connection reports success before the new transactions exist |
 | Codat | Sync status and data are separate reads, so data is queryable while the sync that would change it is still running |

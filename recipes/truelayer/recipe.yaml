@@ -1,0 +1,685 @@
+# TrueLayer Recipe for Cauldron
+#
+# Open banking has a shape that no other API in this portfolio has: the thing
+# that stops working is not your credential, and it stops working on a date
+# somebody else chose.
+#
+# Under PSD2 a consent lasts ninety days. Not ninety days from last use:
+# ninety days from when it was granted. On day ninety-one every call against
+# that connection fails, and nothing you can do at your end fixes it, because
+# the fix is the customer going back to their bank and re-authorising. You
+# were told the date exactly once, in the token response, and if you did not
+# write it down you now find out by failing.
+#
+# Four more worth modelling exactly:
+#
+#   1. A revoked consent and an expired one are different failures with
+#      different fixes, and both arrive as a 403. Revoked means the customer
+#      turned you off. Expired means time passed. Only the error code
+#      distinguishes them, and only one of them is your fault for not
+#      prompting sooner.
+#   2. Pending and settled transactions are two different lists for the same
+#      money. A pending transaction has a provisional amount and a
+#      provisional description, and when it settles it moves lists and its
+#      transaction_id changes. Matching on the id across the two loses every
+#      transaction exactly once.
+#   3. A balance is not a sum of transactions and never reconciles to one.
+#      There is an available balance and a current balance, they differ by
+#      the pending transactions, and the pending transactions you can see are
+#      not necessarily all of them.
+#   4. Not every bank supports every endpoint. A connection to one bank
+#      answers with standing orders and a connection to another 501s, and
+#      which is which is not in the response you already have.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No consent ever expires while Cauldron is running. Which state a
+#     connection is in is what a fixture puts there, and the fixtures hold a
+#     live one, an expired one and a revoked one so all three can be handled.
+#   - No transaction ever settles. The pending and settled fixtures are two
+#     views of a moment, not a sequence.
+#   - The auth flow is not modelled. Exchanging a code for a token is where
+#     the consent's expiry is first stated, and this Recipe describes the
+#     data endpoints that come after.
+#   - Payments are not modelled at all, deliberately. This describes reads.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: truelayer
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.truelayer.com/docs/data-api-basics
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-truelayer-access-token
+
+responses:
+  list:
+    style: wrapped
+    key: results
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_description
+    code_field: error
+    type_field: "-"
+
+resources:
+  # A connection to one bank, for one customer. It is the thing that expires.
+  connection:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      provider_id:
+        type: string
+      display_name:
+        type: string
+      # The date the consent runs out, stated once in the token response and
+      # nowhere else afterwards. Ninety days from when it was granted, not
+      # from last use, so a connection nobody has touched expires on the same
+      # day as one used hourly.
+      consent_expires_at:
+        type: datetime
+      # active, expired, revoked. Only the first works, and the other two
+      # both answer 403 with different codes and different fixes.
+      consent_status:
+        type: string
+        default: active
+      # Not every bank supports every endpoint. A connection that answers
+      # standing orders and one that 501s look identical until you ask.
+      scopes:
+        type: list
+
+  account:
+    collection: results
+    id:
+      style: opaque
+      length: 32
+      field: account_id
+    fields:
+      connection_id:
+        type: string
+      account_type:
+        type: string
+        default: TRANSACTION
+      display_name:
+        type: string
+      currency:
+        type: string
+        default: GBP
+      # The last four of the account number, nested where TrueLayer puts it.
+      # The full number is here too on UK accounts, which is worth knowing
+      # before storing the object wholesale.
+      account_number:
+        type: string
+        in: account_number
+        as: number
+      sort_code:
+        type: string
+        in: account_number
+        as: sort_code
+      provider_id:
+        type: string
+        in: provider
+        as: provider_id
+
+  # Money that has settled. Its transaction_id is stable.
+  transaction:
+    collection: results
+    id:
+      style: opaque
+      length: 32
+      field: transaction_id
+    fields:
+      account_id:
+        type: string
+      timestamp:
+        type: datetime
+      description:
+        type: string
+      # DEBIT or CREDIT, and the amount is unsigned, so a client that reads
+      # the amount without the type gets every outgoing payment backwards.
+      transaction_type:
+        type: string
+      amount:
+        type: number
+      currency:
+        type: string
+        default: GBP
+      # The merchant as the bank rendered it, which is not the merchant as
+      # the card network rendered it, and neither is stable across banks.
+      merchant_name:
+        type: string
+        in: meta
+        as: merchant_name
+      running_balance_amount:
+        type: number
+        in: running_balance
+        as: amount
+
+  # The same money before it settles. A different list, a different id, and
+  # an amount that can still change.
+  pending_transaction:
+    collection: results
+    id:
+      style: opaque
+      length: 32
+      field: transaction_id
+    fields:
+      account_id:
+        type: string
+      timestamp:
+        type: datetime
+      description:
+        type: string
+      transaction_type:
+        type: string
+      amount:
+        type: number
+      currency:
+        type: string
+        default: GBP
+
+  balance:
+    collection: results
+    id:
+      # Addressed by the account in the path and not echoed in the body.
+      style: opaque
+      field: "-"
+    fields:
+      currency:
+        type: string
+        default: GBP
+      # What can be spent. Differs from current by the pending transactions,
+      # and the pending transactions you can see are not necessarily all of
+      # them.
+      available:
+        type: number
+      current:
+        type: number
+      overdraft:
+        type: number
+      update_timestamp:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /data/v1/me
+    resource: connection
+    operation: list
+
+  - method: GET
+    path: /data/v1/accounts
+    resource: account
+    operation: list
+
+  - method: GET
+    path: /data/v1/accounts/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /data/v1/accounts/{account_id}/transactions
+    resource: transaction
+    operation: list
+    scope:
+      - account_id
+    # Everything except account_id, which is in the path and not in the
+    # object TrueLayer sends back.
+    returns:
+      - id
+      - timestamp
+      - description
+      - transaction_type
+      - amount
+      - currency
+      - merchant_name
+      - running_balance_amount
+
+  # A separate endpoint, a separate list, and separate identifiers for the
+  # same money. When one of these settles it moves to the list above and its
+  # transaction_id changes, so matching on the id across the two loses every
+  # transaction exactly once.
+  - method: GET
+    path: /data/v1/accounts/{account_id}/transactions/pending
+    resource: pending_transaction
+    operation: list
+    scope:
+      - account_id
+    returns:
+      - id
+      - timestamp
+      - description
+      - transaction_type
+      - amount
+      - currency
+
+  - method: GET
+    path: /data/v1/accounts/{id}/balance
+    resource: balance
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: invalid_token
+    message: "The access token is invalid or has expired"
+
+  resource_missing:
+    status: 404
+    code: account_not_found
+    message: "The account could not be found"
+
+  parameter_missing:
+    status: 400
+    code: invalid_parameters
+    message: "The request parameters are invalid"
+
+  # Ninety days elapsed. Nothing at your end fixes it: the customer has to go
+  # back to their bank and re-authorise. 403, and only the code says it was
+  # time rather than a decision.
+  consent_expired:
+    status: 403
+    code: access_denied
+    message: "The consent for this connection has expired and must be renewed by the end user"
+
+  # The customer turned you off. Also 403, also access-shaped, and the fix is
+  # a conversation rather than a prompt.
+  consent_revoked:
+    status: 403
+    code: access_denied
+    message: "The end user has revoked consent for this connection"
+
+  # The bank does not offer this. Not a failure of the request, not
+  # something a retry helps, and not visible from the connection object.
+  endpoint_not_supported:
+    status: 501
+    code: endpoint_not_supported
+    message: "This provider does not support this endpoint"
+
+  # The bank is down. TrueLayer passes it through as a 503 and the connection
+  # is fine, so a client that marks the connection broken on any failure
+  # sends the customer through re-authorisation for nothing.
+  provider_error:
+    status: 503
+    code: provider_error
+    message: "The provider service is temporarily unavailable"
+
+fixtures:
+  empty: {}
+
+  small-customer:
+    connection:
+      # Live, and with a date on it. Nine days left, and the only place that
+      # date was ever stated is the token response nobody kept.
+      - id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+        provider_id: ob-monzo
+        display_name: Monzo
+        consent_expires_at: "2026-08-24T09:14:00Z"
+        consent_status: active
+        scopes:
+          - accounts
+          - balance
+          - transactions
+
+      # Ninety days elapsed. Nothing at this end fixes it.
+      - id: 9a4d2c67-1e83-4f50-b729-8c05e31a6d47
+        provider_id: ob-barclays
+        display_name: Barclays
+        consent_expires_at: "2026-07-19T11:02:00Z"
+        consent_status: expired
+        scopes:
+          - accounts
+          - balance
+          - transactions
+
+      # The customer turned it off, in their banking app, without telling
+      # anybody. Same 403 as the one above and a different fix.
+      - id: 2b7e5f13-6c04-4a98-9d31-7f62a08c5e39
+        provider_id: ob-natwest
+        display_name: NatWest
+        consent_expires_at: "2026-10-02T16:40:00Z"
+        consent_status: revoked
+        scopes:
+          - accounts
+          - balance
+
+    account:
+      - id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+        connection_id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+        account_type: TRANSACTION
+        display_name: Current Account
+        currency: GBP
+        account_number: "12345678"
+        sort_code: "04-00-04"
+        provider_id: ob-monzo
+
+      # A second account on the same connection. Its transaction is below,
+      # and a listing that ignored the account in its path would return it.
+      - id: b2c3d4e5f60718293a4b5c6d7e8f90a1
+        connection_id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+        account_type: SAVINGS
+        display_name: Savings
+        currency: GBP
+        account_number: "87654321"
+        sort_code: "04-00-04"
+        provider_id: ob-monzo
+
+    transaction:
+      # Settled. This id is stable and will not change again.
+      - id: f0e9d8c7b6a5948372615f4e3d2c1b0a
+        account_id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+        timestamp: "2026-08-12T19:04:22Z"
+        description: "BELLWETHER DINER"
+        transaction_type: DEBIT
+        # Unsigned. The direction is in transaction_type, so a client reading
+        # the amount alone gets every outgoing payment backwards.
+        amount: 58.4
+        currency: GBP
+        merchant_name: "Bellwether Diner"
+        running_balance_amount: 1204.16
+
+      # On the savings account, not the current one.
+      - id: 7d6c5b4a39281706f5e4d3c2b1a09876
+        account_id: b2c3d4e5f60718293a4b5c6d7e8f90a1
+        timestamp: "2026-08-01T00:00:00Z"
+        description: "INTEREST"
+        transaction_type: CREDIT
+        amount: 3.11
+        currency: GBP
+        merchant_name: ""
+        running_balance_amount: 5003.11
+
+    pending_transaction:
+      # The same fuel stop the bank has not settled yet. When it does, it
+      # moves to the list above and gets a different transaction_id, so
+      # matching across the two on the id loses it exactly once.
+      #
+      # The amount is provisional too: fuel pumps authorise a round number
+      # and settle for what was pumped.
+      - id: 3c8b1a47d92e0f56184b7c26a35d9e08
+        account_id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+        timestamp: "2026-08-15T08:52:40Z"
+        description: "NORTHGATE FUEL"
+        transaction_type: DEBIT
+        amount: 100.0
+        currency: GBP
+
+    balance:
+      # Current is 1204.16 and available is 1104.16, and the difference is
+      # the pending fuel stop above. Neither is the sum of the transactions
+      # list, and it never will be.
+      - id: a1b2c3d4e5f60718293a4b5c6d7e8f90
+        currency: GBP
+        available: 1104.16
+        current: 1204.16
+        overdraft: 500.0
+        update_timestamp: "2026-08-15T09:00:00Z"
+
+# Every case below is derived from TrueLayer's published documentation. None
+# has been run against a real connection. The verify report says so.
+conformance:
+  - name: a consent has an expiry date and it is not from last use
+    # Ninety days from when it was granted. A connection nobody has touched
+    # expires on the same day as one used hourly, and the date was stated
+    # once, in a token response, and nowhere afterwards.
+    source: https://docs.truelayer.com/docs/data-api-basics
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/me
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].consent_expires_at: "2026-08-24T09:14:00Z"
+        results[0].consent_status: active
+
+  - name: expired and revoked are different failures that look the same
+    # Both are 403 with access_denied. One means time passed and the fix is a
+    # prompt; the other means the customer turned you off and the fix is a
+    # conversation. The connection object is the only place they differ.
+    source: https://docs.truelayer.com/docs/data-api-basics
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/me
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[1].consent_status: expired
+        results[2].consent_status: revoked
+      absent:
+        - results[3]
+
+  - name: an expired consent is a 403, not a 401
+    # Nothing at your end fixes it. Refreshing the token succeeds and the
+    # next call fails the same way, because the token is fine and the consent
+    # behind it is not.
+    source: https://docs.truelayer.com/docs/errors
+    fixture: small-customer
+    arm: consent_expired
+    request:
+      method: GET
+      path: /data/v1/accounts
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 403
+      body:
+        error: access_denied
+        error_description: "The consent for this connection has expired and must be renewed by the end user"
+
+  - name: a bank outage is a 503 and the connection is fine
+    # A client that marks the connection broken on any failure sends the
+    # customer through re-authorisation for a bank that was down for ten
+    # minutes.
+    source: https://docs.truelayer.com/docs/errors
+    fixture: small-customer
+    arm: provider_error
+    request:
+      method: GET
+      path: /data/v1/accounts
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 503
+      body:
+        error: provider_error
+
+  - name: an unsupported endpoint is a 501 that no retry helps
+    # Not every bank offers every endpoint, and which is which is not in the
+    # connection object you already have.
+    source: https://docs.truelayer.com/docs/errors
+    fixture: small-customer
+    arm: endpoint_not_supported
+    request:
+      method: GET
+      path: /data/v1/accounts
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 501
+      body:
+        error: endpoint_not_supported
+
+  - name: pending and settled are two lists for the same money
+    # The fuel stop is pending at 100.00 and is not in the settled list. When
+    # it settles it moves, and its transaction_id changes.
+    source: https://docs.truelayer.com/docs/retrieve-account-transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/transactions
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].transaction_id: f0e9d8c7b6a5948372615f4e3d2c1b0a
+        results[0].description: "BELLWETHER DINER"
+      absent:
+        - results[1]
+
+  - name: the pending list has its own identifiers
+    # Matching on transaction_id across the two lists loses every
+    # transaction exactly once: it is in neither list under the id you
+    # remembered.
+    source: https://docs.truelayer.com/docs/retrieve-pending-transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/transactions/pending
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].transaction_id: 3c8b1a47d92e0f56184b7c26a35d9e08
+        results[0].description: "NORTHGATE FUEL"
+        results[0].amount: 100.0
+      absent:
+        - results[1]
+        - results[0].running_balance
+        - results[0].meta
+
+  - name: the amount is unsigned and the direction is a separate field
+    # 58.40 DEBIT. A client reading the amount alone gets every outgoing
+    # payment backwards, and a sum over a mixed list is meaningless.
+    source: https://docs.truelayer.com/docs/retrieve-account-transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/transactions
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].amount: 58.4
+        results[0].transaction_type: DEBIT
+
+  - name: the merchant name is nested under meta
+    # And it is the bank's rendering, not the card network's, so it differs
+    # between banks for the same purchase.
+    source: https://docs.truelayer.com/docs/retrieve-account-transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/transactions
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].meta.merchant_name: "Bellwether Diner"
+        results[0].running_balance.amount: 1204.16
+      absent:
+        - results[0].merchant_name
+        - results[0].running_balance_amount
+
+  - name: a balance does not reconcile to the transactions
+    # Current is 1204.16 and available is 1104.16, and the difference is the
+    # pending fuel stop. Neither is the sum of the settled list, and the
+    # pending transactions you can see are not necessarily all of them.
+    source: https://docs.truelayer.com/docs/retrieve-account-balance
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/balance
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        available: 1104.16
+        current: 1204.16
+        overdraft: 500.0
+
+  - name: the account number is nested and is the whole number
+    # Not the last four. Storing the account object wholesale stores a UK
+    # account number and sort code, which is worth knowing before doing it.
+    source: https://docs.truelayer.com/docs/retrieve-accounts
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        account_number.number: "12345678"
+        account_number.sort_code: "04-00-04"
+        provider.provider_id: ob-monzo
+      absent:
+        - account_number.last_four
+        - sort_code
+
+  - name: an invalid token is a 401 while an expired consent is a 403
+    source: https://docs.truelayer.com/docs/errors
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+
+  - name: a transaction listing is scoped to the account in its path
+    # The savings account has its own transaction, and it is not here. Nor
+    # is account_id anywhere in the response: the account is in the path and
+    # the object does not repeat it, so a transaction held on its own cannot
+    # say which account it came from.
+    source: https://docs.truelayer.com/docs/retrieve-account-transactions
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/b2c3d4e5f60718293a4b5c6d7e8f90a1/transactions
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      body:
+        results[0].description: "INTEREST"
+        results[0].transaction_type: CREDIT
+      absent:
+        - results[1]
+        - results[0].account_id
+
+  - name: a balance carries no identifier of its own
+    # It is addressed by the account in the path and the body never repeats
+    # it, so a balance held on its own cannot say whose it is.
+    source: https://docs.truelayer.com/docs/retrieve-account-balance
+    fixture: small-customer
+    request:
+      method: GET
+      path: /data/v1/accounts/a1b2c3d4e5f60718293a4b5c6d7e8f90/balance
+      headers:
+        Authorization: Bearer cauldron-truelayer-access-token
+    expect:
+      status: 200
+      absent:
+        - account_id
+        - id
+        - account
