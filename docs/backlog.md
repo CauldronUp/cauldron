@@ -803,45 +803,29 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Sixty-one resources across twenty-five Recipes mint identifiers with the
-`numeric` style. Meilisearch is declared and the rest are not, because which
-of the two a provider sends has to be read from its documentation rather than
-assumed: several of these genuinely send strings, and quoting a number is only
-half the failure. Sending a number where the provider sends a string is the
-other half.
+Sixteen Recipes are fixed and each carries a case asserting an unquoted
+identifier, so removing the declaration fails something. Three of them already
+had cases asserting the quoted form, which is to say three cases were pinning
+the bug in place.
+
+The rest of the `numeric` resources are below. Which of the two a provider
+sends has to be read from its documentation rather than assumed: sending a
+number where the provider sends a string is as wrong as the thing this fixes.
 
 | Recipe | Expected | Note |
 |---|---|---|
-| GitHub | number | Issue and label ids are JSON numbers |
-| GitLab | number | Project, merge request and pipeline ids are numbers |
-| Zendesk | number | Ticket, user and organization ids are numbers |
-| WordPress | number | Post, page, category and media ids are numbers |
-| WooCommerce | number | Order, product and customer ids are numbers |
-| Shopify | number | REST Admin order and product ids are numbers; the GraphQL API uses gid strings for the same objects, which is its own trap |
-| Freshdesk | number | Ticket, contact and company ids are numbers |
-| Pipedrive | number | Deal, person and organization ids are numbers |
-| PostHog | number | Feature flag, person and cohort ids are numbers |
-| Rollbar | number | Item, project and deploy ids are numbers |
-| Shortcut | number | Story, epic and iteration ids are numbers |
-| Greenhouse | number | Candidate, application and job ids are numbers |
-| Help Scout | number | Conversation, thread and mailbox ids are numbers |
-| Basecamp | number | Project, todo and message ids are numbers |
-| DigitalOcean | number | Droplet and action ids are numbers |
-| Bitbucket | number | Pull request ids are numbers |
 | RingCentral | needs checking | Message and extension ids may be numbers or numeric strings |
 | Postmark | needs checking | Bounce ID is a number; the casing of the field needs confirming too |
 | SendGrid | needs checking | Suppression ids are numbers on some endpoints |
 | Documenso | needs checking | Document and recipient ids are numbers |
+| Intercom | needs checking | Conversation ids are quoted, but the older API differed |
 | HubSpot | **string** | Contact, deal and company ids are quoted, which is why the default stays string |
 | Jira | **string** | Issue id is a quoted number; the key is the readable identifier |
-| Intercom | **string** | Conversation ids are quoted |
 | QuickBooks | **string** | Id is quoted everywhere in the JSON API |
 | DocuSign | **string** | recipientId is quoted |
 
-Each one is a small change and a conformance case that would have caught it.
-None of them should be changed without reading that provider's documentation
-first, because a Recipe that sends a number where the provider sends a string
-is as wrong as the thing this fixes.
+The five marked **string** are correct as they stand and are listed so nobody
+"fixes" them.
 
 ## Assessed and deliberately not done
 
