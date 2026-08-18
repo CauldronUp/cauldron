@@ -1,0 +1,451 @@
+# Docker Hub Recipe for Cauldron
+#
+# There is no Docker Hub sandbox. A token reaches real repositories, real
+# tags and a real organisation, and the destructive calls are destructive: a
+# deleted tag is gone and the image behind it is unreferenced.
+#
+# The reason to emulate it is the rate limit, which is the single most
+# expensive thing about Docker Hub and the hardest to reproduce deliberately.
+# It is counted per IP address rather than per account, so authenticating does
+# not give a shared CI runner its own budget: every job on that runner draws
+# from one pool, and the pool is exhausted by whoever got there first. A test
+# that passes on a developer's machine and fails in CI, on the same commit,
+# with a 429, is this.
+#
+# Four things worth modelling exactly:
+#
+#   1. The rate limit is per IP, and the headers say so in a unit nobody
+#      expects. ratelimit-limit reads "100;w=21600", which is a count and a
+#      window in seconds glued together with a semicolon, so parsing it as an
+#      integer gets 100 and misses that the window is six hours.
+#   2. A tag is not an image. Several tags point at one digest, so deleting a
+#      tag deletes a name and not the bytes, and two tags that look unrelated
+#      can be the same thing. The digest is the identity and the tag is a
+#      label somebody moved.
+#   3. latest is an ordinary tag with no special meaning. It is whatever was
+#      pushed to it last, it can be older than a numbered tag, and the
+#      fixture makes that concrete: latest points at a digest that was pushed
+#      before the newest version.
+#   4. A private repository that you cannot see answers 404 rather than 403,
+#      deliberately, so the API cannot be used to find out what exists. Code
+#      that treats 404 as "deleted" and tidies up its own records has just
+#      deleted a row over a permission change.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The registry itself is not modelled. This is the Hub API, which is
+#      repositories and tags and metadata; pulls and pushes speak the
+#      registry protocol and are somewhere else entirely.
+#   - The rate limit is declared and armable rather than counted. Cauldron
+#     does not track a budget across requests, so the 429 is something a test
+#     asks for rather than something it earns.
+#   - Deleting a tag is not modelled, for the same reason Mercury's transfers
+#     are not: the call is irreversible and an emulator that makes it easy to
+#     exercise is inviting the mistake.
+#   - The token exchange against auth.docker.io, which is what a pull
+#     actually does, is not modelled.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: dockerhub
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.docker.com/docker-hub/api/latest/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  # Not "Bearer ". Docker Hub's own scheme word, and sending the usual one
+  # reads as a bad token rather than as the wrong scheme.
+  prefix: "JWT "
+  keys:
+    - cauldron.dockerhub.jwt.000000
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    count_field: count
+    cursor_field: next
+  resource:
+    style: bare
+  # A bare message and nothing else. No code anywhere, so branching means
+  # matching on prose.
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  repository:
+    collection: results
+    id:
+      style: opaque
+      length: 20
+    fields:
+      namespace:
+        type: string
+      name:
+        type: string
+        required: true
+      # true means private. The field is named for the wrong half, so a
+      # truth test on it reads as "is public" and means the opposite.
+      is_private:
+        type: boolean
+        default: false
+      description:
+        type: string
+      # Counted lazily and rounded, so it is an indication rather than a
+      # number. Two repositories with the same figure have not had the same
+      # number of pulls.
+      pull_count:
+        type: integer
+        default: 0
+      star_count:
+        type: integer
+        default: 0
+      last_updated:
+        type: string
+
+  tag:
+    collection: results
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # In the path rather than the body, so it has to be a field to be
+      # filtered on at all.
+      namespace:
+        type: string
+      repository:
+        type: string
+      name:
+        type: string
+        required: true
+      # The identity. Several tags share one, so this is what says whether
+      # two names are the same image.
+      digest:
+        type: string
+      # Bytes, and it is the compressed size of the manifest's layers rather
+      # than what the image occupies on disk once pulled.
+      full_size:
+        type: integer
+      # active or inactive. An inactive tag has not been pulled or pushed
+      # recently and is a candidate for deletion under the retention policy,
+      # which is a thing that happens without anybody asking.
+      tag_status:
+        type: string
+        default: active
+      architecture:
+        type: string
+        in: images[0]
+        as: architecture
+      os:
+        type: string
+        in: images[0]
+        as: os
+      last_updated:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/repositories/{namespace}
+    resource: repository
+    operation: list
+    scope: [namespace]
+
+  - method: GET
+    path: /v2/repositories/{namespace}/{id}
+    resource: repository
+    operation: get
+    scope: [namespace]
+
+  - method: GET
+    path: /v2/repositories/{namespace}/{repository}/tags
+    resource: tag
+    operation: list
+    scope: [namespace, repository]
+
+  - method: GET
+    path: /v2/repositories/{namespace}/{repository}/tags/{id}
+    resource: tag
+    operation: get
+    scope: [namespace, repository]
+
+webhooks:
+  events:
+    - repository.push
+  signing:
+    scheme: none
+
+errors:
+  # The expensive one. Per IP address rather than per account, so
+  # authenticating does not give a shared runner its own budget.
+  rate_limit:
+    status: 429
+    message: "You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limit"
+    headers:
+      # A count and a window in seconds, glued together. Parsing this as an
+      # integer gets 100 and silently loses the six-hour window.
+      ratelimit-limit: "100;w=21600"
+      ratelimit-remaining: "0;w=21600"
+      retry-after: "3600"
+
+  authentication_error:
+    status: 401
+    message: "Incorrect authentication credentials"
+
+  # The same answer for a repository that does not exist and one you cannot
+  # see. Deliberate, so the API cannot be used to enumerate private names.
+  resource_missing:
+    status: 404
+    message: "object not found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request"
+
+  # A token scoped to read cannot delete, and the failure names neither the
+  # scope nor the token.
+  insufficient_scope:
+    status: 403
+    message: "access to the resource is forbidden"
+
+fixtures:
+  empty: {}
+
+  small-org:
+    repository:
+      - id: api
+        namespace: cauldron
+        name: api
+        is_private: false
+        description: The service everything else talks to
+        pull_count: 184203
+        star_count: 12
+        last_updated: "2026-06-09T14:02:11.000000Z"
+      # Private, and the field is named for the wrong half: a truth test on
+      # is_private reads as "is public" to anybody skimming.
+      - id: internal-tools
+        namespace: cauldron
+        name: internal-tools
+        is_private: true
+        description: Not for publication
+        pull_count: 41
+        star_count: 0
+        last_updated: "2026-05-30T08:15:00.000000Z"
+
+    tag:
+      # The newest version. Pushed most recently, and latest does not point
+      # at it.
+      - id: cauldron-api-2-4-0
+        namespace: cauldron
+        repository: api
+        name: 2.4.0
+        digest: sha256:9f1c0e6a2b7d4c8e5a3f1b9d7c6e4a2f8b0d3c5e7a9f1b3d5c7e9a1f3b5d7c9e
+        full_size: 41203847
+        tag_status: active
+        architecture: amd64
+        os: linux
+        last_updated: "2026-06-09T14:02:11.000000Z"
+      # Older, and this is what latest actually points at, because somebody
+      # pushed 2.4.0 without moving it.
+      - id: cauldron-api-2-3-1
+        namespace: cauldron
+        repository: api
+        name: 2.3.1
+        digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+        full_size: 40981220
+        tag_status: active
+        architecture: amd64
+        os: linux
+        last_updated: "2026-05-21T09:30:00.000000Z"
+      # The same digest as 2.3.1. Two names, one image, and nothing in the
+      # name says so.
+      - id: cauldron-api-latest
+        namespace: cauldron
+        repository: api
+        name: latest
+        digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+        full_size: 40981220
+        tag_status: active
+        architecture: amd64
+        os: linux
+        last_updated: "2026-05-21T09:30:00.000000Z"
+      # Nobody has pulled this in months, so the retention policy will
+      # eventually remove it without anybody asking.
+      - id: cauldron-api-1-0-0
+        namespace: cauldron
+        repository: api
+        name: 1.0.0
+        digest: sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+        full_size: 28114900
+        tag_status: inactive
+        architecture: amd64
+        os: linux
+        last_updated: "2025-11-02T12:00:00.000000Z"
+
+# Conformance cases, read from the Docker Hub API documentation rather than
+# observed against a live organisation. The verify report says so.
+conformance:
+  - name: latest is an ordinary tag and can be older
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/repositories
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags/cauldron-api-latest
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        # Pushed in May, while 2.4.0 was pushed in June. Nothing moved
+        # latest, so deploying it deploys the older image and every log line
+        # says "latest".
+        name: latest
+        last_updated: "2026-05-21T09:30:00.000000Z"
+
+  - name: and the newest version is newer than it
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/repositories
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags/cauldron-api-2-4-0
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        name: 2.4.0
+        last_updated: "2026-06-09T14:02:11.000000Z"
+
+  - name: two tags can be one image
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/repositories
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        # 2.3.1 and latest share a digest, so they are the same bytes under
+        # two names. Deleting one deletes a name and nothing else, and
+        # counting images by counting tags counts this twice.
+        results[1].digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+        results[2].digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+        results[0].digest: sha256:9f1c0e6a2b7d4c8e5a3f1b9d7c6e4a2f8b0d3c5e7a9f1b3d5c7e9a1f3b5d7c9e
+
+  - name: an inactive tag is still listed and will be removed anyway
+    source: https://docs.docker.com/docker-hub/image-management/
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags/cauldron-api-1-0-0
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        # Nobody has pulled it in months. The retention policy removes tags
+        # in this state without anybody asking, so a deployment pinned to it
+        # breaks on a schedule nobody set.
+        tag_status: inactive
+        name: "1.0.0"
+
+  - name: the private flag is named for the wrong half
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/repositories
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/internal-tools
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        # A truth test on this field reads as "is public" to anybody
+        # skimming, and means the opposite. The public repository beside it
+        # has the same field set to false.
+        is_private: true
+        name: internal-tools
+
+  - name: a repository you cannot see is a 404, not a 403
+    source: https://docs.docker.com/docker-hub/api/latest/
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/somebody-elses-private-thing
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      # Deliberate, so the API cannot be used to enumerate private names. A
+      # client that treats 404 as "deleted" and tidies up its own records has
+      # just deleted a row over a permission change.
+      status: 404
+      body:
+        message: object not found
+      absent:
+        - code
+        - errors
+
+  - name: the rate limit is a count and a window glued together
+    source: https://docs.docker.com/docker-hub/usage/
+    arm: rate_limit
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 429
+      headers:
+        # Parsing this as an integer gets 100 and silently loses the six-hour
+        # window, so a client that waits a minute and retries is still
+        # limited for another five hours and fifty-nine.
+        ratelimit-limit: "100;w=21600"
+        ratelimit-remaining: "0;w=21600"
+        retry-after: "3600"
+      matches:
+        message: 'pull rate limit'
+
+  - name: a listing counts everything and pages by an opaque next
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/repositories
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags
+      query:
+        limit: "2"
+      headers:
+        Authorization: JWT cauldron.dockerhub.jwt.000000
+    expect:
+      status: 200
+      body:
+        # Four tags matched and two arrived. The count is of everything, so
+        # sizing anything from the array length is wrong by half here.
+        count: 4
+      matches:
+        next: '.'
+
+  - name: the wrong authorisation scheme reads as a bad token
+    source: https://docs.docker.com/docker-hub/api/latest/#tag/authentication
+    fixture: small-org
+    request:
+      method: GET
+      path: /v2/repositories/cauldron/api/tags
+      headers:
+        # Bearer, which is what everything else uses and what Docker Hub does
+        # not. The failure says the credentials are wrong rather than the
+        # scheme, so the search that follows is for the wrong thing.
+        Authorization: Bearer cauldron.dockerhub.jwt.000000
+    expect:
+      status: 401
+      matches:
+        message: 'Incorrect authentication credentials'
