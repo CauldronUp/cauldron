@@ -1,0 +1,510 @@
+# Persona Recipe for Cauldron
+#
+# Persona has a sandbox, and it is the kind that decides instantly because
+# you told it what to decide. That is useful for a demo and misleading for a
+# test, because the thing that makes this API hard is that finishing and
+# being approved are different events, minutes to hours apart, and the second
+# one arrives by webhook rather than by the poll you wrote.
+#
+# The other half of the difficulty is the envelope. Persona speaks JSON:API,
+# so nothing is where an ordinary REST client expects it: the status is at
+# data.attributes.status, the identifier is at data.id, and the verifications
+# that explain a decision are in a separate top-level array that has to be
+# matched back by identifier.
+#
+# Five things worth modelling exactly:
+#
+#   1. completed is not approved. It means the person finished the flow.
+#      Whether they passed is a later status on the same field, and code that
+#      treats completed as a decision lets everybody through.
+#   2. needs_review is neither. A human has to look, and it can sit there for
+#      hours. Treating it as failure turns away real customers and treating
+#      it as success is worse.
+#   3. Everything is one level down under attributes. There is no top-level
+#      status, no top-level reference id, and a client that reads the object
+#      it was handed finds nothing at all.
+#   4. The verifications that explain a decision are not on the inquiry. They
+#      arrive in a separate included array keyed by type and id, so finding
+#      out why an inquiry was declined means walking a second collection.
+#   5. reference-id is yours and id is theirs, and only one of them means
+#      anything on your side. The identifier is prefixed and the reference is
+#      whatever you sent, so storing the wrong one loses the link.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No decision is made. Which status an inquiry holds is what a fixture
+#     puts there, and the transition from completed to approved happens
+#     somewhere Cauldron cannot reproduce.
+#   - The hosted flow, which is where the person actually does the work, is
+#     not modelled at all.
+#   - Persona's webhook signatures are HMAC-SHA256 over a timestamped payload
+#     with their own header format, and Cauldron signs with its own scheme,
+#     so signature-handling code written against this is not the code that
+#     will run.
+#   - Cases, workflows, reports and the government-ID-specific endpoints are
+#     not modelled.
+#
+# Tokens below are fixtures, not secrets, and every person here is invented.
+
+recipe: persona
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: "2023-01-05"
+  docs: https://docs.withpersona.com/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - persona_sandbox_cauldron00000000000000
+
+responses:
+  # JSON:API. The object is under data, and a client that reads the response
+  # it was handed finds a wrapper rather than an inquiry.
+  resource:
+    style: wrapped
+    key: data
+  list:
+    # Both resources declare data as their collection, which is what the
+    # runtime reads, so a key here would be inert. A declaration nothing
+    # honours is the failure this project is about.
+    style: wrapped
+  # An array of errors, each with a title and a detail, and the machine
+  # readable half is neither of them.
+  error:
+    style: list
+    key: errors
+    message_field: detail
+    code_field: code
+    type_field: "-"
+
+resources:
+  inquiry:
+    collection: data
+    id:
+      style: prefixed
+      prefix: inq_
+      length: 24
+    fields:
+      # JSON:API insists the object names its own type, and clients that
+      # switch on it are the reason it is there.
+      type:
+        type: string
+        default: inquiry
+      # Everything below is one level down under attributes, which is the
+      # shape lie that catches people first.
+      status:
+        type: string
+        default: created
+        in: attributes
+      # Yours, not theirs. The only value in this exchange that means
+      # anything on your side of it.
+      reference_id:
+        type: string
+        in: attributes
+        as: reference-id
+      name_first:
+        type: string
+        in: attributes
+        as: name-first
+      name_last:
+        type: string
+        in: attributes
+        as: name-last
+      email_address:
+        type: string
+        in: attributes
+        as: email-address
+      # When they finished the flow. Set on completed and on every status
+      # after it, so its presence says the person is done and says nothing
+      # about the decision.
+      completed_at:
+        type: string
+        in: attributes
+        as: completed-at
+      # When somebody or something decided. Absent while the inquiry is
+      # merely completed, which is the gap this Recipe exists to show.
+      decisioned_at:
+        type: string
+        in: attributes
+        as: decisioned-at
+      created_at:
+        type: string
+        in: attributes
+        as: created-at
+
+  verification:
+    collection: data
+    id:
+      style: prefixed
+      prefix: ver_
+      length: 24
+    fields:
+      inquiry_id:
+        type: string
+      type:
+        type: string
+        default: verification/government-id
+      status:
+        type: string
+        default: initiated
+        in: attributes
+      # Why it came out that way, and it is a list of checks rather than a
+      # sentence. An inquiry that was declined has the reason here and not on
+      # the inquiry.
+      checks:
+        type: list
+        in: attributes
+      created_at:
+        type: string
+        in: attributes
+        as: created-at
+
+routes:
+  - method: GET
+    path: /api/v1/inquiries
+    resource: inquiry
+    operation: list
+
+  - method: GET
+    path: /api/v1/inquiries/{id}
+    resource: inquiry
+    operation: get
+
+  - method: GET
+    path: /api/v1/verifications/{id}
+    resource: verification
+    operation: get
+
+  - method: GET
+    path: /api/v1/inquiries/{inquiry_id}/verifications
+    resource: verification
+    operation: list
+    scope: [inquiry_id]
+
+webhooks:
+  events:
+    - inquiry.completed
+    - inquiry.approved
+    - inquiry.declined
+    - inquiry.marked-for-review
+  signing:
+    scheme: hmac-sha256
+    header: Persona-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: "Too many requests"
+    headers:
+      Retry-After: "30"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "Invalid API key"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Record not found"
+
+  parameter_missing:
+    status: 400
+    code: invalid_request
+    message: "Invalid request"
+
+  # A sandbox key cannot reach production data and the failure names neither
+  # the key nor the environment plainly.
+  wrong_environment:
+    status: 401
+    code: unauthorized
+    message: "This API key belongs to a different environment"
+
+  # An inquiry expires if the person walks away, and it cannot be resumed:
+  # a new one has to be created, which means a new identifier and a new link
+  # to send them.
+  inquiry_expired:
+    status: 409
+    code: conflict
+    message: "This inquiry has expired and cannot be resumed"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    inquiry:
+      # Finished and undecided. The person did everything asked of them and
+      # nobody has said yes or no, which is the state that gets read as
+      # success.
+      - id: inq_cauldron000000000001
+        type: inquiry
+        status: completed
+        reference_id: customer-8891
+        name_first: Ada
+        name_last: Lovelace
+        email_address: ada@cauldron.test
+        completed_at: "2026-08-17T09:14:22.000Z"
+        created_at: "2026-08-17T09:10:00.000Z"
+      # Decided, and it took four minutes. decisioned_at is set and
+      # completed_at is unchanged, so the two together are the only way to
+      # see the gap.
+      - id: inq_cauldron000000000002
+        type: inquiry
+        status: approved
+        reference_id: customer-8892
+        name_first: Grace
+        name_last: Hopper
+        email_address: grace@cauldron.test
+        completed_at: "2026-08-17T09:20:11.000Z"
+        decisioned_at: "2026-08-17T09:24:47.000Z"
+        created_at: "2026-08-17T09:16:00.000Z"
+      # Waiting for a human. Neither a pass nor a failure, and it can sit
+      # here for hours.
+      - id: inq_cauldron000000000003
+        type: inquiry
+        status: needs_review
+        reference_id: customer-8893
+        name_first: Katherine
+        name_last: Johnson
+        email_address: katherine@cauldron.test
+        completed_at: "2026-08-17T09:31:02.000Z"
+        created_at: "2026-08-17T09:28:00.000Z"
+      # Declined. The reason is not here: it is on the verification.
+      - id: inq_cauldron000000000004
+        type: inquiry
+        status: declined
+        reference_id: customer-8894
+        name_first: Dorothy
+        name_last: Vaughan
+        email_address: dorothy@cauldron.test
+        completed_at: "2026-08-17T09:40:00.000Z"
+        decisioned_at: "2026-08-17T09:41:30.000Z"
+        created_at: "2026-08-17T09:37:00.000Z"
+
+    verification:
+      # Belongs to the declined inquiry, and carries the checks that say why.
+      - id: ver_cauldron000000000001
+        inquiry_id: inq_cauldron000000000004
+        type: verification/government-id
+        status: failed
+        created_at: "2026-08-17T09:40:05.000Z"
+        checks:
+          - name: id_expired
+            status: failed
+          - name: id_tampering_detection
+            status: passed
+      # Belongs to a different inquiry entirely, so a listing that ignored
+      # the inquiry in its own path would return this one too.
+      - id: ver_cauldron000000000002
+        inquiry_id: inq_cauldron000000000002
+        type: verification/government-id
+        status: passed
+        created_at: "2026-08-17T09:20:15.000Z"
+        checks:
+          - name: id_expired
+            status: passed
+
+# Conformance cases, read from the Persona API reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: completed is not approved
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000001
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # The person finished the flow. Nobody has decided anything, and code
+        # that treats this as a decision lets everybody through.
+        data.attributes.status: completed
+        data.attributes.completed-at: "2026-08-17T09:14:22.000Z"
+      absent:
+        - data.attributes.decisioned-at
+
+  - name: and the decision arrives minutes later
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000002
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # Four minutes and thirty-six seconds after they finished. A poll
+        # that stops when the status reaches completed never sees this.
+        data.attributes.status: approved
+        data.attributes.completed-at: "2026-08-17T09:20:11.000Z"
+        data.attributes.decisioned-at: "2026-08-17T09:24:47.000Z"
+
+  - name: needs_review is neither a pass nor a failure
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000003
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # A human has to look, and it can sit here for hours. Treating it as
+        # failure turns away real customers and treating it as success is
+        # worse.
+        data.attributes.status: needs_review
+      absent:
+        - data.attributes.decisioned-at
+
+  - name: nothing is at the top level
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000001
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        data.type: inquiry
+      # No status, no reference id, no email anywhere a client would look
+      # first. Everything is one level down under attributes, and the object
+      # names its own type instead.
+      absent:
+        - status
+        - reference-id
+        - email-address
+        - attributes
+
+  - name: the reference is yours and the identifier is theirs
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000002
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # Two identifiers on one object, and only one of them can be used to
+        # find the customer in your own database.
+        data.id: inq_cauldron000000000002
+        data.attributes.reference-id: customer-8892
+
+  - name: a declined inquiry does not say why
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000004
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        data.attributes.status: declined
+      # No reason, no checks, no failure code. Finding out why means fetching
+      # the verifications, which is a second request and a second collection.
+      absent:
+        - data.attributes.checks
+        - data.attributes.reason
+        - data.attributes.decline-reason
+
+  - name: and the verification does
+    source: https://docs.withpersona.com/reference/verifications
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/verifications/ver_cauldron000000000001
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # A list of named checks, one failed and one passed, which is what an
+        # operator needs and what the inquiry does not carry.
+        data.attributes.status: failed
+        data.attributes.checks[0].name: id_expired
+        data.attributes.checks[0].status: failed
+        data.attributes.checks[1].status: passed
+
+  - name: a verification listing is scoped to its inquiry
+    source: https://docs.withpersona.com/reference/verifications
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000004/verifications
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # One verification, and it is the failed one. The passed verification
+        # belongs to a different inquiry in the same account, so a listing
+        # that ignored the path would report this inquiry as having passed.
+        data[0].id: ver_cauldron000000000001
+        data[0].attributes.status: failed
+      absent:
+        - data[1]
+
+  - name: a listing wraps the array under data as well
+    source: https://docs.withpersona.com/reference/inquiries
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        # The same key for one object and for many, so a generic client
+        # cannot tell a single inquiry from a collection by shape alone.
+        data[0].attributes.status: completed
+        data[3].attributes.status: declined
+
+  - name: a failure is an array with a code and a detail
+    source: https://docs.withpersona.com/reference/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_doesnotexist000000
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      status: 404
+      body:
+        # An array even for one problem, so a client reading errors.detail
+        # finds undefined and has to index first.
+        errors[0].code: not_found
+      matches:
+        errors[0].detail: 'Record not found'
+
+  - name: an expired inquiry cannot be resumed
+    source: https://docs.withpersona.com/reference/inquiries
+    arm: inquiry_expired
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v1/inquiries/inq_cauldron000000000001
+      headers:
+        Authorization: Bearer persona_sandbox_cauldron00000000000000
+    expect:
+      # A new inquiry has to be created, which means a new identifier and a
+      # new link to send the person, so an application that stored the old
+      # one has nothing useful left.
+      status: 409
+      matches:
+        errors[0].detail: 'cannot be resumed'

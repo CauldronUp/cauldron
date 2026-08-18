@@ -1325,6 +1325,23 @@ func (r *Recipe) Validate() error {
 			// null would block a true claim.
 			for i, record := range r.Fixtures[fixtureName][resourceName] {
 				for _, field := range sortedKeys(record) {
+					// A key the resource does not declare is dropped on the
+					// way in, so a fixture can set it, a reader can believe
+					// it, and the emulator never sends it. That silence is
+					// the problem: it fooled a mutation into passing, which
+					// means it could fool a conformance case the same way.
+					//
+					// id is always allowed, and so is whatever the Recipe
+					// renamed it to, because the identifier is not declared
+					// among the fields.
+					if _, declared := resource.Fields[field]; !declared {
+						if _, constant := resource.Constants[field]; !constant &&
+							field != "id" && field != resource.ID.Field {
+							add("fixture %q record %d of %q sets %q, which is not a field on that resource, so it would be dropped in silence",
+								fixtureName, i, resourceName, field)
+						}
+					}
+
 					if resource.Fields[field].Type != "list" || record[field] == nil {
 						continue
 					}
