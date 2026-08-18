@@ -91,23 +91,46 @@ func (r Report) Provenance() (observed, documented int, latest string) {
 // not reach into the runtime itself.
 type Seeder func(fixture string) error
 
+// Armer installs a declared failure for the next request, or clears whatever is
+// armed when given an empty name. The server supplies this for the same reason
+// it supplies the Seeder: conform says what a case needs and does not reach
+// into the runtime to get it.
+type Armer func(errorName string) error
+
 // Run executes every case in a Recipe against handler, mounted at prefix.
-func Run(r *recipe.Recipe, handler http.Handler, prefix string, seed Seeder) Report {
+func Run(r *recipe.Recipe, handler http.Handler, prefix string, seed Seeder, arm Armer) Report {
 	report := Report{Recipe: r.Name, Version: r.Version}
 
 	for _, c := range r.Conformance {
-		report.Results = append(report.Results, runCase(c, handler, prefix, seed))
+		report.Results = append(report.Results, runCase(c, handler, prefix, seed, arm))
 	}
 
 	return report
 }
 
-func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder) Result {
+func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder, arm Armer) Result {
 	result := Result{Case: c}
 
 	if c.Fixture != "" && seed != nil {
 		if err := seed(c.Fixture); err != nil {
 			result.Failures = append(result.Failures, fmt.Sprintf("could not seed %q: %v", c.Fixture, err))
+			return result
+		}
+	}
+
+	// Called for every case, including the ones arming nothing, because that
+	// is what clears a fault the previous case installed. A leak here would
+	// show up as a suite that passes case by case and fails in order, which is
+	// among the least pleasant things to debug.
+	//
+	// This is one of two guards and either alone is enough: the caller also
+	// arms with a count of one, so a fault expires on the request it was
+	// installed for. Both are cheap and the failure they prevent is not, and
+	// removing both is measurable — nine of PayPal's thirteen cases fail,
+	// because its armed cases sit deliberately in the middle of the suite.
+	if arm != nil {
+		if err := arm(c.Arm); err != nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("could not arm %q: %v", c.Arm, err))
 			return result
 		}
 	}

@@ -47,7 +47,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 | Provider | Why |
 |---|---|
-| PayPal | Payments, captures, refunds, disputes, webhooks |
+| ~~PayPal~~ | Shipped. APPROVED is not paid, the links array is the flow, a capture can succeed without settling, and the fee comes out of the middle |
 | Braintree | Transactions, customers, payment methods |
 | Mollie | Payment lifecycle and asynchronous states |
 | Wise Business | Transfers, recipients, balances, settlement states |

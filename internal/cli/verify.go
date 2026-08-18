@@ -8,6 +8,7 @@ import (
 
 	"github.com/CauldronUp/cauldron/internal/conform"
 	"github.com/CauldronUp/cauldron/internal/recipe"
+	"github.com/CauldronUp/cauldron/internal/runtime"
 	"github.com/CauldronUp/cauldron/internal/server"
 )
 
@@ -56,6 +57,16 @@ func runVerify(ctx *context, args []string) int {
 
 		report := conform.Run(sandbox.Recipe(), srv, "/"+name, func(fixture string) error {
 			return srv.SeedRecipe(name, fixture)
+		}, func(errorName string) error {
+			sandbox.ClearFaults()
+
+			if errorName == "" {
+				return nil
+			}
+
+			// Count 1, so the failure covers this case's single request and
+			// nothing after it even if the clear above is ever missed.
+			return sandbox.Arm(runtime.Fault{Error: errorName, Count: 1})
 		})
 
 		writeReport(ctx, report, verbose)
