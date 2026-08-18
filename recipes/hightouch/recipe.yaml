@@ -1,0 +1,558 @@
+# Hightouch Recipe for Cauldron
+#
+# Reverse ETL has a failure mode that no CRUD API has: the job succeeds and
+# the data does not arrive.
+#
+# A sync run reports rows queried, rows planned, rows attempted and rows
+# rejected, separately, and its own status is about whether the machinery ran
+# rather than whether the rows landed. A run that attempted four thousand
+# rows and had every one of them rejected by the destination finishes with
+# status "success". Nothing errored. The dashboard is green. Nobody's CRM has
+# the data.
+#
+# Four more worth modelling exactly:
+#
+#   1. Rejections are per row and are readable only from a different
+#      endpoint. The run tells you how many; the rows themselves, and the
+#      reason each was refused, are somewhere else, and almost nobody
+#      fetches them.
+#   2. "warning" is a status. Not an error and not a success: some rows
+#      landed and some did not, and code that treats anything other than
+#      "failed" as fine treats a partial delivery as a complete one.
+#   3. A sync is disabled by a person and paused by Hightouch, and both stop
+#      it running. Disabled is a choice somebody made; paused is Hightouch
+#      having given up after repeated failures, and the fix for each is
+#      different.
+#   4. A run has a planned row count that does not match the attempted one,
+#      because planning happens against a snapshot and the destination's
+#      rate limits decide how many actually go. A client reconciling the two
+#      finds they never agree.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing syncs and no rows move. Which status a run holds and how many
+#     rows it rejected are what a fixture puts there. The four statuses are
+#     what a client has to handle, and the interesting ones are the hardest
+#     to produce on demand against the real thing.
+#   - The rejected-row reasons are a fixture rather than a real per-
+#     destination table. Every destination refuses rows for its own reasons
+#     and that is the part no Recipe can carry for everybody.
+#   - Models, sources, destinations as configurable objects, and the
+#     triggering API are not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: hightouch
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://hightouch.com/docs/api-reference/introduction
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-hightouch-api-key
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  sync:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      slug:
+        type: string
+      modelId:
+        type: string
+      destinationId:
+        type: string
+      # Somebody switched it off. A choice, and the fix is switching it back
+      # on.
+      disabled:
+        type: boolean
+        default: false
+      # Hightouch switched it off, after repeated failures. Not a choice,
+      # and the fix is finding out why it kept failing. Both stop it
+      # running and code that checks only one of them misses half the
+      # reasons a sync is quiet.
+      schedulePaused:
+        type: boolean
+        default: false
+      # success, warning, failed, disabled, pending, queued, running. Only
+      # three of those are terminal and one of them is not what it sounds
+      # like.
+      status:
+        type: string
+        default: pending
+      lastRunAt:
+        type: datetime
+        null_when_unset: true
+
+  sync_run:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      syncId:
+        type: string
+      # The machinery ran. Not: the rows landed. A run that attempted four
+      # thousand rows and had every one rejected finishes here as success.
+      status:
+        type: string
+        default: pending
+      startedAt:
+        type: datetime
+      finishedAt:
+        type: datetime
+        null_when_unset: true
+      # What the model returned. Planning happens against a snapshot, so
+      # this and the attempted count never agree and a client reconciling
+      # them is reconciling two different moments.
+      queriedRows:
+        type: integer
+        in: plannedRows
+        as: queried
+      addedRows:
+        type: integer
+        in: plannedRows
+        as: addedCount
+      # What was actually sent, and what came back refused. successfulRows
+      # is the only one of these that means anything arrived.
+      successfulRows:
+        type: integer
+        in: successfulRows
+        as: addedCount
+      # The number the run reports. The rows themselves, and why each was
+      # refused, are on a different endpoint that almost nobody calls.
+      failedRows:
+        type: integer
+        in: failedRows
+        as: addedCount
+      error:
+        type: string
+        null_when_unset: true
+
+  # One refused row, and why. Readable only from its own endpoint, so a
+  # client that reads the run and stops never learns any of this.
+  rejected_row:
+    collection: data
+    id:
+      # Not on the wire. The route says what it sends and an identifier is
+      # not among it, which is the same statement made once rather than
+      # twice: hiding it here as well changed nothing when mutated.
+      style: opaque
+      length: 16
+    fields:
+      runId:
+        type: string
+      # The destination's own words. Not Hightouch's, not normalised, and
+      # different for every destination.
+      reason:
+        type: string
+      # The row as Hightouch sent it, so the identifier is whatever the
+      # model called it rather than anything Hightouch minted.
+      primaryKey:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/syncs
+    resource: sync
+    operation: list
+
+  - method: GET
+    path: /api/v1/syncs/{id}
+    resource: sync
+    operation: get
+
+  - method: GET
+    path: /api/v1/syncs/{syncId}/runs
+    resource: sync_run
+    operation: list
+    scope:
+      - syncId
+    returns:
+      - id
+      - status
+      - startedAt
+      - finishedAt
+      - queriedRows
+      - addedRows
+      - successfulRows
+      - failedRows
+      - error
+
+  # The endpoint almost nobody calls. Everything the run said went wrong is
+  # here, one row at a time, with the destination's own words for why.
+  - method: GET
+    path: /api/v1/syncs/{syncId}/runs/{runId}/rejected-rows
+    resource: rejected_row
+    operation: list
+    scope:
+      - runId
+    # The run is in the path and the rows do not repeat it, so a rejected
+    # row held on its own cannot say which run refused it.
+    returns:
+      - reason
+      - primaryKey
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    message: "Invalid API key"
+
+  resource_missing:
+    status: 404
+    message: "Sync not found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request parameters"
+
+  # The plan asks for more rows than the workspace is entitled to sync. Not
+  # a failure of the request and not something a retry fixes: the run will
+  # keep being refused until somebody changes the plan or the model.
+  row_limit_exceeded:
+    status: 402
+    message: "This sync would exceed your workspace's monthly row limit"
+
+  # The destination refused the connection entirely, which is different from
+  # refusing rows. Nothing was attempted and the run fails rather than
+  # warning.
+  destination_unreachable:
+    status: 503
+    message: "The destination could not be reached"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    sync:
+      - id: "3041"
+        slug: customers-to-salesforce
+        modelId: "812"
+        destinationId: "44"
+        disabled: false
+        schedulePaused: false
+        status: success
+        lastRunAt: "2026-08-15T06:00:00Z"
+
+      # Somebody switched this off. A choice, and turning it back on fixes
+      # it.
+      - id: "3042"
+        slug: accounts-to-hubspot
+        modelId: "813"
+        destinationId: "45"
+        disabled: true
+        schedulePaused: false
+        status: disabled
+
+      # Hightouch switched this one off after it kept failing. Not a choice,
+      # and turning it back on without finding out why would just pause it
+      # again. disabled is false, so a client checking only that field
+      # believes this sync is running.
+      - id: "3043"
+        slug: leads-to-marketo
+        modelId: "814"
+        destinationId: "46"
+        disabled: false
+        schedulePaused: true
+        status: failed
+        lastRunAt: "2026-08-14T06:00:00Z"
+
+    sync_run:
+      # The one that matters. status success, four thousand rows attempted,
+      # four thousand rejected, nothing arrived. The dashboard is green.
+      - id: "990011"
+        syncId: "3041"
+        status: success
+        startedAt: "2026-08-15T06:00:00Z"
+        finishedAt: "2026-08-15T06:04:12Z"
+        queriedRows: 4210
+        addedRows: 4000
+        successfulRows: 0
+        failedRows: 4000
+
+      # A partial delivery. warning is neither an error nor a success, and
+      # code that treats anything other than failed as fine treats this as
+      # complete.
+      - id: "990012"
+        syncId: "3041"
+        status: warning
+        startedAt: "2026-08-14T06:00:00Z"
+        finishedAt: "2026-08-14T06:03:40Z"
+        queriedRows: 4198
+        addedRows: 3900
+        successfulRows: 3874
+        failedRows: 26
+
+      # Nothing was attempted at all. The destination refused the
+      # connection, which is a different thing from refusing rows.
+      - id: "990013"
+        syncId: "3043"
+        status: failed
+        startedAt: "2026-08-14T06:00:00Z"
+        finishedAt: "2026-08-14T06:00:09Z"
+        queriedRows: 1180
+        addedRows: 1180
+        successfulRows: 0
+        failedRows: 0
+        error: "Could not connect to destination: invalid credentials"
+
+    rejected_row:
+      # Why the four thousand were refused, in the destination's own words,
+      # on an endpoint the run does not link to.
+      - id: rr000000000000001
+        runId: "990011"
+        reason: "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]"
+        primaryKey: "cust_10041"
+
+      - id: rr000000000000002
+        runId: "990011"
+        reason: "INVALID_EMAIL_ADDRESS: Email address is invalid: not-an-email"
+        primaryKey: "cust_10042"
+
+      # And the twenty-six from the warning run, refused for a different
+      # reason entirely.
+      - id: rr000000000000003
+        runId: "990012"
+        reason: "STORAGE_LIMIT_EXCEEDED: storage limit exceeded"
+        primaryKey: "cust_20117"
+
+# Every case below is derived from Hightouch's published documentation. None
+# has been run against a real workspace. The verify report says so.
+conformance:
+  - name: a successful run can have delivered nothing
+    # Four thousand rows attempted, four thousand rejected, zero
+    # successful, and the status is success. The run's status is about
+    # whether the machinery ran, not whether the rows landed. The dashboard
+    # is green and nobody's CRM has the data.
+    source: https://hightouch.com/docs/api-reference/syncs/list-sync-runs
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[0].status: success
+        data[0].successfulRows.addedCount: 0
+        data[0].failedRows.addedCount: 4000
+
+  - name: warning is neither an error nor a success
+    # 3874 landed and 26 did not. Code that treats anything other than
+    # failed as fine treats a partial delivery as a complete one.
+    source: https://hightouch.com/docs/api-reference/syncs/list-sync-runs
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[1].status: warning
+        data[1].successfulRows.addedCount: 3874
+        data[1].failedRows.addedCount: 26
+
+  - name: the planned count and the attempted count never agree
+    # 4210 queried and 4000 planned to add. Planning happens against a
+    # snapshot and the destination decides how many go, so a client
+    # reconciling the two is reconciling two different moments.
+    source: https://hightouch.com/docs/api-reference/syncs/list-sync-runs
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[0].plannedRows.queried: 4210
+        data[0].plannedRows.addedCount: 4000
+      absent:
+        - data[0].queriedRows
+        - data[0].addedRows
+
+  - name: a failed run attempted nothing and rejected nothing
+    # The destination refused the connection, which is a different thing
+    # from refusing rows. failedRows is zero on the run that delivered
+    # nothing at all, and four thousand on the one that reported success.
+    source: https://hightouch.com/docs/api-reference/syncs/list-sync-runs
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3043/runs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[0].status: failed
+        data[0].failedRows.addedCount: 0
+        data[0].error: "Could not connect to destination: invalid credentials"
+      absent:
+        - data[1]
+
+  - name: the reasons are on an endpoint the run does not link to
+    # The run said four thousand rows failed. Why each one failed is here,
+    # one row at a time, in the destination's own words, and a client that
+    # reads the run and stops never learns any of it.
+    source: https://hightouch.com/docs/api-reference/syncs/list-rejected-rows
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs/990011/rejected-rows
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[0].reason: "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]"
+        data[0].primaryKey: "cust_10041"
+        data[1].reason: "INVALID_EMAIL_ADDRESS: Email address is invalid: not-an-email"
+      absent:
+        - data[2]
+
+  - name: rejected rows are scoped to the run that rejected them
+    # The warning run's twenty-six were refused for a different reason
+    # entirely, and mixing the two runs' rows together would attribute one
+    # destination's complaint to the other's rows.
+    source: https://hightouch.com/docs/api-reference/syncs/list-rejected-rows
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs/990012/rejected-rows
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[0].reason: "STORAGE_LIMIT_EXCEEDED: storage limit exceeded"
+      absent:
+        - data[1]
+
+  - name: a rejected row carries no identifier of Hightouch's
+    # The primary key is whatever the model called it. There is nothing
+    # here to address a rejected row by, because there is nothing to
+    # address: they are a list of complaints, not records.
+    source: https://hightouch.com/docs/api-reference/syncs/list-rejected-rows
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3041/runs/990011/rejected-rows
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      absent:
+        - data[0].id
+        - data[0].runId
+
+  - name: disabled and paused are different things that both stop a sync
+    # Somebody switched 3042 off. Hightouch switched 3043 off after it kept
+    # failing, and its disabled flag is false, so a client checking only
+    # that field believes it is running.
+    source: https://hightouch.com/docs/api-reference/syncs/list-syncs
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        data[1].disabled: true
+        data[1].schedulePaused: false
+        data[2].disabled: false
+        data[2].schedulePaused: true
+      absent:
+        - data[3]
+
+  - name: a sync that has never run has no last run time
+    # Present and null rather than left out, so a client testing for the
+    # key's existence finds it on everybody.
+    source: https://hightouch.com/docs/api-reference/syncs/get-sync
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs/3042
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 200
+      body:
+        status: disabled
+        lastRunAt: null
+
+  - name: exceeding the row limit is a 402 no retry fixes
+    # The run will keep being refused until somebody changes the plan or
+    # the model, and a client that backs off and retries waits forever.
+    source: https://hightouch.com/docs/api-reference/introduction
+    fixture: small-workspace
+    arm: row_limit_exceeded
+    request:
+      method: GET
+      path: /api/v1/syncs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 402
+      body:
+        message: "This sync would exceed your workspace's monthly row limit"
+
+  - name: an unreachable destination is a 503, not a row rejection
+    source: https://hightouch.com/docs/api-reference/introduction
+    fixture: small-workspace
+    arm: destination_unreachable
+    request:
+      method: GET
+      path: /api/v1/syncs
+      headers:
+        Authorization: Bearer cauldron-hightouch-api-key
+    expect:
+      status: 503
+      body:
+        message: "The destination could not be reached"
+
+  - name: an error carries prose and nothing to branch on
+    source: https://hightouch.com/docs/api-reference/introduction
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v1/syncs
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        message: "Invalid API key"
+      absent:
+        - code
+        - type
+        - error
