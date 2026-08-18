@@ -67,6 +67,15 @@ func runVerify(ctx *context, args []string) int {
 			// Count 1, so the failure covers this case's single request and
 			// nothing after it even if the clear above is ever missed.
 			return sandbox.Arm(runtime.Fault{Error: errorName, Count: 1})
+		}, func() []conform.Delivery {
+			recorded := sandbox.Webhooks().Deliveries()
+			out := make([]conform.Delivery, 0, len(recorded))
+
+			for _, d := range recorded {
+				out = append(out, conform.Delivery{Event: d.Event, Payload: d.Payload})
+			}
+
+			return out
 		})
 
 		writeReport(ctx, report, verbose)
