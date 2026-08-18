@@ -1,0 +1,642 @@
+# PayPal Recipe for Cauldron
+#
+# PayPal has a sandbox, and it is one of the better ones. So the case for this
+# Recipe is not that there is nowhere to test. It is that the sandbox is a
+# shared, network-dependent, rate-limited account whose behaviour you cannot
+# choose: reproducing a declined instrument means finding the right negative
+# testing card, reproducing a pending capture means finding a scenario that
+# produces one, and reproducing either in a unit test means a network call and
+# an OAuth token that expires in eight hours.
+#
+# And underneath that, PayPal's checkout flow is misread the same way by
+# almost everybody who implements it for the first time.
+#
+# Five things worth modelling exactly:
+#
+#   1. APPROVED does not mean paid. The buyer came back from PayPal, the
+#      order says APPROVED, and no money has moved. Capture is a separate
+#      call, and an order left approved and uncaptured is a sale that never
+#      happened while looking in every log like one that did. This is the
+#      single most expensive misunderstanding in the API.
+#   2. The links array is the flow, and its contents change with the status.
+#      A CREATED order carries an approve link; an APPROVED one does not,
+#      because approving is done. Anything indexing links[1] rather than
+#      matching on rel reads a different link at each step and eventually
+#      sends a buyer somewhere meaningless.
+#   3. A capture can succeed and still not have settled. status PENDING with
+#      a reason beside it is an HTTP 201 where the money is under review, and
+#      code branching on the response being successful ships the goods.
+#   4. Money is a string and a currency code, never a number, and the number
+#      of decimals depends on the currency. A yen amount has none. Parsing
+#      the value as a float to compare it works until it does not, and
+#      multiplying by a hundred to get minor units is wrong for JPY by a
+#      factor of a hundred.
+#   5. What arrives is not what was charged. A completed capture carries a
+#      gross, a fee and a net, and reconciling against the gross leaves a
+#      shortfall every single time.
+#
+# One smaller trap that costs an hour: every id in this API is a seventeen
+# character alphanumeric string, and an order id and a capture id are
+# indistinguishable by inspection. Passing the wrong one gets a 404 that says
+# only that the resource is missing.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Capturing, authorising, voiding and refunding are deliberately not
+#     modelled. Those are the calls that move money, and this Recipe takes
+#     the same position as Mercury, Bill.com and Deel: an emulator that makes
+#     the irreversible operation easy to exercise is inviting the mistake it
+#     exists to warn about. Which state an order holds is what a fixture puts
+#     there.
+#   - OAuth is not modelled. The token endpoint, the eight hour expiry and
+#     the client credentials exchange are exactly the parts a fixture cannot
+#     teach you anything about.
+#   - Webhook signature verification against PayPal is a call to PayPal's own
+#     verify endpoint using a certificate chain, not a local HMAC. Cauldron
+#     signs with HMAC like every other Recipe here, so signature handling
+#     written against this will not be the code that runs in production. It
+#     is the one part of this Recipe that is a convenience rather than a
+#     reproduction, and it is called out rather than assumed.
+#   - Disputes, payouts, subscriptions and vaulting are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: paypal
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.paypal.com/docs/api/orders/v2/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - A21AAcauldronPayPalAccessToken0000
+
+responses:
+  resource:
+    style: bare
+  # name, message, debug_id and an array of details. The actionable part is
+  # inside the array: name says UNPROCESSABLE_ENTITY on a declined card and on
+  # a malformed request alike, and only details[0].issue separates them.
+  error:
+    style: flat
+    message_field: message
+    code_field: name
+    type_field: "-"
+
+resources:
+  order:
+    collection: orders
+    # Seventeen characters, and a capture id looks exactly the same. Nothing
+    # about either says which kind it is.
+    id:
+      style: opaque
+      length: 17
+    fields:
+      # CAPTURE or AUTHORIZE, and it decides whether the next call takes the
+      # money or only reserves it.
+      intent:
+        type: string
+        default: CAPTURE
+      # CREATED, SAVED, APPROVED, VOIDED, COMPLETED, PAYER_ACTION_REQUIRED.
+      # APPROVED is the one that reads like success and is not.
+      status:
+        type: string
+        default: CREATED
+      # A string and a currency code, never a number. The decimals depend on
+      # the currency and JPY has none.
+      amount_value:
+        type: string
+        in: amount
+        as: value
+      amount_currency:
+        type: string
+        in: amount
+        as: currency_code
+      # The merchant's own reference, which is the only id in this exchange
+      # that means anything on your side of it.
+      reference_id:
+        type: string
+      payer_email:
+        type: string
+        in: payer
+        as: email_address
+      payer_id:
+        type: string
+        in: payer
+        as: payer_id
+      # The flow itself. Which links are here depends on the status, so rel is
+      # the only stable way in and a positional read finds a different link at
+      # every step.
+      links:
+        type: list
+      create_time:
+        type: string
+      update_time:
+        type: string
+
+  capture:
+    collection: captures
+    id:
+      style: opaque
+      length: 17
+    fields:
+      # COMPLETED, PENDING, DECLINED, REFUNDED, PARTIALLY_REFUNDED. PENDING is
+      # a successful call where the money has not settled.
+      status:
+        type: string
+        default: COMPLETED
+      # Present only when the status needs explaining, and it is the field
+      # that says whether waiting will help.
+      status_reason:
+        type: string
+        in: status_details
+        as: reason
+      amount_value:
+        type: string
+        in: amount
+        as: value
+      amount_currency:
+        type: string
+        in: amount
+        as: currency_code
+      # What was charged, what PayPal kept, and what actually arrives. The
+      # third is the only one that matches the bank.
+      gross_value:
+        type: string
+        in: seller_receivable_breakdown.gross_amount
+        as: value
+      fee_value:
+        type: string
+        in: seller_receivable_breakdown.paypal_fee
+        as: value
+      net_value:
+        type: string
+        in: seller_receivable_breakdown.net_amount
+        as: value
+      breakdown_currency:
+        type: string
+        in: seller_receivable_breakdown.gross_amount
+        as: currency_code
+      # False when more of the authorised amount may still be taken, which
+      # means the order is not finished even though this capture succeeded.
+      final_capture:
+        type: boolean
+      # The merchant's reference again, carried through so a capture can be
+      # matched back to an order without holding PayPal's ids.
+      invoice_id:
+        type: string
+      create_time:
+        type: string
+
+routes:
+  - method: POST
+    path: /v2/checkout/orders
+    resource: order
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/checkout/orders/{id}
+    resource: order
+    operation: get
+
+  - method: GET
+    path: /v2/payments/captures/{id}
+    resource: capture
+    operation: get
+
+webhooks:
+  events:
+    - CHECKOUT.ORDER.APPROVED
+    - PAYMENT.CAPTURE.COMPLETED
+    - PAYMENT.CAPTURE.PENDING
+    - PAYMENT.CAPTURE.DENIED
+    - PAYMENT.CAPTURE.REFUNDED
+  # PayPal verifies a webhook by calling its own verification endpoint with a
+  # certificate chain rather than by checking a local HMAC. This is Cauldron's
+  # scheme, not PayPal's, and the header comment above says so.
+  signing:
+    scheme: hmac-sha256
+    header: PAYPAL-TRANSMISSION-SIG
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests."
+
+  authentication_error:
+    status: 401
+    message: "Authentication failed due to invalid authentication credentials or a missing Authorization header."
+
+  resource_missing:
+    status: 404
+    message: "The specified resource does not exist."
+    code: RESOURCE_NOT_FOUND
+    fields:
+      debug_id: cauldron00notfound
+      details:
+        - issue: INVALID_RESOURCE_ID
+          description: "Specified resource ID does not exist. Please check the resource ID and try again."
+
+  parameter_missing:
+    status: 400
+    message: "Request is not well-formed, syntactically incorrect, or violates schema."
+
+  # The one that is not a failure. The card said no, the order is still there,
+  # and the buyer should be sent back to choose another funding source. Code
+  # that treats this as a dead order loses a sale that was still winnable.
+  instrument_declined:
+    status: 422
+    message: "The requested action could not be performed, semantically incorrect, or failed business validation."
+    code: UNPROCESSABLE_ENTITY
+    fields:
+      debug_id: cauldron00declined
+      details:
+        - issue: INSTRUMENT_DECLINED
+          description: "The instrument presented was either declined by the processor or bank, or it can't be used for this payment."
+
+  # The same name and the same status as the decline above, and only the issue
+  # inside the array separates them. This one will never succeed on a retry.
+  order_already_captured:
+    status: 422
+    message: "The requested action could not be performed, semantically incorrect, or failed business validation."
+    code: UNPROCESSABLE_ENTITY
+    fields:
+      debug_id: cauldron00captured
+      details:
+        - issue: ORDER_ALREADY_CAPTURED
+          description: "Order already captured. If 'intent=CAPTURE' only one capture per order is allowed."
+
+  # Not approved yet. The buyer has not come back, and nothing can be taken.
+  order_not_approved:
+    status: 422
+    message: "The requested action could not be performed, semantically incorrect, or failed business validation."
+    code: UNPROCESSABLE_ENTITY
+    fields:
+      debug_id: cauldron00notapprovd
+      details:
+        - issue: ORDER_NOT_APPROVED
+          description: "Payer has not yet approved the Order for payment. Please redirect the payer to the 'rel':'approve' url returned as part of the HATEOAS links."
+
+fixtures:
+  empty: {}
+
+  storefront:
+    order:
+      # Created and waiting for the buyer. The approve link is the point of
+      # this object: nothing happens until somebody follows it.
+      - id: 5O190127TN364715T
+        intent: CAPTURE
+        status: CREATED
+        amount_value: "42.50"
+        amount_currency: USD
+        reference_id: cart-8891
+        links:
+          - href: https://api.cauldron.test/v2/checkout/orders/5O190127TN364715T
+            rel: self
+            method: GET
+          - href: https://www.cauldron.test/checkoutnow?token=5O190127TN364715T
+            rel: approve
+            method: GET
+          - href: https://api.cauldron.test/v2/checkout/orders/5O190127TN364715T/capture
+            rel: capture
+            method: POST
+        create_time: "2026-08-14T10:02:11Z"
+        update_time: "2026-08-14T10:02:11Z"
+      # The buyer approved and no money has moved. The approve link is gone
+      # because approving is done, so the positional read that worked above
+      # now points at something else.
+      - id: 8AB05529N88245616
+        intent: CAPTURE
+        status: APPROVED
+        amount_value: "42.50"
+        amount_currency: USD
+        reference_id: cart-8892
+        payer_email: buyer@cauldron.test
+        payer_id: QYR5Z8XDVJNXQ
+        links:
+          - href: https://api.cauldron.test/v2/checkout/orders/8AB05529N88245616
+            rel: self
+            method: GET
+          - href: https://api.cauldron.test/v2/checkout/orders/8AB05529N88245616/capture
+            rel: capture
+            method: POST
+        create_time: "2026-08-14T11:14:03Z"
+        update_time: "2026-08-14T11:16:48Z"
+      # Yen. Same string field, no decimal places, because the currency has no
+      # minor unit. Multiplying by a hundred to get cents is out by a hundred.
+      - id: 3KL77219BM118432C
+        intent: CAPTURE
+        status: APPROVED
+        amount_value: "6400"
+        amount_currency: JPY
+        reference_id: cart-8893
+        payer_email: buyer.jp@cauldron.test
+        payer_id: 7HN2KQWERTY44
+        links:
+          - href: https://api.cauldron.test/v2/checkout/orders/3KL77219BM118432C
+            rel: self
+            method: GET
+          - href: https://api.cauldron.test/v2/checkout/orders/3KL77219BM118432C/capture
+            rel: capture
+            method: POST
+        create_time: "2026-08-14T12:40:00Z"
+        update_time: "2026-08-14T12:41:19Z"
+
+    capture:
+      # Settled. The gross was charged, the fee was taken, and the net is what
+      # reaches the bank. Reconciling against the gross is short by the fee
+      # every time.
+      - id: 2GG279541U471931P
+        status: COMPLETED
+        amount_value: "42.50"
+        amount_currency: USD
+        gross_value: "42.50"
+        fee_value: "1.79"
+        net_value: "40.71"
+        breakdown_currency: USD
+        final_capture: true
+        invoice_id: cart-8890
+        create_time: "2026-08-13T09:31:02Z"
+      # A 201 where the money is under review. The call succeeded and the
+      # funds are not there, and the reason beside it is the only thing that
+      # says whether waiting helps.
+      - id: 9XJ40218RC880274N
+        status: PENDING
+        status_reason: PENDING_REVIEW
+        amount_value: "980.00"
+        amount_currency: USD
+        gross_value: "980.00"
+        fee_value: "28.72"
+        net_value: "951.28"
+        breakdown_currency: USD
+        final_capture: true
+        invoice_id: cart-8894
+        create_time: "2026-08-14T13:05:44Z"
+      # Refunded. The capture keeps its original amount and its original
+      # status word changes, so a total taken from the amount is right about
+      # what was charged and wrong about what was kept.
+      - id: 6RT88103KE229947Q
+        status: REFUNDED
+        amount_value: "120.00"
+        amount_currency: USD
+        gross_value: "120.00"
+        fee_value: "4.78"
+        net_value: "115.22"
+        breakdown_currency: USD
+        final_capture: true
+        invoice_id: cart-8888
+        create_time: "2026-08-10T16:20:31Z"
+
+# Conformance cases, read from the PayPal Orders v2 and Payments v2 references
+# rather than observed against a live sandbox. The verify report says so.
+#
+# The two armed cases sit in the middle on purpose. Every case after them
+# expects success, so a fault that failed to clear would take the rest of the
+# suite down with it, and the ordering is the cheapest guard there is against
+# one case leaking a failure into the next.
+conformance:
+  - name: an approved order has not been paid
+    source: https://developer.paypal.com/docs/api/orders/v2/#orders_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/8AB05529N88245616
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # The buyer came back from PayPal and no money has moved. An order
+        # left here is a sale that never happened while looking in every log
+        # like one that did.
+        status: APPROVED
+        payer.email_address: buyer@cauldron.test
+      # Nothing was taken, so there is no capture on it and nothing to
+      # reconcile against.
+      absent:
+        - purchase_units
+
+  - name: a created order has not even been approved
+    source: https://developer.paypal.com/docs/api/orders/v2/#orders_create
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/5O190127TN364715T
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        status: CREATED
+      # No payer at all until somebody approves, so code reading an email
+      # address off a fresh order finds nothing.
+      absent:
+        - payer
+        - payer.email_address
+
+  - name: a declined instrument is a 422 and the order is still winnable
+    source: https://developer.paypal.com/docs/api/orders/v2/#error-INSTRUMENT_DECLINED
+    fixture: storefront
+    arm: instrument_declined
+    request:
+      method: GET
+      path: /v2/checkout/orders/5O190127TN364715T
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 422
+      body:
+        # The name is the same word PayPal uses for a malformed request, so it
+        # separates nothing. The issue inside the array is the actionable
+        # part, and this one means send the buyer back to pick another card
+        # rather than that the order is dead.
+        name: UNPROCESSABLE_ENTITY
+        details[0].issue: INSTRUMENT_DECLINED
+
+  - name: and a captured order is the same name with a different issue
+    source: https://developer.paypal.com/docs/api/orders/v2/#error-ORDER_ALREADY_CAPTURED
+    fixture: storefront
+    arm: order_already_captured
+    request:
+      method: GET
+      path: /v2/checkout/orders/5O190127TN364715T
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 422
+      body:
+        # Identical status, identical name, and retrying this one will never
+        # work while retrying the one above might. Only details[0].issue says
+        # which is which.
+        name: UNPROCESSABLE_ENTITY
+        details[0].issue: ORDER_ALREADY_CAPTURED
+      matches:
+        # The reference support asks for, and it is not the order id.
+        debug_id: '^cauldron'
+
+  - name: the approve link is there while it is needed
+    source: https://developer.paypal.com/docs/api/orders/v2/#orders_create
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/5O190127TN364715T
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # Three links, and the middle one is where the buyer goes.
+        links[1].rel: approve
+        links[1].href: https://www.cauldron.test/checkoutnow?token=5O190127TN364715T
+        links[2].rel: capture
+
+  - name: and gone once it is not, which moves everything after it
+    source: https://developer.paypal.com/docs/api/orders/v2/#orders_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/8AB05529N88245616
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # Two links now, and index 1 is the capture link rather than the
+        # approve link it was on the order above. Anything reading a position
+        # rather than matching on rel sends a buyer somewhere meaningless.
+        links[1].rel: capture
+      absent:
+        - links[2]
+
+  - name: money is a string with a currency beside it
+    source: https://developer.paypal.com/docs/api/orders/v2/#definition-amount_with_breakdown
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/8AB05529N88245616
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # Text, so adding two of them concatenates, and the currency is a
+        # sibling rather than part of the value.
+        amount.value: "42.50"
+        amount.currency_code: USD
+
+  - name: and a yen amount has no decimal places at all
+    source: https://developer.paypal.com/docs/api/reference/currency-codes/
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/3KL77219BM118432C
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # Six thousand four hundred yen. Multiplying by a hundred to get minor
+        # units, which is right for dollars, is out by a factor of a hundred
+        # here, and the field looks identical either way.
+        amount.value: "6400"
+        amount.currency_code: JPY
+
+  - name: what arrives is not what was charged
+    source: https://developer.paypal.com/docs/api/payments/v2/#captures_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/payments/captures/2GG279541U471931P
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # Charged 42.50, kept 40.71, and the difference is PayPal's. A ledger
+        # reconciled against the gross is short by the fee on every single
+        # order.
+        status: COMPLETED
+        amount.value: "42.50"
+        seller_receivable_breakdown.gross_amount.value: "42.50"
+        seller_receivable_breakdown.paypal_fee.value: "1.79"
+        seller_receivable_breakdown.net_amount.value: "40.71"
+
+  - name: a capture can succeed without settling
+    source: https://developer.paypal.com/docs/api/payments/v2/#captures_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/payments/captures/9XJ40218RC880274N
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # The call worked and the money is under review. Branching on the
+        # response being successful ships the goods against funds that may
+        # never arrive.
+        status: PENDING
+        status_details.reason: PENDING_REVIEW
+
+  - name: and a settled one carries no reason at all
+    source: https://developer.paypal.com/docs/api/payments/v2/#captures_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/payments/captures/2GG279541U471931P
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        status: COMPLETED
+      # Present only when the status needs explaining, so its absence is the
+      # signal rather than its value.
+      absent:
+        - status_details
+        - status_details.reason
+
+  - name: a refunded capture keeps the amount it charged
+    source: https://developer.paypal.com/docs/api/payments/v2/#captures_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/payments/captures/6RT88103KE229947Q
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      status: 200
+      body:
+        # The refund is a separate object and this one is unchanged apart from
+        # the word. A total summed from capture amounts is right about what
+        # was charged and wrong about what was kept.
+        status: REFUNDED
+        amount.value: "120.00"
+        seller_receivable_breakdown.net_amount.value: "115.22"
+
+  - name: an order id and a capture id are indistinguishable and not interchangeable
+    source: https://developer.paypal.com/docs/api/orders/v2/#orders_get
+    fixture: storefront
+    request:
+      method: GET
+      path: /v2/checkout/orders/2GG279541U471931P
+      headers:
+        Authorization: Bearer A21AAcauldronPayPalAccessToken0000
+    expect:
+      # A real capture id, seventeen characters, same alphabet, wrong
+      # endpoint. The failure says only that the resource is missing.
+      status: 404
+      body:
+        # The name says nothing about which kind of id was wrong, and the
+        # issue beside it says only that the id is invalid. Nothing in the
+        # failure tells you the id was real and pointed at a capture.
+        name: RESOURCE_NOT_FOUND
+        details[0].issue: INVALID_RESOURCE_ID
+      matches:
+        message: 'does not exist'

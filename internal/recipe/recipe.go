@@ -166,7 +166,21 @@ type Case struct {
 	Verified string `yaml:"verified"`
 	// Fixture is seeded before the case runs. Empty leaves the sandbox as it is,
 	// which lets a group of cases build on each other in order.
-	Fixture string      `yaml:"fixture"`
+	Fixture string `yaml:"fixture"`
+	// Arm names an entry in the Recipe's errors table to install before this
+	// case's request, and only for it.
+	//
+	// Without this a Recipe's error table is a list of unverified claims.
+	// Every failure a conformance suite could reach was one the runtime
+	// produces on its own: a 404 for a missing record, a 401 for a bad
+	// credential. The interesting entries, the ones describing a declined
+	// card or an expired sync token or a rate limit, were declared and never
+	// once exercised, so a field could be renamed, a status changed or a
+	// nested detail dropped and nothing anywhere would notice.
+	//
+	// The fault is armed for exactly one request and cleared afterwards, so a
+	// case cannot leak a failure into the next one.
+	Arm     string      `yaml:"arm"`
 	Request Request     `yaml:"request"`
 	Expect  Expectation `yaml:"expect"`
 }
@@ -1018,6 +1032,20 @@ func (r *Recipe) Validate() error {
 	}
 
 	for i, c := range r.Conformance {
+		if c.Arm != "" {
+			if _, ok := r.Errors[c.Arm]; !ok {
+				add("conformance[%d] %q: arms %q, which is not in the errors table", i, c.Name, c.Arm)
+			}
+
+			// Arming a failure and expecting success means the fault did
+			// nothing, and the case passes while proving the opposite of what
+			// it says. That is the same class of mistake as a case asserting
+			// its own request back.
+			if c.Expect.Status > 0 && c.Expect.Status < 400 {
+				add("conformance[%d] %q: arms %q and expects %d, so the failure it installed changed nothing", i, c.Name, c.Arm, c.Expect.Status)
+			}
+		}
+
 		if !c.Expect.NoBody {
 			continue
 		}
