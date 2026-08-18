@@ -1,0 +1,532 @@
+# Bugsnag Recipe for Cauldron
+#
+# Bugsnag has no sandbox. A token reaches a real project, and the interesting
+# operations are the ones that change what an on-call engineer sees: marking
+# an error fixed, ignoring it, or deleting a whole project's history.
+#
+# The reason to emulate it is that almost everybody integrating with the Data
+# API starts by conflating two objects that are deliberately separate. An
+# Error is a group. An Event is one thing that happened. The stack trace, the
+# request, the user, the breadcrumbs are all on the Event, and none of them
+# are on the Error, so a dashboard built from errors alone has nothing to
+# show and a script that alerts on errors is alerting on groups.
+#
+# Five things worth modelling exactly:
+#
+#   1. An error carries counts and no detail. events is a number, users is a
+#      number, and there is no stack trace anywhere on the object. Getting one
+#      means fetching an event, which is a second request per error.
+#   2. fixed is not terminal. An error marked fixed reopens automatically when
+#      it happens again in a later release, and the field that says so is the
+#      same field that said fixed, so a report generated on Monday is wrong by
+#      Tuesday without anything being edited.
+#   3. severity and unhandled are different questions. An unhandled crash can
+#      be severity info and a handled exception can be severity error, because
+#      one is about how the code failed and the other is about how much
+#      somebody cares. Branching on the wrong one pages the wrong person.
+#   4. The event count is sampled above a threshold, so it is an estimate
+#      presented as an integer. Two errors with the same number have not
+#      necessarily happened the same number of times.
+#   5. first_seen and last_seen bracket the group rather than the release. An
+#      error first seen a year ago and last seen an hour ago is one row, so
+#      anything treating an error as an incident with a duration is reading a
+#      group as an event.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The Notify API, which is how events get into Bugsnag in the first
+#     place, is a different host with a different credential and is not
+#     modelled. This Recipe is the Data API only, and the header says so
+#     rather than leaving somebody to discover it.
+#   - Marking an error fixed or ignored is not modelled. Which state an error
+#     holds is what a fixture puts there.
+#   - Pivots, trend data and the stability score are not modelled: they are
+#     aggregates computed over a window, and a fixture cannot teach anything
+#     about them.
+#   - Paging is by Link header and by a total in a header, neither of which
+#     Cauldron models, so a client following rel=next has nothing to follow.
+#
+# Tokens below are fixtures, not secrets, and every error here is invented.
+
+recipe: bugsnag
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://bugsnagapiv2.docs.apiary.io/
+
+auth:
+  scheme: header
+  header: Authorization
+  # Bugsnag's own scheme word, and it is not Bearer. Sending the usual one
+  # reads as a bad token rather than as the wrong scheme.
+  prefix: "token "
+  keys:
+    - cauldron0000000000000000000000000000000
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: errors
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  error:
+    id:
+      style: hex
+      length: 24
+    fields:
+      project_id:
+        type: string
+      # The class and message of the exception, which is all the detail an
+      # error carries. There is no stack trace on this object.
+      error_class:
+        type: string
+      message:
+        type: string
+      context:
+        type: string
+      # open, fixed, ignored, snoozed. fixed is not terminal: it reverts to
+      # open when the error happens again in a later release.
+      status:
+        type: string
+        default: open
+      # error, warning, info. Separate from unhandled, and about how much
+      # somebody cares rather than about how the code failed.
+      severity:
+        type: string
+        default: warning
+      # Whether the code caught it. An unhandled crash can be severity info
+      # and a handled exception can be severity error.
+      unhandled:
+        type: boolean
+        default: false
+      # Sampled above a threshold, so this is an estimate presented as an
+      # integer and two errors with the same number have not necessarily
+      # happened the same number of times.
+      events:
+        type: integer
+        default: 0
+      users:
+        type: integer
+        default: 0
+      # These bracket the group rather than a release, so an error first seen
+      # a year ago and last seen an hour ago is one row.
+      first_seen:
+        type: string
+      last_seen:
+        type: string
+
+  event:
+    id:
+      style: hex
+      length: 24
+    fields:
+      error_id:
+        type: string
+      # Everything an error does not have lives here.
+      received_at:
+        type: string
+      severity:
+        type: string
+        default: warning
+      unhandled:
+        type: boolean
+        default: false
+      # The stack, which is the reason to fetch an event at all.
+      stacktrace:
+        type: list
+        in: exceptions[0]
+        as: stacktrace
+      exception_class:
+        type: string
+        in: exceptions[0]
+        as: errorClass
+      exception_message:
+        type: string
+        in: exceptions[0]
+        as: message
+      user_id:
+        type: string
+        in: user
+        as: id
+      app_version:
+        type: string
+        in: app
+        as: version
+      release_stage:
+        type: string
+        in: app
+        as: releaseStage
+
+routes:
+  - method: GET
+    path: /projects/{project_id}/errors
+    resource: error
+    operation: list
+    scope: [project_id]
+
+  - method: GET
+    path: /errors/{id}
+    resource: error
+    operation: get
+
+  - method: GET
+    path: /errors/{error_id}/events
+    resource: event
+    operation: list
+    scope: [error_id]
+
+  - method: GET
+    path: /projects/{project_id}/events/{id}
+    resource: event
+    operation: get
+
+webhooks:
+  events:
+    - error.created
+    - error.reopened
+    - error.state_change
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Rate limit exceeded"
+    headers:
+      Retry-After: "60"
+
+  authentication_error:
+    status: 401
+    message: "Invalid token"
+
+  resource_missing:
+    status: 404
+    message: "Not Found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request"
+
+  # A token scoped to read cannot change an error's status, and the failure
+  # names neither the scope nor the operation.
+  insufficient_scope:
+    status: 403
+    message: "Forbidden"
+
+  # Events are retained for a fixed window and then removed, so an error that
+  # exists can have no events left to inspect. This is the state that makes a
+  # stack trace unavailable for a bug that is still open.
+  events_expired:
+    status: 404
+    message: "No events are retained for this error"
+
+fixtures:
+  empty: {}
+
+  small-project:
+    error:
+      # Open, unhandled, and severity info. The crash was not caught and
+      # somebody decided it does not matter much, which is a combination that
+      # code branching on one field alone gets wrong.
+      - id: 5f2a1b0c9d8e4f7a8b6c5d4e
+        project_id: 60a1b2c3d4e5f60718293a4b
+        error_class: TypeError
+        message: "Cannot read properties of undefined"
+        context: GET /api/orders
+        status: open
+        severity: info
+        unhandled: true
+        events: 4821
+        users: 312
+        first_seen: "2025-07-02T11:14:00.000Z"
+        last_seen: "2026-08-17T22:41:09.000Z"
+      # Marked fixed, and it will reopen the moment it happens in a later
+      # release. Nothing about the object says that is coming.
+      - id: 6a3b2c1d0e9f4a8b9c7d6e5f
+        project_id: 60a1b2c3d4e5f60718293a4b
+        error_class: TimeoutError
+        message: "Upstream did not respond in 30s"
+        context: POST /api/checkout
+        status: fixed
+        severity: error
+        unhandled: false
+        events: 118
+        users: 44
+        first_seen: "2026-05-19T08:00:00.000Z"
+        last_seen: "2026-08-10T14:22:31.000Z"
+      # Handled, and severity error. The mirror of the first one: the code
+      # caught it and somebody decided it matters a great deal.
+      - id: 7b4c3d2e1f0a4b9c8d7e6f5a
+        project_id: 60a1b2c3d4e5f60718293a4b
+        error_class: PaymentDeclined
+        message: "Card issuer refused the charge"
+        context: POST /api/checkout
+        status: open
+        severity: error
+        unhandled: false
+        events: 4821
+        users: 2907
+        first_seen: "2026-08-01T09:00:00.000Z"
+        last_seen: "2026-08-17T23:02:00.000Z"
+
+    event:
+      - id: 8c5d4e3f2a1b4c0d9e8f7a6b
+        project_id: 60a1b2c3d4e5f60718293a4b
+        error_id: 5f2a1b0c9d8e4f7a8b6c5d4e
+        received_at: "2026-08-17T22:41:09.000Z"
+        severity: info
+        unhandled: true
+        exception_class: TypeError
+        exception_message: "Cannot read properties of undefined"
+        stacktrace:
+          - file: app/routes/orders.js
+            lineNumber: 84
+            method: listOrders
+            inProject: true
+          - file: node_modules/express/lib/router/route.js
+            lineNumber: 149
+            method: handle
+            inProject: false
+        user_id: user_88213
+        app_version: 4.2.1
+        release_stage: production
+      # An occurrence of a different error, in the same project. A listing
+      # that ignored the error in its own path would return this one too.
+      - id: 9d6e5f4a3b2c4d1e8f9a8b7c
+        project_id: 60a1b2c3d4e5f60718293a4b
+        error_id: 7b4c3d2e1f0a4b9c8d7e6f5a
+        received_at: "2026-08-17T23:02:00.000Z"
+        severity: error
+        unhandled: false
+        exception_class: PaymentDeclined
+        exception_message: "Card issuer refused the charge"
+        stacktrace:
+          - file: app/services/payments.js
+            lineNumber: 212
+            method: charge
+            inProject: true
+        user_id: user_44117
+        app_version: 4.2.1
+        release_stage: production
+
+# Conformance cases, read from the Bugsnag Data API reference rather than
+# observed against a live project. The verify report says so.
+conformance:
+  - name: an error carries counts and no stack trace
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/errors
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/5f2a1b0c9d8e4f7a8b6c5d4e
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Numbers, a class and a message. A dashboard built from this has
+        # nothing to show a developer, and getting the detail is a second
+        # request per error.
+        error_class: TypeError
+        events: 4821
+        users: 312
+      absent:
+        - stacktrace
+        - exceptions
+        - request
+        - user
+
+  - name: and the event has everything the error does not
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/events
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/60a1b2c3d4e5f60718293a4b/events/8c5d4e3f2a1b4c0d9e8f7a6b
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The stack, the user, the release. All of it on the occurrence
+        # rather than on the group.
+        exceptions[0].errorClass: TypeError
+        exceptions[0].stacktrace[0].file: app/routes/orders.js
+        exceptions[0].stacktrace[0].lineNumber: 84
+        user.id: user_88213
+        app.version: 4.2.1
+
+  - name: the top frame is the one in your own code
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/events
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/60a1b2c3d4e5f60718293a4b/events/8c5d4e3f2a1b4c0d9e8f7a6b
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # inProject is the flag that separates your frames from the library
+        # ones, and it is on every frame rather than being a filter.
+        exceptions[0].stacktrace[0].inProject: true
+        exceptions[0].stacktrace[1].inProject: false
+
+  - name: fixed is not terminal
+    source: https://docs.bugsnag.com/product/error-reporting/
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/6a3b2c1d0e9f4a8b9c7d6e5f
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # It reverts to open the moment this happens again in a later
+        # release, using the same field, so a report generated on Monday is
+        # wrong by Tuesday without anybody editing anything.
+        status: fixed
+        error_class: TimeoutError
+
+  - name: an unhandled crash can be severity info
+    source: https://docs.bugsnag.com/product/severity-indicator/
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/5f2a1b0c9d8e4f7a8b6c5d4e
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The code did not catch it and somebody decided it does not matter
+        # much. Paging on unhandled alone wakes somebody for this.
+        unhandled: true
+        severity: info
+
+  - name: and a handled exception can be severity error
+    source: https://docs.bugsnag.com/product/severity-indicator/
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/7b4c3d2e1f0a4b9c8d7e6f5a
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The mirror of the one above. Two fields answering two questions,
+        # and branching on either alone gets one of these two wrong.
+        unhandled: false
+        severity: error
+
+  - name: two errors with the same count have not happened the same number of times
+    source: https://docs.bugsnag.com/product/error-reporting/
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/60a1b2c3d4e5f60718293a4b/errors
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Identical event counts on two unrelated errors, because above a
+        # threshold the number is sampled and presented as an integer. It is
+        # an estimate wearing a precise-looking type.
+        "[0].events": 4821
+        "[2].events": 4821
+        "[0].users": 312
+        "[2].users": 2907
+
+  - name: first_seen and last_seen bracket the group
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/errors
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/5f2a1b0c9d8e4f7a8b6c5d4e
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Thirteen months apart on one row. Anything treating an error as an
+        # incident with a duration is reading a group as an event.
+        first_seen: "2025-07-02T11:14:00.000Z"
+        last_seen: "2026-08-17T22:41:09.000Z"
+
+  - name: an events listing is scoped to its error
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/events
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/5f2a1b0c9d8e4f7a8b6c5d4e/events
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].error_id": 5f2a1b0c9d8e4f7a8b6c5d4e
+      absent:
+        - "[1]"
+
+  - name: a listing is a bare array with the total in a header
+    source: https://bugsnagapiv2.docs.apiary.io/#reference/errors
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/60a1b2c3d4e5f60718293a4b/errors
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[1].error_class": TimeoutError
+      # No envelope, no count in the body, and no next link either. Both live
+      # in headers, which is a place most clients do not look.
+      absent:
+        - data
+        - errors
+        - total_count
+        - next
+
+  - name: an error can outlive the events that explain it
+    source: https://docs.bugsnag.com/product/data-retention/
+    arm: events_expired
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/6a3b2c1d0e9f4a8b9c7d6e5f/events
+      headers:
+        Authorization: token cauldron0000000000000000000000000000000
+    expect:
+      # Events are retained for a window and the error is not, so an open bug
+      # can have no stack trace left to look at. The 404 is about the events
+      # rather than about the error, and it reads identically to a missing
+      # error.
+      status: 404
+      matches:
+        errors: 'No events are retained'
+
+  - name: the wrong authorisation scheme reads as a bad token
+    source: https://bugsnagapiv2.docs.apiary.io/#introduction/authentication
+    fixture: small-project
+    request:
+      method: GET
+      path: /errors/5f2a1b0c9d8e4f7a8b6c5d4e
+      headers:
+        # Bearer, which is what everything else uses. The failure blames the
+        # token rather than the scheme, so the search that follows is for the
+        # wrong thing.
+        Authorization: Bearer cauldron0000000000000000000000000000000
+    expect:
+      status: 401
+      matches:
+        errors: 'Invalid token'
