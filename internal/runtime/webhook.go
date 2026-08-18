@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,26 +54,92 @@ type webhookQueue struct {
 	seq       int
 }
 
+// maxEndpoints caps how many places one sandbox will deliver to.
+//
+// Delivery happens inside the request that triggered it, so an uncapped list
+// is a way to make every write in a test suite slow, and the subscribe
+// endpoint is reachable by anything that can talk to the control plane. Nobody
+// testing webhooks needs more receivers than this.
+const maxEndpoints = 16
+
+// deliveryTimeout bounds one attempt. Short, because these are local receivers
+// and the caller is a test waiting on a create.
+const deliveryTimeout = 2 * time.Second
+
 func newWebhookQueue(r *recipe.Recipe, c *clock.Clock) *webhookQueue {
 	return &webhookQueue{
 		recipe: r,
 		clock:  c,
-		client: &http.Client{Timeout: 5 * time.Second},
+		client: &http.Client{
+			Timeout: deliveryTimeout,
+			// A webhook receiver has no business redirecting, and following
+			// one turns an endpoint somebody vetted into an address they never
+			// saw. The payload carries record data and a valid signature, so
+			// where it lands is worth being strict about.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
 // Subscribe registers an endpoint to receive webhooks.
-func (q *webhookQueue) Subscribe(url string) {
+//
+// The address is checked because this is an outbound request Cauldron makes on
+// somebody else's say-so, carrying record data and a signature the receiver
+// will treat as genuine.
+//
+// Loopback and private addresses are deliberately allowed: delivering to the
+// application under test on localhost is the entire point, and refusing it
+// would break the documented use for a threat this cannot fix on its own. What
+// is refused is the class no local receiver ever lives in — a non-HTTP scheme,
+// and the link-local range that cloud metadata services sit on.
+func (q *webhookQueue) Subscribe(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("webhook endpoint is not a URL: %w", err)
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("webhook endpoint must be http or https, not %q", parsed.Scheme)
+	}
+
+	if parsed.Host == "" {
+		return fmt.Errorf("webhook endpoint has no host: %s", raw)
+	}
+
+	if linkLocal(parsed.Hostname()) {
+		return fmt.Errorf("refusing a webhook endpoint on a link-local address: %s", parsed.Host)
+	}
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	for _, existing := range q.endpoints {
-		if existing == url {
-			return
+		if existing == raw {
+			return nil
 		}
 	}
 
-	q.endpoints = append(q.endpoints, url)
+	if len(q.endpoints) >= maxEndpoints {
+		return fmt.Errorf("a sandbox delivers to at most %d endpoints", maxEndpoints)
+	}
+
+	q.endpoints = append(q.endpoints, raw)
+
+	return nil
+}
+
+// linkLocal reports whether a host is in the range cloud metadata services
+// live on. 169.254.169.254 is the address worth naming: it answers without
+// credentials on most providers and hands back instance role tokens.
+func linkLocal(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 // Endpoints returns the registered endpoints.
@@ -102,6 +170,11 @@ func (q *webhookQueue) reset() {
 
 	q.sent = nil
 	q.seq = 0
+	// Subscriptions too. Leaving them made a reset sandbox distinguishable
+	// from a fresh one in the way that matters most: an endpoint registered
+	// once kept receiving every record the suite created afterwards, through
+	// every reset between tests.
+	q.endpoints = nil
 }
 
 // Known reports whether the Recipe declares an event.
@@ -266,40 +339,69 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 		return delivery, nil
 	}
 
-	for _, endpoint := range endpoints {
-		attempt := delivery
-		attempt.Endpoint = endpoint
-		attempt.Attempt = 1
+	// Concurrently, because delivery happens inside the request that triggered
+	// it and endpoints fail by timing out rather than by refusing. In series,
+	// three receivers that have stopped answering cost three timeouts, and a
+	// suite that registers a handful of them turns every create into a
+	// quarter-minute wait. Fanning out costs one timeout however many there
+	// are.
+	//
+	// The results are collected in order and recorded afterwards, so what a
+	// test reads back does not depend on which receiver answered first.
+	attempts := make([]Delivery, len(endpoints))
 
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			attempt.Error = err.Error()
-			q.record(attempt)
+	var wg sync.WaitGroup
 
-			continue
-		}
+	for i, endpoint := range endpoints {
+		wg.Add(1)
 
-		req.Header.Set("Content-Type", "application/json")
+		go func(i int, endpoint string) {
+			defer wg.Done()
 
-		if header := q.recipe.Webhooks.Signing.Header; header != "" && attempt.Signature != "" {
-			req.Header.Set(header, attempt.Signature)
-		}
+			attempts[i] = q.deliver(delivery, endpoint, body)
+		}(i, endpoint)
+	}
 
-		resp, err := q.client.Do(req)
-		if err != nil {
-			attempt.Error = err.Error()
-			q.record(attempt)
+	wg.Wait()
 
-			continue
-		}
-
-		attempt.Status = resp.StatusCode
-		_ = resp.Body.Close()
-
+	for _, attempt := range attempts {
 		q.record(attempt)
 	}
 
 	return delivery, nil
+}
+
+// deliver posts one webhook and reports what happened, without touching shared
+// state: the caller records the results in endpoint order once they are all in.
+func (q *webhookQueue) deliver(delivery Delivery, endpoint string, body []byte) Delivery {
+	attempt := delivery
+	attempt.Endpoint = endpoint
+	attempt.Attempt = 1
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		attempt.Error = err.Error()
+
+		return attempt
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	if header := q.recipe.Webhooks.Signing.Header; header != "" && attempt.Signature != "" {
+		req.Header.Set(header, attempt.Signature)
+	}
+
+	resp, err := q.client.Do(req)
+	if err != nil {
+		attempt.Error = err.Error()
+
+		return attempt
+	}
+
+	attempt.Status = resp.StatusCode
+	_ = resp.Body.Close()
+
+	return attempt
 }
 
 func (q *webhookQueue) record(d Delivery) {

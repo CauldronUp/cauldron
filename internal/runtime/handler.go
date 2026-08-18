@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -854,7 +855,18 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 			presented = password
 		}
 	default:
-		return true
+		// Validation should have refused an unknown scheme long before a
+		// request arrived, and today it does: the empty and none cases are
+		// handled above, and the validator only allows the four cased here. So
+		// this is unreachable, and it used to accept every request anyway.
+		//
+		// Nothing couples that switch to the list of valid schemes, though.
+		// Adding a fifth scheme to the list without adding a case here would
+		// silently authorise every request against every Recipe using it, from
+		// a one-line change, with no test that would fail. Failing closed is
+		// the only safe direction for a branch whose whole job is to be
+		// unreachable.
+		return false
 	}
 
 	if auth.Prefix != "" {
@@ -879,7 +891,12 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 	}
 
 	for _, key := range auth.Keys {
-		if presented == key {
+		// Constant time, which matters less here than almost anywhere: the
+		// keys are published fixtures. It is here because this file is read as
+		// a description of how a provider behaves, and a comparison that
+		// leaks its answer byte by byte is not the pattern to hand somebody
+		// who is about to go and write the real thing.
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(key)) == 1 {
 			return true
 		}
 	}

@@ -1,6 +1,9 @@
 package cli
 
 import (
+	// Aliased: this package already has a type called context, which is the
+	// CLI's own streams rather than the standard library's.
+	stdcontext "context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -176,8 +180,15 @@ func runServe(ctx *context, args []string) int {
 
 	addr := dialable(listener.Addr())
 
+	// The port that was bound, not the one that was asked for. --port 0 asks
+	// the operating system to choose, which is the natural thing to do in CI
+	// so parallel jobs do not collide, and it is exactly the case where
+	// reporting the request rather than the result hands the caller a zero it
+	// cannot dial. The headless documentation makes this field load-bearing.
+	bound := boundPort(listener.Addr(), opts.port)
+
 	if opts.headless {
-		writeServeJSON(ctx.stdout, addr, host, opts.port, srv.Names(), missing, unseeded)
+		writeServeJSON(ctx.stdout, addr, host, bound, srv.Names(), missing, unseeded)
 	} else {
 		writeServeBanner(ctx.stdout, addr, srv.Names(), missing, opts)
 
@@ -190,6 +201,13 @@ func runServe(ctx *context, args []string) int {
 	httpServer := &http.Server{
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Without these a client that opens a connection and then stops
+		// talking holds a goroutine for as long as it likes. A test suite does
+		// not do that deliberately; a suite that crashes mid-request does it
+		// by accident, and the server it left behind is the one the next job
+		// finds still bound to the port.
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// Serve until interrupted, then shut down cleanly so an in-flight request
@@ -209,7 +227,15 @@ func runServe(ctx *context, args []string) int {
 			fmt.Fprint(ctx.stdout, "\nStopping.\n")
 		}
 
-		_ = httpServer.Close()
+		// Shutdown, not Close. Close severs live connections immediately,
+		// which on a compose teardown means the application under test sees an
+		// EOF mid-response at the exact moment the suite is tidying up, and
+		// spends an afternoon being blamed for it. Shutdown stops accepting
+		// and lets what is in flight finish.
+		shutdown, cancel := stdcontext.WithTimeout(stdcontext.Background(), 5*time.Second)
+		defer cancel()
+
+		_ = httpServer.Shutdown(shutdown)
 
 		return 0
 	case err := <-errs:
@@ -229,6 +255,26 @@ func runServe(ctx *context, args []string) int {
 // instead is correct from this machine, which is where the person reading it
 // is, and the headless JSON carries the real bind address separately for
 // anybody arriving from elsewhere.
+// boundPort reports the port actually listening, falling back to the requested
+// one only when the address cannot be read.
+func boundPort(addr net.Addr, requested int) int {
+	if tcp, ok := addr.(*net.TCPAddr); ok && tcp.Port != 0 {
+		return tcp.Port
+	}
+
+	_, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return requested
+	}
+
+	parsed, err := strconv.Atoi(port)
+	if err != nil {
+		return requested
+	}
+
+	return parsed
+}
+
 func dialable(addr net.Addr) string {
 	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {

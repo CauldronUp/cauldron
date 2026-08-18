@@ -667,3 +667,120 @@ func TestRequestLogRecordsTheFaultThatFired(t *testing.T) {
 		t.Errorf("Fault = %q, want rate_limit", entries[0].Fault)
 	}
 }
+
+// The switch over auth schemes and the list of schemes the validator accepts
+// are two separate pieces of code that have to agree, and nothing makes them.
+//
+// This test is the coupling. Adding a scheme to the valid list without adding
+// a case to the switch is a one-line change that would silently authorise
+// every request against every Recipe using it, and until now nothing would
+// have failed.
+func TestEveryValidAuthSchemeActuallyChecksSomething(t *testing.T) {
+	schemes := map[string]recipe.Auth{
+		"bearer": {Scheme: "bearer", Header: "Authorization", Prefix: "Bearer ", Keys: []string{"right"}},
+		"basic":  {Scheme: "basic", Credential: "password", Keys: []string{"right"}},
+		"header": {Scheme: "header", Header: "X-Api-Key", Keys: []string{"right"}},
+		"query":  {Scheme: "query", Param: "api_key", Keys: []string{"right"}},
+	}
+
+	// none is the one scheme that is meant to accept anything, and it is
+	// handled before the switch, so it is not in the table above. Anything
+	// else appearing in the valid list without a case here is the bug.
+	for _, scheme := range recipe.ValidAuthSchemes() {
+		if scheme == "" || scheme == "none" {
+			continue
+		}
+
+		if _, covered := schemes[scheme]; !covered {
+			t.Errorf("auth scheme %q is accepted by the validator and this test does not exercise it, so nothing checks that the handler does either", scheme)
+		}
+	}
+
+	for name, auth := range schemes {
+		s := sandboxWithAuth(t, auth)
+
+		if authorisedWith(s, auth, "right") != true {
+			t.Errorf("%s: the correct credential was refused", name)
+		}
+
+		for _, wrong := range []string{"", "wrong", "righter", "righ"} {
+			if authorisedWith(s, auth, wrong) {
+				t.Errorf("%s: %q was accepted", name, wrong)
+			}
+		}
+	}
+}
+
+// An unknown scheme is refused twice: once by the validator, which is the
+// defence that works today, and once by the handler, which is the one that
+// still works if somebody adds a scheme to the valid list and forgets the
+// switch.
+func TestAnUnknownAuthSchemeIsRefusedTwice(t *testing.T) {
+	auth := recipe.Auth{Scheme: "some-scheme-nobody-implemented", Keys: []string{"right"}}
+
+	r, err := recipe.Open("stripe")
+	if err != nil {
+		t.Fatalf("open stripe: %v", err)
+	}
+
+	clone := *r
+	clone.Auth = auth
+
+	// The first defence. A Recipe naming a scheme nothing implements does not
+	// load at all.
+	if _, err := New(&clone, Options{Seed: 1}); err == nil {
+		t.Fatal("a Recipe with an unknown auth scheme was accepted by the validator")
+	}
+
+	// The second. Reaching past the validator, as a future edit to the valid
+	// list would, the handler must still refuse rather than wave everything
+	// through, which is what it used to do.
+	s := sandboxWithAuth(t, recipe.Auth{Scheme: "bearer", Prefix: "Bearer ", Keys: []string{"right"}})
+	s.recipe.Auth = auth
+
+	if authorisedWith(s, auth, "right") {
+		t.Error("an unrecognised scheme accepted a request, which is the fail-open this branch exists to prevent")
+	}
+}
+
+func sandboxWithAuth(t *testing.T, auth recipe.Auth) *Sandbox {
+	t.Helper()
+
+	r, err := recipe.Open("stripe")
+	if err != nil {
+		t.Fatalf("open stripe: %v", err)
+	}
+
+	// A copy, so the shared embedded Recipe is not altered for anything else
+	// running in this process.
+	clone := *r
+	clone.Auth = auth
+
+	s, err := New(&clone, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	return s
+}
+
+func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
+	req := httptest.NewRequest(http.MethodGet, "/v1/customers", nil)
+
+	switch auth.Scheme {
+	case "bearer":
+		req.Header.Set("Authorization", auth.Prefix+credential)
+	case "basic":
+		req.SetBasicAuth("user", credential)
+	case "header":
+		req.Header.Set(auth.Header, credential)
+	case "query":
+		q := req.URL.Query()
+		q.Set(auth.Param, credential)
+		req.URL.RawQuery = q.Encode()
+	default:
+		req.Header.Set("Authorization", credential)
+	}
+
+	return s.authorised(req)
+}

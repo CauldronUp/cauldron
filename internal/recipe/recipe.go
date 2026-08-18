@@ -1339,3 +1339,17 @@ func sortedKeys[V any](m map[string]V) []string {
 
 	return keys
 }
+
+// ValidAuthSchemes returns the credential schemes a Recipe may declare.
+//
+// Exported so the runtime's test suite can assert that every scheme the
+// validator accepts is one the handler actually checks. The two are separate
+// pieces of code that have to agree and nothing else makes them: adding a
+// scheme here without adding a case there would silently authorise every
+// request against every Recipe using it.
+func ValidAuthSchemes() []string {
+	out := make([]string, len(validSchemes))
+	copy(out, validSchemes)
+
+	return out
+}
