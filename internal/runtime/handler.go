@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -260,10 +262,20 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		limit = 10
 	}
 
-	limit = queryInt(r, "limit", limit)
+	// A declared name replaces the defaults rather than joining them. Google
+	// does not accept limit, and an emulator that honours both spellings lets
+	// the wrong one work locally and fail nowhere until production.
+	if name := matched.spec.Pagination.LimitParam; name != "" {
+		limit = queryInt(r, name, limit)
+	} else {
+		limit = queryInt(r, "limit", limit)
+	}
 
-	cursor := r.URL.Query().Get("starting_after")
-	if cursor == "" {
+	cursor := ""
+
+	if name := matched.spec.Pagination.CursorParam; name != "" {
+		cursor = r.URL.Query().Get(name)
+	} else if cursor = r.URL.Query().Get("starting_after"); cursor == "" {
 		cursor = r.URL.Query().Get("cursor")
 	}
 
@@ -655,6 +667,13 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 			setPath(body, spec.CompleteField, !page.HasMore)
 		}
 
+		// Only on the last page, which is the entire point. Google Calendar
+		// gives you a page token or a sync token and never both, so code that
+		// grabs whichever one it finds first stores the wrong one.
+		if spec.FinalField != "" && !page.HasMore {
+			setPath(body, spec.FinalField, finalToken(resource, page))
+		}
+
 		if spec.HasMoreField != "" {
 			setPath(body, spec.HasMoreField, page.HasMore)
 		}
@@ -689,6 +708,25 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 
 		return withFields(body, spec.Fields)
 	}
+}
+
+// finalToken derives the opaque token a provider hands back when a listing is
+// exhausted.
+//
+// Stable for a given final page, so a suite can assert it rather than only
+// matching a shape, and opaque so nothing is tempted to read structure out of
+// it. The real ones carry no parseable structure either, and clients that
+// guessed otherwise are the reason they are documented as opaque.
+func finalToken(resource string, page store.Page) string {
+	last := ""
+
+	if n := len(page.Records); n > 0 {
+		last, _ = page.Records[n-1]["id"].(string)
+	}
+
+	sum := sha256.Sum256([]byte(resource + ":" + last))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:15])
 }
 
 // scopeVars extracts the scope filters for a request from its path parameters.
