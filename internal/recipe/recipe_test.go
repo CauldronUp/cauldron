@@ -1327,3 +1327,76 @@ func TestAHiddenIdentifierIsRefusedWhenSomethingDeletesOne(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// Dwolla is HAL: there is no id property on anything, and identity lives in
+// _links.self.href with the identifier as its last segment. So the record is
+// addressable and the id is genuinely absent, which are two things that are
+// usually not true together, and the rule that catches a listing withholding
+// an identifier would otherwise make that shape undescribable.
+const carriedRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+responses:
+  list:
+    style: wrapped
+resources:
+  customer:
+    collection: customers
+    id:
+      style: uuid
+      field: "-"
+      carried_by: self_href
+    fields:
+      self_href:
+        type: string
+        in: _links.self
+        as: href
+      email:
+        type: string
+routes:
+  - method: GET
+    path: /v1/customers
+    resource: customer
+    operation: list
+  - method: GET
+    path: /v1/customers/{id}
+    resource: customer
+    operation: get
+`
+
+func TestAnIdentifierCarriedElsewhereIsAllowedOnAListing(t *testing.T) {
+	if _, err := parse(t, carriedRecipe); err != nil {
+		t.Errorf("a described absence should be allowed: %v", err)
+	}
+}
+
+// Without the declaration it is an undescribed one, and that is what the rule
+// is for.
+func TestAnUndescribedAbsenceIsStillRefused(t *testing.T) {
+	got := problems(t, strings.Replace(carriedRecipe, "\n      carried_by: self_href", "", 1))
+
+	if !strings.Contains(got, "withholds an identifier that exists") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCarriedByMustNameARealField(t *testing.T) {
+	got := problems(t, strings.Replace(carriedRecipe, "carried_by: self_href", "carried_by: links", 1))
+
+	if !strings.Contains(got, "not a field on it") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// Carried by something means not sent under its own name. A resource that
+// sends both is not describing this shape.
+func TestCarriedByAndAVisibleIdentifierContradict(t *testing.T) {
+	got := problems(t, strings.Replace(carriedRecipe, `      field: "-"`, `      field: customerId`, 1))
+
+	if !strings.Contains(got, "in one place only") {
+		t.Errorf("got %q", got)
+	}
+}

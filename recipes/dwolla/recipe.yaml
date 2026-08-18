@@ -1,0 +1,637 @@
+# Dwolla Recipe for Cauldron
+#
+# Two things about Dwolla are unlike anything else in this portfolio, and both
+# of them break code written against a normal REST API on the first call.
+#
+# A create answers 201 with no body at all. Not an empty object: nothing. The
+# identifier of the thing you just made is in the Location header and nowhere
+# else, so a client that reads the response body gets nothing to parse and one
+# that calls .json() on it throws.
+#
+# And resources have no id field. Dwolla is HAL, so identity lives in
+# _links.self.href, and the id is the last segment of that URL. Code that
+# reads customer.id gets undefined on every object, and the documented way to
+# navigate is to follow the links rather than build paths from ids you
+# extracted.
+#
+# Three more worth modelling exactly:
+#
+#   1. Micro-deposit verification has three attempts and then the funding
+#      source is finished. Not rate limited, not retryable tomorrow:
+#      permanently unverifiable, and the fix is removing it and adding it
+#      again. A client that retries on failure burns all three in a second.
+#   2. A customer at "retry" has exactly one more attempt at the same
+#      information. Getting it wrong again moves them to "document", which
+#      means somebody has to photograph an ID. Neither status is a failure
+#      and neither is a success.
+#   3. An amount is a decimal string inside an object, so the value is
+#      "10.00" and it lives at amount.value. Reading transfer.amount gets an
+#      object, and parsing it as a number gets NaN.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No money moves and no attempt is ever spent. Which status a resource
+#     holds, and how many verification attempts are left, are what a fixture
+#     puts there. The states are what a client has to handle and the
+#     interesting ones take days to reach against the real thing.
+#   - The links are fixture values rather than generated, except on a create,
+#     where the Location header is real because that is the whole behaviour
+#     being described.
+#   - Mass payments, webhooks subscriptions, beneficial owners and the
+#     on-demand authorisation flow are not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: dwolla
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.dwolla.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-dwolla-access-token
+
+required_headers:
+  Accept:
+    error: unsupported_media_type
+
+responses:
+  list:
+    style: wrapped
+    count_field: total
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  customer:
+    collection: _embedded.customers
+    id:
+      style: uuid
+      # No id field anywhere. Identity is _links.self.href and the id is its
+      # last segment, so code that reads customer.id gets undefined on every
+      # object Dwolla sends.
+      field: "-"
+      carried_by: self_href
+    fields:
+      self_href:
+        type: string
+        in: _links.self
+        as: href
+      firstName:
+        type: string
+      lastName:
+        type: string
+      email:
+        type: string
+      # unverified, retry, document, verified, suspended. retry means the
+      # information was wrong and there is exactly one more attempt at it;
+      # document means somebody has to photograph an ID. Neither is a failure
+      # and neither is a success.
+      status:
+        type: string
+        default: unverified
+      type:
+        type: string
+        default: personal
+      created:
+        type: datetime
+
+  funding_source:
+    collection: _embedded.funding-sources
+    id:
+      style: uuid
+      field: "-"
+      carried_by: self_href
+    fields:
+      self_href:
+        type: string
+        in: _links.self
+        as: href
+      customerId:
+        type: string
+      name:
+        type: string
+      # checking or savings. Not a card: Dwolla moves money by ACH and a
+      # client that expects card semantics expects the wrong timings.
+      bankAccountType:
+        type: string
+        default: checking
+      # unverified or verified. Only a verified source can send money, and
+      # verification is the micro-deposit handshake below.
+      status:
+        type: string
+        default: unverified
+      # The last four, and there is no way to get the rest back.
+      bankName:
+        type: string
+      created:
+        type: datetime
+      removed:
+        type: boolean
+        default: false
+
+  # The verification handshake. Two small deposits land in the account a day
+  # or two later and the customer tells you the amounts.
+  micro_deposit:
+    collection: _embedded.micro-deposits
+    id:
+      style: uuid
+      field: "-"
+    fields:
+      fundingSourceId:
+        type: string
+      # pending while the deposits are in flight, processed once they have
+      # landed and can be guessed at, failed if the bank refused them.
+      status:
+        type: string
+        default: pending
+      # How many guesses are left. Three, then the funding source is
+      # finished: not rate limited and not retryable tomorrow, but
+      # permanently unverifiable, and the fix is removing it and adding it
+      # again. A client that retries on failure burns all three in a second.
+      attemptsRemaining:
+        type: integer
+        default: 3
+        in: failure
+        as: attemptsRemaining
+      failureCode:
+        type: string
+        in: failure
+        as: code
+      created:
+        type: datetime
+
+  transfer:
+    collection: _embedded.transfers
+    id:
+      style: uuid
+      field: "-"
+      carried_by: self_href
+    fields:
+      self_href:
+        type: string
+        in: _links.self
+        as: href
+      sourceId:
+        type: string
+      # A decimal string inside an object. Reading transfer.amount gets an
+      # object and parsing it as a number gets NaN.
+      amountValue:
+        type: string
+        in: amount
+        as: value
+      amountCurrency:
+        type: string
+        in: amount
+        as: currency
+      # pending, processed, failed, cancelled. processed is not final: an
+      # ACH transfer can be returned days later and become failed, which is
+      # the same trap every ACH rail has and the one people meet last.
+      status:
+        type: string
+        default: pending
+      created:
+        type: datetime
+      # Why it came back, days after it was processed. Absent until then.
+      returnCode:
+        type: string
+
+routes:
+  # 201 with no body at all. The identifier of the thing you just made is in
+  # the Location header and nowhere else, so a client that reads the response
+  # body gets nothing to parse and one that calls .json() on it throws.
+  - method: POST
+    path: /customers
+    resource: customer
+    operation: create
+    status: 201
+    empty_body: true
+    headers:
+      Location: https://api-sandbox.dwolla.com/customers/{id}
+
+  - method: GET
+    path: /customers
+    resource: customer
+    operation: list
+
+  - method: GET
+    path: /customers/{id}
+    resource: customer
+    operation: get
+
+  - method: GET
+    path: /customers/{customerId}/funding-sources
+    resource: funding_source
+    operation: list
+    scope:
+      - customerId
+    returns:
+      - self_href
+      - name
+      - bankAccountType
+      - status
+      - bankName
+      - created
+      - removed
+
+  - method: GET
+    path: /funding-sources/{id}
+    resource: funding_source
+    operation: get
+
+  - method: GET
+    path: /funding-sources/{fundingSourceId}/micro-deposits
+    resource: micro_deposit
+    operation: list
+    scope:
+      - fundingSourceId
+    returns:
+      - status
+      - attemptsRemaining
+      - failureCode
+      - created
+
+  - method: GET
+    path: /transfers/{id}
+    resource: transfer
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: TooManyRequests
+    message: "Requests exceeded."
+
+  authentication_error:
+    status: 401
+    code: InvalidAccessToken
+    message: "Invalid access token."
+
+  resource_missing:
+    status: 404
+    code: NotFound
+    message: "The requested resource was not found."
+
+  parameter_missing:
+    status: 400
+    code: ValidationError
+    message: "Validation error(s) present. See embedded errors list for more details."
+
+  # Dwolla answers 406 without its own Accept header, because the media type
+  # is versioned and the default one is not it. A client that forgets is not
+  # told which header is wrong.
+  unsupported_media_type:
+    status: 406
+    code: NotAcceptable
+    message: "The Accept header must be application/vnd.dwolla.v1.hal+json."
+
+  # The three guesses are gone. Not rate limited and not retryable tomorrow:
+  # the funding source is permanently unverifiable and the fix is removing it
+  # and adding it again.
+  max_attempts_reached:
+    status: 400
+    code: MaxNumberOfResources
+    message: "Maximum number of verification attempts reached. Remove this funding source and add it again."
+
+  # The funding source has not been verified, so it cannot send money. A
+  # different failure from the one above and the same 400.
+  funding_source_unverified:
+    status: 400
+    code: ValidationError
+    message: "Funding source is not verified."
+
+fixtures:
+  empty: {}
+
+  small-account:
+    customer:
+      - id: 9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+        self_href: https://api-sandbox.dwolla.com/customers/9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+        firstName: Ada
+        lastName: Okonkwo
+        email: ada@example.com
+        status: verified
+        type: personal
+        created: "2026-06-02T11:00:00Z"
+
+      # The information was wrong. Exactly one more attempt at the same
+      # fields, and getting it wrong again moves them to document, which
+      # means somebody has to photograph an ID.
+      - id: 3f8d2a56-1c94-4b70-a825-6d13e97f0b48
+        self_href: https://api-sandbox.dwolla.com/customers/3f8d2a56-1c94-4b70-a825-6d13e97f0b48
+        firstName: Bede
+        lastName: Marchetti
+        email: bede@example.com
+        status: retry
+        type: personal
+        created: "2026-08-13T09:15:00Z"
+
+    funding_source:
+      - id: 7a2e5c81-4b36-4f09-9d57-2c84b1e60a73
+        self_href: https://api-sandbox.dwolla.com/funding-sources/7a2e5c81-4b36-4f09-9d57-2c84b1e60a73
+        customerId: 9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+        name: Ada's Checking
+        bankAccountType: checking
+        status: verified
+        bankName: First Northern
+        created: "2026-06-02T11:04:00Z"
+
+      # Not verified, so it cannot send money. The micro-deposits below are
+      # this one's handshake, and it has one guess left.
+      - id: 5d9c3b47-6e18-4a25-8f30-9b41d72c5e86
+        self_href: https://api-sandbox.dwolla.com/funding-sources/5d9c3b47-6e18-4a25-8f30-9b41d72c5e86
+        customerId: 9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+        name: Ada's Savings
+        bankAccountType: savings
+        status: unverified
+        bankName: First Northern
+        created: "2026-08-14T16:20:00Z"
+
+    micro_deposit:
+      # Two guesses gone, one left. A client that retries on failure burns
+      # the last one in the same second and the funding source is then
+      # permanently unverifiable.
+      - id: c4a7f138-2b95-4e60-a713-8d05c62b9f41
+        fundingSourceId: 5d9c3b47-6e18-4a25-8f30-9b41d72c5e86
+        status: processed
+        attemptsRemaining: 1
+        failureCode: R03
+        created: "2026-08-14T16:22:00Z"
+
+      # The handshake that verified the other funding source, months ago.
+      # Nobody guessed wrong, so all three attempts are still there, and a
+      # listing that ignored the funding source in its path would hand this
+      # one's history to the account still trying.
+      - id: 8b3f6d24-9a07-4c51-b68e-2d95a70f4c13
+        fundingSourceId: 7a2e5c81-4b36-4f09-9d57-2c84b1e60a73
+        status: processed
+        attemptsRemaining: 3
+        created: "2026-06-02T11:06:00Z"
+
+    transfer:
+      # Processed is not final. This one settled and came back four days
+      # later, which is the trap every ACH rail has and the one people meet
+      # last.
+      - id: e6b0d495-7c23-4a81-b569-1f38a04e7c92
+        self_href: https://api-sandbox.dwolla.com/transfers/e6b0d495-7c23-4a81-b569-1f38a04e7c92
+        sourceId: 7a2e5c81-4b36-4f09-9d57-2c84b1e60a73
+        amountValue: "250.00"
+        amountCurrency: USD
+        status: failed
+        returnCode: R01
+        created: "2026-08-08T10:00:00Z"
+
+      - id: a1f7c206-3d84-4b95-8e12-7c60a5d39b47
+        self_href: https://api-sandbox.dwolla.com/transfers/a1f7c206-3d84-4b95-8e12-7c60a5d39b47
+        sourceId: 7a2e5c81-4b36-4f09-9d57-2c84b1e60a73
+        amountValue: "42.50"
+        amountCurrency: USD
+        status: processed
+        created: "2026-08-12T14:30:00Z"
+
+# Every case below is derived from Dwolla's published documentation. None has
+# been run against a real account. The verify report says so.
+conformance:
+  - name: a create answers 201 with no body at all
+    # Not an empty object: nothing. The identifier of the thing you just made
+    # is in the Location header and nowhere else, so a client that reads the
+    # response body gets nothing to parse and one that calls .json() on it
+    # throws.
+    source: https://developers.dwolla.com/api-reference/customers/create
+    fixture: small-account
+    request:
+      method: POST
+      path: /customers
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+      json:
+        firstName: Caro
+        lastName: Nwachukwu
+        email: caro@example.com
+    expect:
+      status: 201
+      no_body: true
+      header_matches:
+        Location: '^https://api-sandbox\.dwolla\.com/customers/[0-9a-f-]{36}$'
+
+  - name: nothing Dwolla sends has an id
+    # Identity is _links.self.href and the id is its last segment, so code
+    # that reads customer.id gets undefined on every object.
+    source: https://developers.dwolla.com/api-reference/customers/retrieve
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers/9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        _links.self.href: https://api-sandbox.dwolla.com/customers/9c1b4f27-8a05-4d63-b192-3e07c5a48f61
+        firstName: Ada
+        status: verified
+      absent:
+        - id
+        - self_href
+
+  - name: retry is one more attempt, not a failure
+    # The information was wrong. Getting it wrong again moves them to
+    # document, which means somebody has to photograph an ID. Neither status
+    # is a failure and neither is a success.
+    source: https://developers.dwolla.com/concepts/customer-verification
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers/3f8d2a56-1c94-4b70-a825-6d13e97f0b48
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        status: retry
+        firstName: Bede
+
+  - name: a listing is embedded and counted
+    source: https://developers.dwolla.com/api-reference/customers/list
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        total: 2
+        _embedded.customers[0].firstName: Ada
+        _embedded.customers[1].status: retry
+      absent:
+        - _embedded.customers[2]
+        - customers
+
+  - name: three guesses and then the funding source is finished
+    # Two gone, one left. Not rate limited and not retryable tomorrow:
+    # running out makes the funding source permanently unverifiable, and the
+    # fix is removing it and adding it again. A client that retries on
+    # failure burns the last one in the same second.
+    source: https://developers.dwolla.com/api-reference/funding-sources/verify-micro-deposits
+    fixture: small-account
+    request:
+      method: GET
+      path: /funding-sources/5d9c3b47-6e18-4a25-8f30-9b41d72c5e86/micro-deposits
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        _embedded.micro-deposits[0].status: processed
+        _embedded.micro-deposits[0].failure.attemptsRemaining: 1
+        _embedded.micro-deposits[0].failure.code: R03
+      absent:
+        - _embedded.micro-deposits[0].attemptsRemaining
+        - _embedded.micro-deposits[0].fundingSourceId
+
+  - name: running out is a 400 that says to start again
+    # Not a rate limit and not something to retry. The message is the whole
+    # fix, and it is the only place the fix appears.
+    source: https://developers.dwolla.com/api-reference/funding-sources/verify-micro-deposits
+    fixture: small-account
+    arm: max_attempts_reached
+    request:
+      method: GET
+      path: /customers
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 400
+      body:
+        code: MaxNumberOfResources
+        message: "Maximum number of verification attempts reached. Remove this funding source and add it again."
+
+  - name: an unverified funding source cannot send money
+    # A different failure from running out of attempts, with the same 400 and
+    # a different code, so branching on status tells you nothing.
+    source: https://developers.dwolla.com/api-reference/funding-sources/retrieve
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers/9c1b4f27-8a05-4d63-b192-3e07c5a48f61/funding-sources
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        _embedded.funding-sources[0].status: verified
+        _embedded.funding-sources[1].status: unverified
+        _embedded.funding-sources[1].bankAccountType: savings
+      absent:
+        - _embedded.funding-sources[2]
+        - _embedded.funding-sources[0].customerId
+
+  - name: an amount is a decimal string inside an object
+    # Reading transfer.amount gets an object and parsing it as a number gets
+    # NaN.
+    source: https://developers.dwolla.com/api-reference/transfers/retrieve
+    fixture: small-account
+    request:
+      method: GET
+      path: /transfers/a1f7c206-3d84-4b95-8e12-7c60a5d39b47
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        amount.value: "42.50"
+        amount.currency: USD
+        status: processed
+      absent:
+        - amountValue
+        - returnCode
+
+  - name: processed is not final
+    # This one settled and came back four days later with an R01. The trap
+    # every ACH rail has, and the one people meet last, because it needs a
+    # test that waits days.
+    source: https://developers.dwolla.com/concepts/ach-return-codes
+    fixture: small-account
+    request:
+      method: GET
+      path: /transfers/e6b0d495-7c23-4a81-b569-1f38a04e7c92
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        status: failed
+        returnCode: R01
+        amount.value: "250.00"
+
+  - name: the Accept header is versioned and required
+    # Dwolla answers 406 without its own media type, and a client that
+    # forgets is not told which header is wrong.
+    source: https://developers.dwolla.com/api-reference/authorization
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+    expect:
+      status: 406
+      body:
+        code: NotAcceptable
+
+  - name: an invalid token is a 401 with a code to branch on
+    source: https://developers.dwolla.com/api-reference/authorization
+    fixture: small-account
+    request:
+      method: GET
+      path: /customers
+      headers:
+        Authorization: Bearer wrong
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 401
+      body:
+        code: InvalidAccessToken
+
+  - name: a micro-deposit listing is scoped to its funding source
+    # The verified source's handshake is in this account too, with all three
+    # attempts intact. A listing that ignored the path would hand one funding
+    # source's history to the other and report three guesses left on the one
+    # that has one.
+    source: https://developers.dwolla.com/api-reference/funding-sources/retrieve-micro-deposits
+    fixture: small-account
+    request:
+      method: GET
+      path: /funding-sources/7a2e5c81-4b36-4f09-9d57-2c84b1e60a73/micro-deposits
+      headers:
+        Authorization: Bearer cauldron-dwolla-access-token
+        Accept: application/vnd.dwolla.v1.hal+json
+    expect:
+      status: 200
+      body:
+        _embedded.micro-deposits[0].failure.attemptsRemaining: 3
+      absent:
+        - _embedded.micro-deposits[1]
+        - _embedded.micro-deposits[0].failure.code
