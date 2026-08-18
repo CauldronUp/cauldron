@@ -58,8 +58,15 @@ func TestRecipeInfoSuggestsAlternativesWhenUnknown(t *testing.T) {
 		t.Errorf("stderr = %q", stderr)
 	}
 
-	if !strings.Contains(stderr, "available:") {
-		t.Errorf("an unknown name should list what is available; got %q", stderr)
+	// It used to print all of them, which was reasonable at four Recipes and
+	// buries the answer at a hundred and twenty-seven. Either a near miss or
+	// a pointer to the list, and never the list itself.
+	if !strings.Contains(stderr, "did you mean") && !strings.Contains(stderr, "cauldron recipe list") {
+		t.Errorf("an unknown name should suggest or point somewhere; got %q", stderr)
+	}
+
+	if strings.Contains(stderr, "available:") {
+		t.Errorf("an unknown name should not print every Recipe; got %q", stderr)
 	}
 }
 

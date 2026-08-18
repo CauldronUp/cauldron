@@ -300,11 +300,26 @@ func (s *Server) HasFixture(recipe, fixture string) bool {
 	return false
 }
 
+// notRunning explains that a recipe is not mounted, and says what is.
+//
+// A misspelling is the usual reason and naming the mounted ones answers it
+// without a second command. Which recipes a sandbox has is decided by the
+// project it booted from, so the list is short and worth printing whole,
+// unlike the hundred and twenty-seven that ship.
+func (s *Server) notRunning(name string) error {
+	mounted := s.Names()
+	if len(mounted) == 0 {
+		return fmt.Errorf("no recipe %q is running, and neither is anything else", name)
+	}
+
+	return fmt.Errorf("no recipe %q is running; this sandbox has %s", name, strings.Join(mounted, ", "))
+}
+
 // SeedRecipe loads a fixture into one mounted recipe.
 func (s *Server) SeedRecipe(recipe, fixture string) error {
 	sandbox, ok := s.Sandbox(recipe)
 	if !ok {
-		return fmt.Errorf("no recipe %q is running", recipe)
+		return s.notRunning(recipe)
 	}
 
 	return sandbox.Seed(fixture)

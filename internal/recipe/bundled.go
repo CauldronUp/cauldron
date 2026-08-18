@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"path"
 	"sort"
+	"strings"
 
 	"github.com/CauldronUp/cauldron/recipes"
 )
@@ -49,7 +50,28 @@ type ErrNotBundled struct {
 }
 
 func (e *ErrNotBundled) Error() string {
-	return fmt.Sprintf("no recipe named %q", e.Name)
+	// The suggestion belongs on the error rather than at each call site,
+	// because every one of them wants it and the one that had it printed all
+	// hundred and twenty-seven names instead.
+	if close := Suggest(e.Name); len(close) > 0 {
+		return fmt.Sprintf("no recipe named %q; did you mean %s?", e.Name, humanList(close))
+	}
+
+	return fmt.Sprintf("no recipe named %q; run 'cauldron recipe list' to see what there is", e.Name)
+}
+
+// humanList renders a short list the way a sentence would.
+func humanList(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " or " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
+	}
 }
 
 // Open loads a bundled Recipe by name.
