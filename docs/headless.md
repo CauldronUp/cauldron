@@ -247,17 +247,31 @@ The control plane is the same whether Cauldron is headless or not:
 
 ```bash
 # Load seed data before a test
-curl -X POST http://127.0.0.1:4600/_cauldron/stripe/seed -d '{"fixture":"small-shop"}'
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/seed -H 'Content-Type: application/json' -d '{"fixture":"small-shop"}'
 
 # Break the next two calls, with the provider's real rate-limit shape
-curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault -d '{"error":"rate_limit","count":2}'
+curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault -H 'Content-Type: application/json' -d '{"error":"rate_limit","count":2}'
 
 # Age everything a month, so a subscription falls into dunning
-curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance -d '{"duration":"30d"}'
+curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance -H 'Content-Type: application/json' -d '{"duration":"30d"}'
 
 # Back to clean, between tests
 curl -X POST http://127.0.0.1:4600/_cauldron/reset
 ```
+
+Three things the control plane is strict about, because a browser on any page
+the developer has open can reach a loopback server:
+
+- **Anything that changes state is a POST.** Reads are GETs. A GET to a
+  mutating endpoint answers 405, because a GET is what a page can issue with
+  an image tag and no permission asked.
+- **A body must be `application/json`.** `curl -d` sends form encoding by
+  default, so the header above is not decoration; without it the request is
+  refused with 415. Form encoding is the other shape a page can post
+  cross-origin without a preflight.
+- **A request carrying an `Origin` from somewhere else is refused.** So is one
+  whose `Sec-Fetch-Site` is not `same-origin` or `none`. Both are headers a
+  browser attaches and your test suite does not, which is the point.
 
 A reset between tests is cheaper than a fresh process, and the identifier
 generator is seeded, so the same fixture produces the same ids on every machine

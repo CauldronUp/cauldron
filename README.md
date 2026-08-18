@@ -169,14 +169,17 @@ That identifier is not random. The same seed and fixture produce it on every mac
 ```bash
 # Rate limit the next request, with the provider's real Retry-After header
 curl -X POST http://127.0.0.1:4600/_cauldron/stripe/fault \
+  -H 'Content-Type: application/json' \
   -d '{"error":"rate_limit","count":1}'
 
 # Age everything by a month, so a subscription falls into dunning
 curl -X POST http://127.0.0.1:4600/_cauldron/clock/advance \
+  -H 'Content-Type: application/json' \
   -d '{"duration":"30d"}'
 
 # Fire a signed webhook at your application
 curl -X POST http://127.0.0.1:4600/_cauldron/stripe/emit \
+  -H 'Content-Type: application/json' \
   -d '{"event":"payment_intent.payment_failed","data":{"amount":2500}}'
 
 # See what your code actually sent
