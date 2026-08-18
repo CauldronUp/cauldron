@@ -773,3 +773,114 @@ routes:
 		t.Errorf("got %q", got)
 	}
 }
+
+// A default that excludes nothing is a default nobody can see. It is the same
+// rule as a scope: the behaviour is only described when a fixture holds a
+// record the filter must hide, because otherwise the listing looks identical
+// with the filter and without it, and a mutation removing it passes.
+const filterBase = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  invoice:
+    id:
+      prefix: in_
+      length: 14
+    fields:
+      status:
+        type: string
+        default: open
+fixtures:
+  small:
+    invoice:
+      - id: in_0000000000001
+        status: open
+routes:
+  - method: GET
+    path: /v1/invoices
+    resource: invoice
+    operation: list
+    filters:
+      - param: status
+        field: status
+        default: open
+`
+
+// The same Recipe with a paid invoice in the fixture, which is the record the
+// default has to hide for the default to be describable at all.
+const filterWithExcluded = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  invoice:
+    id:
+      prefix: in_
+      length: 14
+    fields:
+      status:
+        type: string
+        default: open
+fixtures:
+  small:
+    invoice:
+      - id: in_0000000000001
+        status: open
+      - id: in_0000000000002
+        status: paid
+routes:
+  - method: GET
+    path: /v1/invoices
+    resource: invoice
+    operation: list
+    filters:
+      - param: status
+        field: status
+        default: open
+`
+
+func TestADefaultedFilterNeedsSomethingToHide(t *testing.T) {
+	got := problems(t, filterBase)
+
+	if !strings.Contains(got, "the default would hide") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestADefaultedFilterIsAcceptedWhenAFixtureExcludesSomething(t *testing.T) {
+	if _, err := parse(t, filterWithExcluded); err != nil {
+		t.Errorf("a filter with something to hide should be allowed: %v", err)
+	}
+}
+
+func TestAFilterMustNameADeclaredField(t *testing.T) {
+	got := problems(t, strings.Replace(filterWithExcluded, "field: status", "field: nickname", 1))
+
+	if !strings.Contains(got, "not a field on resource") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAnEscapeValueEqualToTheDefaultIsRefused(t *testing.T) {
+	got := problems(t, strings.Replace(filterWithExcluded,
+		"        field: status\n        default: open", "        field: status\n        default: open\n        all: open", 1))
+
+	if !strings.Contains(got, "never applies") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestFiltersOnlyNarrowAListing(t *testing.T) {
+	got := problems(t, strings.Replace(
+		strings.Replace(filterWithExcluded, "path: /v1/invoices", "path: /v1/invoices/{id}", 1),
+		"operation: list", "operation: get", 1))
+
+	if !strings.Contains(got, "only narrow a listing") {
+		t.Errorf("got %q", got)
+	}
+}

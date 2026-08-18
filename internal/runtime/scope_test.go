@@ -36,7 +36,9 @@ func TestScopedListOnlySeesItsOwnScope(t *testing.T) {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	octocat := issues(t, s, "/repos/octocat/hello-world/issues")
+	// state=all: the listing narrows itself to open issues, and this test is
+	// about the scope rather than the filter.
+	octocat := issues(t, s, "/repos/octocat/hello-world/issues?state=all")
 	if len(octocat) != 2 {
 		t.Fatalf("octocat/hello-world has %d issues, want 2", len(octocat))
 	}

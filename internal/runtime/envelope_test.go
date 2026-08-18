@@ -61,7 +61,10 @@ func TestBareListStyleReturnsAnArray(t *testing.T) {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	rec := ghCall(t, s, http.MethodGet, "/repos/octocat/hello-world/issues", "")
+	// state=all, because the listing narrows itself to open issues and this
+	// test is about the envelope rather than the filter. Without it the
+	// fixture's closed issue is correctly absent and the count is one.
+	rec := ghCall(t, s, http.MethodGet, "/repos/octocat/hello-world/issues?state=all", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)

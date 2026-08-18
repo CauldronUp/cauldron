@@ -598,6 +598,24 @@ type ID struct {
 	Field string `yaml:"field"`
 }
 
+// Filter is a query parameter that narrows a listing to records whose field
+// matches, and usually narrows it whether or not the caller asked.
+type Filter struct {
+	// Param is the query parameter's name.
+	Param string `yaml:"param"`
+	// Field is the record field it matches against.
+	Field string `yaml:"field"`
+	// Default is the value applied when the parameter is absent. Empty means
+	// the filter only applies when the caller supplies it, which is the less
+	// interesting half: a filter nobody asked for is the one that surprises
+	// people.
+	Default string `yaml:"default"`
+	// All is the value that turns the filter off, for providers that have one.
+	// GitHub and Alpaca both spell it "all". Empty means there is no way to
+	// ask for everything, which is itself worth knowing.
+	All string `yaml:"all"`
+}
+
 // Field is a single attribute on a resource.
 type Field struct {
 	// Type is string, integer, boolean, timestamp (a Unix integer in seconds,
@@ -688,6 +706,21 @@ type Route struct {
 	// a client needs to correlate a later event with the send.
 	Headers    map[string]string `yaml:"headers"`
 	Pagination Pagination        `yaml:"pagination"`
+	// Filters are query parameters that narrow a listing, and the reason they
+	// exist is the default rather than the filtering.
+	//
+	// GitHub's issue listing answers with open issues unless you ask for
+	// otherwise. Alpaca's order listing answers with open orders. Both are
+	// documented and both are forgotten, and the failure they produce is the
+	// worst-shaped one there is: a client places an order, the order fills, the
+	// client lists its orders and sees nothing, and concludes the order never
+	// existed. Nothing errored. The list was correct.
+	//
+	// An emulator that returns everything is being helpful in the direction
+	// that hides this. Cauldron did exactly that until this existed, and
+	// GitHub's own Recipe had a closed issue in its fixture that the listing
+	// returned and the real API would not.
+	Filters []Filter `yaml:"filters"`
 	// Returns limits the response to the named fields, for the routes that
 	// answer with less than the record they touched.
 	//
@@ -1210,6 +1243,59 @@ func (r *Recipe) Validate() error {
 		// collection: a page of records with nothing to tell them apart
 		// cannot be what the provider sends, because nobody could address
 		// the second one.
+		for i, f := range route.Filters {
+			fwhere := fmt.Sprintf("%s: filters[%d]", where, i)
+
+			if route.Operation != "list" {
+				add("%s: filters only narrow a listing, and this is a %s", fwhere, route.Operation)
+			}
+
+			if f.Param == "" || f.Field == "" {
+				add("%s: needs both a param and a field", fwhere)
+
+				continue
+			}
+
+			resource, ok := r.Resources[route.Resource]
+			if !ok {
+				continue
+			}
+
+			if _, declared := resource.Fields[f.Field]; !declared {
+				add("%s: filters on %q, which is not a field on resource %q", fwhere, f.Field, route.Resource)
+
+				continue
+			}
+
+			if f.All != "" && f.All == f.Default {
+				add("%s: the value that turns the filter off is also its default, so it never applies", fwhere)
+			}
+
+			if f.Default == "" {
+				continue
+			}
+
+			// A default that excludes nothing is a default nobody can see. It
+			// is the same rule as a scope: the behaviour is only described
+			// when a fixture holds a record the filter must hide, because
+			// otherwise the listing looks identical with the filter and
+			// without it, and a mutation removing it passes.
+			excluded := false
+
+			for _, resources := range r.Fixtures {
+				for _, record := range resources[route.Resource] {
+					if value, present := record[f.Field]; present && fmt.Sprint(value) != f.Default {
+						excluded = true
+					}
+				}
+			}
+
+			if !excluded {
+				add("%s: defaults to %q and no fixture holds a %s the default would hide, so the listing looks the same with the filter and without it",
+					fwhere, f.Default, route.Resource)
+			}
+		}
+
 		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" {
 			add("%s: resource %q hides its identifier, so this list would return records nothing can address",
 				where, route.Resource)
