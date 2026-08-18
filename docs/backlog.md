@@ -49,7 +49,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | ~~PayPal~~ | Shipped. APPROVED is not paid, the links array is the flow, a capture can succeed without settling, and the fee comes out of the middle |
 | Braintree | Transactions, customers, payment methods |
-| Mollie | Payment lifecycle and asynchronous states |
+| ~~Mollie~~ | Shipped. The webhook is an id and nothing else, open is not pending, the checkout link disappears |
 | Wise Business | Transfers, recipients, balances, settlement states |
 | GoCardless | Mandates, direct debit, failed collections |
 | ~~Brex~~ | Shipped. Money as an object, pending cards, expenses against transactions |

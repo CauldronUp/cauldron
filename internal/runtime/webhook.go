@@ -288,9 +288,17 @@ func expandString(value string, with substitutions) any {
 		return with.at.Unix()
 	}
 
+	// The changed record's own identifier, which is not the delivery's.
+	// Mollie's webhook body is that id and nothing else, on purpose: the
+	// notification tells you something happened and you have to fetch the
+	// payment to find out what. An emulator sending the whole payment would
+	// let an application read fields the real notification never carries.
+	recordID, _ := with.record["id"].(string)
+
 	replaced := strings.NewReplacer(
 		"{event}", with.event,
 		"{id}", with.id,
+		"{record_id}", recordID,
 		"{created}", strconv.FormatInt(with.at.Unix(), 10),
 		"{created_iso}", with.at.UTC().Format(time.RFC3339),
 	).Replace(value)
