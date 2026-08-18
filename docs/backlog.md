@@ -632,7 +632,7 @@ what normalisation does not fix.
 | Provider | Why |
 |---|---|
 | ~~Merge.dev~~ | Shipped, HRIS only. A field is null because the provider lacks it or because it is empty and the response is identical; remote_data is null unless the account was configured for it; a linked account exists before it works, and can be authenticated with nothing synced |
-| Finch | Employment data arrives at different completeness per payroll provider, and a missing field and an unsupported field are the same null |
+| ~~Finch~~ | Shipped. /providers is the only thing distinguishing an unsupported field from an empty one, and almost nobody calls it; an assisted connection is a human logging in on a schedule; income is an amount and a unit and the unit is the meaning; a pay statement is a pay period, not a person |
 | Nango | The proxy passes the provider's own errors through unchanged, so error handling has to know both vocabularies |
 | Argyle | An account is connected before it is scanned, and the payroll history arrives over minutes |
 

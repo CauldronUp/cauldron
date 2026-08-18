@@ -1,0 +1,648 @@
+# Finch Recipe for Cauldron
+#
+# Finch is a unified API over payroll and HR systems, and it differs from
+# Merge in one way that is worth a Recipe of its own: it tells you what it
+# cannot do.
+#
+# Every connection exposes /provider, which lists the fields that provider
+# actually supports. That endpoint is the difference between "this employee
+# has no manager" and "this payroll system has never had a concept of
+# managers", and both of those arrive as null everywhere else. Almost nobody
+# calls it, so almost every Finch integration treats an unsupported field as
+# an empty one, and the bug only appears when a customer connects the wrong
+# payroll system.
+#
+# Four more worth modelling exactly:
+#
+#   1. Batch endpoints answer 200 with per-item failures inside. Asking for
+#      four employees can return two employees, one 404 and one 500, in one
+#      array, under one successful status code. Code that checks the status
+#      and iterates the array processes error objects as if they were people.
+#   2. An assisted connection is not an API connection. Finch fills some
+#      integrations by having a human log in on a schedule, so the data is
+#      days old, writes are not possible, and the only sign is
+#      authentication_method on the connection.
+#   3. Individual and employment are two objects for one person, fetched
+#      from two endpoints, joined on an id that is Finch's rather than the
+#      provider's. Neither is complete on its own and neither says so.
+#   4. Pay statements are per pay period, not per person, and one statement
+#      holds many people's earnings and taxes. A client that iterates
+#      statements expecting one person's history iterates the whole company.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The provider capability list is a fixture rather than a real
+#     per-provider table. A real one is per integration and changes as Finch
+#     adds coverage, which is the part no Recipe can pin for everybody.
+#   - The manager is not modelled. Finch sends "manager": null -- the whole
+#     object, not an id inside it -- and this format nests fields under a
+#     parent rather than describing the parent as nullable. A Recipe that
+#     answered {"manager": {"id": null}} would be a different shape from the
+#     one Finch sends, and code branching on manager === null would take the
+#     wrong branch. The unsupported-versus-empty trap is carried by
+#     middle_name and preferred_name instead, which are genuinely flat.
+#   - No syncing. An assisted connection's data is as old as a fixture says.
+#   - Payroll writes, benefits and the sandbox's own simulation endpoints
+#     are not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: finch
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.tryfinch.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-finch-access-token
+
+required_headers:
+  Finch-API-Version:
+    error: missing_api_version
+
+responses:
+  list:
+    style: wrapped
+    # A bare array under "responses" for batch reads, and "individuals" or
+    # "paging" shapes elsewhere. Each resource names its own.
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: name
+
+resources:
+  # What this connection can actually do. The endpoint almost nobody calls,
+  # and the only thing that distinguishes an unsupported field from an empty
+  # one.
+  provider:
+    collection: providers
+    id:
+      style: opaque
+      length: 12
+    fields:
+      display_name:
+        type: string
+      # assisted or api. An assisted connection is filled by a human logging
+      # in on a schedule, so the data is days old and writes are impossible,
+      # and this is the only place that shows.
+      authentication_methods:
+        type: list
+      # The fields this provider supports. A field absent from here is null
+      # in every response and will be null forever, which is a different
+      # thing from a field that happens to be empty for one employee.
+      supported_fields:
+        type: list
+      manual:
+        type: boolean
+        default: false
+
+  # Who somebody is. Half of a person: the other half is their employment,
+  # from a different endpoint, joined on an id that is Finch's rather than
+  # the provider's.
+  individual:
+    collection: responses
+    id:
+      style: uuid
+    fields:
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # Null because this provider does not expose it, or null because it is
+      # not set. /provider is the only way to tell, and this response says
+      # nothing.
+      middle_name:
+        type: string
+        null_when_unset: true
+      preferred_name:
+        type: string
+        null_when_unset: true
+      dob:
+        type: string
+        null_when_unset: true
+      # Only ever the last four. A client expecting a full number to
+      # validate against gets four digits and no indication that is all
+      # there is.
+      ssn:
+        type: string
+        null_when_unset: true
+      gender:
+        type: string
+        null_when_unset: true
+      email:
+        type: string
+        in: emails[0]
+        as: data
+      phone:
+        type: string
+        in: phone_numbers[0]
+        as: data
+
+  # The other half. Employment dates, department, manager, and the fields a
+  # payroll system may simply not have.
+  employment:
+    collection: responses
+    id:
+      style: uuid
+    fields:
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # employee or contractor, and this is the field most likely to be
+      # missing entirely: several payroll systems have no such distinction.
+      employment_type:
+        type: string
+        in: employment
+        as: type
+      employment_subtype:
+        type: string
+        in: employment
+        as: subtype
+      start_date:
+        type: string
+        null_when_unset: true
+      end_date:
+        type: string
+        null_when_unset: true
+      is_active:
+        type: boolean
+        default: true
+      department_name:
+        type: string
+        in: department
+        as: name
+      # Amount in cents and a unit, because a salary and an hourly rate are
+      # the same field with a different unit and comparing them without it
+      # compares an hourly rate to an annual salary.
+      income_amount:
+        type: integer
+        in: income
+        as: amount
+      income_unit:
+        type: string
+        in: income
+        as: unit
+      income_currency:
+        type: string
+        in: income
+        as: currency
+
+  # One pay period for the whole company. Not one person's payslip.
+  pay_statement:
+    collection: paging_items
+    id:
+      style: uuid
+      field: payment_id
+    fields:
+      individual_id:
+        type: string
+      gross_pay_amount:
+        type: integer
+        in: gross_pay
+        as: amount
+      net_pay_amount:
+        type: integer
+        in: net_pay
+        as: amount
+      payment_method:
+        type: string
+      total_hours:
+        type: number
+        null_when_unset: true
+
+routes:
+  # The endpoint almost nobody calls, and the only thing that tells an
+  # unsupported field from an empty one.
+  - method: GET
+    path: /providers
+    resource: provider
+    operation: list
+
+  - method: GET
+    path: /employer/directory
+    resource: employment
+    operation: list
+
+  - method: GET
+    path: /employer/individual/{id}
+    resource: individual
+    operation: get
+
+  - method: GET
+    path: /employer/employment/{id}
+    resource: employment
+    operation: get
+
+  - method: GET
+    path: /employer/pay-statement
+    resource: pay_statement
+    operation: list
+
+errors:
+  rate_limit:
+    status: 429
+    code: 429
+    type: rate_limit_exceeded
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: 401
+    type: unauthorized
+    message: "The access token is invalid"
+
+  resource_missing:
+    status: 404
+    code: 404
+    type: not_found
+    message: "The requested resource was not found"
+
+  parameter_missing:
+    status: 400
+    code: 400
+    type: invalid_request
+    message: "The request is missing a required parameter"
+
+  # No Finch-API-Version header. 400 rather than 426 or 400-with-a-hint, and
+  # the version is pinned per request rather than per key, so forgetting it
+  # is a runtime failure rather than a configuration one.
+  missing_api_version:
+    status: 400
+    code: 400
+    type: invalid_request
+    message: "The Finch-API-Version header is required"
+
+  # This provider does not have this data at all. Not empty: absent, forever,
+  # and the fix is asking the customer to connect something else.
+  not_supported:
+    status: 501
+    code: 501
+    type: not_implemented
+    message: "This provider does not support this endpoint"
+
+  # An assisted connection cannot be read on demand. Finch fills it by
+  # having a human log in on a schedule, so a request outside that schedule
+  # answers with what it has or with this.
+  connection_pending:
+    status: 202
+    code: 202
+    type: sync_pending
+    message: "The connection is still being set up and data is not available yet"
+
+fixtures:
+  empty: {}
+
+  small-employer:
+    provider:
+      # An API connection with most fields. manager is not in the supported
+      # list, so every employment here has a null manager and always will.
+      - id: gusto
+        display_name: Gusto
+        authentication_methods:
+          - api
+        supported_fields:
+          - individual.first_name
+          - individual.last_name
+          - individual.dob
+          - individual.emails
+          - employment.employment_type
+          - employment.start_date
+          - employment.department
+          - employment.income
+        manual: false
+
+      # Assisted. A human logs in on a schedule, so the data is days old and
+      # writes are impossible, and this list is the only place that shows.
+      - id: paychex_flex
+        display_name: Paychex Flex
+        authentication_methods:
+          - assisted
+        supported_fields:
+          - individual.first_name
+          - individual.last_name
+          - employment.start_date
+        manual: true
+
+    individual:
+      # dob is supported and set. middle_name and preferred_name are not
+      # supported by this provider, so they are null and will stay null, and
+      # nothing here says which of the two reasons applies.
+      - id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        first_name: Ada
+        last_name: Okonkwo
+        dob: "1991-04-17"
+        ssn: "6789"
+        email: ada@example.com
+        phone: "+15551112222"
+
+    employment:
+      - id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        first_name: Ada
+        last_name: Okonkwo
+        employment_type: employee
+        employment_subtype: full_time
+        start_date: "2024-03-04"
+        is_active: true
+        department_name: Operations
+        # 96000000 cents a year, which is 960,000.00 in whatever currency
+        # income_currency says. The unit is the whole meaning: the same
+        # number under "hourly" would be an absurd wage.
+        income_amount: 9600000
+        income_unit: yearly
+        income_currency: USD
+
+      # A contractor paid hourly. The same income_amount shape, a different
+      # unit, and comparing the two numbers without the unit compares an
+      # hourly rate to an annual salary.
+      - id: 7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+        first_name: Bede
+        last_name: Marchetti
+        employment_type: contractor
+        employment_subtype: null
+        start_date: "2025-11-02"
+        is_active: true
+        department_name: Engineering
+        income_amount: 9500
+        income_unit: hourly
+        income_currency: USD
+
+    pay_statement:
+      # One pay period, two people. A client iterating statements expecting
+      # one person's history iterates the whole company.
+      - id: 3d0f7a62-8c14-4b59-9e26-1a83f5d70c49
+        individual_id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        gross_pay_amount: 400000
+        net_pay_amount: 289400
+        payment_method: direct_deposit
+        total_hours: 80.0
+
+      - id: 5b3c8e17-2a09-4f76-8d41-6c92b0e35a87
+        individual_id: 7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+        gross_pay_amount: 152000
+        net_pay_amount: 152000
+        payment_method: check
+
+# Every case below is derived from Finch's published documentation. None has
+# been run against a real connection. The verify report says so.
+conformance:
+  - name: the provider list says what this connection cannot do
+    # employment.manager is not in the supported list, so every manager on
+    # this connection is null and always will be. That is a different fact
+    # from an employee having no manager, and no other endpoint distinguishes
+    # them.
+    source: https://developer.tryfinch.com/api-reference/providers
+    fixture: small-employer
+    request:
+      method: GET
+      path: /providers
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        providers[0].id: gusto
+        providers[0].supported_fields[0]: individual.first_name
+      absent:
+        - providers[2]
+
+  - name: an assisted connection is not an API connection
+    # A human logs in on a schedule, so the data is days old and writes are
+    # impossible. authentication_methods is the only place that shows, and
+    # its supported field list is a third the length.
+    source: https://developer.tryfinch.com/api-reference/providers
+    fixture: small-employer
+    request:
+      method: GET
+      path: /providers
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        providers[1].id: paychex_flex
+        providers[1].authentication_methods[0]: assisted
+        providers[1].manual: true
+        providers[0].authentication_methods[0]: api
+        providers[0].manual: false
+
+  - name: an unsupported field and an empty one are both null
+    # middle_name and preferred_name are absent from this provider's
+    # supported list, so they are null here and will be null forever. dob is
+    # supported and set. The response looks the same either way.
+    source: https://developer.tryfinch.com/api-reference/hris/individual
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/individual/1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        first_name: Ada
+        dob: "1991-04-17"
+        middle_name: null
+        preferred_name: null
+        gender: null
+
+  - name: the ssn is four digits and that is all there is
+    # A client expecting a full number to validate against gets the last four
+    # and nothing saying that is the whole field.
+    source: https://developer.tryfinch.com/api-reference/hris/individual
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/individual/1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        ssn: "6789"
+
+  - name: an email is an object in an array, not a string
+    # emails[0].data, because a person can have several and each carries a
+    # type. Reading individual.email finds nothing.
+    source: https://developer.tryfinch.com/api-reference/hris/individual
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/individual/1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        emails[0].data: ada@example.com
+        phone_numbers[0].data: "+15551112222"
+      absent:
+        - email
+        - phone
+
+  - name: income is an amount and a unit, and the unit is the meaning
+    # 9600000 cents yearly and 9500 cents hourly. Comparing the two numbers
+    # without the unit compares an hourly rate to an annual salary and gets
+    # the answer exactly backwards.
+    source: https://developer.tryfinch.com/api-reference/hris/employment
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/directory
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        responses[0].income.amount: 9600000
+        responses[0].income.unit: yearly
+        responses[1].income.amount: 9500
+        responses[1].income.unit: hourly
+      absent:
+        - responses[2]
+        - responses[0].income_amount
+
+  - name: employment type is nested and its subtype can be null
+    # A contractor with no subtype, which several payroll systems have no
+    # concept of at all.
+    source: https://developer.tryfinch.com/api-reference/hris/employment
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/employment/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        employment.type: contractor
+        employment.subtype: null
+        department.name: Engineering
+      absent:
+        - employment_type
+        - employment_subtype
+
+  - name: an active employment has no end date and says so with null
+    # Present and null rather than left out, so a client testing for the
+    # key's existence finds it on everybody and has to read the value.
+    source: https://developer.tryfinch.com/api-reference/hris/employment
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/employment/1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        end_date: null
+        is_active: true
+        start_date: "2024-03-04"
+
+  - name: a pay statement is a pay period, not a person
+    # One period, two people, and the individual each row belongs to is a
+    # field on the row. A client iterating statements expecting one person's
+    # history iterates the whole company.
+    source: https://developer.tryfinch.com/api-reference/hris/pay-statement
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/pay-statement
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        paging_items[0].individual_id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        paging_items[1].individual_id: 7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+        paging_items[0].gross_pay.amount: 400000
+        paging_items[0].net_pay.amount: 289400
+      absent:
+        - paging_items[2]
+
+  - name: a contractor's gross and net are the same and hours are absent
+    # Nothing was withheld and nobody counted hours. total_hours is present
+    # and null rather than zero, which is the difference between "worked no
+    # hours" and "hours are not tracked for this person".
+    source: https://developer.tryfinch.com/api-reference/hris/pay-statement
+    fixture: small-employer
+    request:
+      method: GET
+      path: /employer/pay-statement
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 200
+      body:
+        paging_items[1].gross_pay.amount: 152000
+        paging_items[1].net_pay.amount: 152000
+        paging_items[1].total_hours: null
+        paging_items[0].total_hours: 80.0
+
+  - name: the API version header is required on every request
+    # Pinned per request rather than per key, so forgetting it is a runtime
+    # failure rather than a configuration one, and it is a 400 that says
+    # nothing about versions in its code.
+    source: https://developer.tryfinch.com/api-reference/development-guides/Versioning
+    fixture: small-employer
+    request:
+      method: GET
+      path: /providers
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+    expect:
+      status: 400
+      body:
+        message: "The Finch-API-Version header is required"
+        name: invalid_request
+
+  - name: an endpoint this provider lacks is a 501, not an empty list
+    # Not empty: absent, forever, and the fix is asking the customer to
+    # connect something else.
+    source: https://developer.tryfinch.com/api-reference/development-guides/Errors
+    fixture: small-employer
+    arm: not_supported
+    request:
+      method: GET
+      path: /employer/directory
+      headers:
+        Authorization: Bearer cauldron-finch-access-token
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 501
+      body:
+        name: not_implemented
+
+  - name: an invalid token says so with a name as well as a code
+    source: https://developer.tryfinch.com/api-reference/development-guides/Errors
+    fixture: small-employer
+    request:
+      method: GET
+      path: /providers
+      headers:
+        Authorization: Bearer wrong
+        Finch-API-Version: "2020-09-17"
+    expect:
+      status: 401
+      body:
+        code: 401
+        name: unauthorized
