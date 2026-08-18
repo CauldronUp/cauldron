@@ -800,6 +800,12 @@ type Error struct {
 // Fixture is a named seed dataset: resource name to a list of records.
 type Fixture map[string][]map[string]any
 
+// indexedSegment matches a path segment naming an array position, e.g. to[0].
+var indexedSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\[\d+\])+$`)
+
+// plainSegment matches an ordinary object key.
+var plainSegment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
@@ -939,6 +945,22 @@ func (r *Recipe) Validate() error {
 
 			if spec.As != "" && spec.In == "" {
 				add("resource %q field %q sets as without in, and a top-level field is already named by its key", name, field)
+			}
+
+			// Every segment of an in: path has to be something the runtime can
+			// walk. A segment it cannot parse became a literal key: a field
+			// nested under "to[0]" was emitted under a property actually
+			// spelled "to[0]", which is a shape no provider sends, produced in
+			// silence, and invisible to a conformance suite with no case
+			// naming it. That has now happened three times in different
+			// disguises, so it is a rule rather than a habit.
+			for _, segment := range splitNonEmpty(spec.In) {
+				if plainSegment.MatchString(segment) || indexedSegment.MatchString(segment) {
+					continue
+				}
+
+				add("resource %q field %q nests under %q, and the segment %q is not a name or a name with an array index, so it would be sent as a property literally spelled that",
+					name, field, spec.In, segment)
 			}
 
 			// A field named parent_thing nested under parent emits
@@ -1424,4 +1446,14 @@ func ValidAuthSchemes() []string {
 	copy(out, validSchemes)
 
 	return out
+}
+
+// splitNonEmpty splits a dotted path, and returns nothing for an empty one so
+// a field that does not nest is not asked to justify its parent.
+func splitNonEmpty(path string) []string {
+	if path == "" {
+		return nil
+	}
+
+	return strings.Split(path, ".")
 }

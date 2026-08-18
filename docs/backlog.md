@@ -206,7 +206,7 @@ than finding out halfway through writing one.
 
 | Provider | Why |
 |---|---|
-| RingCentral | Retired its developer sandbox on 1 January 2025 and now tells developers to build against production. For a telephony API that means real calls to real numbers and real per-message billing during a test run. There is no safe way to exercise this API today, which is the strongest case for a Recipe on the list |
+| ~~RingCentral~~ | Shipped. Sent is not delivered, per-group rate limits, deleted messages still in the store |
 | Aircall | Assess — calls, contacts, webhook ordering. A call's final state arrives after the call ends, so the webhook and the fetched object disagree for a while |
 | Dialpad | Assess — calls, SMS, transcripts |
 | OpenPhone | Assess — the API is young enough that shapes have moved between versions, which is worth pinning |

@@ -1,0 +1,757 @@
+# RingCentral Recipe for Cauldron
+#
+# RingCentral retired its developer sandbox on the first of January 2025 and
+# now tells developers to build against production. That is not a gap in the
+# tooling around this API. It is the API's own documented position, and it is
+# the clearest statement of the problem this project exists for that any
+# provider has made on its own website.
+#
+# For a telephony API it means a test run places real calls to real numbers
+# and sends real messages, billed per message, to whoever is on the other end.
+# A loop with an off-by-one in it does not fail a test, it rings somebody.
+#
+# So this Recipe takes the same position as Mercury, Bill.com, Gusto and Deel,
+# and further: nothing here dials anything. Reading the message store, reading
+# call logs and reading extensions are modelled. Placing a call and sending a
+# message are not, and the header says why rather than leaving somebody to
+# discover it.
+#
+# Five things worth modelling exactly:
+#
+#   1. Sent is not delivered. A message goes Queued, then Sent, then
+#      Delivered, and Sent means RingCentral handed it to a carrier. A carrier
+#      can take minutes to disagree, so code treating the send response as
+#      proof of arrival is reporting on something it has not been told yet.
+#      The failure states are worse: DeliveryFailed arrives after a success.
+#   2. The rate limit is per API group, not per account. Every endpoint
+#      belongs to Light, Medium or Heavy, and each group has its own budget,
+#      so hammering one leaves the others untouched and a global counter in a
+#      client is measuring nothing. The 429 names the group it was.
+#   3. A deleted message is still in the message store. It comes back with
+#      availability: Deleted and its content intact, so a listing that does
+#      not filter on that field shows messages the user deleted, and a count
+#      of the inbox is wrong.
+#   4. readStatus and messageStatus are different fields answering different
+#      questions, and only one of them is about whether anybody read it. A
+#      message can be Read and DeliveryFailed at once.
+#   5. Paging is an object, and the count is of everything rather than of
+#      what arrived. records is the array, paging.totalElements is the number
+#      that matched, and navigation.nextPage.uri is the only sanctioned way
+#      forward. A progress bar sized from the array length is wrong on the
+#      first page of anything.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is dialled or sent. Which state a message holds is what a
+#     fixture puts there, and there is no endpoint here that would place a
+#     call or a message even if you wanted one.
+#   - OAuth is not modelled: the one hour access token, the seven day refresh
+#     token and the JWT grant are exactly the parts a fixture cannot teach you
+#     anything about, and the expiry is the thing that breaks in production.
+#   - Rate limits are declared and armable rather than counted. Cauldron does
+#     not track a group's budget across requests, so the 429 is something a
+#     test asks for rather than something it earns.
+#   - Presence, call control, RingOut, meetings and fax are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every number is invented and in
+# a range reserved for fiction.
+
+recipe: ringcentral
+version: 0.1.0
+
+upstream:
+  api: v1.0
+  docs: https://developers.ringcentral.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_ringcentral_access_token
+
+responses:
+  list:
+    style: wrapped
+    key: records
+    # Under paging, and it is the number that matched rather than the number
+    # that arrived. Sizing anything from the array length is wrong on the
+    # first page.
+    count_field: paging.totalElements
+    cursor_field: navigation.nextPage.uri
+  resource:
+    style: bare
+  # errorCode is the machine-readable half and message is prose. There is also
+  # an errors array for the failures that have more than one cause, which is
+  # not modelled here.
+  error:
+    style: flat
+    message_field: message
+    code_field: errorCode
+    type_field: "-"
+
+resources:
+  message:
+    collection: records
+    id:
+      style: numeric
+    fields:
+      # SMS, Pager, VoiceMail, Fax. A voicemail is in the same store as a
+      # text message, so a listing that assumes text finds an object with no
+      # body at all.
+      type:
+        type: string
+        default: SMS
+      # Inbound or Outbound. The direction decides which of from and to is
+      # the account's own number, so code that always reads one of them is
+      # right half the time.
+      direction:
+        type: string
+        default: Outbound
+      # Queued, Sent, Delivered, DeliveryFailed, SendingFailed, Received.
+      # Sent means handed to a carrier and nothing more.
+      messageStatus:
+        type: string
+        default: Queued
+      # A different question entirely, and a message can be Read and
+      # DeliveryFailed at the same time.
+      readStatus:
+        type: string
+        default: Unread
+      # Alive or Deleted. A deleted message is still returned, with its
+      # content, so a listing that ignores this shows what the user removed.
+      availability:
+        type: string
+        default: Alive
+      subject:
+        type: string
+      from_number:
+        type: string
+        in: from
+        as: phoneNumber
+      to_number:
+        type: string
+        in: to[0]
+        as: phoneNumber
+      creationTime:
+        type: string
+      lastModifiedTime:
+        type: string
+      # Present when a send failed, and it is where the reason lives. The
+      # status word alone does not say whether retrying would help.
+      error_code:
+        type: string
+        in: messageStatusDetail
+        as: errorCode
+
+  call:
+    collection: records
+    id:
+      style: opaque
+      length: 20
+    fields:
+      # Voice or Fax.
+      type:
+        type: string
+        default: Voice
+      direction:
+        type: string
+        default: Inbound
+      # Ok, Missed, Accepted, Rejected, Voicemail, Busy. Missed and Voicemail
+      # are different outcomes and both mean nobody spoke to the caller.
+      result:
+        type: string
+        default: Ok
+      # Seconds, and zero on a call nobody answered. Averaging without
+      # excluding those understates every call that happened.
+      duration:
+        type: integer
+        default: 0
+      from_number:
+        type: string
+        in: from
+        as: phoneNumber
+      from_name:
+        type: string
+        in: from
+        as: name
+      to_number:
+        type: string
+        in: to
+        as: phoneNumber
+      startTime:
+        type: string
+      # Absent unless the call was recorded, and its presence is the only
+      # signal that there is anything to fetch.
+      recording_id:
+        type: string
+        in: recording
+        as: id
+
+  extension:
+    collection: records
+    id:
+      style: numeric
+    fields:
+      extensionNumber:
+        type: string
+      # User, Department, Announcement, Voicemail, DigitalUser, VirtualUser,
+      # FaxUser, Limited. Most of these are not people, so a headcount taken
+      # from this list is wrong.
+      type:
+        type: string
+        default: User
+      # Enabled, Disabled, NotActivated, Frozen. NotActivated means invited
+      # and never signed in, and it is not the same as Disabled.
+      status:
+        type: string
+        default: Enabled
+      name:
+        type: string
+        in: contact
+        as: firstName
+      last_name:
+        type: string
+        in: contact
+        as: lastName
+      email:
+        type: string
+        in: contact
+        as: email
+
+routes:
+  - method: GET
+    path: /restapi/v1.0/account/~/extension/~/message-store
+    resource: message
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      limit_param: perPage
+      cursor_param: page
+
+  - method: GET
+    path: /restapi/v1.0/account/~/extension/~/message-store/{id}
+    resource: message
+    operation: get
+
+  - method: GET
+    path: /restapi/v1.0/account/~/extension/~/call-log
+    resource: call
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      limit_param: perPage
+      cursor_param: page
+
+  - method: GET
+    path: /restapi/v1.0/account/~/extension/~/call-log/{id}
+    resource: call
+    operation: get
+
+  - method: GET
+    path: /restapi/v1.0/account/~/extension
+    resource: extension
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      limit_param: perPage
+      cursor_param: page
+
+  - method: GET
+    path: /restapi/v1.0/account/~/extension/{id}
+    resource: extension
+    operation: get
+
+webhooks:
+  events:
+    - message.created
+    - message.updated
+    - call.created
+  signing:
+    scheme: hmac-sha256
+    header: Verification-Token
+    secret: cauldron-webhook-secret
+
+errors:
+  # Named for the group it belongs to, because that is the only thing that
+  # makes the limit actionable. Backing off globally while one group is
+  # exhausted wastes the budget of the other two.
+  rate_limit:
+    status: 429
+    message: "Request rate exceeded"
+    code: CMN-301
+    headers:
+      Retry-After: "60"
+      X-Rate-Limit-Group: "Heavy"
+      X-Rate-Limit-Limit: "10"
+      X-Rate-Limit-Remaining: "0"
+      X-Rate-Limit-Window: "60"
+
+  authentication_error:
+    status: 401
+    message: "Access token corrupted"
+    code: CMN-405
+
+  resource_missing:
+    status: 404
+    message: "Resource for parameter [{detail}] is not found"
+    code: CMN-102
+
+  parameter_missing:
+    status: 400
+    message: "Parameter [{detail}] value is invalid"
+    code: CMN-101
+
+  # The one that catches everybody after the sandbox went away: an access
+  # token lives an hour, and the failure is a 401 that reads like a bad
+  # credential rather than an expired one.
+  token_expired:
+    status: 401
+    message: "Token expired"
+    code: OAU-213
+
+  # An application asking for something its scopes do not cover. The message
+  # names the permission rather than the endpoint, so the fix is in the app
+  # registration and not the code.
+  insufficient_scope:
+    status: 403
+    message: "In order to call this API endpoint, application needs to have [ReadMessages] permission"
+    code: CMN-408
+
+fixtures:
+  empty: {}
+
+  small-account:
+    message:
+      # Handed to a carrier. Not delivered, and the send request that produced
+      # this returned success.
+      - id: "1000000001"
+        type: SMS
+        direction: Outbound
+        messageStatus: Sent
+        readStatus: Read
+        availability: Alive
+        subject: Your appointment is confirmed for Tuesday.
+        from_number: "+15005550001"
+        to_number: "+15005550111"
+        creationTime: "2026-08-14T09:14:22.000Z"
+        lastModifiedTime: "2026-08-14T09:14:23.000Z"
+      # Arrived. This is what the one above becomes, minutes later, and only
+      # a later read or a webhook says so.
+      - id: "1000000002"
+        type: SMS
+        direction: Outbound
+        messageStatus: Delivered
+        readStatus: Read
+        availability: Alive
+        subject: Your appointment is confirmed for Wednesday.
+        from_number: "+15005550001"
+        to_number: "+15005550112"
+        creationTime: "2026-08-14T09:15:10.000Z"
+        lastModifiedTime: "2026-08-14T09:16:44.000Z"
+      # Failed after the send succeeded, and read at the same time. The two
+      # status fields answer different questions and this record holds one
+      # value from each that a single status field could not express.
+      - id: "1000000003"
+        type: SMS
+        direction: Outbound
+        messageStatus: DeliveryFailed
+        readStatus: Read
+        availability: Alive
+        subject: Your appointment is confirmed for Thursday.
+        from_number: "+15005550001"
+        to_number: "+15005550113"
+        creationTime: "2026-08-14T09:16:02.000Z"
+        lastModifiedTime: "2026-08-14T09:21:31.000Z"
+        error_code: SMS-CAR-102
+      # Deleted by the user, still in the store, content intact. A listing
+      # that does not filter on availability shows this to them again.
+      - id: "1000000004"
+        type: SMS
+        direction: Inbound
+        messageStatus: Received
+        readStatus: Read
+        availability: Deleted
+        subject: Please stop texting me.
+        from_number: "+15005550114"
+        to_number: "+15005550001"
+        creationTime: "2026-08-13T17:02:55.000Z"
+        lastModifiedTime: "2026-08-13T17:40:09.000Z"
+      # A voicemail, in the same store as the text messages, with no body to
+      # read at all.
+      - id: "1000000005"
+        type: VoiceMail
+        direction: Inbound
+        messageStatus: Received
+        readStatus: Unread
+        availability: Alive
+        from_number: "+15005550115"
+        to_number: "+15005550001"
+        creationTime: "2026-08-14T11:30:00.000Z"
+        lastModifiedTime: "2026-08-14T11:30:00.000Z"
+
+    call:
+      # Answered and recorded. The recording is a separate object and its
+      # presence here is the only sign there is one.
+      - id: aBcDeFgHiJkLmNoPqRsT
+        type: Voice
+        direction: Inbound
+        result: Ok
+        duration: 184
+        from_number: "+15005550121"
+        from_name: Ada Lovelace
+        to_number: "+15005550001"
+        startTime: "2026-08-14T10:05:00.000Z"
+        recording_id: "2000000001"
+      # Nobody answered, so the duration is nought. Averaging call length
+      # without excluding these understates every call that happened.
+      - id: bCdEfGhIjKlMnOpQrStU
+        type: Voice
+        direction: Inbound
+        result: Missed
+        duration: 0
+        from_number: "+15005550122"
+        to_number: "+15005550001"
+        startTime: "2026-08-14T10:40:12.000Z"
+      # Also nobody, and a different result. Missed and Voicemail are not the
+      # same outcome and code that only knows Missed loses half of them.
+      - id: cDeFgHiJkLmNoPqRsTuV
+        type: Voice
+        direction: Inbound
+        result: Voicemail
+        duration: 31
+        from_number: "+15005550115"
+        to_number: "+15005550001"
+        startTime: "2026-08-14T11:29:29.000Z"
+
+    extension:
+      - id: "3000000001"
+        extensionNumber: "101"
+        type: User
+        status: Enabled
+        name: Ada
+        last_name: Lovelace
+        email: ada@cauldron.test
+      # Invited and never signed in. Not disabled, and a headcount that
+      # counts enabled users only misses them.
+      - id: "3000000002"
+        extensionNumber: "102"
+        type: User
+        status: NotActivated
+        name: Grace
+        last_name: Hopper
+        email: grace@cauldron.test
+      # Not a person. It is in the same list as the people, so a headcount
+      # taken from this endpoint is wrong by however many of these exist.
+      - id: "3000000003"
+        extensionNumber: "200"
+        type: Department
+        status: Enabled
+        name: Support
+
+# Conformance cases, read from the RingCentral API reference rather than
+# observed against a live account. The verify report says so, and in this case
+# observing it would mean placing real calls.
+conformance:
+  - name: sent is not delivered
+    source: https://developers.ringcentral.com/api-reference/Message-Store/readMessage
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000001
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Handed to a carrier. The send request that produced this returned
+        # success, and whether it arrived is not known yet.
+        messageStatus: Sent
+      absent:
+        - messageStatusDetail
+
+  - name: one recipient is still an array
+    source: https://developers.ringcentral.com/api-reference/Message-Store/readMessage
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000001
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # to is a list and from is not, on the same object, because a message
+        # has one sender and may have several recipients. Reading
+        # to.phoneNumber finds nothing, and the asymmetry is easy to miss when
+        # every fixture has exactly one of each.
+        to[0].phoneNumber: "+15005550111"
+        from.phoneNumber: "+15005550001"
+      absent:
+        - to.phoneNumber
+
+  - name: delivered is a later state of the same message
+    source: https://developers.ringcentral.com/api-reference/Message-Store/readMessage
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000002
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # A minute and a half after it was created, which is how long a
+        # carrier took to say so.
+        messageStatus: Delivered
+        creationTime: "2026-08-14T09:15:10.000Z"
+        lastModifiedTime: "2026-08-14T09:16:44.000Z"
+
+  - name: a failure arrives after the send succeeded
+    source: https://developers.ringcentral.com/api-reference/Message-Store/readMessage
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000003
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Five minutes after creation. Nothing in the send response could have
+        # told the caller this, and the carrier code is where the reason is.
+        messageStatus: DeliveryFailed
+        messageStatusDetail.errorCode: SMS-CAR-102
+        lastModifiedTime: "2026-08-14T09:21:31.000Z"
+
+  - name: read and failed at the same time
+    source: https://developers.ringcentral.com/api-reference/Message-Store/readMessage
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000003
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Two fields answering two questions. One status field could not hold
+        # both of these, which is why there are two, and why code that reads
+        # the wrong one is confidently wrong.
+        readStatus: Read
+        messageStatus: DeliveryFailed
+
+  - name: a deleted message is still in the store, with its content
+    source: https://developers.ringcentral.com/api-reference/Message-Store/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000004
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # The user deleted this and it comes back in full. A listing that does
+        # not filter on availability shows it to them again.
+        availability: Deleted
+        subject: Please stop texting me.
+
+  - name: and it is in the listing beside the live ones
+    source: https://developers.ringcentral.com/api-reference/Message-Store/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Fourth of five, with nothing separating it from the rest. An inbox
+        # count taken from this array is wrong by one.
+        records[3].availability: Deleted
+        records[0].availability: Alive
+
+  - name: a voicemail sits in the message store with no body
+    source: https://developers.ringcentral.com/api-reference/Message-Store/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store/1000000005
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # The same collection as the text messages, and code that reads a
+        # subject off every record finds nothing on this one.
+        type: VoiceMail
+      absent:
+        - subject
+
+  - name: the count is of everything that matched, not of what arrived
+    source: https://developers.ringcentral.com/api-reference/Message-Store/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store
+      query:
+        perPage: "2"
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Two arrived and five matched, and the total is nested under paging
+        # rather than sitting at the top level where a client would look
+        # first.
+        paging.totalElements: 5
+      matches:
+        navigation.nextPage.uri: '.'
+
+  - name: perPage is the page size and page selects the page
+    source: https://developers.ringcentral.com/api-reference/Message-Store/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store
+      query:
+        perPage: "2"
+        page: "2"
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # The third and fourth messages, so the page really moved. A page
+        # boundary off by one page here would show the first two again.
+        records[0].id: "1000000003"
+        records[1].id: "1000000004"
+
+  - name: an unanswered call has no duration
+    source: https://developers.ringcentral.com/api-reference/Call-Log/readUserCallLog
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/call-log/bCdEfGhIjKlMnOpQrStU
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Nought seconds, in the same collection as the calls that happened.
+        # An average taken without excluding these understates every one of
+        # them.
+        result: Missed
+        duration: 0
+      absent:
+        - recording
+
+  - name: voicemail is a different outcome from missed
+    source: https://developers.ringcentral.com/api-reference/Call-Log/readUserCallLog
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/call-log/cDeFgHiJkLmNoPqRsTuV
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # Nobody spoke to this caller either, and the word is different. Code
+        # that only knows Missed loses half the calls nobody answered.
+        result: Voicemail
+        duration: 31
+
+  - name: a recording is a reference, and its absence is the signal
+    source: https://developers.ringcentral.com/api-reference/Call-Log/readUserCallLog
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/call-log/aBcDeFgHiJkLmNoPqRsT
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # An id and nothing else. The audio is somewhere else, and the two
+        # calls above have no such field at all.
+        recording.id: "2000000001"
+        duration: 184
+
+  - name: an extension list is not a list of people
+    source: https://developers.ringcentral.com/api-reference/Extensions/listExtensions
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # A department, in the same list, with a name and no person behind it.
+        # A headcount taken from this endpoint counts it.
+        records[2].type: Department
+        records[0].type: User
+
+  - name: invited and never signed in is not disabled
+    source: https://developers.ringcentral.com/api-reference/Extensions/readExtension
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/3000000002
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 200
+      body:
+        # A real person who has not arrived yet. Counting only Enabled misses
+        # them, and treating them as Disabled removes an account somebody is
+        # still waiting to use.
+        status: NotActivated
+        contact.email: grace@cauldron.test
+
+  - name: an expired token is a 401 that reads like a bad one
+    source: https://developers.ringcentral.com/api-reference
+    arm: token_expired
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/message-store
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      # An access token lives an hour. The code is the only thing separating
+      # this from a credential that was never valid, and retrying with the
+      # same token is pointless while refreshing it fixes it.
+      status: 401
+      body:
+        errorCode: OAU-213
+      matches:
+        message: 'expired'
+
+  - name: the rate limit names the group it belongs to
+    source: https://developers.ringcentral.com/guide/basics/rate-limits
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /restapi/v1.0/account/~/extension/~/call-log
+      headers:
+        Authorization: Bearer cauldron_ringcentral_access_token
+    expect:
+      status: 429
+      headers:
+        # Every endpoint belongs to Light, Medium or Heavy, and each group has
+        # its own budget. A client backing off globally on this leaves the
+        # other two groups idle for no reason.
+        X-Rate-Limit-Group: Heavy
+        X-Rate-Limit-Window: "60"
+        Retry-After: "60"
+      body:
+        errorCode: CMN-301

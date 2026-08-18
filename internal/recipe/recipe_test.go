@@ -512,3 +512,44 @@ func TestADeclaredFieldNameMustBeAsserted(t *testing.T) {
 		t.Error("no cases cannot assert a name")
 	}
 }
+
+// A path segment the runtime cannot walk used to become a literal key. A field
+// nested under "to[0]" was emitted under a property actually spelled "to[0]" —
+// a shape no provider sends, produced in silence, and invisible to a
+// conformance suite with no case naming it.
+//
+// That is the third time a key like this has shipped in a different disguise,
+// which is why it is a rule now rather than a habit. An index the runtime does
+// honour must still be accepted, or the rule would forbid the fix as well as
+// the bug.
+func TestAnInPathSegmentMustBeSomethingTheRuntimeCanWalk(t *testing.T) {
+	nested := func(in string) string {
+		return strings.Replace(minimal, `      email:
+        type: string
+        required: true`, `      email:
+        type: string
+        required: true
+      recipient:
+        type: string
+        in: `+in+`
+        as: phoneNumber`, 1)
+	}
+
+	for _, in := range []string{"to[0]", "to", "message.to[0]", "a.b.c", "to[0][1]"} {
+		if _, err := parse(t, nested(in)); err != nil {
+			t.Errorf("in: %q was refused: %v", in, err)
+		}
+	}
+
+	for _, in := range []string{"to[]", "to[a]", "to[-1]", "to.", "to[0", "0to", "to bar", "to-bar"} {
+		_, err := parse(t, nested(in))
+		if err == nil {
+			t.Errorf("in: %q was accepted, and would be sent as a property spelled that", in)
+			continue
+		}
+
+		if !strings.Contains(err.Error(), "literally spelled") {
+			t.Errorf("in: %q was refused for the wrong reason: %v", in, err)
+		}
+	}
+}

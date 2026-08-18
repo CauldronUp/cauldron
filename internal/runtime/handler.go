@@ -556,16 +556,102 @@ func nestedObject(out map[string]any, path string) map[string]any {
 	current := out
 
 	for _, segment := range strings.Split(path, ".") {
-		next, _ := current[segment].(map[string]any)
-		if next == nil {
-			next = map[string]any{}
-			current[segment] = next
+		name, indexes := splitIndex(segment)
+
+		if len(indexes) == 0 {
+			next, _ := current[segment].(map[string]any)
+			if next == nil {
+				next = map[string]any{}
+				current[segment] = next
+			}
+
+			current = next
+
+			continue
 		}
 
-		current = next
+		// An array with objects in it. RingCentral's to is a list of one
+		// recipient, and without this the whole segment became a literal key
+		// spelled "to[0]" — a shape no provider sends, produced silently, and
+		// invisible to a conformance suite that has no case naming it. That is
+		// the third time a key like this has shipped, so the validator now
+		// refuses an index the runtime cannot honour rather than trusting the
+		// next Recipe author to notice.
+		current = descendIndexed(current, name, indexes)
 	}
 
 	return current
+}
+
+// descendIndexed walks into an array-valued key, growing the array as needed,
+// and returns the object at the innermost index.
+func descendIndexed(current map[string]any, name string, indexes []int) map[string]any {
+	held, _ := current[name].([]any)
+	if held == nil {
+		held = []any{}
+	}
+
+	for depth, index := range indexes {
+		for len(held) <= index {
+			held = append(held, map[string]any{})
+		}
+
+		if depth == len(indexes)-1 {
+			object, _ := held[index].(map[string]any)
+			if object == nil {
+				object = map[string]any{}
+				held[index] = object
+			}
+
+			current[name] = held
+
+			return object
+		}
+
+		inner, _ := held[index].([]any)
+		if inner == nil {
+			inner = []any{}
+		}
+
+		current[name] = held
+		held = inner
+	}
+
+	return map[string]any{}
+}
+
+// splitIndex separates a path segment from any [n] suffixes on it.
+func splitIndex(segment string) (string, []int) {
+	open := strings.Index(segment, "[")
+	if open < 0 {
+		return segment, nil
+	}
+
+	name := segment[:open]
+	rest := segment[open:]
+
+	var indexes []int
+
+	for rest != "" {
+		if !strings.HasPrefix(rest, "[") {
+			return segment, nil
+		}
+
+		close := strings.Index(rest, "]")
+		if close < 0 {
+			return segment, nil
+		}
+
+		n, err := strconv.Atoi(rest[1:close])
+		if err != nil || n < 0 {
+			return segment, nil
+		}
+
+		indexes = append(indexes, n)
+		rest = rest[close+1:]
+	}
+
+	return name, indexes
 }
 
 // nests reports whether any of a resource's fields live under a sub-object.
