@@ -613,6 +613,21 @@ type Route struct {
 	// a client needs to correlate a later event with the send.
 	Headers    map[string]string `yaml:"headers"`
 	Pagination Pagination        `yaml:"pagination"`
+	// Error names a failure from the Recipe's own table that this route always
+	// answers with, whatever the request. It is how a retired endpoint is
+	// described.
+	//
+	// Jira's old search path answers 410 Gone to the thousands of integrations
+	// still calling it, and 410 rather than 404 is the entire message: the
+	// path was right, the endpoint is gone, and retrying will not help. An
+	// emulator that let the path fall through to its unknown-route handler
+	// would answer 404, and a client branching on the difference would take
+	// the wrong branch locally and the right one in production, which is the
+	// hardest kind of disagreement to notice.
+	//
+	// A route declaring one needs no resource and no operation, because it
+	// never reaches either.
+	Error string `yaml:"error"`
 }
 
 // Pagination describes how a list endpoint pages.
@@ -898,6 +913,21 @@ func (r *Recipe) Validate() error {
 			add("%s: duplicate route", where)
 		}
 		seen[key] = true
+
+		// A route that only ever fails reaches no operation and touches no
+		// resource, so requiring either would be asking for a declaration that
+		// cannot mean anything.
+		if route.Error != "" {
+			if _, ok := r.Errors[route.Error]; !ok {
+				add("%s: unknown error %q", where, route.Error)
+			}
+
+			if route.Operation != "" || route.Resource != "" {
+				add("%s: declares error %q and an operation or resource, and it can only ever do the first", where, route.Error)
+			}
+
+			continue
+		}
 
 		if route.Operation == "" {
 			add("%s: operation is required", where)

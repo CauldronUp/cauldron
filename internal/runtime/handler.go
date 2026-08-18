@@ -74,6 +74,18 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	exchange.Resource = matched.spec.Resource
 	exchange.Op = matched.spec.Operation
 
+	// A route that exists only to fail. Jira's old search endpoint answers 410
+	// Gone to a path thousands of integrations still call, and the distinction
+	// between that and a 404 is the whole message: the path was right, and it
+	// is not coming back. Routing it as an ordinary unknown path would make an
+	// emulator that quietly disagrees with the provider about which failure
+	// this is.
+	if name := matched.spec.Error; name != "" {
+		exchange.Status = s.writeRecipeError(w, name)
+
+		return
+	}
+
 	switch matched.spec.Operation {
 	case "create":
 		exchange.Status = s.create(w, r, matched, vars)
