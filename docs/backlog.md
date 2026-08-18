@@ -640,7 +640,7 @@ what normalisation does not fix.
 
 | Provider | Why |
 |---|---|
-| Razorpay | Capture is a separate call and an uncaptured authorisation is auto-refunded after a fixed window, so doing nothing is a decision |
+| ~~Razorpay~~ | Shipped. Capture is a separate call and an uncaptured authorisation is auto-refunded, so doing nothing is a decision; amounts are in paise; the fee and tax do not exist until capture; and BAD_REQUEST_ERROR is the code on almost every failure, so reason is the only thing worth branching on |
 | Paystack | Amounts are in kobo, the smallest unit of a currency whose smallest unit most code has never met |
 | Flutterwave | The verify endpoint is the source of truth and the redirect parameters are not, which is the whole of the fraud surface |
 | Mercado Pago | A payment can sit in in_process for days, and the status detail rather than the status says why |
