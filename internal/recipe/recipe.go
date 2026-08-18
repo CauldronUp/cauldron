@@ -1010,6 +1010,19 @@ func (r *Recipe) Validate() error {
 			// and every conformance case about them passed because they
 			// asserted the shape the emulator produced. A provider that
 			// really does repeat the parent says so with an explicit as.
+			// A field named the same as its parent emits parent.parent, which
+			// is usually an accident: the author meant the field to be the
+			// parent object itself and wrote in: rather than leaving it off.
+			// Four Recipes were written with that shape in one sitting.
+			//
+			// It is not always an accident. ClickUp really does send a status
+			// object with a status inside it, so an explicit as: says the
+			// provider means it, exactly as the sibling rule below allows.
+			if spec.In != "" && spec.As == "" && strings.EqualFold(field, spec.In) {
+				add("resource %q field %q nests under %q and would be sent as %s.%s; drop the in: if the field is the parent object, or set as: %s if the provider really sends that",
+					name, field, spec.In, spec.In, field, field)
+			}
+
 			if spec.In != "" && spec.As == "" && strings.HasPrefix(strings.ToLower(field), strings.ToLower(spec.In)+"_") {
 				add("resource %q field %q nests under %q and would be sent as %s.%s, which repeats the parent; set as: %s, or set as explicitly if the provider really sends that",
 					name, field, spec.In, spec.In, field, field[len(spec.In)+1:])

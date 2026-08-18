@@ -571,7 +571,7 @@ transfers alone, and say so in the header.
 | ~~Bugsnag~~ | Shipped. An error carries counts and no stack trace, fixed is not terminal, and severity is a different question from unhandled |
 | Grafana Cloud | Assess — dashboards, alert rules, and a Prometheus-shaped query API that is not REST |
 | Better Stack | Assess — logs, uptime monitors, incidents |
-| PostHog | Events, persons, and feature flags in one product, where flag evaluation is local and the API is only the source |
+| ~~PostHog~~ | Shipped. A flag definition is not what a user gets, nought per cent is not inactive, and capture says the same thing whatever you send |
 | Statsig | Assess — gates, experiments, exposure logging |
 | Flagsmith | Assess — flags per environment with identity overrides, so the same flag has many answers |
 

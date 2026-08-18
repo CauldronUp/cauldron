@@ -1,0 +1,577 @@
+# PostHog Recipe for Cauldron
+#
+# PostHog is open source and you can run it, which sounds like it removes the
+# need for an emulator and does not. Running it means a Postgres, a ClickHouse,
+# a Kafka and a Redis, which is a lot of machinery to stand up so that a test
+# can ask whether a flag is on.
+#
+# The reason to emulate it is that two of its answers are routinely misread,
+# and both misreadings produce code that works in every test and behaves
+# differently for real users.
+#
+# Five things worth modelling exactly:
+#
+#   1. A flag definition is not what a user gets. The API serves the rules:
+#      active, a rollout percentage, and a set of conditions. What any
+#      particular person receives is the result of evaluating those against
+#      their properties, which the SDK does locally. Reading active and
+#      treating it as on is wrong for everybody outside the rollout.
+#   2. Capture answers the same way whatever you send. The response is a
+#      status of 1 and nothing else: no identifier, no confirmation, no
+#      validation. An event with a malformed property is accepted here and
+#      dropped later, silently, somewhere you are not looking.
+#   3. A cohort is computed on a schedule. is_calculating is true while it
+#      runs and the count is the previous one, so adding a property to a
+#      person does not put them in a cohort now and nothing says when it
+#      will.
+#   4. A rollout percentage of zero is not the same as inactive. The flag is
+#      live, its conditions are evaluated, and anybody matching an override
+#      still gets it. Turning a flag off and setting it to nought percent
+#      are different acts with different blast radii.
+#   5. Two distinct ids can become one person. After a merge the surviving
+#      person carries both, so a lookup by the older id still works and a
+#      count of people goes down without anybody being deleted.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No flag is evaluated. This Recipe serves definitions, and the whole
+#     point of the first item above is that evaluation happens elsewhere. A
+#     suite that wants to test its own evaluation still has to do that
+#     itself.
+#   - No event is ingested, aggregated or queried. Capture accepts and says
+#     so, and there is no query endpoint here at all: HogQL is a language,
+#     and Cauldron does not execute languages.
+#   - Cohort recalculation does not happen. Which state a cohort holds is
+#     what a fixture puts there.
+#   - Session replay, surveys, experiments and the data warehouse are not
+#     modelled.
+#
+# Tokens below are fixtures, not secrets, and every person here is invented.
+
+recipe: posthog
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://posthog.com/docs/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - phx_cauldron00000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    count_field: count
+    cursor_field: next
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: code
+    type_field: type
+
+resources:
+  feature_flag:
+    collection: results
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      # What the SDK asks for. The key is the contract and the numeric id is
+      # PostHog's, so code that stores the id breaks when a flag is recreated.
+      key:
+        type: string
+        required: true
+      name:
+        type: string
+      # Whether the flag is live at all. Not whether any given person gets
+      # it: that is the rollout and the conditions below.
+      active:
+        type: boolean
+        default: true
+      # The rules. A percentage of nought still evaluates, so a flag can be
+      # active, roll out to nobody, and still be on for anybody matching an
+      # override.
+      rollout_percentage:
+        type: integer
+        in: filters
+        as: rollout_percentage
+      groups:
+        type: list
+        in: filters
+      # Set when somebody archived it. An archived flag is still returned by
+      # the listing, so a count of live flags that ignores this is wrong.
+      deleted:
+        type: boolean
+        default: false
+      created_at:
+        type: string
+
+  person:
+    collection: results
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      # Several, because two identities can be merged into one person and
+      # both keep working as lookups afterwards.
+      distinct_ids:
+        type: list
+      properties:
+      created_at:
+        type: string
+
+  cohort:
+    collection: results
+    id:
+      style: numeric
+    fields:
+      project_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # True while the cohort is being recomputed, during which the count
+      # below is the previous one.
+      is_calculating:
+        type: boolean
+        default: false
+      # As of the last calculation, which may be hours ago.
+      count:
+        type: integer
+        default: 0
+      last_calculation:
+        type: string
+      created_at:
+        type: string
+
+  capture:
+    id:
+      style: opaque
+    fields:
+      # The entire response. No identifier, no confirmation, no validation.
+      status:
+        type: integer
+        default: 1
+
+routes:
+  - method: GET
+    path: /api/projects/{project_id}/feature_flags
+    resource: feature_flag
+    operation: list
+    scope: [project_id]
+
+  - method: GET
+    path: /api/projects/{project_id}/feature_flags/{id}
+    resource: feature_flag
+    operation: get
+    scope: [project_id]
+
+  - method: GET
+    path: /api/projects/{project_id}/persons
+    resource: person
+    operation: list
+    scope: [project_id]
+
+  - method: GET
+    path: /api/projects/{project_id}/persons/{id}
+    resource: person
+    operation: get
+    scope: [project_id]
+
+  - method: GET
+    path: /api/projects/{project_id}/cohorts
+    resource: cohort
+    operation: list
+    scope: [project_id]
+
+  - method: GET
+    path: /api/projects/{project_id}/cohorts/{id}
+    resource: cohort
+    operation: get
+    scope: [project_id]
+
+  # The one that says nothing. Whatever you send, the answer is the same.
+  - method: POST
+    path: /capture/
+    resource: capture
+    operation: create
+    status: 200
+    returns: [status]
+
+webhooks:
+  events: []
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    code: throttled
+    type: throttled_error
+    message: "Request was throttled. Expected available in 60 seconds."
+
+  authentication_error:
+    status: 401
+    code: authentication_failed
+    type: authentication_error
+    message: "Incorrect authentication credentials."
+
+  resource_missing:
+    status: 404
+    code: not_found
+    type: invalid_request
+    message: "Not found."
+
+  parameter_missing:
+    status: 400
+    code: invalid_input
+    type: validation_error
+    message: "This field is required."
+
+  # A personal key scoped to read cannot write, and the failure names the
+  # scope, which is the one useful thing about it.
+  insufficient_scope:
+    status: 403
+    code: permission_denied
+    type: authentication_error
+    message: "This action requires the feature_flag:write scope."
+
+  # A flag key must be unique within a project, so recreating a deleted flag
+  # with the same key fails until the old one is purged.
+  duplicate_key:
+    status: 400
+    code: unique
+    type: validation_error
+    message: "There is already a feature flag with this key."
+
+fixtures:
+  empty: {}
+
+  small-project:
+    feature_flag:
+      # Live, and rolled out to a fifth of people. Reading active and
+      # treating it as on is right for twenty per cent and wrong for eighty.
+      - id: "101"
+        project_id: "1"
+        key: new-checkout
+        name: New checkout flow
+        active: true
+        rollout_percentage: 20
+        deleted: false
+        created_at: "2026-07-02T10:00:00.123456Z"
+        groups:
+          - properties:
+              - key: email
+                value: "@cauldron.test"
+                operator: icontains
+            rollout_percentage: 20
+      # Live and rolled out to nobody, which is not the same as off. Anybody
+      # matching the override still gets it.
+      - id: "102"
+        project_id: "1"
+        key: beta-dashboard
+        name: Beta dashboard
+        active: true
+        rollout_percentage: 0
+        deleted: false
+        created_at: "2026-07-14T09:30:00.123456Z"
+        groups:
+          - properties:
+              - key: email
+                value: ada@cauldron.test
+                operator: exact
+            rollout_percentage: 100
+      # Off. A different act with a different blast radius, and the rollout
+      # is untouched underneath.
+      - id: "103"
+        project_id: "1"
+        key: old-experiment
+        name: Old experiment
+        active: false
+        rollout_percentage: 100
+        deleted: false
+        created_at: "2026-03-01T08:00:00.123456Z"
+      # Archived, and still in the listing.
+      - id: "104"
+        project_id: "1"
+        key: retired-banner
+        name: Retired banner
+        active: false
+        rollout_percentage: 0
+        deleted: true
+        created_at: "2026-01-05T08:00:00.123456Z"
+
+    person:
+      # Two distinct ids on one person, because an anonymous session was
+      # merged into a signed-in identity. Both still work as lookups.
+      - id: "9001"
+        project_id: "1"
+        distinct_ids:
+          - "01919e2f-anon-7f3a-9c2d-000000000001"
+          - ada@cauldron.test
+        created_at: "2026-06-01T09:00:00.123456Z"
+        properties:
+          email: ada@cauldron.test
+          plan: pro
+      # A person in a different project, so a listing that ignored the
+      # project in its path would return this one too.
+      - id: "9002"
+        project_id: "2"
+        distinct_ids:
+          - grace@elsewhere.test
+        created_at: "2026-06-02T09:00:00.123456Z"
+        properties:
+          email: grace@elsewhere.test
+
+    cohort:
+      # Being recomputed right now. The count is the previous one, and
+      # nothing says when the new one arrives.
+      - id: "501"
+        project_id: "1"
+        name: Pro users
+        is_calculating: true
+        count: 412
+        last_calculation: "2026-08-17T22:00:00.123456Z"
+        created_at: "2026-05-01T10:00:00.123456Z"
+      - id: "502"
+        project_id: "1"
+        name: Trialists
+        is_calculating: false
+        count: 88
+        last_calculation: "2026-08-18T02:00:00.123456Z"
+        created_at: "2026-05-01T10:05:00.123456Z"
+
+# Conformance cases, read from the PostHog API documentation rather than
+# observed against a live project. The verify report says so.
+conformance:
+  - name: a flag definition is not what a user gets
+    source: https://posthog.com/docs/api/feature-flags
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags/101
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Active and rolled out to a fifth. Reading active and treating it as
+        # on is right for twenty per cent of people and wrong for eighty, and
+        # the object carries no per-person answer at all.
+        active: true
+        filters.rollout_percentage: 20
+      absent:
+        - enabled
+        - value
+
+  - name: nought per cent is not the same as inactive
+    source: https://posthog.com/docs/feature-flags/creating-feature-flags
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags/102
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Live, rolled out to nobody, and anybody matching the override still
+        # gets it. Turning a flag off and setting it to nought are different
+        # acts with different blast radii.
+        active: true
+        filters.rollout_percentage: 0
+        filters.groups[0].rollout_percentage: 100
+
+  - name: and an inactive flag keeps its rollout underneath
+    source: https://posthog.com/docs/api/feature-flags
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags/103
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Off, and still declaring a hundred per cent. Turning it back on
+        # restores the old blast radius rather than starting from nothing.
+        active: false
+        filters.rollout_percentage: 100
+
+  - name: an archived flag is still in the listing
+    source: https://posthog.com/docs/api/feature-flags
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Four flags, one of them deleted, and nothing separates them but a
+        # boolean. A count of live flags that ignores it is wrong by one.
+        count: 4
+        results[3].deleted: true
+        results[0].deleted: false
+
+  - name: a page before the last carries a next link and a full count
+    source: https://posthog.com/docs/api
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Two returned and four matched. The count is of everything, so a
+        # progress bar sized from the array length is wrong by half here.
+        count: 4
+      matches:
+        next: '.'
+
+  - name: capture says the same thing whatever you send
+    source: https://posthog.com/docs/api/capture
+    fixture: small-project
+    request:
+      method: POST
+      path: /capture/
+      json:
+        event: something-with-a-typo
+        properties:
+          distinct_id: ada@cauldron.test
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # A status of one and nothing else. No identifier, no confirmation,
+        # no validation: a malformed event is accepted here and dropped
+        # later, silently, somewhere you are not looking.
+        status: 1
+      absent:
+        - id
+        - uuid
+        - event
+        - errors
+
+  - name: a cohort being recomputed shows the previous count
+    source: https://posthog.com/docs/api/cohorts
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/cohorts/501
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # Four hundred and twelve as of four hours ago, while the new number
+        # is being worked out. Adding a property to a person does not put
+        # them in a cohort now, and nothing says when it will.
+        is_calculating: true
+        count: 412
+        last_calculation: "2026-08-17T22:00:00.123456Z"
+
+  - name: and a settled one is the same shape
+    source: https://posthog.com/docs/api/cohorts
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/cohorts/502
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # One boolean apart, so the count means two different things
+        # depending on a field beside it.
+        is_calculating: false
+        count: 88
+
+  - name: one person carries several distinct ids
+    source: https://posthog.com/docs/api/persons
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/persons/9001
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # An anonymous session merged into a signed-in identity. Both still
+        # work as lookups, and a count of people went down without anybody
+        # being deleted.
+        distinct_ids[0]: "01919e2f-anon-7f3a-9c2d-000000000001"
+        distinct_ids[1]: ada@cauldron.test
+        properties.email: ada@cauldron.test
+
+  - name: a listing is scoped to the project in its path
+    source: https://posthog.com/docs/api/persons
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/persons
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # One person, and the other belongs to project 2. A listing that
+        # ignored the path would leak somebody from another project into
+        # this one's count.
+        count: 1
+        results[0].id: "9001"
+      absent:
+        - results[1]
+
+  - name: a failure carries a code and a type that are not the same thing
+    source: https://posthog.com/docs/api
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags/999
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      status: 404
+      body:
+        # Three fields saying three different things, and the one a client
+        # should branch on is code rather than type or detail.
+        code: not_found
+        type: invalid_request
+      matches:
+        detail: 'Not found'
+
+  - name: a scope failure names the scope it wanted
+    source: https://posthog.com/docs/api#personal-api-keys
+    arm: insufficient_scope
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/projects/1/feature_flags
+      headers:
+        Authorization: Bearer phx_cauldron00000000000000000000000000
+    expect:
+      # Which is the one genuinely useful thing about it: the fix is in the
+      # key rather than in the code.
+      status: 403
+      body:
+        code: permission_denied
+      matches:
+        detail: 'feature_flag:write scope'
