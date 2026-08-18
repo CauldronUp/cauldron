@@ -7,6 +7,7 @@ import (
 
 const minimal = `
 recipe: stripe
+capability: payments
 version: 0.1.0
 upstream:
   api: "2026-06-30"
@@ -94,6 +95,7 @@ func TestVersionMustLookLikeSemver(t *testing.T) {
 func TestUpstreamAPIIsRequired(t *testing.T) {
 	yaml := `
 recipe: stripe
+capability: payments
 version: 0.1.0
 resources:
   customer:
@@ -220,6 +222,7 @@ routes: []
 func TestValidationProblemsAreDeterministic(t *testing.T) {
 	yaml := `
 recipe: x
+capability: payments
 version: 0.1.0
 upstream: {api: "2026-01-01"}
 resources:
@@ -263,6 +266,7 @@ webhooks:
 func TestAnAbsenceCountsAsAnAssertion(t *testing.T) {
 	source := `
 recipe: absence
+capability: payments
 version: 0.1.0
 upstream:
   api: "1"
@@ -300,6 +304,7 @@ conformance:
 func TestACaseAssertingNothingIsStillRejected(t *testing.T) {
 	source := `
 recipe: empty-claim
+capability: payments
 version: 0.1.0
 upstream:
   api: "1"
@@ -338,6 +343,7 @@ conformance:
 func TestStampedOnlyAppliesToTimeFields(t *testing.T) {
 	source := `
 recipe: stamping
+capability: payments
 version: 0.1.0
 upstream:
   api: "1"
@@ -371,6 +377,7 @@ routes:
 func TestStampedIsAcceptedOnATimeField(t *testing.T) {
 	source := `
 recipe: stamping-ok
+capability: payments
 version: 0.1.0
 upstream:
   api: "1"
@@ -550,6 +557,53 @@ func TestAnInPathSegmentMustBeSomethingTheRuntimeCanWalk(t *testing.T) {
 
 		if !strings.Contains(err.Error(), "literally spelled") {
 			t.Errorf("in: %q was refused for the wrong reason: %v", in, err)
+		}
+	}
+}
+
+// A capability is a fixed word, not a free string.
+//
+// The value of a category is that two people reaching for it independently
+// land on the same one. A free string gives you "payments", "payment",
+// "billing" and "money" within a month, and then the grouping is worth less
+// than no grouping at all, because it looks authoritative and is not.
+func TestACapabilityMustComeFromTheList(t *testing.T) {
+	with := func(capability string) string {
+		if capability == "" {
+			return strings.Replace(minimal, "capability: payments\n", "", 1)
+		}
+
+		return strings.Replace(minimal, "capability: payments", "capability: "+capability, 1)
+	}
+
+	if _, err := parse(t, with("payments")); err != nil {
+		t.Errorf("a declared capability was refused: %v", err)
+	}
+
+	for _, wrong := range []string{"", "payment", "billing", "Payments", "money", "misc"} {
+		_, err := parse(t, with(wrong))
+		if err == nil {
+			t.Errorf("capability %q was accepted", wrong)
+			continue
+		}
+
+		if !strings.Contains(err.Error(), "capability") {
+			t.Errorf("capability %q was refused for the wrong reason: %v", wrong, err)
+		}
+	}
+}
+
+// Every bundled Recipe declares one, or the grouping has holes in exactly the
+// places somebody is looking.
+func TestEveryBundledRecipeSaysWhatItDoes(t *testing.T) {
+	summaries, err := Summarise()
+	if err != nil {
+		t.Fatalf("summarise: %v", err)
+	}
+
+	for _, s := range summaries {
+		if s.Capability == "" {
+			t.Errorf("%s does not say what it does", s.Name)
 		}
 	}
 }

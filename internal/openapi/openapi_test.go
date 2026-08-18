@@ -191,6 +191,7 @@ func TestCheckFindsWhatADescriptionContradicts(t *testing.T) {
 
 	wrong := `
 recipe: widget
+capability: commerce
 version: 0.1.0
 upstream:
   api: "2026-01-01"
@@ -295,6 +296,7 @@ func TestCheckSeparatesModellingLessFromModellingWrongly(t *testing.T) {
 
 	partial := `
 recipe: widget
+capability: commerce
 version: 0.1.0
 upstream:
   api: "2026-01-01"
@@ -356,6 +358,7 @@ func TestCheckHonoursABasePath(t *testing.T) {
 
 	r, err := recipe.Parse([]byte(`
 recipe: widget
+capability: commerce
 version: 0.1.0
 upstream:
   api: "2026-01-01"

@@ -17,7 +17,7 @@ func runRecipe(ctx *context, args []string) int {
 
 	switch args[0] {
 	case "list", "ls":
-		return recipeList(ctx)
+		return recipeList(ctx, args[1:])
 	case "info", "show":
 		return recipeInfo(ctx, args[1:])
 	default:
@@ -26,7 +26,7 @@ func runRecipe(ctx *context, args []string) int {
 	}
 }
 
-func recipeList(ctx *context) int {
+func recipeList(ctx *context, args []string) int {
 	summaries, err := recipe.Summarise()
 	if err != nil {
 		fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
@@ -38,17 +38,62 @@ func recipeList(ctx *context) int {
 		return 0
 	}
 
+	// A filter, because at a hundred Recipes the useful question is "what can
+	// emulate a payment provider" rather than "what is there".
+	if len(args) > 0 && args[0] != "" {
+		wanted := strings.ToLower(args[0])
+		kept := make([]recipe.Summary, 0, len(summaries))
+
+		for _, s := range summaries {
+			if s.Capability == wanted {
+				kept = append(kept, s)
+			}
+		}
+
+		if len(kept) == 0 {
+			fmt.Fprintf(ctx.stderr, "cauldron: no recipe does %q\n\nTry one of: %s\n",
+				args[0], strings.Join(capabilitiesOf(summaries), ", "))
+
+			return 1
+		}
+
+		summaries = kept
+	}
+
 	w := tabwriter.NewWriter(ctx.stdout, 0, 0, 2, ' ', 0)
 
-	fmt.Fprint(w, "RECIPE\tVERSION\tAPI\tRESOURCES\tROUTES\tEVENTS\n")
+	fmt.Fprint(w, "RECIPE\tDOES\tVERSION\tAPI\tRESOURCES\tROUTES\tEVENTS\n")
 
 	for _, s := range summaries {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n", s.Name, s.Version, s.API, s.Resources, s.Routes, s.Events)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%d\n",
+			s.Name, s.Capability, s.Version, s.API, s.Resources, s.Routes, s.Events)
 	}
 
 	_ = w.Flush()
 
 	return 0
+}
+
+// capabilitiesOf lists the categories present, in a stable order, for the
+// message a caller gets when they ask for one that is not.
+func capabilitiesOf(summaries []recipe.Summary) []string {
+	seen := map[string]bool{}
+
+	var out []string
+
+	for _, s := range summaries {
+		if s.Capability == "" || seen[s.Capability] {
+			continue
+		}
+
+		seen[s.Capability] = true
+
+		out = append(out, s.Capability)
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 func recipeInfo(ctx *context, args []string) int {

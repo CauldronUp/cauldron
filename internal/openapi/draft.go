@@ -25,7 +25,21 @@ func Draft(doc *Document, name string) string {
 
 	writeDraftHeader(&b, doc, name)
 
-	fmt.Fprintf(&b, "recipe: %s\nversion: 0.1.0\n\n", name)
+	fmt.Fprintf(&b, "recipe: %s\n", name)
+
+	guessed, confident := guessCapability(doc)
+
+	if confident {
+		fmt.Fprintf(&b, "# Guessed from the description's title. Check it.\ncapability: %s\n", guessed)
+	} else {
+		fmt.Fprintf(&b, `# A guess, and a poor one: nothing in the description said. This is one of
+# the things at the top of this file a person has to decide, and it decides
+# whether anybody looking for this provider by what it does will find it.
+capability: %s
+`, guessed)
+	}
+
+	b.WriteString("version: 0.1.0\n\n")
 
 	b.WriteString("upstream:\n")
 	fmt.Fprintf(&b, "  api: %q\n", doc.Info.Version)
@@ -541,4 +555,42 @@ func firstLine(s string) string {
 	}
 
 	return s
+}
+
+// guessCapability picks a category from words in the description's title, and
+// reports whether it had any evidence for the choice.
+//
+// A description says what the endpoints are and never what the product is, so
+// this is a keyword match and it is labelled as one in the file it writes. The
+// alternative was leaving the field out, and a draft that does not load is
+// worse than a draft with a wrong word in it that the header tells you to
+// check.
+func guessCapability(doc *Document) (string, bool) {
+	haystack := strings.ToLower(doc.Info.Title + " " + doc.Info.Description)
+
+	for _, pair := range []struct{ word, capability string }{
+		{"payment", "payments"}, {"checkout", "payments"}, {"billing", "payments"},
+		{"subscription", "payments"}, {"invoice", "accounting"}, {"accounting", "accounting"},
+		{"bank", "banking"}, {"payroll", "payroll"}, {"tax", "tax"},
+		{"email", "email"}, {"mail", "email"}, {"sms", "sms"}, {"messaging", "sms"},
+		{"chat", "chat"}, {"voice", "voice"}, {"telephony", "voice"}, {"push", "push"},
+		{"auth", "auth"}, {"identity", "identity"}, {"crm", "crm"}, {"support", "support"},
+		{"ticket", "support"}, {"marketing", "marketing"}, {"commerce", "commerce"},
+		{"store", "commerce"}, {"shipping", "shipping"}, {"shipment", "shipping"},
+		{"storage", "storage"}, {"database", "database"}, {"queue", "queue"},
+		{"search", "search"}, {"cdn", "cdn"}, {"hosting", "hosting"},
+		{"monitor", "observability"}, {"logging", "observability"}, {"analytics", "analytics"},
+		{"feature flag", "flags"}, {"pipeline", "ci"}, {"repositor", "vcs"}, {"git", "vcs"},
+		{"issue", "issues"}, {"calendar", "calendar"}, {"file", "files"},
+		{"video", "media"}, {"image", "media"}, {"transcri", "ai"}, {"model", "ai"},
+		{"signature", "signing"}, {"sign", "signing"}, {"schedul", "scheduling"},
+		{"form", "forms"}, {"content", "cms"}, {"cloud", "infrastructure"},
+	} {
+		if strings.Contains(haystack, pair.word) {
+			return pair.capability, true
+		}
+	}
+
+	// Something valid, so the draft loads, and the header says to change it.
+	return "infrastructure", false
 }

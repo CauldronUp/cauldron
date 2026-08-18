@@ -243,6 +243,8 @@ the header says so.
 | Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
 | Klarna | Assess — order lifecycle across authorise, capture and refund, with a session that expires |
 | Affirm | Assess — checkout, capture, partial refunds |
+| RevenueCat | Assess — mobile subscriptions and entitlements, where the entitlement is the thing an app reads and the subscription is the thing that renews, and they can disagree for a whole billing period |
+| Firebase Auth | Assess — identity, and the emulator Google already ships for it is the question: a Recipe has to be better than the official one to earn its place |
 | Coinbase Commerce | Assess — charges that expire, underpayment and overpayment as distinct outcomes |
 | Circle | Assess — USDC transfers and their settlement states |
 

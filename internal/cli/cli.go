@@ -78,7 +78,7 @@ func commands() map[string]command {
 		"recipe": {
 			name:    "recipe",
 			summary: "Inspect the Recipes Cauldron can emulate",
-			usage:   "cauldron recipe list | cauldron recipe info <name>",
+			usage:   "cauldron recipe list [capability] | cauldron recipe info <name>",
 			run:     runRecipe,
 		},
 		"import": {
