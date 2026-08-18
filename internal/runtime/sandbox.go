@@ -7,6 +7,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -299,11 +300,45 @@ func (s *Sandbox) missingRequired(resource string, record store.Record) []string
 
 // writeJSON writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	// Encoded into a buffer first, so a body that cannot be encoded becomes a
+	// failure the caller can see rather than a success the caller cannot
+	// parse. Writing the status line before asking the encoder meant an
+	// unencodable value produced 200, application/json, and zero bytes, which
+	// is the worst available answer: the client parses it before it fails, and
+	// nothing anywhere says why.
+	var buffer bytes.Buffer
+
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetIndent("", "  ")
+
+	if err := encoder.Encode(body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+
+		fmt.Fprintf(w, "{\"error\":{\"type\":\"cauldron_error\",\"message\":%s}}\n",
+			mustQuote("The sandbox holds a value that cannot be encoded as JSON: "+err.Error()))
+
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
+	_, _ = w.Write(buffer.Bytes())
+}
 
-	_ = encoder.Encode(body)
+// mustQuote renders a string as a JSON string literal.
+//
+// Used only by writeJSON's failure path, which has to produce valid JSON
+// without going through the encoder that has just refused to produce any. A
+// string always encodes, so the error is unreachable, and returning a quoted
+// empty string rather than panicking keeps the failure path from having a
+// failure path of its own.
+func mustQuote(s string) string {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+
+	return string(encoded)
 }

@@ -3,6 +3,7 @@ package runtime
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -125,5 +126,62 @@ func TestAResponseCannotBeUsedToReachIntoTheStore(t *testing.T) {
 	after := get()
 	if got, _ := after["fields"].(map[string]any); got["summary"] != "Rotate the signing keys" {
 		t.Errorf("writing into one response changed the next one: %v", got["summary"])
+	}
+}
+
+// The same collision through the API, on one of the eight recipes it was live
+// on. A numeric counter starting at zero and a fixture pinning id "1" meant
+// the first issue the API created replaced the first issue the fixture
+// seeded: the collection did not grow, the seeded title was gone, and the
+// response was a 201.
+func TestCreatingThroughTheApiCannotDestroyAFixtureRecord(t *testing.T) {
+	r, err := recipe.Open("github")
+	if err != nil {
+		t.Fatalf("open github: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("small-repo"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	before, err := s.store.ListWhere("issue", nil, "", 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if len(before.Records) < 2 {
+		t.Fatalf("expected the fixture to seed at least two issues, got %d", len(before.Records))
+	}
+
+	firstTitle := before.Records[0]["title"]
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/cauldron/example/issues",
+		strings.NewReader(`{"title":"a brand new issue from the API"}`))
+	req.Header.Set("Authorization", "Bearer ghp_cauldron")
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("create = %d\n%s", rec.Code, rec.Body)
+	}
+
+	after, err := s.store.ListWhere("issue", nil, "", 100)
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+
+	if len(after.Records) != len(before.Records)+1 {
+		t.Errorf("the collection went from %d to %d records after one create", len(before.Records), len(after.Records))
+	}
+
+	if after.Records[0]["title"] != firstTitle {
+		t.Errorf("creating an issue overwrote the first seeded one: %v", after.Records[0]["title"])
 	}
 }

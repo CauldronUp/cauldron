@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -121,7 +122,13 @@ func coerce(value string) any {
 		return n
 	}
 
-	if f, err := strconv.ParseFloat(value, 64); err == nil {
+	// ParseFloat accepts NaN, Inf, Infinity and +Inf, case-insensitively, and
+	// none of them is a type a JSON client could have sent, which is the only
+	// thing this function is for. Storing one meant the record could never be
+	// encoded again: encoding/json refuses it, so every later read of that
+	// collection answered with an empty body until something reset the
+	// sandbox. The word is what a form carrying it actually means.
+	if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
 		return f
 	}
 

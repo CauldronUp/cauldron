@@ -101,6 +101,16 @@ var ErrNotFound = errors.New("not found")
 // Recipe. Creating one on the fly would let a typo invent an endpoint.
 var ErrUnknownResource = errors.New("unknown resource")
 
+// ErrConflict is returned when a create names an identifier that is already
+// held.
+//
+// It used to be a silent in-place replacement, which is the worst of the three
+// available behaviours: the existing record was destroyed, the collection did
+// not grow, and the caller was handed a 201 saying a record had been made. A
+// suite that seeded three issues and created three more finished with three
+// issues and no complaint.
+var ErrConflict = errors.New("identifier already exists")
+
 // collection is one resource type's records plus their insertion order.
 type collection struct {
 	order   []string
@@ -173,14 +183,28 @@ func (s *Store) Create(resource string, record Record) (Record, error) {
 
 	id, _ := stored["id"].(string)
 	if id == "" {
-		id = s.ids.Next(resource)
+		// Skip anything the collection already holds. A numeric counter starts
+		// at zero and fixtures routinely pin id "1", so the first record the
+		// API created was handed an identifier a seeded record already had.
+		// Every provider that mints sequential ids allocates the next unused
+		// one, so this is fidelity as much as it is safety.
+		for {
+			id = s.ids.Next(resource)
+
+			if _, taken := c.records[id]; !taken {
+				break
+			}
+		}
+
 		stored["id"] = id
+	} else if _, taken := c.records[id]; taken {
+		// A caller naming an identifier that exists means a conflict. Real
+		// providers answer 409 or an equivalent; none of them quietly replaces
+		// the record and reports a creation.
+		return nil, fmt.Errorf("%w: %s %s", ErrConflict, resource, id)
 	}
 
-	if _, exists := c.records[id]; !exists {
-		c.order = append(c.order, id)
-	}
-
+	c.order = append(c.order, id)
 	c.records[id] = stored
 
 	return stored.Clone(), nil

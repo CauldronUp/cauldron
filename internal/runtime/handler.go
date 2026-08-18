@@ -127,6 +127,15 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	created, err := s.store.Create(matched.spec.Resource, record)
 	if err != nil {
+		// A caller naming an identifier that already exists is a conflict, and
+		// every provider says so with its own status. A Recipe declaring a
+		// conflict gets its own shape; the fallback is the 409 the situation
+		// deserves rather than the 400 an internal message used to leak
+		// through.
+		if errors.Is(err, store.ErrConflict) {
+			return s.writeRecipeError(w, "conflict", http.StatusConflict, "conflict", "A record with that identifier already exists.")
+		}
+
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
