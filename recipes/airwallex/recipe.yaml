@@ -1,0 +1,556 @@
+# Airwallex Recipe for Cauldron
+#
+# Every other payments Recipe here has one currency per payment. Airwallex is
+# the one where that assumption breaks, and it breaks quietly: you charge in
+# one currency, you are settled in another, and the difference is a rate
+# nobody in your code chose.
+#
+# A payment intent has a currency. The balance it lands in has a different
+# one. Between them sits a conversion at a rate fixed at a moment you did not
+# pick, and the amount you receive is not the amount you charged minus a fee,
+# because it is not even in the same unit. Code that reconciles a settlement
+# against an order total is comparing two numbers that were never meant to
+# match.
+#
+# Four more worth modelling exactly:
+#
+#   1. There is a balance per currency, and they are separate. Having ten
+#      thousand in one and nothing in another is not the same as having ten
+#      thousand: a payout in the empty one fails while the account looks
+#      funded.
+#   2. An intent's status goes REQUIRES_PAYMENT_METHOD, REQUIRES_CAPTURE,
+#      SUCCEEDED, CANCELLED, and REQUIRES_CAPTURE is money held and not
+#      taken, exactly as it is at Razorpay and Marqeta. Three providers, the
+#      same trap, and it is still the one people meet last.
+#   3. The captured amount and the intent amount are separate fields, and a
+#      partial capture leaves them different forever. There is no third
+#      field saying what was released.
+#   4. Every amount is a decimal number rather than a minor-unit integer,
+#      which is the opposite convention from Stripe, so a codebase that
+#      talks to both has two conventions and one habit.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No conversion is performed and no rate is real. The rate on a fixture
+#     is a number somebody typed. The point is the shape: that a settlement
+#     carries a different currency and a rate at all, which is what a mock
+#     built from one example response never shows.
+#   - Nothing settles and no balance moves. Which currency a balance holds
+#     and how much is what a fixture puts there.
+#   - Payouts, beneficiaries, issuing and the global accounts API are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: airwallex
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.airwallex.com/docs/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-airwallex-access-token
+
+responses:
+  list:
+    style: wrapped
+    has_more_field: has_more
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  payment_intent:
+    collection: items
+    id:
+      style: opaque
+      length: 22
+    fields:
+      # A decimal number, not minor units. The opposite convention from
+      # Stripe, so a codebase talking to both has two conventions and one
+      # habit.
+      amount:
+        type: number
+      currency:
+        type: string
+        default: USD
+      # What was actually taken. Separate from amount, and a partial capture
+      # leaves them different forever with no third field saying what was
+      # released.
+      captured_amount:
+        type: number
+        default: 0
+      # REQUIRES_PAYMENT_METHOD, REQUIRES_CAPTURE, SUCCEEDED, CANCELLED.
+      # REQUIRES_CAPTURE is money held and not taken, which is the third
+      # provider in this portfolio with that shape and still the one people
+      # meet last.
+      status:
+        type: string
+        default: REQUIRES_PAYMENT_METHOD
+      merchant_order_id:
+        type: string
+      request_id:
+        type: string
+      created_at:
+        type: datetime
+
+  # What actually landed. A different currency from the intent, and a rate
+  # between them that nobody in your code chose.
+  settlement:
+    collection: items
+    id:
+      style: opaque
+      length: 22
+    fields:
+      payment_intent_id:
+        type: string
+      # What was charged. Same numbers as the intent.
+      source_amount:
+        type: number
+      source_currency:
+        type: string
+      # What arrived, in the currency the account settles in. Not the source
+      # amount minus a fee: not even the same unit.
+      settlement_amount:
+        type: number
+      settlement_currency:
+        type: string
+      # The rate used, fixed at a moment nobody picked. A client that
+      # reconciles a settlement against an order total without this is
+      # comparing two numbers that were never meant to match.
+      rate:
+        type: number
+        in: fx
+        as: rate
+      # When the rate was fixed, which is not when the payment happened.
+      rate_fixed_at:
+        type: datetime
+        in: fx
+        as: fixed_at
+      fee_amount:
+        type: number
+      fee_currency:
+        type: string
+      created_at:
+        type: datetime
+
+  # One currency's worth. There is one of these per currency and they are
+  # separate: having ten thousand in one and nothing in another is not the
+  # same as having ten thousand.
+  balance:
+    collection: items
+    id:
+      style: opaque
+      length: 8
+      # Addressed by currency, and the response repeats the currency rather
+      # than carrying an identifier.
+      field: "-"
+      carried_by: currency
+    fields:
+      currency:
+        type: string
+      # What can be paid out now.
+      available_amount:
+        type: number
+      # Money that has arrived and is not yet available. Settlement takes
+      # days, so this is where a payment lives between landing and being
+      # spendable.
+      pending_amount:
+        type: number
+      # Money held against disputes and reserves. Not available, not
+      # pending, and not coming back on any schedule you control.
+      reserved_amount:
+        type: number
+
+routes:
+  - method: GET
+    path: /api/v1/pa/payment_intents
+    resource: payment_intent
+    operation: list
+
+  - method: GET
+    path: /api/v1/pa/payment_intents/{id}
+    resource: payment_intent
+    operation: get
+
+  - method: GET
+    path: /api/v1/settlements
+    resource: settlement
+    operation: list
+
+  - method: GET
+    path: /api/v1/settlements/{id}
+    resource: settlement
+    operation: get
+
+  - method: GET
+    path: /api/v1/balances/current
+    resource: balance
+    operation: list
+
+errors:
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "The access token is invalid or has expired"
+
+  resource_missing:
+    status: 404
+    code: resource_not_found
+    message: "The requested resource was not found"
+
+  parameter_missing:
+    status: 400
+    code: invalid_argument
+    message: "The request is invalid"
+
+  # The balance in that currency is not enough. Not the account's total: one
+  # currency's, and the message does not say which, so a client with money in
+  # three currencies and none in the fourth reads a failure that looks like a
+  # funding problem it does not have.
+  insufficient_balance:
+    status: 400
+    code: insufficient_balance
+    message: "The available balance is insufficient for this transaction"
+
+  # A capture for more than was authorised. Airwallex allows less and refuses
+  # more, and the partial capture leaves the intent's two amounts different
+  # forever.
+  capture_exceeds_authorisation:
+    status: 400
+    code: invalid_status_for_operation
+    message: "The capture amount exceeds the authorised amount"
+
+  # The access token lasts thirty minutes. Short enough that a long-running
+  # job meets it mid-flight, and the failure is a 401 that a retry with the
+  # same token repeats.
+  token_expired:
+    status: 401
+    code: unauthorized
+    message: "The access token has expired; request a new one"
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    payment_intent:
+      # Charged in euros, captured in full.
+      - id: int_cauldron00000000001
+        amount: 149.0
+        currency: EUR
+        captured_amount: 149.0
+        status: SUCCEEDED
+        merchant_order_id: order-4471
+        request_id: req_cauldron00000000001
+        created_at: "2026-08-12T10:14:00Z"
+
+      # Money held and not taken. If nobody captures it the authorisation
+      # lapses and the customer is never charged, which is the same shape as
+      # Razorpay and Marqeta and still the one people meet last.
+      - id: int_cauldron00000000002
+        amount: 320.5
+        currency: GBP
+        captured_amount: 0
+        status: REQUIRES_CAPTURE
+        merchant_order_id: order-4472
+        request_id: req_cauldron00000000002
+        created_at: "2026-08-15T09:02:00Z"
+
+      # Partially captured. amount and captured_amount differ forever, and
+      # there is no third field saying the other 40.00 was released.
+      - id: int_cauldron00000000003
+        amount: 90.0
+        currency: EUR
+        captured_amount: 50.0
+        status: SUCCEEDED
+        merchant_order_id: order-4473
+        request_id: req_cauldron00000000003
+        created_at: "2026-08-13T16:40:00Z"
+
+    settlement:
+      # 149.00 EUR charged, 127.14 USD received. Not the charge minus a fee:
+      # a different currency at a rate fixed the day after the payment. A
+      # client reconciling this against the order total is comparing two
+      # numbers that were never meant to match.
+      - id: stl_cauldron00000000001
+        payment_intent_id: int_cauldron00000000001
+        source_amount: 149.0
+        source_currency: EUR
+        settlement_amount: 127.14
+        settlement_currency: USD
+        rate: 0.8734
+        rate_fixed_at: "2026-08-13T00:00:00Z"
+        fee_amount: 3.81
+        fee_currency: USD
+        created_at: "2026-08-13T02:00:00Z"
+
+      # The partial capture, settled. 50.00 EUR in, 43.67 USD out, and the
+      # 90.00 the order was for appears nowhere.
+      - id: stl_cauldron00000000002
+        payment_intent_id: int_cauldron00000000003
+        source_amount: 50.0
+        source_currency: EUR
+        settlement_amount: 43.67
+        settlement_currency: USD
+        rate: 0.8734
+        rate_fixed_at: "2026-08-14T00:00:00Z"
+        fee_amount: 1.31
+        fee_currency: USD
+        created_at: "2026-08-14T02:00:00Z"
+
+    balance:
+      # Settled money, spendable.
+      - id: USD
+        currency: USD
+        available_amount: 10482.19
+        pending_amount: 812.4
+        reserved_amount: 0
+
+      # Charged in euros and none of it has been converted yet, so a payout
+      # in EUR fails while the account plainly has ten thousand in it.
+      - id: EUR
+        currency: EUR
+        available_amount: 0
+        pending_amount: 199.0
+        reserved_amount: 40.0
+
+# Every case below is derived from Airwallex's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: the money you receive is in a currency you did not charge
+    # 149.00 EUR charged, 127.14 USD received, at a rate fixed the day after
+    # the payment. Not the charge minus a fee: not even the same unit, and a
+    # client reconciling this against the order total is comparing two
+    # numbers that were never meant to match.
+    source: https://www.airwallex.com/docs/api#/Settlements
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/settlements/stl_cauldron00000000001
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        source_amount: 149.0
+        source_currency: EUR
+        settlement_amount: 127.14
+        settlement_currency: USD
+
+  - name: the rate is nested and was fixed at a moment nobody picked
+    # A day after the payment. A client that reads the payment's own
+    # timestamp and looks up a rate gets a different number from the one
+    # Airwallex used.
+    source: https://www.airwallex.com/docs/api#/Settlements
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/settlements/stl_cauldron00000000001
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        fx.rate: 0.8734
+        fx.fixed_at: "2026-08-13T00:00:00Z"
+      absent:
+        - rate
+        - rate_fixed_at
+
+  - name: the fee is in the settlement currency, not the charge currency
+    # So subtracting it from the charged amount subtracts dollars from
+    # euros, which no type system will catch because both are numbers.
+    source: https://www.airwallex.com/docs/api#/Settlements
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/settlements/stl_cauldron00000000001
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        fee_amount: 3.81
+        fee_currency: USD
+        source_currency: EUR
+
+  - name: a balance per currency, and they are separate
+    # Ten thousand dollars and no euros. A payout in EUR fails while the
+    # account plainly has ten thousand in it, and the failure looks like a
+    # funding problem the merchant does not have.
+    source: https://www.airwallex.com/docs/api#/Balances
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/balances/current
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        has_more: false
+        items[0].currency: USD
+        items[0].available_amount: 10482.19
+        items[1].currency: EUR
+        items[1].available_amount: 0
+      absent:
+        - items[2]
+        - items[0].id
+
+  - name: money that has arrived is not money you can spend
+    # 812.40 pending in USD and 40.00 reserved in EUR. Neither is available,
+    # they are three separate numbers, and adding them gives a figure that
+    # is true of nothing.
+    source: https://www.airwallex.com/docs/api#/Balances
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/balances/current
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        items[0].pending_amount: 812.4
+        items[1].pending_amount: 199.0
+        items[1].reserved_amount: 40.0
+
+  - name: REQUIRES_CAPTURE is money held and not taken
+    # If nobody captures it the authorisation lapses and the customer is
+    # never charged. captured_amount is zero and the intent still says 320.50.
+    source: https://www.airwallex.com/docs/api#/Payment_Intents
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/pa/payment_intents/int_cauldron00000000002
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        status: REQUIRES_CAPTURE
+        amount: 320.5
+        captured_amount: 0
+        currency: GBP
+
+  - name: a partial capture leaves the two amounts different forever
+    # 90.00 authorised, 50.00 taken, and no third field saying the other
+    # 40.00 was released. A client that reads amount reports the order value
+    # and one that reads captured_amount reports the revenue, and they will
+    # never agree.
+    source: https://www.airwallex.com/docs/api#/Payment_Intents
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/pa/payment_intents/int_cauldron00000000003
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        status: SUCCEEDED
+        amount: 90.0
+        captured_amount: 50.0
+      absent:
+        - released_amount
+        - refunded_amount
+
+  - name: and the settlement follows the capture, not the order
+    # 50.00 EUR settled against an order for 90.00. The number the customer
+    # agreed to appears nowhere in the money that arrived.
+    source: https://www.airwallex.com/docs/api#/Settlements
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/settlements/stl_cauldron00000000002
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        payment_intent_id: int_cauldron00000000003
+        source_amount: 50.0
+        settlement_amount: 43.67
+
+  - name: amounts are decimals, not minor units
+    # 149.0, not 14900. The opposite convention from Stripe, so a codebase
+    # talking to both has two conventions and one habit, and the mistake is
+    # a hundredfold in whichever direction it goes.
+    source: https://www.airwallex.com/docs/api#/Payment_Intents
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/pa/payment_intents/int_cauldron00000000001
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 200
+      body:
+        amount: 149.0
+        captured_amount: 149.0
+
+  - name: an insufficient balance names no currency
+    # One currency's balance, not the account's, and the message does not
+    # say which. A merchant with money in three currencies and none in the
+    # fourth reads a funding problem it does not have.
+    source: https://www.airwallex.com/docs/api#/Errors
+    fixture: small-merchant
+    arm: insufficient_balance
+    request:
+      method: GET
+      path: /api/v1/balances/current
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 400
+      body:
+        code: insufficient_balance
+        message: "The available balance is insufficient for this transaction"
+
+  - name: an expired token is a 401 a retry repeats
+    # Thirty minutes, so a long-running job meets it mid-flight, and
+    # retrying with the same token fails the same way.
+    source: https://www.airwallex.com/docs/api#/Authentication
+    fixture: small-merchant
+    arm: token_expired
+    request:
+      method: GET
+      path: /api/v1/balances/current
+      headers:
+        Authorization: Bearer cauldron-airwallex-access-token
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+        message: "The access token has expired; request a new one"
+
+  - name: an invalid token is refused
+    source: https://www.airwallex.com/docs/api#/Authentication
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /api/v1/balances/current
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+      absent:
+        - type
+        - error
