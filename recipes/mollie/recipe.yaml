@@ -1,0 +1,452 @@
+# Mollie Recipe for Cauldron
+#
+# Mollie has a test mode, and it is a good one: a test key, a hosted checkout
+# you can click through, and payment methods that fail on demand. What it does
+# not have is a way to test the part that actually breaks, because the part
+# that actually breaks is what happens between the redirect and the webhook,
+# and that requires a public URL, a browser, and a human clicking.
+#
+# The result is that almost every Mollie integration is written against a
+# guess about the notification, and the guess is always the same one.
+#
+# Four things worth modelling exactly:
+#
+#   1. The webhook body is an id and nothing else. Mollie tells you something
+#      happened and refuses to tell you what: you fetch the payment and read
+#      the status yourself. This is deliberate on their part, because the
+#      notification travels over a URL anybody could post to. Code written
+#      against an emulator that helpfully sent the whole payment reads a
+#      status the real notification never carries, and the first live
+#      transaction is where it finds out.
+#   2. open is not pending and neither is paid. A payment starts open, and
+#      open means the customer has not finished at the checkout. pending is a
+#      separate state that means the method is slow, and it can still fail.
+#      Treating anything that is not failed as success books an order nobody
+#      paid for.
+#   3. The checkout link disappears. _links.checkout is there while the
+#      payment is open and gone the moment it is not, so an application that
+#      stores the link and shows it again sends a customer to a page that does
+#      not exist. Its absence is the signal, and nothing else announces it.
+#   4. Money is a string with a currency beside it, and the string has the
+#      decimals in it. "10.00" and not 1000, so a client that treats Mollie
+#      like Stripe is out by a factor of a hundred in the direction that looks
+#      like a bargain.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Mollie posts its webhook form-encoded, as id=tr_xxx, and Cauldron posts
+#     JSON. The shape claim below is faithful — the notification carries the
+#     identifier and nothing else — and the encoding is not. An application
+#     parsing the body as a form will not be exercising that code here.
+#   - Creating a payment is modelled and paying one is not. Which state a
+#     payment holds is what a fixture puts there, because the transition
+#     happens at a hosted checkout that this cannot reproduce.
+#   - Refunds, chargebacks, subscriptions, mandates and the Connect
+#     endpoints are not modelled.
+#   - The idempotency key header is accepted and ignored.
+#
+# Keys below are fixtures, not secrets, and every amount is invented.
+
+recipe: mollie
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.mollie.com/reference/v2/payments-api/get-payment
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - test_cauldronMollieApiKey000000000000
+
+responses:
+  list:
+    # Under _embedded, which is HAL, so the array is two levels down and a
+    # client reading a top-level list finds an object with a count in it.
+    style: wrapped
+    # The resource declares the same name as its collection, which is what the
+    # runtime reads, so a key here would be inert. Saying it once is the point:
+    # a declaration nothing honours is the failure this project is about.
+    count_field: count
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: title
+    status_field: status
+
+resources:
+  payment:
+    collection: _embedded.payments
+    id:
+      style: prefixed
+      prefix: tr_
+      length: 10
+    fields:
+      # open, pending, authorized, paid, canceled, expired, failed. open
+      # means the customer has not finished; pending means the method is slow
+      # and it can still fail.
+      status:
+        type: string
+        default: open
+      # A string with the decimals in it, and the currency beside it rather
+      # than implied. Not minor units.
+      amount_value:
+        type: string
+        in: amount
+        as: value
+      amount_currency:
+        type: string
+        in: amount
+        as: currency
+      description:
+        type: string
+        required: true
+      # The merchant's own reference, and the only identifier in this exchange
+      # that means anything on your side of it.
+      metadata_order_id:
+        type: string
+        in: metadata
+        as: order_id
+      # creditcard, ideal, paypal, banktransfer, and null until the customer
+      # picks one. Present and null rather than absent, so a presence check
+      # finds it and reading it finds nothing.
+      method:
+      createdAt:
+        type: string
+      # Set when the money actually arrived, and absent otherwise, so its
+      # presence is the reliable signal rather than the status word.
+      paidAt:
+        type: string
+      # Where the customer goes to pay. Present while the payment is open and
+      # gone afterwards.
+      checkout_href:
+        type: string
+        in: _links.checkout
+        as: href
+      self_href:
+        type: string
+        in: _links.self
+        as: href
+
+routes:
+  - method: POST
+    path: /v2/payments
+    resource: payment
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/payments/{id}
+    resource: payment
+    operation: get
+
+  - method: GET
+    path: /v2/payments
+    resource: payment
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+      limit_param: limit
+      cursor_param: from
+
+webhooks:
+  events:
+    - payment.created
+    - payment.updated
+  # An identifier and nothing else. Mollie does this on purpose, because the
+  # notification travels over a URL anybody could post to, so the body is
+  # treated as a hint rather than as evidence.
+  payload:
+    id: "{record_id}"
+  signing:
+    scheme: none
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+    type: "Too Many Requests"
+
+  authentication_error:
+    status: 401
+    message: "Missing authentication, or failed to authenticate"
+    type: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: "No payment exists with token {detail}."
+    type: "Not Found"
+
+  parameter_missing:
+    status: 422
+    message: "The amount is required for this payment method"
+    type: "Unprocessable Entity"
+
+  # A test key cannot touch live data and a live key cannot touch test data,
+  # and the failure names neither key nor mode plainly enough to be obvious
+  # at three in the morning.
+  wrong_mode:
+    status: 401
+    message: "Your account is in test mode. Use a test API key, or switch your account to live mode."
+    type: Unauthorized
+
+  # The customer's bank said no. The payment is finished and there is nothing
+  # to retry, which is the opposite of what a network failure means.
+  payment_failed:
+    status: 422
+    message: "The payment could not be completed. The customer's bank declined the transaction."
+    type: "Unprocessable Entity"
+
+fixtures:
+  empty: {}
+
+  small-shop:
+    payment:
+      # Waiting for the customer. The checkout link is here because it is
+      # still needed, and no method has been chosen yet.
+      - id: tr_WDqYK6vllg
+        status: open
+        amount_value: "10.00"
+        amount_currency: EUR
+        description: Order 1001
+        metadata_order_id: "1001"
+        method: null
+        createdAt: "2026-08-14T10:00:00+00:00"
+        checkout_href: https://www.cauldron.test/checkout/select-method/WDqYK6vllg
+        self_href: https://api.cauldron.test/v2/payments/tr_WDqYK6vllg
+      # Paid. The checkout link is gone because there is nothing left to do
+      # there, and a method finally exists.
+      - id: tr_7UhSN1zuXS
+        status: paid
+        amount_value: "24.95"
+        amount_currency: EUR
+        description: Order 1002
+        metadata_order_id: "1002"
+        method: ideal
+        createdAt: "2026-08-14T10:04:11+00:00"
+        paidAt: "2026-08-14T10:05:39+00:00"
+        self_href: https://api.cauldron.test/v2/payments/tr_7UhSN1zuXS
+      # Slow rather than finished. A bank transfer is pending for days and
+      # can still fail, so anything treating not-failed as success has booked
+      # an order nobody has paid for.
+      - id: tr_3aJqPmXk9L
+        status: pending
+        amount_value: "149.00"
+        amount_currency: EUR
+        description: Order 1003
+        metadata_order_id: "1003"
+        method: banktransfer
+        createdAt: "2026-08-14T10:09:02+00:00"
+        self_href: https://api.cauldron.test/v2/payments/tr_3aJqPmXk9L
+      # The customer walked away and the payment timed out. No money moved
+      # and there is nothing to refund.
+      - id: tr_5nQxWv2rDp
+        status: expired
+        amount_value: "10.00"
+        amount_currency: EUR
+        description: Order 1004
+        metadata_order_id: "1004"
+        method: null
+        createdAt: "2026-08-13T08:00:00+00:00"
+        self_href: https://api.cauldron.test/v2/payments/tr_5nQxWv2rDp
+
+# Conformance cases, read from the Mollie v2 reference rather than observed
+# against a live account. The verify report says so.
+conformance:
+  - name: the notification carries an identifier and nothing else
+    source: https://docs.mollie.com/overview/webhooks
+    fixture: small-shop
+    request:
+      method: POST
+      path: /v2/payments
+      json:
+        description: Order 1005
+        amount_value: "42.00"
+        amount_currency: EUR
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 201
+      matches:
+        id: '^tr_'
+      webhook:
+        event: payment.created
+        matches:
+          # The whole body. Mollie refuses to tell you what happened because
+          # the notification travels over a URL anybody could post to, so the
+          # application has to fetch the payment and read the status itself.
+          id: '^tr_'
+        absent:
+          # An emulator that helpfully sent these would let an application
+          # read a status the real notification never carries, and the first
+          # live transaction is where it would find out.
+          - status
+          - amount
+          - amount.value
+          - metadata
+          - data
+          - data.object
+
+  - name: open means the customer has not finished
+    source: https://docs.mollie.com/reference/v2/payments-api/get-payment
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_WDqYK6vllg
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        # Nothing has happened yet. No method has been chosen, and the field
+        # holding that is present and null rather than absent.
+        status: open
+        method: null
+      absent:
+        - paidAt
+
+  - name: and the checkout link is there while it is needed
+    source: https://docs.mollie.com/reference/v2/payments-api/create-payment
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_WDqYK6vllg
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        _links.checkout.href: https://www.cauldron.test/checkout/select-method/WDqYK6vllg
+
+  - name: a paid payment has no checkout link at all
+    source: https://docs.mollie.com/reference/v2/payments-api/get-payment
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_7UhSN1zuXS
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        status: paid
+        paidAt: "2026-08-14T10:05:39+00:00"
+      # Gone, because there is nothing left to do there. An application that
+      # stored the link and shows it again sends a customer to a page that
+      # does not exist, and nothing announces that except this absence.
+      absent:
+        - _links.checkout
+        - _links.checkout.href
+
+  - name: pending is slow rather than finished
+    source: https://docs.mollie.com/payments/status-changes
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_3aJqPmXk9L
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        # A bank transfer sits here for days and can still fail. Treating
+        # anything that is not failed as success books an order nobody has
+        # paid for.
+        status: pending
+        method: banktransfer
+      absent:
+        - paidAt
+
+  - name: expired is a payment that never happened
+    source: https://docs.mollie.com/payments/status-changes
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_5nQxWv2rDp
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        # The customer walked away. No money moved and there is nothing to
+        # refund, so code that treats every terminal state as needing a
+        # reversal issues one against nothing.
+        status: expired
+        method: null
+
+  - name: money is a string with the decimals in it
+    source: https://docs.mollie.com/reference/v2/payments-api/get-payment
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_7UhSN1zuXS
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        # Twenty-four ninety-five, written out. A client that treats this like
+        # Stripe's minor units reads 2495 cents as 2495 euros, which is out by
+        # a hundred in the direction that looks like a bargain.
+        amount.value: "24.95"
+        amount.currency: EUR
+
+  - name: a listing is two levels down under an embedded key
+    source: https://docs.mollie.com/reference/v2/payments-api/list-payments
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 200
+      body:
+        # HAL, so the array is nested and a client reading a top-level list
+        # finds an object with a count in it instead.
+        _embedded.payments[0].id: tr_WDqYK6vllg
+        _embedded.payments[1].status: paid
+        count: 4
+
+  - name: a failure names the problem in a title and a detail
+    source: https://docs.mollie.com/overview/handling-errors
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_doesnotexist
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      status: 404
+      body:
+        # No code anywhere, so anything that needs to branch has to match on
+        # the title or the status, and the title is prose with a capital in
+        # it rather than an identifier.
+        status: 404
+        title: "Not Found"
+      matches:
+        detail: 'No payment exists'
+
+  - name: a declined payment is a 422 and is finished
+    source: https://docs.mollie.com/payments/status-changes
+    arm: payment_failed
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v2/payments/tr_WDqYK6vllg
+      headers:
+        Authorization: Bearer test_cauldronMollieApiKey000000000000
+    expect:
+      # The bank said no. There is nothing to retry, which is the opposite of
+      # what a network failure means, and both arrive as a non-2xx.
+      status: 422
+      body:
+        title: "Unprocessable Entity"
+      matches:
+        detail: 'declined'
