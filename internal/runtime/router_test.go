@@ -61,3 +61,43 @@ func TestALiteralSuffixOutranksABareParameter(t *testing.T) {
 		t.Errorf("id = %q, want the more specific route to win", vars["id"])
 	}
 }
+
+// A parameter with literal text on both sides, matched against a path short
+// enough for the two to overlap.
+//
+// /v1/aba{id}aba against /v1/ababa: five characters that both start with "aba"
+// and end with "aba", so both checks passed and the slice that followed ran
+// off the end. It panicked in the request path, where net/http recovers per
+// connection and the caller sees an EOF with no response at all.
+//
+// No shipped Recipe declares a two-sided parameter, so this was latent rather
+// than live. Adding Recipes is what this project mostly does, though, and the
+// validator does not refuse the shape.
+func TestAParameterWrappedInTextDoesNotPanicOnAShortPath(t *testing.T) {
+	rt := route{method: "GET", segments: compilePath("/v1/aba{id}aba")}
+
+	for _, path := range []string{"/v1/ababa", "/v1/abab", "/v1/aba", "/v1/abaaba"} {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("%s panicked: %v", path, recovered)
+				}
+			}()
+
+			if _, _, ok := rt.matches(splitPath(path)); ok {
+				t.Errorf("%s matched, and there is no identifier left in it", path)
+			}
+		}()
+	}
+
+	// A path long enough to carry both really does match, so the guard rejects
+	// only the impossible ones.
+	vars, _, ok := rt.matches(splitPath("/v1/abaXYZaba"))
+	if !ok {
+		t.Fatal("/v1/abaXYZaba should match")
+	}
+
+	if vars["id"] != "XYZ" {
+		t.Errorf("id = %q, want the middle", vars["id"])
+	}
+}

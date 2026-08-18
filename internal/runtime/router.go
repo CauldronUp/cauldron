@@ -141,6 +141,18 @@ func (rt route) matches(parts []string) (map[string]string, int, bool) {
 				return nil, 0, false
 			}
 
+			// Both can hold at once on a string too short to contain them
+			// both, when they overlap: /v1/aba{id}aba matched against
+			// /v1/ababa starts with "aba" and ends with "aba" in five
+			// characters. Slicing that panicked in the request path, and
+			// net/http recovers per connection, so the client saw an EOF with
+			// no response and the only trace was a stack on a stderr nobody
+			// was reading. No shipped Recipe declares a two-sided parameter,
+			// which is why this went unnoticed rather than why it was safe.
+			if len(value) < len(seg.prefix)+len(seg.suffix) {
+				return nil, 0, false
+			}
+
 			value = value[len(seg.prefix) : len(value)-len(seg.suffix)]
 			if value == "" {
 				return nil, 0, false
