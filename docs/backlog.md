@@ -664,7 +664,7 @@ what normalisation does not fix.
 
 | Provider | Why |
 |---|---|
-| Cohere | Token counts come back per response and billing is on both directions, so a client counting its own prompt is counting wrong |
+| ~~Cohere~~ | Shipped. billed_units and tokens do not agree and pricing from the wrong one is wrong on every request; a finish reason is not an error and MAX_TOKENS is a 200 with a truncated body; an embedding carries nothing but its position |
 | Mistral | Streaming and non-streaming answer with different shapes for the same request |
 | Together AI | Model names change and a retired model answers 404 rather than falling back |
 | Groq | Rate limits are on tokens per minute as well as requests, and the headers report both |

@@ -615,7 +615,13 @@ func TestEveryBundledRecipeSaysWhatItDoes(t *testing.T) {
 // fetched one at a time by a key that lives in the path. On a collection it is
 // not: a page of records with nothing to tell them apart cannot be what any
 // provider sends, because nobody could address the second one.
-func TestAHiddenIdentifierIsRefusedOnACollection(t *testing.T) {
+// This started out as "a hidden identifier is refused on a collection", which
+// was too broad. A positional array is a real shape and hiding the identifier
+// is the honest description of it, so the rule now turns on whether anything
+// fetches one record on its own. A customer plainly is fetched that way, which
+// is what makes withholding the identifier from the listing inconsistent
+// rather than positional.
+func TestAHiddenIdentifierIsRefusedOnACollectionOfAddressableRecords(t *testing.T) {
 	yaml := `
 recipe: stripe
 capability: payments
@@ -636,11 +642,15 @@ routes:
     path: /v1/customers
     resource: customer
     operation: list
+  - method: GET
+    path: /v1/customers/{id}
+    resource: customer
+    operation: get
 `
 
 	got := problems(t, yaml)
 
-	if !strings.Contains(got, "nothing can address") {
+	if !strings.Contains(got, "withholds an identifier that exists") {
 		t.Errorf("got %q", got)
 	}
 }
@@ -1245,6 +1255,75 @@ func TestBesideOnlyAppliesToAListing(t *testing.T) {
 	got := problems(t, yaml)
 
 	if !strings.Contains(got, "only a listing carries other collections") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A hidden identifier on a listing is usually wrong, and the exception is a
+// positional array: a collection where position is the identity because there
+// is nothing else. Cohere's embeddings are exactly that, and it is the trap
+// rather than an oversight -- the only thing tying a vector to its input is
+// the index, so a client that filters or reorders inputs anywhere in the
+// pipeline pairs the wrong vector with the wrong document.
+const positionalRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+responses:
+  list:
+    style: wrapped
+resources:
+  vector:
+    collection: vectors
+    id:
+      style: uuid
+      field: "-"
+    fields:
+      values:
+        type: list
+routes:
+  - method: GET
+    path: /v1/vectors
+    resource: vector
+    operation: list
+`
+
+func TestAPositionalCollectionMayHideItsIdentifier(t *testing.T) {
+	if _, err := parse(t, positionalRecipe); err != nil {
+		t.Errorf("a collection nothing fetches one of should be allowed to hide it: %v", err)
+	}
+}
+
+// If a route does fetch one, the identifier exists and withholding it from the
+// listing is inconsistent: the client is told the records are positional and
+// then handed a path that addresses them individually.
+func TestAHiddenIdentifierIsRefusedWhenSomethingFetchesOne(t *testing.T) {
+	yaml := positionalRecipe + `  - method: GET
+    path: /v1/vectors/{id}
+    resource: vector
+    operation: get
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "withholds an identifier that exists") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAHiddenIdentifierIsRefusedWhenSomethingDeletesOne(t *testing.T) {
+	// Delete addresses a record just as much as get does, so it counts.
+	yaml := positionalRecipe + `  - method: DELETE
+    path: /v1/vectors/{id}
+    resource: vector
+    operation: delete
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "withholds an identifier that exists") {
 		t.Errorf("got %q", got)
 	}
 }
