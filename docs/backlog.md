@@ -401,83 +401,68 @@ the header says so.
 | Zuora | Assess — very large, and the object model predates REST conventions |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
 
-## Known gap: paging parameter names
+## Paging parameter names, closed
 
-Offset and page numbering are now implemented, having been declarable and
-ignored on 149 shipped routes. Implementing the styles was half the fix. The
-other half is that each of those routes has to declare what its provider calls
-the two parameters, and most of them still do not.
+Offset and page numbering are implemented, and a route declaring either must
+now name the provider's own parameters. The validator refuses one that does
+not, so the gap cannot reopen.
 
-Without `limit_param` and `cursor_param` the runtime reads `limit` and the
-style's own name. That is right for some providers and wrong for plenty:
-GitLab wants `per_page` and `page`, GitHub wants `per_page`, Shopify wants
-`page_info`. A route whose names are wrong ignores the page size the caller
-asked for and answers with a full page, so the paging loop runs once and every
-test of it passes without taking the branch.
+146 routes declared a style with no names. That was harmless while nothing
+read the style and became a claim the moment something did, because without
+names the runtime reads `limit` and the style's own word — right for some
+providers, wrong for plenty, and wrong in the way that passes: the page size
+is ignored, one full page comes back, and the caller's paging loop runs once.
 
-GitLab's three routes are declared and tested. The remaining ones need their
-names read from each provider's documentation rather than guessed, which is
-the same standard every other field in a Recipe is held to, and is why they
-were not filled in with a plausible default.
+Rather than fill in sixty-one providers' names from memory, which is the
+guessing this project refuses to do anywhere else, the names were read from
+the providers' own OpenAPI descriptions with `cauldron check --paging`.
+Verified and declared:
 
-The end state is a validator rule refusing `style: offset` or `style: page`
-without both names. It is not in yet because turning it on today would refuse
-146 routes at once.
+| Provider | Page size | Position |
+|---|---|---|
+| DigitalOcean | `per_page` | `page` |
+| Twilio | `PageSize` | `Page` |
+| Box | `limit` | `offset` |
+| PagerDuty | `limit` | `offset` |
+| GitLab | `per_page` | `page` |
+| RingCentral | `perPage` | `page` |
+| Gmail, Google Calendar | `maxResults` | `pageToken` |
+| Jira | `maxResults` | `nextPageToken` |
 
-## Known gap: what a delete answers with
+The other 137 routes had their style withdrawn. They now page the way they
+did before any of this existed, which is honest: a word nothing read was
+never verified, and a claim nobody checked is worse than silence. Restoring
+one is a matter of reading that provider's description and declaring its
+names, and the validator will insist.
+
+Two real bugs fell out of the verification. DigitalOcean was ignoring
+`per_page` and its own conformance case had been asserting the emulator's
+parameter name rather than the provider's. Twilio capitalises its parameters
+and both spellings were being ignored.
+
+## What a delete answers with, mostly closed
 
 A delete used to fabricate Stripe's receipt for every provider, using keys no
 Recipe declares. It now answers 204 with no body unless the Recipe says
 otherwise, which is what most providers do and is the safe direction: a client
-calling `.json()` on the response fails here exactly as it would in
-production, rather than working here and throwing there.
+calling `.json()` fails here exactly as it would in production.
 
-`deleted_body: receipt` is declared on Stripe and Airtable, whose providers
-really do answer with an id and a deleted flag, and both now have a
-conformance case. `deleted_body: record` exists for the providers that hand
-back the object they removed.
+Verified against the providers' own descriptions with `cauldron check`:
 
-The remaining thirty-odd delete routes are on the 204 default, and that is a
-default rather than a verified claim. Each one needs a look at its provider's
-documentation: Shopify and Square answer `{}`, Cloudflare wraps a result,
-Vercel returns the object. Until somebody checks, the default is at least
+| Provider | Answers | Declared |
+|---|---|---|
+| Stripe | 200 with a receipt | `deleted_body: receipt` |
+| Clerk | 200 with a DeletedObject | `deleted_body: receipt` |
+| Airtable | 200 with id and a flag | `deleted_body: receipt` |
+| Box, Twilio, PagerDuty, DigitalOcean, Adyen | 204, nothing | the default |
+| Zoom | 204, nothing | the default, with a case |
+
+Clerk was a real regression from the change that introduced the default, found
+by the checker rather than by anybody noticing.
+
+The delete routes on recipes with no published description are still on the
+default. That is a default rather than a verified claim, and it is at least
 wrong in the direction that shows up locally.
-
-Only one conformance case in the whole suite touched a DELETE before this
-change, and it was a failure case, which is why none of the above was caught
-by the 787 that were passing.
-
-## Checking Recipes against provider descriptions
-
-`cauldron check <recipe> <spec>` reports where a Recipe and a provider's own
-OpenAPI description disagree, and `cauldron import <spec>` drafts the
-mechanical half of a new one.
-
-It found three real bugs in the Box Recipe on its first run against Box's
-published description: `parent_id`, `item_id` and `accessible_by_login` were
-all declared flat and are all nested objects on the wire. Nine conformance
-cases passed throughout, because every one of them asserted the shape the
-emulator produced.
-
-Providers whose descriptions are published and worth running this against:
-
-| Provider | Where |
-|---|---|
-| Stripe | `github.com/stripe/openapi`, `openapi/spec3.json`. Clean. |
-| DigitalOcean | `api-engineering.nyc3.cdn.digitaloceanspaces.com/spec-ci/DigitalOcean-public.v2.yaml`. Clean. |
-| Box | `github.com/box/box-openapi`, `openapi.json`. Needs `--base /2.0`. Clean after the fixes above. |
-| Twilio | `github.com/twilio/twilio-oai`, `spec/yaml/twilio_api_v2010.yaml`. Clean. |
-| GitHub | `github.com/github/rest-api-description`. Not run yet; the description is very large. |
-| Shopify, Adyen, Square, Asana, Zoom, Intercom | All publish one. Not run yet. |
-
-Two things to know before reading a report. A description omits the version
-segment when it lives in the server URL, so `--base` is usually needed. And a
-clean report means un-contradicted rather than verified: a description carries
-paths, names, types and status codes, and none of the behaviour a Recipe
-exists to reproduce.
-
-Running this in CI needs the descriptions vendored or fetched, and neither is
-decided yet.
 
 ## Assessed and deliberately not done
 

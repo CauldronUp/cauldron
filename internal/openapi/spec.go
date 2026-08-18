@@ -169,8 +169,13 @@ type SecurityScheme struct {
 // Schema is the subset of JSON Schema an OpenAPI description uses for the
 // shapes this package cares about.
 type Schema struct {
-	Ref         string             `yaml:"$ref"`
-	Type        string             `yaml:"type"`
+	Ref string `yaml:"$ref"`
+	// Type is a word in OpenAPI 3.0 and may be a sequence in 3.1, where
+	// ["string", "null"] is how a nullable field is written. Telnyx's
+	// published description uses the sequence form and this package refused to
+	// read the whole file because of it, which is a poor reason to be unable
+	// to check a Recipe.
+	Type        SchemaType         `yaml:"type"`
 	Format      string             `yaml:"format"`
 	Nullable    bool               `yaml:"nullable"`
 	Enum        []any              `yaml:"enum"`
@@ -328,7 +333,7 @@ func (d *Document) Success(op *Operation) (*Schema, string) {
 			continue
 		}
 
-		response := op.Responses[code]
+		response := d.ResolveResponse(op.Responses[code])
 
 		for _, media := range []string{"application/json", "application/hal+json", "application/vnd.api+json"} {
 			if content, ok := response.Content[media]; ok && content.Schema != nil {
@@ -366,4 +371,89 @@ func sortedCodes(responses map[string]Response) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// ResolveParameter follows a local $ref to the parameter it names.
+func (d *Document) ResolveParameter(p Parameter) Parameter {
+	seen := map[string]bool{}
+
+	for p.Ref != "" && !seen[p.Ref] {
+		seen[p.Ref] = true
+
+		name, ok := strings.CutPrefix(p.Ref, "#/components/parameters/")
+		if !ok {
+			return p
+		}
+
+		resolved, ok := d.Components.Parameters[name]
+		if !ok {
+			return p
+		}
+
+		p = resolved
+	}
+
+	return p
+}
+
+// SchemaType is a schema's declared type, which may be written as a word or,
+// in OpenAPI 3.1, as a sequence of them.
+type SchemaType string
+
+// UnmarshalYAML accepts either spelling.
+//
+// A sequence keeps its first non-null member, because ["string", "null"] means
+// a nullable string and the useful half is the string. Nothing here needs to
+// know a field is nullable, and pretending the type is "null" would be worse
+// than picking.
+func (t *SchemaType) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.SequenceNode {
+		for _, member := range node.Content {
+			if member.Value != "" && member.Value != "null" {
+				*t = SchemaType(member.Value)
+
+				return nil
+			}
+		}
+
+		return nil
+	}
+
+	var single string
+
+	if err := node.Decode(&single); err != nil {
+		return err
+	}
+
+	*t = SchemaType(single)
+
+	return nil
+}
+
+// ResolveResponse follows a local $ref to the response it names.
+//
+// A description that declares a shared response once and references it
+// everywhere is common, and Clerk's does exactly that for its delete: without
+// following the reference the schema looked absent, which reads as "the
+// description declines to say" rather than "the description says plainly".
+func (d *Document) ResolveResponse(r Response) Response {
+	seen := map[string]bool{}
+
+	for r.Ref != "" && !seen[r.Ref] {
+		seen[r.Ref] = true
+
+		name, ok := strings.CutPrefix(r.Ref, "#/components/responses/")
+		if !ok {
+			return r
+		}
+
+		resolved, ok := d.Components.Responses[name]
+		if !ok {
+			return r
+		}
+
+		r = resolved
+	}
+
+	return r
 }
