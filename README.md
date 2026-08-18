@@ -64,7 +64,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 833 cases, all from documentation so far |
+| Conformance suites (`cauldron verify`) | Working. 835 cases, all from documentation so far |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -255,7 +255,7 @@ stripe 0.1.0
 ```
 
 That second line is the honest one, and today it reads the same for every
-Recipe: 833 cases, none yet run against a live account. Documentation-derived
+Recipe: 835 cases, none yet run against a live account. Documentation-derived
 cases are worth having, and they are not the same as watching the provider do
 it. Adding a `verified:` date to a case is a claim that someone did.
 

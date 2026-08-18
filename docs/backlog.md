@@ -447,6 +447,38 @@ Only one conformance case in the whole suite touched a DELETE before this
 change, and it was a failure case, which is why none of the above was caught
 by the 787 that were passing.
 
+## Checking Recipes against provider descriptions
+
+`cauldron check <recipe> <spec>` reports where a Recipe and a provider's own
+OpenAPI description disagree, and `cauldron import <spec>` drafts the
+mechanical half of a new one.
+
+It found three real bugs in the Box Recipe on its first run against Box's
+published description: `parent_id`, `item_id` and `accessible_by_login` were
+all declared flat and are all nested objects on the wire. Nine conformance
+cases passed throughout, because every one of them asserted the shape the
+emulator produced.
+
+Providers whose descriptions are published and worth running this against:
+
+| Provider | Where |
+|---|---|
+| Stripe | `github.com/stripe/openapi`, `openapi/spec3.json`. Clean. |
+| DigitalOcean | `api-engineering.nyc3.cdn.digitaloceanspaces.com/spec-ci/DigitalOcean-public.v2.yaml`. Clean. |
+| Box | `github.com/box/box-openapi`, `openapi.json`. Needs `--base /2.0`. Clean after the fixes above. |
+| Twilio | `github.com/twilio/twilio-oai`, `spec/yaml/twilio_api_v2010.yaml`. Clean. |
+| GitHub | `github.com/github/rest-api-description`. Not run yet; the description is very large. |
+| Shopify, Adyen, Square, Asana, Zoom, Intercom | All publish one. Not run yet. |
+
+Two things to know before reading a report. A description omits the version
+segment when it lives in the server URL, so `--base` is usually needed. And a
+clean report means un-contradicted rather than verified: a description carries
+paths, names, types and status codes, and none of the behaviour a Recipe
+exists to reproduce.
+
+Running this in CI needs the descriptions vendored or fetched, and neither is
+decided yet.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
