@@ -1,0 +1,482 @@
+# Knock Recipe for Cauldron
+#
+# Knock is worth emulating because it breaks the assumption almost every
+# notification integration is built on: that sending a notification has one
+# outcome.
+#
+# You trigger a workflow. Knock resolves who should be notified, which
+# channels each of them has, and what their preferences allow, and then sends
+# on some of those channels and not others. One trigger becomes a workflow
+# run, which becomes several messages, each with its own status. The email
+# was delivered, the push bounced because the device token expired, and the
+# SMS was never attempted because the recipient had switched it off. Nothing
+# errored. The trigger answered 200.
+#
+# Four things worth modelling exactly:
+#
+#   1. A trigger answers with a workflow_run_id and nothing else. Not the
+#      messages, not the recipients, not a count. The messages do not exist
+#      yet, and the only way to find out what happened is to go and look.
+#   2. A message that was never sent is still a message. status "not_sent"
+#      with a reason, sitting in the same list as the delivered ones. Code
+#      that counts messages counts intentions.
+#   3. Preferences are layered and the effective answer is not any one of
+#      them. There is a workspace default, a per-tenant set and a per-user
+#      set, and the merge is Knock's, not yours. Reading a user's
+#      preferences tells you what they chose, not what will happen.
+#   4. Seen, read and archived are three separate timestamps and none of
+#      them implies another. A message can be archived without being read,
+#      and an unread count that treats archived as read is wrong in the
+#      direction users notice.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No workflow runs. Triggering creates a run and no messages, because
+#     what a real trigger produces depends on the workflow's steps, the
+#     recipient's channels and a preference merge this Recipe does not
+#     perform. The messages in the fixtures are the outcome of a run that
+#     already happened, which is the state worth testing against.
+#   - The preference merge is not performed. The three layers are readable
+#     and the effective result is not computed, because computing it wrongly
+#     would be worse than not offering it.
+#   - Batching, digests, throttles and the in-app feed's real-time channel
+#     are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: knock
+capability: push
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.knock.app/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk_test_cauldron_knock_key
+
+responses:
+  list:
+    style: wrapped
+    # A cursor, and Knock's is nested inside page_info rather than sitting at
+    # the top level, so a client reading response.after finds nothing.
+    cursor_field: page_info.after
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  # What a trigger answers with, and the whole of it. There is no message
+  # here, no recipient list and no count, because none of that exists yet.
+  workflow_run:
+    collection: entries
+    id:
+      style: opaque
+      length: 27
+      field: workflow_run_id
+
+  # One outcome, on one channel, for one recipient. A trigger produces
+  # several of these and they do not agree with each other.
+  message:
+    collection: entries
+    id:
+      style: opaque
+      length: 27
+    fields:
+      # queued, sent, delivered, delivery_attempted, undelivered, not_sent,
+      # bounced. Only two of those mean it arrived, and not_sent means it was
+      # never attempted, which is different from failing.
+      status:
+        type: string
+        default: queued
+      # email, sms, push, chat, in_app_feed. The channel a message went out
+      # on decides what "delivered" is worth: an email provider's delivered
+      # means accepted by a mail server, and a push provider's means handed
+      # to Apple.
+      channel_id:
+        type: string
+      recipient:
+        type: string
+      workflow:
+        type: string
+      # Why nothing was sent. Present only when status is not_sent, so code
+      # that reads it on a delivered message reads nothing.
+      not_sent_reason:
+        type: string
+      # Three timestamps that do not imply one another. A message can be
+      # archived without ever being read, and an unread count treating
+      # archived as read is wrong in the direction users notice.
+      seen_at:
+        type: datetime
+        null_when_unset: true
+      read_at:
+        type: datetime
+        null_when_unset: true
+      archived_at:
+        type: datetime
+        null_when_unset: true
+      inserted_at:
+        type: datetime
+
+  # What a recipient chose. Not what will happen: the workspace default and
+  # the tenant's set are merged over this, and the merge is Knock's.
+  preference_set:
+    collection: entries
+    id:
+      style: opaque
+      length: 12
+    fields:
+      recipient:
+        type: string
+      # A map from workflow key to true or false, and a workflow absent from
+      # it is not the same as one set to false: absent means "fall back to
+      # the layer above" and false means "no".
+      workflows:
+        type: list
+      channel_types:
+        type: list
+
+routes:
+  # A trigger. 200, a workflow run id, and nothing else at all.
+  - method: POST
+    path: /v1/workflows/{workflow}/trigger
+    resource: workflow_run
+    operation: create
+    # The identifier and nothing else. A receipt-shaped resource declares no
+    # fields, and without this the request body is echoed back, which no
+    # provider does and which would let a client read its own payload back
+    # and believe Knock had confirmed it.
+    returns:
+      - id
+
+  - method: GET
+    path: /v1/messages
+    resource: message
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+      limit_param: page_size
+      cursor_param: after
+
+  - method: GET
+    path: /v1/messages/{id}
+    resource: message
+    operation: get
+
+  - method: GET
+    path: /v1/users/{id}/preferences/default
+    resource: preference_set
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limited
+    message: "You have exceeded the rate limit for this endpoint."
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "The API key provided is invalid."
+
+  resource_missing:
+    status: 404
+    code: resource_missing
+    message: "The requested resource was not found."
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. A trigger missing its recipients is unprocessable rather
+    # than malformed, and a client branching on 400 never sees it.
+    code: invalid_params
+    message: "The request contained invalid parameters."
+
+  # The workflow exists and is not live in this environment. Knock keeps
+  # development and production separate and a workflow committed in one is
+  # not present in the other, so the same call succeeds locally and 404s
+  # after deploy.
+  workflow_not_committed:
+    status: 404
+    code: workflow_not_found
+    message: "The workflow `payment-failed` was not found in this environment. Workflows must be committed to production before they can be triggered there."
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    workflow_run: []
+
+    message:
+      # One trigger, three outcomes. The email arrived.
+      - id: 2mQ8fXcauldron000000000001
+        status: delivered
+        channel_id: email
+        recipient: user_ada
+        workflow: payment-failed
+        seen_at: null
+        read_at: null
+        archived_at: null
+        inserted_at: "2026-08-14T10:02:11Z"
+
+      # The push bounced. The device token expired weeks ago and nobody
+      # noticed, because the trigger that produced this answered 200.
+      - id: 2mQ8fXcauldron000000000002
+        status: bounced
+        channel_id: push
+        recipient: user_ada
+        workflow: payment-failed
+        seen_at: null
+        read_at: null
+        archived_at: null
+        inserted_at: "2026-08-14T10:02:11Z"
+
+      # And the SMS was never attempted. not_sent is not a failure: nothing
+      # was tried, because the recipient's preferences said no. It is in this
+      # list all the same, so a count of messages is a count of intentions.
+      - id: 2mQ8fXcauldron000000000003
+        status: not_sent
+        channel_id: sms
+        recipient: user_ada
+        workflow: payment-failed
+        not_sent_reason: preferences
+        seen_at: null
+        read_at: null
+        archived_at: null
+        inserted_at: "2026-08-14T10:02:11Z"
+
+      # Archived without ever being read. An unread count that treats
+      # archived as read reports zero here and the user still has one.
+      - id: 2mQ8fXcauldron000000000004
+        status: delivered
+        channel_id: in_app_feed
+        recipient: user_ada
+        workflow: comment-mention
+        seen_at: "2026-08-13T18:41:00Z"
+        archived_at: "2026-08-13T18:41:09Z"
+        inserted_at: "2026-08-13T18:40:02Z"
+
+    preference_set:
+      - id: user_ada
+        recipient: user_ada
+        # payment-failed is absent from this map, not set to false. Absent
+        # means "fall back to the workspace default" and false means "no",
+        # and a client reading this to decide whether a user will be notified
+        # about payment-failed is reading nothing at all.
+        workflows:
+          - comment-mention
+        channel_types:
+          - email
+          - in_app_feed
+
+# Every case below is derived from Knock's published documentation. None has
+# been run against a real workspace. The verify report says so.
+conformance:
+  - name: a trigger answers with a run id and nothing else
+    # Not the messages, not the recipients, not a count. The messages do not
+    # exist yet and the only way to find out what happened is to go and look.
+    source: https://docs.knock.app/reference#trigger-workflow
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /v1/workflows/payment-failed/trigger
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+      json:
+        recipients:
+          - user_ada
+    expect:
+      status: 200
+      matches:
+        workflow_run_id: '^[A-Za-z0-9]{27}$'
+      absent:
+        - id
+        - messages
+        - recipients
+        - count
+        - status
+
+  - name: one trigger becomes several messages that disagree
+    # The email arrived, the push bounced and the SMS was never attempted.
+    # Nothing errored and the trigger answered 200.
+    source: https://docs.knock.app/reference#list-messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        entries[0].channel_id: email
+        entries[0].status: delivered
+        entries[1].channel_id: push
+        entries[1].status: bounced
+        entries[2].channel_id: sms
+        entries[2].status: not_sent
+      absent:
+        - entries[4]
+
+  - name: a message that was never sent is still a message
+    # not_sent is not a failure. Nothing was attempted, because the
+    # recipient's preferences said no, and it is in the list all the same.
+    source: https://docs.knock.app/reference#list-messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages/2mQ8fXcauldron000000000003
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        status: not_sent
+        not_sent_reason: preferences
+        channel_id: sms
+
+  - name: a delivered message carries no reason for not sending
+    # The property is absent rather than null on the messages that went out,
+    # so a client reading it everywhere reads undefined most of the time.
+    source: https://docs.knock.app/reference#list-messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages/2mQ8fXcauldron000000000001
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        status: delivered
+      absent:
+        - not_sent_reason
+
+  - name: the paging cursor is nested under page_info
+    # A client reading response.after finds nothing, on every listing.
+    source: https://docs.knock.app/reference#pagination
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages
+      query:
+        page_size: "2"
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      matches:
+        page_info.after: '.'
+      absent:
+        - after
+        - cursor
+        - next
+
+  - name: archived is not read
+    # Seen at 18:41:00, archived nine seconds later, and never read. An
+    # unread count that treats archived as read reports zero and the user
+    # still has one.
+    source: https://docs.knock.app/reference#get-message
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages/2mQ8fXcauldron000000000004
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        seen_at: "2026-08-13T18:41:00Z"
+        archived_at: "2026-08-13T18:41:09Z"
+        read_at: null
+
+  - name: the three timestamps are present and null rather than absent
+    # A client testing for the key's existence finds all three on every
+    # message and has to read the values to learn anything.
+    source: https://docs.knock.app/reference#get-message
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages/2mQ8fXcauldron000000000001
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        seen_at: null
+        read_at: null
+        archived_at: null
+
+  - name: a preference set says what a user chose, not what will happen
+    # payment-failed is absent from the workflows map rather than set to
+    # false. Absent means "fall back to the layer above" and false means
+    # "no", and the workspace default and the tenant's set are merged over
+    # this by Knock.
+    source: https://docs.knock.app/reference#get-preferences
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/users/user_ada/preferences/default
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 200
+      body:
+        workflows[0]: comment-mention
+        channel_types[0]: email
+      absent:
+        - workflows[1]
+        - effective
+        - resolved
+
+  - name: a workflow that is not committed here is a 404, not a 400
+    # Knock keeps development and production separate, so a workflow
+    # committed in one is absent from the other and the same call succeeds
+    # locally and 404s after deploy.
+    source: https://docs.knock.app/reference#errors
+    fixture: small-workspace
+    arm: workflow_not_committed
+    request:
+      method: GET
+      path: /v1/messages
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 404
+      body:
+        code: workflow_not_found
+
+  - name: a trigger without recipients is 422, not 400
+    source: https://docs.knock.app/reference#errors
+    fixture: small-workspace
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v1/messages
+      headers:
+        Authorization: Bearer sk_test_cauldron_knock_key
+    expect:
+      status: 422
+      body:
+        code: invalid_params
+
+  - name: a wrong key is refused
+    source: https://docs.knock.app/reference#authentication
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/messages
+      headers:
+        Authorization: Bearer sk_test_wrong
+    expect:
+      status: 401
+      body:
+        code: unauthorized

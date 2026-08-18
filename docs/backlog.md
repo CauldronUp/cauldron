@@ -304,7 +304,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Svix~~ | Shipped. Delivery attempts, backoff, and the endpoint disabled after repeated failure |
-| Knock | Assess — workflows, preferences, batching |
+| ~~Knock~~ | Shipped. A trigger answers with a run id and nothing else, one trigger becomes several messages that disagree, a message that was never sent is still a message, and archived is not read |
 | Courier | Assess — routing across channels and the fallback that fires silently |
 | Novu | Assess — subscribers, workflows, digest |
 | Hookdeck | Assess — connections, retries, the paused destination |

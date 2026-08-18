@@ -1028,3 +1028,61 @@ func TestAnUnknownIdentifierTypeIsRefused(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A resource with no fields is almost always an unfinished one, and the
+// exception is narrow enough to name: a receipt. Knock's workflow trigger
+// answers with a workflow_run_id and nothing else, and describing that as a
+// resource with one invented field would put a property on the wire the
+// provider never sends.
+const receiptRecipe = `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  receipt:
+    id:
+      style: opaque
+      length: 12
+      field: run_id
+routes:
+  - method: POST
+    path: /v1/runs
+    resource: receipt
+    operation: create
+    returns: [id]
+`
+
+func TestAReceiptMayDeclareNoFields(t *testing.T) {
+	if _, err := parse(t, receiptRecipe); err != nil {
+		t.Errorf("a create-only resource should be allowed to have no fields: %v", err)
+	}
+}
+
+// A receipt has no fields, so nothing filters the request on the way in and
+// the whole payload comes back out. That is the helpful kind of wrong: a
+// client reads its own request back and believes the provider confirmed it.
+func TestAFieldlessCreateMustSayWhatItReturns(t *testing.T) {
+	got := problems(t, strings.Replace(receiptRecipe, "\n    returns: [id]", "", 1))
+
+	if !strings.Contains(got, "echo the request body back") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// Read it anywhere and it is not a receipt: a resource with no fields that
+// something goes and fetches is describing a response nobody can use.
+func TestAFieldlessResourceThatIsReadIsStillRefused(t *testing.T) {
+	yaml := receiptRecipe + `  - method: GET
+    path: /v1/runs/{id}
+    resource: receipt
+    operation: get
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "has no fields") {
+		t.Errorf("got %q", got)
+	}
+}
