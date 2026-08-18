@@ -46,7 +46,7 @@ func TestEveryCaseClearsWhateverThePreviousOneArmed(t *testing.T) {
 		armed = name
 
 		return nil
-	})
+	}, nil)
 
 	// Three calls, not one. The two empty names are the clearing.
 	if len(asked) != 3 {
@@ -81,7 +81,7 @@ func TestACaseThatCannotBeArmedFails(t *testing.T) {
 
 	report := Run(r, handler, "", nil, func(string) error {
 		return errNoSuchError
-	})
+	}, nil)
 
 	if report.Passed() != 0 {
 		t.Fatal("a case whose fault could not be installed must not pass, since the status it expects can arrive by accident")
@@ -93,3 +93,71 @@ var errNoSuchError = errNoSuch{}
 type errNoSuch struct{}
 
 func (errNoSuch) Error() string { return "no such error" }
+
+// A webhook claim has to be able to fail, which is not obvious: the block sits
+// beside the response assertions and a case whose only claim is about a
+// webhook passes trivially if the check is skipped.
+func TestAWebhookClaimCanFail(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	emitted := []Delivery{{
+		Event:   "payment.created",
+		Payload: map[string]any{"data": map[string]any{"object": map[string]any{"amount": 2500}}},
+	}}
+
+	run := func(name string, expect recipe.WebhookExpectation) Result {
+		t.Helper()
+
+		r := &recipe.Recipe{
+			Name:     "example",
+			Webhooks: recipe.Webhooks{Events: []string{"payment.created"}},
+			Conformance: []recipe.Case{{
+				Name:   name,
+				Expect: recipe.Expectation{Status: http.StatusOK, Webhook: &expect},
+			}},
+		}
+
+		// Nothing recorded before the request, everything after, which is the
+		// arrangement a real emitting request produces.
+		before := true
+
+		return Run(r, handler, "", nil, nil, func() []Delivery {
+			if before {
+				before = false
+
+				return nil
+			}
+
+			return emitted
+		}).Results[0]
+	}
+
+	if got := run("right event", recipe.WebhookExpectation{Event: "payment.created"}); !got.Passed() {
+		t.Errorf("a correct claim failed: %v", got.Failures)
+	}
+
+	if got := run("wrong event", recipe.WebhookExpectation{Event: "payment.updated"}); got.Passed() {
+		t.Error("a claim naming the wrong event passed")
+	}
+
+	if got := run("wrong value", recipe.WebhookExpectation{
+		Body: map[string]any{"data.object.amount": 99},
+	}); got.Passed() {
+		t.Error("a claim about a value the payload does not carry passed")
+	}
+
+	// The half that catches an internal field name leaking into a payload,
+	// which is the failure this whole mechanism exists for.
+	if got := run("present but claimed absent", recipe.WebhookExpectation{
+		Absent: []string{"data.object.amount"},
+	}); got.Passed() {
+		t.Error("a claim that a present field is absent passed")
+	}
+
+	if got := run("nothing emitted", recipe.WebhookExpectation{None: true}); got.Passed() {
+		t.Error("a claim that nothing was emitted passed while something was")
+	}
+}

@@ -97,18 +97,34 @@ type Seeder func(fixture string) error
 // into the runtime to get it.
 type Armer func(errorName string) error
 
+// Delivery is one webhook the sandbox recorded, reduced to what a case can
+// assert about it. The runtime's own Delivery carries delivery bookkeeping
+// this package has no business knowing.
+type Delivery struct {
+	Event   string
+	Payload map[string]any
+}
+
+// Watcher returns the webhooks recorded since the last case, newest last.
+//
+// Supplied by the caller for the same reason the Seeder and the Armer are:
+// conform says what a case needs to look at and does not reach into the
+// runtime to get it.
+
+type Watcher func() []Delivery
+
 // Run executes every case in a Recipe against handler, mounted at prefix.
-func Run(r *recipe.Recipe, handler http.Handler, prefix string, seed Seeder, arm Armer) Report {
+func Run(r *recipe.Recipe, handler http.Handler, prefix string, seed Seeder, arm Armer, watch Watcher) Report {
 	report := Report{Recipe: r.Name, Version: r.Version}
 
 	for _, c := range r.Conformance {
-		report.Results = append(report.Results, runCase(c, handler, prefix, seed, arm))
+		report.Results = append(report.Results, runCase(c, handler, prefix, seed, arm, watch))
 	}
 
 	return report
 }
 
-func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder, arm Armer) Result {
+func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder, arm Armer, watch Watcher) Result {
 	result := Result{Case: c}
 
 	if c.Fixture != "" && seed != nil {
@@ -135,6 +151,14 @@ func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder, ar
 		}
 	}
 
+	// Counted before the request, so the check afterwards can tell what this
+	// request emitted from what was already there.
+	before := 0
+
+	if c.Expect.Webhook != nil && watch != nil {
+		before = len(watch())
+	}
+
 	req, err := buildRequest(c.Request, prefix)
 	if err != nil {
 		result.Failures = append(result.Failures, err.Error())
@@ -154,7 +178,100 @@ func runCase(c recipe.Case, handler http.Handler, prefix string, seed Seeder, ar
 
 	result.Failures = check(c.Expect, response, body)
 
+	if c.Expect.Webhook != nil {
+		var delivered []Delivery
+
+		if watch != nil {
+			delivered = watch()
+		}
+
+		result.Failures = append(result.Failures, checkWebhook(*c.Expect.Webhook, before, delivered)...)
+	}
+
 	return result
+}
+
+// checkWebhook compares the deliveries a case's request produced against what
+// it claimed.
+//
+// Only the deliveries this request caused are considered, which is what makes
+// the claim mean "the request emitted this" rather than "something did at some
+// point". A fixture seeded before the case may have emitted nothing, but a
+// previous case certainly did.
+func checkWebhook(expect recipe.WebhookExpectation, before int, all []Delivery) []string {
+	var failures []string
+
+	produced := all
+	if before <= len(all) {
+		produced = all[before:]
+	}
+
+	if expect.None {
+		if len(produced) > 0 {
+			names := make([]string, 0, len(produced))
+			for _, d := range produced {
+				names = append(names, d.Event)
+			}
+
+			failures = append(failures, fmt.Sprintf("the request should emit nothing, and it emitted %s", strings.Join(names, ", ")))
+		}
+
+		return failures
+	}
+
+	if len(produced) == 0 {
+		return append(failures, "the request emitted no webhook at all")
+	}
+
+	// The last one, because a request emits at most one event and the last is
+	// the one it caused.
+	delivery := produced[len(produced)-1]
+
+	if expect.Event != "" && delivery.Event != expect.Event {
+		failures = append(failures, fmt.Sprintf("webhook event: want %q, got %q", expect.Event, delivery.Event))
+	}
+
+	document := any(delivery.Payload)
+
+	for _, path := range sortedKeys(expect.Body) {
+		failures = append(failures, prefixed("webhook", compare(path, expect.Body[path], document))...)
+	}
+
+	for _, path := range sortedKeys(expect.Matches) {
+		got, found := lookup(document, path)
+		if !found {
+			failures = append(failures, fmt.Sprintf("webhook %s: expected a value matching %s, but the field is absent", path, expect.Matches[path]))
+			continue
+		}
+
+		compiled, err := regexp.Compile(expect.Matches[path])
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("webhook %s: %v", path, err))
+			continue
+		}
+
+		if !compiled.MatchString(text(got)) {
+			failures = append(failures, fmt.Sprintf("webhook %s: %q does not match %s", path, text(got), expect.Matches[path]))
+		}
+	}
+
+	for _, path := range expect.Absent {
+		if _, found := lookup(document, path); found {
+			failures = append(failures, fmt.Sprintf("webhook %s: the provider does not send this field, but the emulator did", path))
+		}
+	}
+
+	return failures
+}
+
+// prefixed labels a set of failures as being about the webhook rather than the
+// response, since a case can assert both and the paths look alike.
+func prefixed(label string, failures []string) []string {
+	for i, failure := range failures {
+		failures[i] = label + " " + failure
+	}
+
+	return failures
 }
 
 func buildRequest(r recipe.Request, prefix string) (*http.Request, error) {

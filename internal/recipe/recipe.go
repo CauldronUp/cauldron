@@ -235,6 +235,37 @@ type Expectation struct {
 	// express it: absences are vacuously true against an empty body, so a case
 	// built from them would pass whatever the emulator sent.
 	NoBody bool `yaml:"no_body"`
+	// Webhook asserts what the request emitted, which nothing could assert
+	// before.
+	//
+	// Webhook payloads were the largest unverified surface in the project: 85
+	// Recipes emit them, the record went in raw rather than shaped, and no
+	// case could look. An application's handler written against the emulator
+	// could read a field the provider never sends and be entirely green.
+	Webhook *WebhookExpectation `yaml:"webhook"`
+}
+
+// WebhookExpectation is what a case claims about the webhook its request
+// emitted.
+//
+// The last delivery is the one examined, because a request emits at most one
+// event and asserting on "the one this caused" is the only reading that stays
+// true as a Recipe grows.
+type WebhookExpectation struct {
+	// Event is the type the delivery must carry.
+	Event string `yaml:"event"`
+	// Body asserts dotted paths in the payload, envelope included, so a
+	// Recipe declaring its own envelope can pin that too.
+	Body map[string]any `yaml:"body"`
+	// Matches asserts regular expressions against payload paths.
+	Matches map[string]string `yaml:"matches"`
+	// Absent names paths the payload must not carry. This is the half that
+	// catches an internal field name leaking into a payload.
+	Absent []string `yaml:"absent"`
+	// None claims the request emitted nothing at all, which is worth being
+	// able to say: an event that fires when it should not is as wrong as one
+	// that does not fire.
+	None bool `yaml:"none"`
 }
 
 // Upstream records which real API version this Recipe targets. Without it, a
@@ -1298,11 +1329,27 @@ func (r *Recipe) Validate() error {
 		// One non-echoed claim is enough to clear it, because then something
 		// the emulator decided is under test. matches and absent count, since
 		// neither can be satisfied by echoing.
+		if w := c.Expect.Webhook; w != nil {
+			if w.None && (w.Event != "" || len(w.Body) > 0 || len(w.Matches) > 0 || len(w.Absent) > 0) {
+				add("%s: expect.webhook.none claims nothing was emitted, so there is nothing for event, body, matches or absent to look at", where)
+			}
+
+			if !w.None && w.Event == "" && len(w.Body) == 0 && len(w.Matches) == 0 && len(w.Absent) == 0 {
+				add("%s: expect.webhook asserts nothing, which is not the same as claiming none was emitted", where)
+			}
+
+			if w.Event != "" && !contains(r.Webhooks.Events, w.Event) {
+				add("%s: expects webhook %q, which the Recipe does not declare", where, w.Event)
+			}
+		}
+
 		if echoesOnly(c) {
 			add("%s: every assertion repeats a value the request sent, so the case passes whatever the emulator does; assert something it decides, or add a matches or absent claim", where)
 		}
 
-		if c.Expect.Status < 400 && !c.Expect.NoBody && c.Expect.BodyMatches == "" &&
+		// A webhook claim counts. It is a claim about what the request caused,
+		// which is evidence of exactly the kind this rule exists to demand.
+		if c.Expect.Status < 400 && !c.Expect.NoBody && c.Expect.BodyMatches == "" && c.Expect.Webhook == nil &&
 			len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
 			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
