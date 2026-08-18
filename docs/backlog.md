@@ -532,7 +532,7 @@ transfers alone, and say so in the header.
 | AWS Cognito | The SDK is the API, and the token lifecycle is the whole integration |
 | Ory | Assess — identities, sessions, flows. The flow object is the unusual part |
 | Kinde | Assess — users, organizations, feature flags in one product |
-| Persona | The decision arrives by webhook minutes after the inquiry completes, so completed is not decided |
+| ~~Persona~~ | Shipped. completed is not approved, needs_review is neither, and nothing is at the top level because it is JSON:API |
 | ~~Onfido~~ | Shipped. complete is not clear, consider is neither a pass nor a failure, and the reason lives on the report rather than the check |
 | Sift | The score is computed server side and changes without any request from you |
 
