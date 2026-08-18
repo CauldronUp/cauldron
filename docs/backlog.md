@@ -86,7 +86,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Provider | Why |
 |---|---|
 | Microsoft Graph | Mail, calendars, users, files. Enormous surface area |
-| Google Calendar | Events, attendees, recurrence, cancellations |
+| ~~Google Calendar~~ | Shipped. Listings return the series not the occurrence, all-day events have no time, cancelled instances are almost empty |
 | Gmail | Threads, labels, drafts, messages |
 | Google Drive | Files, permissions, revisions, shared drives |
 | Microsoft OneDrive | Files, sharing, async operations |
