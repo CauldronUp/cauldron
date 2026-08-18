@@ -1,0 +1,585 @@
+# Modern Treasury Recipe for Cauldron
+#
+# Modern Treasury has a sandbox, and the reason to emulate it anyway is that
+# the hard part of this API is not the endpoints. It is double-entry
+# bookkeeping, which almost nobody integrating with it has written before, and
+# which is unforgiving in a way that produces books that balance and are
+# wrong.
+#
+# The ledger is the product. Every movement of money is two entries with equal
+# amounts and opposite directions, and the invariant is that they cancel. That
+# means a naive sum over ledger entries is always zero, which looks like a bug
+# and is the system working.
+#
+# Five things worth modelling exactly:
+#
+#   1. Every transaction has at least two entries and they cancel. Summing
+#      amounts across a ledger gives nought, every time, and any figure that
+#      is not nought means something is missing rather than that money moved.
+#   2. direction is credit or debit, and what that does to a balance depends
+#      on the account. An account whose normal_balance is debit goes up on a
+#      debit and down on a credit; a credit-normal account is the reverse. So
+#      the same word means increase on one account and decrease on another,
+#      in the same transaction.
+#   3. A ledger account has three balances and they disagree on purpose.
+#      pending includes entries that are not posted, posted includes only
+#      those that are, and available is the one you are allowed to spend.
+#      Reading the wrong one authorises money that is not there.
+#   4. A pending transaction moves the pending balance and not the posted
+#      one. The transition is a separate act, so a transaction that exists is
+#      not a transaction that has settled.
+#   5. Nothing is ever edited. A posted transaction is immutable and a
+#      correction is another transaction in the other direction, so the
+#      history is append-only and a balance is the sum of everything rather
+#      than a field somebody updated.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No money moves and no balance is computed. The balances below are what
+#     a fixture puts there rather than a sum Cauldron performs, so this
+#     Recipe reproduces the shapes and not the arithmetic. A suite that wants
+#     to test its own ledger maths still has to do that itself.
+#   - Payment orders, which are the half of Modern Treasury that actually
+#     instructs a bank, are deliberately not modelled. That is the same
+#     position Mercury, Increase and Bill.com take.
+#   - Idempotency keys are accepted and ignored, which for a ledger API is a
+#     gap worth naming loudly.
+#   - Reconciliation, expected payments, virtual accounts and the counterparty
+#     endpoints are not modelled.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: moderntreasury
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.moderntreasury.com/reference
+
+auth:
+  # An organisation id as the username and an API key as the password. Which
+  # half carries the secret is not obvious, and checking the wrong one means
+  # a bad key is never rejected.
+  scheme: basic
+  credential: password
+  keys:
+    - test-cauldron-modern-treasury-key
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  ledger_account:
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      ledger_id:
+        type: string
+      # debit or credit. This decides whether a debit entry raises or lowers
+      # the balance, so the same direction means opposite things on two
+      # accounts in the same transaction.
+      normal_balance:
+        type: string
+        default: debit
+      currency:
+        type: string
+        default: USD
+      # Integer minor units, and there are three of them because they answer
+      # three different questions.
+      pending_amount:
+        type: integer
+        in: balances.pending_balance
+        as: amount
+      posted_amount:
+        type: integer
+        in: balances.posted_balance
+        as: amount
+      # The one you are allowed to spend. Reading either of the others
+      # authorises money that is not there yet or is already committed.
+      available_amount:
+        type: integer
+        in: balances.available_balance
+        as: amount
+      created_at:
+        type: string
+
+  ledger_transaction:
+    id:
+      style: uuid
+    fields:
+      ledger_id:
+        type: string
+      description:
+        type: string
+      # pending, posted, archived. A pending transaction moves the pending
+      # balance and not the posted one, and posting is a separate act.
+      status:
+        type: string
+        default: pending
+      # The caller's own reference. Modern Treasury enforces that it is
+      # unique per ledger, which is the only thing standing between a retry
+      # and a duplicate entry.
+      external_id:
+        type: string
+      # At least two, and they cancel. Summing their amounts gives nought.
+      ledger_entries:
+        type: list
+      effective_at:
+        type: string
+      posted_at:
+        type: string
+      created_at:
+        type: string
+
+  ledger_entry:
+    id:
+      style: uuid
+    fields:
+      ledger_transaction_id:
+        type: string
+      ledger_account_id:
+        type: string
+      # credit or debit. What it does to the balance depends on the
+      # account's normal_balance rather than on this word alone.
+      direction:
+        type: string
+        required: true
+      # Always positive. The direction carries the sign, so an entry never
+      # holds a negative number and code that expects one finds none.
+      amount:
+        type: integer
+        required: true
+      status:
+        type: string
+        default: pending
+      created_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/ledger_accounts
+    resource: ledger_account
+    operation: list
+
+  - method: GET
+    path: /api/ledger_accounts/{id}
+    resource: ledger_account
+    operation: get
+
+  - method: GET
+    path: /api/ledger_transactions
+    resource: ledger_transaction
+    operation: list
+
+  - method: GET
+    path: /api/ledger_transactions/{id}
+    resource: ledger_transaction
+    operation: get
+
+  - method: POST
+    path: /api/ledger_transactions
+    resource: ledger_transaction
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /api/ledger_entries
+    resource: ledger_entry
+    operation: list
+
+  - method: GET
+    path: /api/ledger_entries/{id}
+    resource: ledger_entry
+    operation: get
+
+webhooks:
+  events:
+    - ledger_transaction.created
+    - ledger_transaction.posted
+    - ledger_account.updated
+  signing:
+    scheme: hmac-sha256
+    header: X-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "Invalid credentials"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "Record not found"
+
+  parameter_missing:
+    status: 422
+    code: parameter_invalid
+    message: "{detail} is required"
+
+  # The invariant, enforced. A transaction whose entries do not cancel is
+  # refused outright rather than stored and reconciled later, which is the
+  # whole reason the books can be trusted.
+  unbalanced_transaction:
+    status: 422
+    code: parameter_invalid
+    message: "Ledger entries must sum to zero: credits and debits are unequal"
+
+  # The other one that stops a retry becoming a duplicate. external_id is
+  # unique per ledger, so sending the same transaction twice is refused by
+  # the ledger rather than by the caller remembering.
+  duplicate_external_id:
+    status: 422
+    code: parameter_invalid
+    message: "A ledger transaction with that external_id already exists in this ledger"
+
+  # A posted transaction cannot be changed. A correction is another
+  # transaction in the other direction.
+  transaction_immutable:
+    status: 422
+    code: parameter_invalid
+    message: "A posted ledger transaction cannot be modified"
+
+fixtures:
+  empty: {}
+
+  small-ledger:
+    ledger_account:
+      # Debit-normal, which is what a cash account is. A debit raises it.
+      - id: 11111111-aaaa-4bbb-8ccc-000000000001
+        name: Cash
+        ledger_id: 99999999-ffff-4eee-8ddd-000000000000
+        normal_balance: debit
+        currency: USD
+        # Three balances, and they disagree. Fifty thousand pending, forty
+        # thousand posted, and thirty-five thousand actually spendable.
+        pending_amount: 50000
+        posted_amount: 40000
+        available_amount: 35000
+        created_at: "2026-05-01T09:00:00Z"
+      # Credit-normal, which is what a revenue account is. A credit raises
+      # it, so the same word means the opposite of what it means above.
+      - id: 22222222-aaaa-4bbb-8ccc-000000000002
+        name: Revenue
+        ledger_id: 99999999-ffff-4eee-8ddd-000000000000
+        normal_balance: credit
+        currency: USD
+        pending_amount: 50000
+        posted_amount: 40000
+        available_amount: 40000
+        created_at: "2026-05-01T09:00:00Z"
+
+    ledger_transaction:
+      # Posted. Two entries, equal amounts, opposite directions.
+      - id: 33333333-aaaa-4bbb-8ccc-000000000003
+        ledger_id: 99999999-ffff-4eee-8ddd-000000000000
+        description: Invoice 1042 paid
+        status: posted
+        external_id: invoice-1042
+        effective_at: "2026-06-01T00:00:00Z"
+        posted_at: "2026-06-01T10:04:00Z"
+        created_at: "2026-06-01T10:03:58Z"
+        ledger_entries:
+          - direction: debit
+            amount: 40000
+            ledger_account_id: 11111111-aaaa-4bbb-8ccc-000000000001
+          - direction: credit
+            amount: 40000
+            ledger_account_id: 22222222-aaaa-4bbb-8ccc-000000000002
+      # Pending. It exists, it has entries, and it has not settled, so it
+      # moves the pending balance and not the posted one.
+      - id: 44444444-aaaa-4bbb-8ccc-000000000004
+        ledger_id: 99999999-ffff-4eee-8ddd-000000000000
+        description: Invoice 1043 expected
+        status: pending
+        external_id: invoice-1043
+        effective_at: "2026-06-02T00:00:00Z"
+        created_at: "2026-06-02T08:15:00Z"
+        ledger_entries:
+          - direction: debit
+            amount: 10000
+            ledger_account_id: 11111111-aaaa-4bbb-8ccc-000000000001
+          - direction: credit
+            amount: 10000
+            ledger_account_id: 22222222-aaaa-4bbb-8ccc-000000000002
+
+    ledger_entry:
+      - id: 55555555-aaaa-4bbb-8ccc-000000000005
+        ledger_transaction_id: 33333333-aaaa-4bbb-8ccc-000000000003
+        ledger_account_id: 11111111-aaaa-4bbb-8ccc-000000000001
+        direction: debit
+        amount: 40000
+        status: posted
+        created_at: "2026-06-01T10:03:58Z"
+      - id: 66666666-aaaa-4bbb-8ccc-000000000006
+        ledger_transaction_id: 33333333-aaaa-4bbb-8ccc-000000000003
+        ledger_account_id: 22222222-aaaa-4bbb-8ccc-000000000002
+        direction: credit
+        amount: 40000
+        status: posted
+        created_at: "2026-06-01T10:03:58Z"
+      - id: 77777777-aaaa-4bbb-8ccc-000000000007
+        ledger_transaction_id: 44444444-aaaa-4bbb-8ccc-000000000004
+        ledger_account_id: 11111111-aaaa-4bbb-8ccc-000000000001
+        direction: debit
+        amount: 10000
+        status: pending
+        created_at: "2026-06-02T08:15:00Z"
+      - id: 88888888-aaaa-4bbb-8ccc-000000000008
+        ledger_transaction_id: 44444444-aaaa-4bbb-8ccc-000000000004
+        ledger_account_id: 22222222-aaaa-4bbb-8ccc-000000000002
+        direction: credit
+        amount: 10000
+        status: pending
+        created_at: "2026-06-02T08:15:00Z"
+
+# Conformance cases, read from the Modern Treasury reference rather than
+# observed against a live ledger. The verify report says so.
+conformance:
+  - name: a transaction has two entries and they cancel
+    source: https://docs.moderntreasury.com/reference/ledger-transaction-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_transactions/33333333-aaaa-4bbb-8ccc-000000000003
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Equal amounts, opposite directions. Summing them gives nought,
+        # which looks like a bug and is the system working.
+        ledger_entries[0].direction: debit
+        ledger_entries[0].amount: 40000
+        ledger_entries[1].direction: credit
+        ledger_entries[1].amount: 40000
+
+  - name: an entry amount is always positive
+    source: https://docs.moderntreasury.com/reference/ledger-entry-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_entries/66666666-aaaa-4bbb-8ccc-000000000006
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # The direction carries the sign, so an entry never holds a negative
+        # number and code that expects one to mean money out finds none.
+        direction: credit
+        amount: 40000
+
+  - name: the same direction means opposite things on two accounts
+    source: https://docs.moderntreasury.com/reference/ledger-account-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_accounts/11111111-aaaa-4bbb-8ccc-000000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Debit-normal, so a debit raises this account.
+        normal_balance: debit
+        name: Cash
+
+  - name: and the account on the other side is the reverse
+    source: https://docs.moderntreasury.com/reference/ledger-account-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_accounts/22222222-aaaa-4bbb-8ccc-000000000002
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Credit-normal, so the credit entry in that same transaction raises
+        # this one. One word, two opposite effects, in one movement of money.
+        normal_balance: credit
+        name: Revenue
+
+  - name: three balances that disagree on purpose
+    source: https://docs.moderntreasury.com/reference/ledger-account-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_accounts/11111111-aaaa-4bbb-8ccc-000000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Fifty thousand pending, forty posted, thirty-five spendable.
+        # Reading either of the first two authorises money that is not there.
+        balances.pending_balance.amount: 50000
+        balances.posted_balance.amount: 40000
+        balances.available_balance.amount: 35000
+
+  - name: a pending transaction has not settled
+    source: https://docs.moderntreasury.com/reference/ledger-transaction-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_transactions/44444444-aaaa-4bbb-8ccc-000000000004
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # It exists and it has entries. Posting is a separate act, and until
+        # it happens this moves the pending balance and not the posted one.
+        status: pending
+      absent:
+        - posted_at
+
+  - name: and a posted one carries the moment it settled
+    source: https://docs.moderntreasury.com/reference/ledger-transaction-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_transactions/33333333-aaaa-4bbb-8ccc-000000000003
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Not the same as effective_at, which is when the money is considered
+        # to have moved. Reporting on the wrong one puts a payment in the
+        # wrong month.
+        status: posted
+        posted_at: "2026-06-01T10:04:00Z"
+        effective_at: "2026-06-01T00:00:00Z"
+
+  - name: an entry inherits the status of its transaction
+    source: https://docs.moderntreasury.com/reference/ledger-entry-object
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_entries/77777777-aaaa-4bbb-8ccc-000000000007
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # So a listing of entries mixes settled and unsettled money, and
+        # summing it without filtering on this counts what has not happened.
+        status: pending
+        amount: 10000
+
+  - name: a listing of entries mixes posted and pending
+    source: https://docs.moderntreasury.com/reference/list-ledger-entries
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_entries
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        # Four entries, two settled and two not, in one array with nothing
+        # separating them but a field.
+        "[0].status": posted
+        "[2].status": pending
+        "[3].direction": credit
+
+  - name: a listing is a bare array with no envelope
+    source: https://docs.moderntreasury.com/reference/pagination
+    fixture: small-ledger
+    request:
+      method: GET
+      path: /api/ledger_accounts
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      status: 200
+      body:
+        "[0].name": Cash
+        "[1].name": Revenue
+      # Paging is in headers, which is a place most clients do not look, and
+      # there is no count anywhere in the body.
+      absent:
+        - data
+        - count
+        - total
+
+  - name: entries that do not cancel are refused outright
+    source: https://docs.moderntreasury.com/reference/create-ledger-transaction
+    arm: unbalanced_transaction
+    fixture: small-ledger
+    request:
+      method: POST
+      path: /api/ledger_transactions
+      json:
+        description: Wrong on purpose
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      # Refused rather than stored and reconciled later, which is the whole
+      # reason the books can be trusted.
+      status: 422
+      body:
+        errors.code: parameter_invalid
+      matches:
+        errors.message: 'sum to zero'
+
+  - name: a repeated external_id is refused by the ledger
+    source: https://docs.moderntreasury.com/reference/create-ledger-transaction
+    arm: duplicate_external_id
+    fixture: small-ledger
+    request:
+      method: POST
+      path: /api/ledger_transactions
+      json:
+        description: Invoice 1042 paid
+        external_id: invoice-1042
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      # The only thing standing between a retried request and a duplicate
+      # entry, and it is enforced by the ledger rather than by the caller
+      # remembering.
+      status: 422
+      matches:
+        errors.message: 'already exists in this ledger'
+
+  - name: a posted transaction cannot be changed
+    source: https://docs.moderntreasury.com/reference/ledger-transaction-object
+    arm: transaction_immutable
+    fixture: small-ledger
+    request:
+      method: POST
+      path: /api/ledger_transactions
+      json:
+        description: Trying to edit history
+      headers:
+        Authorization: Basic Y2F1bGRyb246dGVzdC1jYXVsZHJvbi1tb2Rlcm4tdHJlYXN1cnkta2V5
+    expect:
+      # A correction is another transaction in the other direction, so the
+      # history is append-only and a balance is a sum rather than a field
+      # somebody updated.
+      status: 422
+      matches:
+        errors.message: 'cannot be modified'
