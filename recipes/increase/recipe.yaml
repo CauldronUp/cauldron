@@ -1,0 +1,529 @@
+# Increase Recipe for Cauldron
+#
+# Increase has a sandbox, and it is a good one. The reason to emulate it
+# anyway is that the behaviour worth testing takes days to happen.
+#
+# An ACH transfer settles in one or two business days. A return arrives up to
+# sixty days after that, and an administrative return can arrive later still.
+# No sandbox reproduces that on a useful timescale, so the code that handles
+# it is written from the documentation and runs for the first time in
+# production, against real money, months after it shipped.
+#
+# This Recipe takes the same position as Mercury, Bill.com, Gusto and Deel:
+# reading is modelled and moving money is not. There is no endpoint here that
+# creates a transfer, and the header says so rather than leaving somebody to
+# find out.
+#
+# Five things worth modelling exactly:
+#
+#   1. A return is a new object, not a change to the transfer. The transfer
+#      that was returned still says it was submitted and still carries the
+#      amount that left. Nothing about it is marked wrong. The return sits
+#      beside it with its own identifier and its own date, and code that
+#      reconciles by reading transfers alone never sees the money come back.
+#   2. The return arrives days later, and the date proves it. The transfer in
+#      this fixture settled on the fourth and was returned on the eleventh, a
+#      week after everything downstream had treated it as final.
+#   3. The return reason is the only thing that says whether retrying is
+#      legal. insufficient_funds may be retried; no_account may not, and
+#      authorization_revoked must never be, because doing so is a regulatory
+#      problem rather than a failed request. All three arrive identically.
+#   4. Amounts are integer minor units and the sign carries the direction. A
+#      credit is positive and a debit is negative, on the same field, so
+#      summing without reading the sign gives a number that is neither the
+#      money in nor the money out.
+#   5. pending_submission, pending_approval, submitted, returned. Submitted
+#      means Increase handed it to the network, which is the strongest
+#      statement available and is not the same as arrived.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is transferred. Which state a transfer holds is what a fixture
+#     puts there, and there is no create endpoint at all.
+#   - Increase's idempotency key behaviour, which is genuinely load-bearing
+#     for a payments API, is not modelled: the header is accepted and
+#     ignored.
+#   - Approvals, OAuth, entity onboarding, cards and the simulation endpoints
+#     the real sandbox provides are not modelled.
+#   - The event and event subscription model is real and is not here; the
+#     webhook events below are Cauldron's shape rather than Increase's
+#     envelope.
+#
+# Tokens below are fixtures, not secrets, and every figure is invented.
+
+recipe: increase
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://increase.com/documentation/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_increase_api_key
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # An opaque cursor, and there is no total anywhere. A progress bar cannot
+    # be built from this API at all, which is a decision rather than an
+    # oversight.
+    cursor_field: next_cursor
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: title
+    code_field: type
+    type_field: "-"
+    status_field: status
+
+resources:
+  ach_transfer:
+    collection: data
+    id:
+      style: prefixed
+      prefix: ach_transfer_
+      length: 24
+    fields:
+      account_id:
+        type: string
+      # Integer minor units, and the sign is the direction. A credit is
+      # positive and a debit is negative on this same field.
+      amount:
+        type: integer
+      currency:
+        type: string
+        default: USD
+      # pending_approval, pending_submission, submitted, returned, canceled.
+      # submitted means handed to the network, which is not arrived.
+      status:
+        type: string
+        default: pending_submission
+      # The name the receiving bank shows, truncated to what the network
+      # allows rather than to what was sent.
+      statement_descriptor:
+        type: string
+      routing_number:
+        type: string
+      # Last four only, which is what the API returns and what anything
+      # storing this should keep.
+      account_number_last4:
+        type: string
+      company_name:
+        type: string
+      created_at:
+        type: string
+      # Set when Increase handed it to the network. Not when it arrived, and
+      # there is no field for that because nobody tells Increase either.
+      submitted_at:
+        type: string
+
+  ach_return:
+    collection: data
+    id:
+      style: prefixed
+      prefix: ach_transfer_return_
+      length: 24
+    fields:
+      # The transfer this came back from. The transfer itself carries no
+      # pointer in the other direction, so this is the only link.
+      transfer_id:
+        type: string
+      # insufficient_funds may be retried. no_account may not.
+      # authorization_revoked must never be, and doing so is a regulatory
+      # problem rather than a failed request. All three arrive identically.
+      return_reason_code:
+        type: string
+      # Days after the transfer settled. This is the field that proves the
+      # delay, and the reason a synchronous fake teaches nothing.
+      created_at:
+        type: string
+      transaction_id:
+        type: string
+
+  account:
+    collection: data
+    id:
+      style: prefixed
+      prefix: account_
+      length: 24
+    fields:
+      name:
+        type: string
+      # Minor units again. Available is what can be spent and current
+      # includes what has not settled, so the two differ for days at a time
+      # and the smaller one is the honest one.
+      available_balance:
+        type: integer
+        in: balances
+        as: available_balance
+      current_balance:
+        type: integer
+        in: balances
+        as: current_balance
+      currency:
+        type: string
+        default: USD
+      status:
+        type: string
+        default: open
+
+routes:
+  - method: GET
+    path: /accounts
+    resource: account
+    operation: list
+
+  - method: GET
+    path: /accounts/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /ach_transfers
+    resource: ach_transfer
+    operation: list
+
+  - method: GET
+    path: /ach_transfers/{id}
+    resource: ach_transfer
+    operation: get
+
+  - method: GET
+    path: /ach_transfer_returns
+    resource: ach_return
+    operation: list
+
+  - method: GET
+    path: /ach_transfer_returns/{id}
+    resource: ach_return
+    operation: get
+
+webhooks:
+  events:
+    - ach_transfer.created
+    - ach_transfer.updated
+    - ach_return.created
+  signing:
+    scheme: hmac-sha256
+    header: Increase-Webhook-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limited_error
+    message: "This API request has been rate limited."
+
+  authentication_error:
+    status: 401
+    code: authentication_error
+    message: "Your API key is invalid."
+
+  resource_missing:
+    status: 404
+    code: object_not_found_error
+    message: "There is no object with that ID."
+
+  parameter_missing:
+    status: 400
+    message: "One or more parameters were invalid."
+    code: invalid_parameters_error
+
+  # A key minted for the sandbox cannot touch production and the failure says
+  # so in a way that is easy to read past at three in the morning.
+  environment_mismatch:
+    status: 403
+    code: environment_mismatch_error
+    message: "This API key is for a different environment."
+
+  # The one that matters. An account without the funds cannot send, and the
+  # failure is a refusal rather than a transfer that fails later.
+  insufficient_funds:
+    status: 400
+    code: insufficient_funds_error
+    message: "The account does not have sufficient available funds."
+
+fixtures:
+  empty: {}
+
+  small-business:
+    account:
+      - id: account_cauldron000000001
+        name: Operating
+        # Available is lower than current, and stays that way for days,
+        # because something has not settled. The smaller one is the honest
+        # one and the larger one is the one that gets read.
+        available_balance: 412_50
+        current_balance: 512_50
+        currency: USD
+        status: open
+
+    ach_transfer:
+      # Handed to the network on the fourth. This is the strongest statement
+      # the API makes and it is not "arrived".
+      - id: ach_transfer_cauldron00000001
+        account_id: account_cauldron000000001
+        amount: -25000
+        currency: USD
+        status: submitted
+        statement_descriptor: INVOICE 1042
+        routing_number: "021000021"
+        account_number_last4: "6789"
+        company_name: Cauldron Supplies
+        created_at: "2026-06-03T14:02:11Z"
+        submitted_at: "2026-06-04T09:00:00Z"
+      # Returned, and it still says returned rather than saying why or when.
+      # The reason and the date are on the return object, not here.
+      - id: ach_transfer_cauldron00000002
+        account_id: account_cauldron000000001
+        amount: -18000
+        currency: USD
+        status: returned
+        statement_descriptor: INVOICE 1043
+        routing_number: "011401533"
+        account_number_last4: "4321"
+        company_name: Cauldron Supplies
+        created_at: "2026-06-03T14:05:44Z"
+        submitted_at: "2026-06-04T09:00:00Z"
+      # Money coming in, so the amount is positive on the same field. Summing
+      # without reading the sign gives a number that is neither the money in
+      # nor the money out.
+      - id: ach_transfer_cauldron00000003
+        account_id: account_cauldron000000001
+        amount: 90000
+        currency: USD
+        status: submitted
+        statement_descriptor: CUSTOMER 88
+        routing_number: "121000248"
+        account_number_last4: "1122"
+        company_name: Cauldron Supplies
+        created_at: "2026-06-05T10:15:00Z"
+        submitted_at: "2026-06-05T16:00:00Z"
+
+    ach_return:
+      # A week after the transfer was submitted. Everything downstream had
+      # treated it as final for seven days.
+      - id: ach_transfer_return_cauldron01
+        transfer_id: ach_transfer_cauldron00000002
+        return_reason_code: insufficient_funds
+        created_at: "2026-06-11T11:20:03Z"
+        transaction_id: transaction_cauldron0000001
+      # The same shape carrying a reason that must never be retried. Retrying
+      # this one is a regulatory problem rather than a failed request, and
+      # nothing in the object's shape distinguishes it from the one above.
+      - id: ach_transfer_return_cauldron02
+        transfer_id: ach_transfer_cauldron00000001
+        return_reason_code: authorization_revoked
+        created_at: "2026-07-02T08:41:19Z"
+        transaction_id: transaction_cauldron0000002
+
+# Conformance cases, read from the Increase API reference rather than observed
+# against a live account. The verify report says so, and observing the
+# behaviour these describe would mean waiting sixty days.
+conformance:
+  - name: a returned transfer still says it was submitted
+    source: https://increase.com/documentation/api#ach-transfers
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers/ach_transfer_cauldron00000002
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # The status changed and nothing else did. The amount that left is
+        # still here, the submission time is still here, and there is no
+        # pointer to the return.
+        status: returned
+        amount: -18000
+        submitted_at: "2026-06-04T09:00:00Z"
+      absent:
+        - return_reason_code
+        - returned_at
+        - return_id
+
+  - name: the return is a separate object with its own date
+    source: https://increase.com/documentation/api#ach-returns
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfer_returns/ach_transfer_return_cauldron01
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Seven days after the transfer was handed to the network. Anything
+        # reconciling by reading transfers alone never sees this at all.
+        transfer_id: ach_transfer_cauldron00000002
+        created_at: "2026-06-11T11:20:03Z"
+        return_reason_code: insufficient_funds
+
+  - name: a return can arrive against a transfer that still reads as submitted
+    source: https://increase.com/documentation/api#ach-returns
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfer_returns/ach_transfer_return_cauldron02
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Nearly a month later, against the transfer whose status is still
+        # submitted. Reading the transfer says the money left and stayed
+        # gone.
+        transfer_id: ach_transfer_cauldron00000001
+        created_at: "2026-07-02T08:41:19Z"
+
+  - name: and that transfer is still submitted
+    source: https://increase.com/documentation/api#ach-transfers
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers/ach_transfer_cauldron00000001
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Unmarked. Nothing on this object says a return exists, so a
+        # reconciliation that reads transfers and not returns is wrong and
+        # has no way to know.
+        status: submitted
+
+  - name: the reason decides whether retrying is legal
+    source: https://increase.com/documentation/api#ach-returns
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfer_returns
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Two returns, identical in shape, and one of them must never be
+        # retried. Only the reason code separates them, and it is a string
+        # among dozens.
+        data[0].return_reason_code: insufficient_funds
+        data[1].return_reason_code: authorization_revoked
+
+  - name: the sign carries the direction on one field
+    source: https://increase.com/documentation/api#ach-transfers
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Two out and one in, on the same field. Summing these without
+        # reading the sign gives 47000, which is neither the money that left
+        # nor the money that arrived.
+        data[0].amount: -25000
+        data[1].amount: -18000
+        data[2].amount: 90000
+
+  - name: amounts are minor units with no decimal anywhere
+    source: https://increase.com/documentation/api#ach-transfers
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers/ach_transfer_cauldron00000003
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # Nine hundred dollars, written as ninety thousand. An integer, so
+        # nothing in the value hints at the scale, and dividing by a hundred
+        # is a decision the reader has to know to make.
+        amount: 90000
+        currency: USD
+
+  - name: available is not current, and stays that way for days
+    source: https://increase.com/documentation/api#accounts
+    fixture: small-business
+    request:
+      method: GET
+      path: /accounts/account_cauldron000000001
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        # A hundred dollars apart because something has not settled. The
+        # larger number is the one that gets read and the smaller one is the
+        # one that can be spent.
+        balances.available_balance: 41250
+        balances.current_balance: 51250
+
+  - name: a listing pages by cursor and offers no total
+    source: https://increase.com/documentation/api#pagination
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers
+      query:
+        limit: "2"
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      matches:
+        next_cursor: '.'
+      # There is no count anywhere in this API, so a progress bar cannot be
+      # built from it at all. That is a decision rather than an oversight,
+      # and code that expects one has nowhere to look.
+      absent:
+        - total_count
+        - total
+        - has_more
+
+  - name: a failure carries a type and repeats the status
+    source: https://increase.com/documentation/api#errors
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers/ach_transfer_doesnotexist00
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 404
+      body:
+        # The status appears twice, once in the response and once in the
+        # body, and the machine-readable half is called type rather than
+        # code.
+        status: 404
+        type: object_not_found_error
+      matches:
+        title: 'no object with that ID'
+
+  - name: insufficient funds is a refusal rather than a later failure
+    source: https://increase.com/documentation/api#errors
+    arm: insufficient_funds
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      # Refused outright, which is the opposite of an ACH return: this one
+      # never reaches the network and there is nothing to reconcile.
+      status: 400
+      body:
+        type: insufficient_funds_error
+      matches:
+        title: 'sufficient available funds'

@@ -480,7 +480,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Increase | An ACH return arrives days after everything downstream has treated the transfer as settled, and it arrives as a new object rather than as a change to the old one. The whole domain is in that delay |
+| ~~Increase~~ | Shipped. A return is a new object days later, the transfer stays unmarked, and the reason decides whether retrying is legal |
 | Modern Treasury | Double-entry, so every amount appears twice with opposite signs and a naive sum is nought. Reconciliation is the product |
 | Marqeta | Just-in-time funding puts a webhook in the authorisation path with a response deadline on it. Failing to answer in time declines the card, so a slow test is a declined payment |
 | Dwolla | Micro-deposit verification is a multi-day handshake with a fixed number of attempts, and the failure to model is running out of them |
