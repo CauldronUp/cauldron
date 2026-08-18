@@ -1,0 +1,513 @@
+# Cohere Recipe for Cauldron
+#
+# The thing worth emulating about an inference API is not the text it
+# produces. It is the accounting around the text, because that is what
+# surprises people and what a mock never has.
+#
+# Cohere reports token counts on every response, split two ways that do not
+# add up to each other. billed_units counts what you pay for and tokens
+# counts what the model saw, and they differ: system prompts, tool
+# definitions and cached content are seen and not billed, or billed at a
+# different rate. A client that counts its own prompt with a tokeniser and
+# multiplies by a price is doing arithmetic on a number the provider did not
+# use.
+#
+# Four more worth modelling exactly:
+#
+#   1. A finish reason is not an error. COMPLETE, MAX_TOKENS, STOP_SEQUENCE,
+#      TOOL_CALL and ERROR_LIMIT all arrive with 200 and a body. MAX_TOKENS
+#      means the answer was cut off mid-sentence, which for structured output
+#      means invalid JSON that parses as a failure somewhere far away from
+#      here.
+#   2. A tool call is a finish reason, not a field you can test for. The
+#      message has no text when the model called a tool, so code that reads
+#      the text and moves on gets an empty string and reports it as the
+#      model's answer.
+#   3. Embeddings come back in the order sent and carry no identifiers. The
+#      only thing tying an embedding to its input is the index in the array,
+#      so a client that filters or reorders inputs anywhere in the pipeline
+#      silently pairs the wrong vector with the wrong document.
+#   4. A rerank result is a list of indexes into the documents you sent, not
+#      the documents. The response is smaller than people expect and needs
+#      the original list to mean anything, so a client that discards the
+#      inputs after sending them cannot use the reply.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No model runs. Which finish reason a response carries and how many
+#     tokens it reports are what a fixture puts there. That is the point: the
+#     four reasons are what a client has to handle and one of them is nearly
+#     impossible to produce on demand against the real API.
+#   - The token counts are fixtures rather than a tokeniser. Counting
+#     correctly would need Cohere's own tokeniser, and a count computed a
+#     different way would be exactly the wrong lesson.
+#   - Streaming, fine-tuning, datasets and the connectors API are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: cohere
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.cohere.com/reference/about
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-cohere-api-key
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  chat_response:
+    collection: responses
+    id:
+      style: uuid
+    fields:
+      # COMPLETE, MAX_TOKENS, STOP_SEQUENCE, TOOL_CALL, ERROR_LIMIT. All of
+      # them arrive with 200 and a body, and only the first means the model
+      # said everything it had to say.
+      finish_reason:
+        type: string
+        default: COMPLETE
+      # The text, nested twice: message.content is an array of blocks and
+      # each block has a type and a text. A model that called a tool has no
+      # text block at all, so reading message.content[0].text on a tool call
+      # reads undefined.
+      text:
+        type: string
+        in: message.content[0]
+        as: text
+      content_type:
+        type: string
+        in: message.content[0]
+        as: type
+      role:
+        type: string
+        in: message
+        as: role
+      # What you pay for. Not what the model saw: system prompts, tool
+      # definitions and cached content are seen and billed differently or
+      # not at all.
+      billed_input_tokens:
+        type: number
+        in: usage.billed_units
+        as: input_tokens
+      billed_output_tokens:
+        type: number
+        in: usage.billed_units
+        as: output_tokens
+      # What the model saw. Larger than the billed count here, and a client
+      # that reads one and prices with the other is wrong by the difference
+      # on every request.
+      input_tokens:
+        type: number
+        in: usage.tokens
+        as: input_tokens
+      output_tokens:
+        type: number
+        in: usage.tokens
+        as: output_tokens
+
+  # A tool call, which is what the model produces instead of text. Modelled
+  # separately because the response shape genuinely differs: there is no
+  # text block, and the content that is there is a different thing.
+  tool_call_response:
+    collection: responses
+    id:
+      style: uuid
+    fields:
+      finish_reason:
+        type: string
+        default: TOOL_CALL
+      role:
+        type: string
+        in: message
+        as: role
+      tool_name:
+        type: string
+        in: message.tool_calls[0].function
+        as: name
+      tool_arguments:
+        type: string
+        in: message.tool_calls[0].function
+        as: arguments
+      billed_input_tokens:
+        type: number
+        in: usage.billed_units
+        as: input_tokens
+      billed_output_tokens:
+        type: number
+        in: usage.billed_units
+        as: output_tokens
+
+  # One vector, and nothing tying it to its input but its position.
+  embedding:
+    collection: embeddings.float
+    id:
+      style: uuid
+      field: "-"
+    fields:
+      values:
+        type: list
+
+  # A rerank hit: an index into the documents you sent, and a score. Not the
+  # document. A client that discarded the inputs cannot use this.
+  rerank_result:
+    collection: results
+    id:
+      style: uuid
+      field: "-"
+    fields:
+      index:
+        type: integer
+      relevance_score:
+        type: number
+
+routes:
+  - method: GET
+    path: /v2/chat/{id}
+    resource: chat_response
+    operation: get
+
+  - method: GET
+    path: /v2/tool-calls/{id}
+    resource: tool_call_response
+    operation: get
+
+  - method: GET
+    path: /v2/embed
+    resource: embedding
+    operation: list
+
+  - method: GET
+    path: /v2/rerank
+    resource: rerank_result
+    operation: list
+
+errors:
+  rate_limit:
+    status: 429
+    message: "You are being rate limited. Please wait and try again later."
+
+  authentication_error:
+    status: 401
+    message: "invalid api token"
+
+  resource_missing:
+    status: 404
+    message: "not found"
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. A request the model cannot process is unprocessable
+    # rather than malformed, and a client branching on 400 never sees it.
+    message: "invalid request: message must not be empty"
+
+  # The prompt is longer than the model's window. Not a rate limit and not a
+  # server fault: the request will never work and retrying is wasted.
+  context_too_long:
+    status: 400
+    message: "invalid request: total number of tokens is 9482, which exceeds the maximum of 4096"
+
+  # A trial key. Cohere's free keys have a much lower limit and answer the
+  # same 429, so a client that backs off and retries waits out a limit it
+  # cannot reach.
+  trial_key_limit:
+    status: 429
+    message: "You are using a Trial key, which is limited to 40 API calls per minute."
+
+fixtures:
+  empty: {}
+
+  small-account:
+    chat_response:
+      # A complete answer. The billed count is lower than what the model
+      # saw, because the system prompt was seen and not billed, and a client
+      # pricing from tokens.input_tokens is wrong by that difference on
+      # every request.
+      - id: 9c2f1a48-6b03-4d75-8e19-2a47c50f8b63
+        finish_reason: COMPLETE
+        role: assistant
+        content_type: text
+        text: "A consent under PSD2 lasts ninety days from when it was granted."
+        billed_input_tokens: 42
+        billed_output_tokens: 14
+        input_tokens: 118
+        output_tokens: 14
+
+      # Cut off mid-sentence. 200, a body, and a finish reason nobody looks
+      # at. For structured output this is invalid JSON that fails to parse
+      # somewhere far away from the request that caused it.
+      - id: 4b7d3e91-8c56-4a20-b03f-7e15d92a6c48
+        finish_reason: MAX_TOKENS
+        role: assistant
+        content_type: text
+        text: "The three balances are the available balance, the ledger balance and the"
+        billed_input_tokens: 30
+        billed_output_tokens: 16
+        input_tokens: 106
+        output_tokens: 16
+
+    tool_call_response:
+      # The model called a tool instead of answering. There is no text block
+      # at all, so a client that reads message.content[0].text gets
+      # undefined and reports it as the model's answer.
+      - id: 7e0a5c36-2d94-4f18-a671-3b82e47d0f95
+        finish_reason: TOOL_CALL
+        role: assistant
+        tool_name: get_balance
+        tool_arguments: '{"account_id":"a1b2c3"}'
+        billed_input_tokens: 61
+        billed_output_tokens: 22
+
+    embedding:
+      # Two vectors, in the order the inputs were sent, with nothing tying
+      # either to its input but its position.
+      - id: e1
+        values:
+          - 0.0231
+          - -0.0114
+          - 0.0087
+      - id: e2
+        values:
+          - -0.0442
+          - 0.0356
+          - -0.0019
+
+    rerank_result:
+      # Indexes into the documents that were sent, reordered by score. The
+      # second document scored highest, so index 1 comes first, and a client
+      # that discarded the inputs cannot turn this into anything.
+      - id: r1
+        index: 1
+        relevance_score: 0.9182
+      - id: r2
+        index: 0
+        relevance_score: 0.2043
+
+# Every case below is derived from Cohere's published documentation. None has
+# been run against a real account. The verify report says so.
+conformance:
+  - name: billed tokens are not the tokens the model saw
+    # 42 billed against 118 seen. The system prompt was seen and not billed,
+    # and a client that counts its own prompt with a tokeniser and
+    # multiplies by a price is doing arithmetic on a number Cohere did not
+    # use.
+    source: https://docs.cohere.com/reference/chat
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/chat/9c2f1a48-6b03-4d75-8e19-2a47c50f8b63
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        usage.billed_units.input_tokens: 42
+        usage.tokens.input_tokens: 118
+        usage.billed_units.output_tokens: 14
+        usage.tokens.output_tokens: 14
+      absent:
+        - usage.input_tokens
+        - billed_input_tokens
+
+  - name: a cut-off answer is a 200 with a body
+    # MAX_TOKENS. The text stops mid-sentence, nothing errored, and for
+    # structured output this is invalid JSON that fails somewhere far away
+    # from the request that caused it.
+    source: https://docs.cohere.com/reference/chat
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/chat/4b7d3e91-8c56-4a20-b03f-7e15d92a6c48
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        finish_reason: MAX_TOKENS
+        message.content[0].text: "The three balances are the available balance, the ledger balance and the"
+
+  - name: the text is nested twice and typed
+    # message.content is an array of blocks and each block has a type. A
+    # client reading response.text finds nothing.
+    source: https://docs.cohere.com/reference/chat
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/chat/9c2f1a48-6b03-4d75-8e19-2a47c50f8b63
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        message.role: assistant
+        message.content[0].type: text
+      absent:
+        - text
+        - content_type
+        - message.text
+
+  - name: a tool call has no text at all
+    # The model called a tool instead of answering. A client that reads
+    # message.content[0].text and moves on gets undefined and reports it as
+    # the model's answer.
+    source: https://docs.cohere.com/reference/chat
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/tool-calls/7e0a5c36-2d94-4f18-a671-3b82e47d0f95
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        finish_reason: TOOL_CALL
+        message.tool_calls[0].function.name: get_balance
+        message.tool_calls[0].function.arguments: '{"account_id":"a1b2c3"}'
+      absent:
+        - message.content
+        - message.content[0].text
+
+  - name: an embedding carries nothing but its position
+    # No id, no input, no index. The only thing tying a vector to the
+    # document it came from is where it sits in the array, so a client that
+    # filters or reorders inputs anywhere in the pipeline pairs the wrong
+    # vector with the wrong document and nothing complains.
+    source: https://docs.cohere.com/reference/embed
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/embed
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        embeddings.float[0].values[0]: 0.0231
+        embeddings.float[1].values[0]: -0.0442
+      absent:
+        - embeddings.float[0].id
+        - embeddings.float[0].index
+        - embeddings.float[0].text
+        - embeddings.float[2]
+
+  - name: a rerank result is an index, not a document
+    # The second document scored highest, so index 1 comes first. The
+    # response needs the original list to mean anything, and a client that
+    # discarded the inputs after sending them cannot use the reply.
+    source: https://docs.cohere.com/reference/rerank
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/rerank
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        results[0].index: 1
+        results[0].relevance_score: 0.9182
+        results[1].index: 0
+      absent:
+        - results[0].document
+        - results[0].text
+        # No identifier either. A rerank hit is a position and a score, so
+        # holding one on its own tells you nothing about what was ranked.
+        - results[0].id
+        - results[2]
+
+  - name: a tool call is still billed for what it read
+    # 61 input tokens for a call that produced no text. Nothing about the
+    # absence of an answer makes the request free.
+    source: https://docs.cohere.com/reference/chat
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/tool-calls/7e0a5c36-2d94-4f18-a671-3b82e47d0f95
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 200
+      body:
+        usage.billed_units.input_tokens: 61
+        usage.billed_units.output_tokens: 22
+
+  - name: a prompt longer than the window is a 400 no retry fixes
+    # Not a rate limit and not a server fault. The request will never work,
+    # and a client that backs off and retries waits for nothing.
+    source: https://docs.cohere.com/reference/errors
+    fixture: small-account
+    arm: context_too_long
+    request:
+      method: GET
+      path: /v2/embed
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 400
+      body:
+        message: "invalid request: total number of tokens is 9482, which exceeds the maximum of 4096"
+
+  - name: a trial key limit is the same 429 as any other
+    # A client that backs off and retries waits out a limit it cannot reach,
+    # because the limit is on the key rather than on the rate.
+    source: https://docs.cohere.com/reference/errors
+    fixture: small-account
+    arm: trial_key_limit
+    request:
+      method: GET
+      path: /v2/embed
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 429
+      body:
+        message: "You are using a Trial key, which is limited to 40 API calls per minute."
+
+  - name: an invalid request is a 422, not a 400
+    source: https://docs.cohere.com/reference/errors
+    fixture: small-account
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v2/embed
+      headers:
+        Authorization: Bearer cauldron-cohere-api-key
+    expect:
+      status: 422
+      body:
+        message: "invalid request: message must not be empty"
+
+  - name: an error carries prose and nothing to branch on
+    source: https://docs.cohere.com/reference/errors
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/embed
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        message: "invalid api token"
+      absent:
+        - code
+        - type
+        - error
+        - errors

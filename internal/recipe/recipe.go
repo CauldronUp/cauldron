@@ -1470,9 +1470,21 @@ func (r *Recipe) Validate() error {
 			}
 		}
 
-		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" {
-			add("%s: resource %q hides its identifier, so this list would return records nothing can address",
-				where, route.Resource)
+		// A hidden identifier on a listing is usually wrong, and the
+		// exception is a positional array: a collection where position is
+		// the identity because there is nothing else. Cohere's embeddings
+		// are exactly that, and it is the trap rather than an oversight --
+		// the only thing tying a vector to its input is the index, so a
+		// client that filters or reorders inputs anywhere in the pipeline
+		// pairs the wrong vector with the wrong document.
+		//
+		// The test is whether anything fetches one on its own. If a route
+		// does, the identifier exists and hiding it from the listing is
+		// inconsistent. If none does, position is all there is and saying so
+		// is the honest description.
+		if route.Operation == "list" && r.Resources[route.Resource].ID.Field == "-" && fetchedByID(r, route.Resource) {
+			add("%s: resource %q hides its identifier and %s fetches one by id, so the listing withholds an identifier that exists",
+				where, route.Resource, fetchRoute(r, route.Resource))
 		}
 	}
 
@@ -1812,6 +1824,37 @@ func (r *Recipe) Events() []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// fetchedByID reports whether any route fetches one record of a resource on
+// its own, which is what makes an identifier something a client can use.
+func fetchedByID(r *Recipe, resource string) bool {
+	for _, route := range r.Routes {
+		if route.Resource != resource {
+			continue
+		}
+
+		if route.Operation == "get" || route.Operation == "update" || route.Operation == "delete" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// fetchRoute names the first route that fetches one, for the message.
+func fetchRoute(r *Recipe, resource string) string {
+	for _, route := range r.Routes {
+		if route.Resource != resource {
+			continue
+		}
+
+		if route.Operation == "get" || route.Operation == "update" || route.Operation == "delete" {
+			return route.Method + " " + route.Path
+		}
+	}
+
+	return "another route"
 }
 
 // onlyCreated reports whether every route touching a resource creates it.
