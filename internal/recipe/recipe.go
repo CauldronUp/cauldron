@@ -1512,6 +1512,26 @@ func (r *Recipe) Validate() error {
 		add("responses.list.style %q must be one of %s", r.Responses.List.Style, strings.Join(validListStyles[1:], ", "))
 	}
 
+	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key != "" {
+		// The key is a fallback for resources that do not name their own
+		// collection. When every one of them does, it is unreachable, and an
+		// unreachable declaration reads as a description of the provider
+		// while describing nothing. Five Recipes shipped with one before this
+		// rule existed, each found by mutating it and watching nothing fail.
+		covered := len(r.Resources) > 0
+
+		for _, name := range sortedKeys(r.Resources) {
+			if r.Resources[name].Collection == "" {
+				covered = false
+			}
+		}
+
+		if covered {
+			add("responses.list.key is %q and every resource names its own collection, so nothing reads it",
+				r.Responses.List.Key)
+		}
+	}
+
 	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key == "" {
 		for _, name := range sortedKeys(r.Resources) {
 			if r.Resources[name].Collection == "" {
