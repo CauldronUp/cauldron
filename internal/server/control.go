@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"mime"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -22,6 +24,15 @@ import (
 //	POST /_cauldron/clock/advance       {"duration":"30d"}
 //	POST /_cauldron/reset
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
+	// A browser on any page the developer has open can reach a loopback
+	// server, and until this check existed it could reset a sandbox, arm a
+	// fault or register a webhook endpoint with a plain link. Binding to
+	// loopback is not a boundary against the browser already inside it.
+	if origin := crossOrigin(r); origin != "" {
+		s.writeError(w, http.StatusForbidden, "Refusing a control request from another origin: "+origin+".")
+		return
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, controlPrefix)
 	path = strings.Trim(path, "/")
 
@@ -37,13 +48,23 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		s.clockControl(w, r, rest)
 		return
 	case "reset":
+		if !s.mutation(w, r) {
+			return
+		}
+
 		s.resetAll(w)
+
 		return
 	case "snapshot":
 		writeJSON(w, http.StatusOK, s.Snapshot())
 		return
 	case "restore":
+		if !s.mutation(w, r) {
+			return
+		}
+
 		s.restore(w, r)
+
 		return
 	}
 
@@ -56,19 +77,88 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	switch rest {
 	case "requests":
 		s.requests(w, sandbox)
-	case "seed":
-		s.seed(w, r, sandbox)
-	case "reset":
-		s.reset(w, sandbox)
-	case "fault":
-		s.fault(w, r, sandbox)
-	case "emit":
-		s.emit(w, r, sandbox)
-	case "subscribe":
-		s.subscribe(w, r, sandbox)
+	case "seed", "reset", "fault", "emit", "subscribe":
+		if !s.mutation(w, r) {
+			return
+		}
+
+		switch rest {
+		case "seed":
+			s.seed(w, r, sandbox)
+		case "reset":
+			s.reset(w, sandbox)
+		case "fault":
+			s.fault(w, r, sandbox)
+		case "emit":
+			s.emit(w, r, sandbox)
+		case "subscribe":
+			s.subscribe(w, r, sandbox)
+		}
 	default:
 		s.writeError(w, http.StatusNotFound, "Unknown control endpoint: "+rest+".")
 	}
+}
+
+// mutation guards a control endpoint that changes something, and reports
+// whether the caller may proceed.
+//
+// Two requirements, and each one alone closes the hole. The method must be
+// POST, which the documentation always said and nothing enforced: every
+// mutating endpoint answered a GET, and a GET to a loopback address is
+// something any web page can issue with an image tag. And a body, when there
+// is one, must be JSON, because a form posting text/plain is the other way a
+// page reaches an endpoint without asking the browser's permission first.
+func (s *Server) mutation(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		s.writeError(w, http.StatusMethodNotAllowed, "This control endpoint changes state and answers only POST.")
+
+		return false
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		return true
+	}
+
+	if media, _, err := mime.ParseMediaType(contentType); err != nil || media != "application/json" {
+		s.writeError(w, http.StatusUnsupportedMediaType, "A control request with a body must send application/json.")
+
+		return false
+	}
+
+	return true
+}
+
+// crossOrigin reports the origin a request came from when it is not this
+// server, and an empty string when the request is safe to serve.
+//
+// Both signals are advisory in the sense that a non-browser client can omit
+// them, which is fine: the attacker being defended against here is a web page,
+// and a web page cannot. Sec-Fetch-Site is checked first because it is the one
+// a browser attaches even to a request carrying no Origin at all.
+func crossOrigin(r *http.Request) string {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "none", "same-origin":
+	default:
+		return r.Header.Get("Sec-Fetch-Site")
+	}
+
+	origin := r.Header.Get("Origin")
+	if origin == "" || origin == "null" {
+		return ""
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return origin
+	}
+
+	if parsed.Host == r.Host {
+		return ""
+	}
+
+	return origin
 }
 
 func (s *Server) status(w http.ResponseWriter) {
@@ -269,18 +359,29 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request, sandbox *runt
 		return
 	}
 
-	url, _ := body["url"].(string)
-	if url == "" {
+	endpoint, _ := body["url"].(string)
+	if endpoint == "" {
 		s.writeError(w, http.StatusBadRequest, "A url is required.")
 		return
 	}
 
-	sandbox.Webhooks().Subscribe(url)
+	if err := sandbox.Webhooks().Subscribe(endpoint); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"recipe": sandbox.Name(), "endpoints": sandbox.Webhooks().Endpoints()})
 }
 
 func (s *Server) clockControl(w http.ResponseWriter, r *http.Request, action string) {
+	// Advancing and rewinding the shared clock changes what every mounted
+	// sandbox answers, so both are mutations. Reading the time is not.
+	if action == "advance" || action == "reset" {
+		if !s.mutation(w, r) {
+			return
+		}
+	}
+
 	switch action {
 	case "advance":
 		body, err := recordFrom(r)

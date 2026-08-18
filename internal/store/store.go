@@ -22,14 +22,76 @@ import (
 type Record map[string]any
 
 // Clone returns a copy so callers cannot mutate stored state by accident.
+//
+// Deep, and it has to be. A one-level copy left every nested map and slice
+// shared with the store, which is not aliasing tidiness but a live pointer
+// handed across a package boundary: a handler shaping a response and a
+// snapshot being encoded at the same time read and write one map, and the race
+// detector says so.
+//
+// It also leaked upwards. Fixtures are seeded straight from the Recipe's own
+// embedded maps, so a nested fixture value was shared with the process-global
+// Recipe, and a test that wrote into one poisoned every sandbox afterwards —
+// through Reset, which re-seeds from that same now-mutated map. That is the
+// classic passes-alone, fails-in-a-full-run bug, and it was unfixable from the
+// caller's side because the corruption lived somewhere they could not reach.
+//
+// Records are small and fixtures smaller. The cost is nothing beside the
+// failure mode.
 func (r Record) Clone() Record {
 	out := make(Record, len(r))
 
 	for key, value := range r {
-		out[key] = value
+		out[key] = deepCopy(value)
 	}
 
 	return out
+}
+
+// deepCopy duplicates the containers JSON and YAML decode into, and returns
+// anything else as it is.
+//
+// Scalars are immutable in Go, so sharing a string or a number is safe and
+// copying one would be waste. Maps and slices are the whole problem. The
+// concrete slice and map types are listed rather than handled by reflection
+// because these are the only shapes that reach here: yaml.v3 and encoding/json
+// both produce map[string]any and []any, and Record is the store's own.
+func deepCopy(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+
+		for key, held := range typed {
+			out[key] = deepCopy(held)
+		}
+
+		return out
+	case Record:
+		return typed.Clone()
+	case []any:
+		out := make([]any, len(typed))
+
+		for i, held := range typed {
+			out[i] = deepCopy(held)
+		}
+
+		return out
+	case []Record:
+		out := make([]Record, len(typed))
+
+		for i, held := range typed {
+			out[i] = held.Clone()
+		}
+
+		return out
+	case []string:
+		out := make([]string, len(typed))
+		copy(out, typed)
+
+		return out
+	default:
+		return value
+	}
 }
 
 // ErrNotFound is returned when an identifier does not exist.
