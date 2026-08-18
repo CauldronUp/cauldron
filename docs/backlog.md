@@ -481,7 +481,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Increase~~ | Shipped. A return is a new object days later, the transfer stays unmarked, and the reason decides whether retrying is legal |
-| Modern Treasury | Double-entry, so every amount appears twice with opposite signs and a naive sum is nought. Reconciliation is the product |
+| ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, one direction means opposite things on two accounts, three balances disagree on purpose |
 | Marqeta | Just-in-time funding puts a webhook in the authorisation path with a response deadline on it. Failing to answer in time declines the card, so a slow test is a declined payment |
 | Dwolla | Micro-deposit verification is a multi-day handshake with a fixed number of attempts, and the failure to model is running out of them |
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
