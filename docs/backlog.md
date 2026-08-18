@@ -216,7 +216,7 @@ than finding out halfway through writing one.
 
 | Provider | Why |
 |---|---|
-| Jira Cloud | The largest gap in the collection. Custom fields are named `customfield_10023` on the wire and their human names live behind a separate endpoint, so every integration carries a mapping it built at runtime and cached wrongly. JQL search pages with `startAt`, caps `maxResults` below whatever you asked for without saying so, and the cap differs by instance |
+| ~~Jira Cloud~~ | Shipped. Numbered custom fields, administrator-typed statuses, ADF descriptions, a create that returns no issue, and a 410 where the old search used to be |
 | Jira Service Management | Assess — requests, queues, SLAs. An SLA clock pauses and the paused time is not the elapsed time |
 | Confluence Cloud | Bodies are XHTML storage format rather than Markdown or HTML, and the `representation` field decides how the same string parses. Sending the wrong one stores markup as literal text |
 | Smartsheet | Assess — sheets, rows, columns. Column ids are numeric and per-sheet, so nothing is portable between sheets |

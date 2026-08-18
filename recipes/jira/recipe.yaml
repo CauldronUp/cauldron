@@ -1,0 +1,646 @@
+# Jira Cloud Recipe for Cauldron
+#
+# Atlassian gives you a free Cloud instance to develop against, which sounds
+# like a sandbox and is not one. It is a real Jira: it has a workflow somebody
+# configured, custom fields somebody added, and a permission scheme. Two
+# developers on the same team get different field ids for the same field, and
+# an integration that works on one instance fails on the other for reasons
+# neither can see from the code.
+#
+# That is the thing worth reproducing. Jira's API is not hard because it is
+# large. It is hard because almost every value in it is configurable by an
+# administrator, and the parts that are stable are not the parts that read as
+# stable.
+#
+# Six things worth modelling exactly:
+#
+#   1. A custom field is called customfield_10023 on the wire. Its human name
+#      lives behind a different endpoint, and the number is assigned per
+#      instance in creation order, so the same field is a different id in
+#      staging and in production. Every integration ends up carrying a mapping
+#      it built at runtime, and the day it caches the wrong one is the day it
+#      writes a story point estimate into a field called Severity.
+#   2. A status name is whatever an administrator typed. "In Review" is not a
+#      value the API defines, and code branching on it breaks the first time
+#      somebody renames a column. statusCategory.key is the stable one, it has
+#      exactly three values, and one of them is called indeterminate.
+#   3. In v3 the description is a document, not a string. It is Atlassian
+#      Document Format: a JSON tree of nodes. v2 returns the same field as
+#      wiki markup text, so .trim() works on one version of the same endpoint
+#      and throws on the other.
+#   4. Creating an issue returns three fields and none of them is the issue.
+#      An id, a key and a URL, so anything reading created.fields.summary back
+#      gets undefined, and a suite that asserts on the create response is
+#      asserting on almost nothing.
+#   5. An issue has two identifiers and they behave differently. The numeric
+#      id is permanent. The key is the project prefix plus a counter, both
+#      paths accept both, and moving an issue between projects changes the
+#      key. Anything that stored the key has a dangling reference and no error
+#      to tell it so.
+#   6. The old search endpoint is gone, and it says 410 rather than 404.
+#      /rest/api/3/search was removed in favour of /rest/api/3/search/jql, and
+#      the replacement pages by token: no startAt, and no total at all. A
+#      pagination UI built on the count that used to be there cannot be
+#      rebuilt, because the number is not available at any price.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No JQL is executed. The jql parameter is accepted and ignored, exactly
+#     as Cauldron does not execute SOQL for Salesforce or GROQ for Sanity.
+#     Every search returns the fixture in its own order.
+#   - Jira sends an empty errorMessages array when the errors map is
+#     populated, and Cauldron sends both. The shape claim is faithful and the
+#     emptiness is not: a client that decides which failure it has by testing
+#     errorMessages.length would take the wrong branch here. The two-container
+#     trap below is the part worth having, and this note is the price of it.
+#   - Workflow transitions, the permission scheme, screens and field
+#     configuration are not modelled. Those are the machinery that decides
+#     which of the failures below you get, and reproducing them convincingly
+#     would mean building Jira.
+#   - Attachments, comments, worklogs and the changelog are not modelled.
+#   - Agile boards and sprints live under a different API root and are not
+#     here.
+#
+# Credentials below are fixtures, not secrets, and every name is invented.
+
+recipe: jira
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.atlassian.com/cloud/jira/platform/rest/v3/
+
+# An email address and an API token, sent as HTTP basic. The token is not a
+# password and the email is not a username anywhere else in Atlassian's
+# products, which is its own small trap.
+auth:
+  scheme: basic
+  # The token is the password half and the email is the username. Checking the
+  # wrong half would mean a bad token is never rejected.
+  credential: password
+  keys:
+    - cauldron-jira-api-token-0000
+
+responses:
+  list:
+    style: wrapped
+    key: issues
+    # Token paging, because startAt is gone along with the endpoint that took
+    # it. The absence of this field is how you know you are on the last page:
+    # isLast arrived later and is not something old code checks.
+    cursor_field: nextPageToken
+  resource:
+    style: bare
+  # Two sibling keys and two different container types. errorMessages is an
+  # array and errors is a map, so the loop that works on one throws on the
+  # other, and they are named closely enough that nobody reads twice.
+  error:
+    style: flat
+    message_field: "errorMessages[]"
+    code_field: "-"
+    type_field: "-"
+    fields:
+      errors: {}
+
+resources:
+  issue:
+    collection: issues
+    id:
+      style: numeric
+    # Both identifiers address the same issue on the same path, which is what
+    # makes storing the readable one so easy to justify.
+    alias: key
+    fields:
+      # The other identifier. Project prefix plus a counter, and it changes
+      # when an issue moves project while the numeric id above does not.
+      key:
+        type: string
+      summary:
+        type: string
+        in: fields
+      # A document, not a string. v2 returns wiki markup text for this same
+      # field, so .trim() works there and throws here.
+      description:
+        in: fields
+      # Whatever an administrator typed. Not a value the API defines.
+      status_name:
+        type: string
+        in: fields.status
+        as: name
+      # Three values, and this is the one to branch on: new, indeterminate,
+      # done. The middle one is not called "in progress", which is what
+      # everybody guesses.
+      status_category:
+        type: string
+        in: fields.status.statusCategory
+        as: key
+      status_category_name:
+        type: string
+        in: fields.status.statusCategory
+        as: name
+      # Present and null on an unassigned issue rather than absent, so a
+      # presence check finds it and a property read off it throws.
+      assignee:
+        in: fields
+      # Null is the whole object, not an object holding a null name. Modelling
+      # it as a nested field would emit {"name": null}, which is a shape the
+      # provider never sends and which passes a truth test on fields.priority.
+      priority:
+        in: fields
+      issuetype_name:
+        type: string
+        in: fields.issuetype
+        as: name
+      # True on a subtask. The subtasks are ordinary issues in the same
+      # collection, so a count of the project's issues includes them.
+      issuetype_subtask:
+        type: boolean
+        in: fields.issuetype
+        as: subtask
+      parent_key:
+        type: string
+        in: fields.parent
+        as: key
+      labels:
+        type: list
+        in: fields
+      # Story points on this instance. On another instance this number belongs
+      # to something else entirely, and nothing in the response says which.
+      customfield_10023:
+        in: fields
+      # And the one beside it, which is a different shape again: an object
+      # with a value and an id rather than a number.
+      customfield_10041:
+        in: fields
+
+  # The endpoint that tells you what those numbers mean. It exists because the
+  # issue response cannot.
+  field:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      # False for the built-in fields, whose ids are words. The custom ones
+      # are the numbered ones, and only this flag separates them reliably.
+      custom:
+        type: boolean
+      schema_type:
+        type: string
+        in: schema
+        as: type
+
+routes:
+  - method: GET
+    path: /rest/api/3/issue/{id}
+    resource: issue
+    operation: get
+
+  - method: POST
+    path: /rest/api/3/issue
+    resource: issue
+    operation: create
+    status: 201
+    # An id and a key and nothing else. The issue has to be fetched before
+    # anything about it is known, and the convention everywhere else is that a
+    # create echoes what you sent.
+    returns: [id, key]
+
+  - method: GET
+    path: /rest/api/3/search/jql
+    resource: issue
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+      limit_param: maxResults
+      cursor_param: nextPageToken
+
+  # Gone, not missing. The path is right and it is not coming back, and the
+  # difference between this and a 404 is the whole message.
+  - method: GET
+    path: /rest/api/3/search
+    error: search_removed
+
+  - method: POST
+    path: /rest/api/3/search
+    error: search_removed
+
+  - method: GET
+    path: /rest/api/3/field
+    resource: field
+    operation: list
+
+webhooks:
+  events:
+    - jira:issue_created
+    - jira:issue_updated
+    - jira:issue_deleted
+    - comment_created
+  signing:
+    scheme: hmac-sha256
+    header: X-Hub-Signature
+    secret: cauldron-webhook-secret
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Rate limit exceeded."
+
+  authentication_error:
+    status: 401
+    message: "Client must be authenticated to access this resource."
+
+  # Jira answers 404 for an issue you are not permitted to see, on purpose, so
+  # that the API cannot be used to find out what exists. A client that treats
+  # 404 as "deleted" and cleans up its own copy has just deleted a record over
+  # a permission change.
+  resource_missing:
+    status: 404
+    message: "Issue does not exist or you do not have permission to see it."
+
+  parameter_missing:
+    status: 400
+    message: "Missing required parameter: {detail}"
+
+  # The retired endpoint. Gone rather than missing, and retrying will not
+  # help.
+  search_removed:
+    status: 410
+    message: "This endpoint has been removed. Use /rest/api/3/search/jql instead."
+
+  # A field the caller cannot set, which on a real instance usually means it
+  # is not on the screen for that issue type rather than that it does not
+  # exist. The message says both, and cannot tell you which.
+  field_not_on_screen:
+    status: 400
+    message: "Field cannot be set."
+    fields:
+      errors:
+        customfield_10023: "Field 'customfield_10023' cannot be set. It is not on the appropriate screen, or unknown."
+
+  # Deleting a parent takes its subtasks with it, and the API refuses unless
+  # you say so in the query string first.
+  has_subtasks:
+    status: 400
+    message: "The issue has subtasks and deleteSubtasks is not set to true."
+
+fixtures:
+  empty: {}
+
+  platform-project:
+    issue:
+      # An ordinary issue. The status name was typed by an administrator and
+      # the category beside it is the one that means anything.
+      - id: "10001"
+        key: PLAT-42
+        summary: Rotate the signing keys
+        description:
+          type: doc
+          version: 1
+          content:
+            - type: paragraph
+              content:
+                - type: text
+                  text: The keys expire at the end of the quarter.
+        status_name: In Review
+        status_category: indeterminate
+        status_category_name: In Progress
+        assignee:
+          accountId: 5f8a1c2e3d4b5a6c7d8e9f01
+          displayName: Ada Lovelace
+          emailAddress: ada@cauldron.test
+        priority:
+          name: High
+          id: "2"
+        issuetype_name: Task
+        issuetype_subtask: false
+        labels:
+          - security
+          - q3
+        customfield_10023: 5
+        customfield_10041:
+          value: Critical
+          id: "10200"
+      # Unassigned, unprioritised, and both fields are there holding null. A
+      # presence check finds them and reading a name off either throws.
+      - id: "10002"
+        key: PLAT-43
+        summary: Investigate the nightly job timeout
+        description: null
+        status_name: Backlog
+        # Not "todo" and not "open". The API's word for nothing-has-started is
+        # new, and it does not appear anywhere in the interface.
+        status_category: new
+        status_category_name: To Do
+        assignee: null
+        priority: null
+        issuetype_name: Bug
+        issuetype_subtask: false
+        labels: []
+        customfield_10023: null
+      # A subtask, in the same collection as its parent, so a count of the
+      # project's issues includes it and a board that hides subtasks does not
+      # agree with it.
+      - id: "10003"
+        key: PLAT-44
+        summary: Write the migration note
+        description: null
+        status_name: Done
+        status_category: done
+        status_category_name: Done
+        assignee: null
+        priority:
+          name: Low
+          id: "4"
+        issuetype_name: Sub-task
+        issuetype_subtask: true
+        parent_key: PLAT-42
+        labels: []
+        customfield_10023: null
+
+    field:
+      # The built-in fields have word ids and custom is false.
+      - id: summary
+        name: Summary
+        custom: false
+        schema_type: string
+      - id: status
+        name: Status
+        custom: false
+        schema_type: status
+      # And the numbered ones, whose names only exist here. This endpoint is
+      # the only thing standing between an integration and writing an estimate
+      # into a severity field.
+      - id: customfield_10023
+        name: Story Points
+        custom: true
+        schema_type: number
+      - id: customfield_10041
+        name: Severity
+        custom: true
+        schema_type: option
+
+# Conformance cases, read from the Atlassian Cloud platform reference rather
+# than observed against a live instance. The verify report says so.
+conformance:
+  - name: a custom field is a number on the wire and its name lives elsewhere
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-fields/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10001
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Five story points, in a field whose name appears nowhere in this
+        # response. On another instance this number belongs to something else,
+        # and nothing here says which.
+        fields.customfield_10023: 5
+
+  - name: and the field endpoint is the only place that says what it means
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-fields/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/field
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Two numbered fields, adjacent ids, unrelated meanings. Caching this
+        # mapping from the wrong instance writes an estimate into a severity
+        # field and reports success.
+        issues[2].id: customfield_10023
+        issues[2].name: Story Points
+        issues[2].custom: true
+        issues[3].name: Severity
+
+  - name: the two custom fields are not even the same shape
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10001
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # One is a bare number and the next is an object with a value and its
+        # own id. A generic reader that stringifies custom fields produces
+        # "[object Object]" for half of them.
+        fields.customfield_10041:
+          value: Critical
+          id: "10200"
+
+  - name: a status name is whatever an administrator typed
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10001
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # "In Review" is a column somebody named. Branching on it breaks the
+        # first time the board is reorganised, and nothing announces that.
+        fields.status.name: In Review
+        # The stable one. Three values, and the middle is called
+        # indeterminate, which is not a word anybody guesses.
+        fields.status.statusCategory.key: indeterminate
+
+  - name: the category for nothing-has-started is called new
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10002
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Not todo, not open, not backlog. The status is called Backlog and
+        # its category is called new, and the interface shows neither word.
+        fields.status.name: Backlog
+        fields.status.statusCategory.key: new
+        fields.status.statusCategory.name: To Do
+
+  - name: a description is a document rather than a string
+    source: https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10001
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Atlassian Document Format. v2 returns wiki markup text for this same
+        # field, so the same read is a string on one version of the endpoint
+        # and a tree on the other.
+        fields.description.type: doc
+        fields.description.version: 1
+        fields.description.content[0].content[0].text: The keys expire at the end of the quarter.
+
+  - name: an unassigned issue holds null rather than nothing
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/10002
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Three of them, all present, all null. "assignee" in fields passes,
+        # and assignee.displayName throws on the next line.
+        fields.assignee: null
+        fields.priority: null
+        fields.description: null
+
+  - name: an issue answers to its key as well as its id
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/PLAT-42
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # The same issue as /issue/10001 above. Both identifiers work in the
+        # path, and only one of them survives the issue being moved to another
+        # project, which is why storing the readable one is the tempting
+        # mistake.
+        id: "10001"
+        key: PLAT-42
+
+  - name: a subtask is an ordinary issue in the same collection
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/search/jql
+      query:
+        jql: project = PLAT
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      body:
+        # Three issues, one of which is a subtask of another. A count of the
+        # project's work counts it, and a board that hides subtasks does not,
+        # so the two numbers on the same screen disagree.
+        issues[2].fields.issuetype.subtask: true
+        issues[2].fields.parent.key: PLAT-42
+        issues[0].fields.issuetype.subtask: false
+
+  - name: the search response has no total in it at all
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/search/jql
+      query:
+        maxResults: "2"
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 200
+      matches:
+        # Token paging, and the count is not merely absent from this page: it
+        # is not available at any price. A pagination UI built on the total
+        # the old endpoint returned cannot be rebuilt against this one.
+        nextPageToken: '.'
+      absent:
+        - total
+        - startAt
+        - isLast
+
+  - name: the old search endpoint is gone rather than missing
+    source: https://developer.atlassian.com/cloud/jira/platform/changelog/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/search
+      query:
+        jql: project = PLAT
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      # 410, not 404. The path was right, the endpoint is not coming back, and
+      # a retry will not help. Code that treats every 4xx from Jira as a
+      # transient problem retries this until it gives up.
+      status: 410
+      matches:
+        errorMessages[0]: 'has been removed'
+
+  - name: and the POST form of it is gone too
+    source: https://developer.atlassian.com/cloud/jira/platform/changelog/
+    fixture: platform-project
+    request:
+      method: POST
+      path: /rest/api/3/search
+      json:
+        jql: project = PLAT
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 410
+      matches:
+        errorMessages[0]: 'search/jql'
+
+  - name: creating an issue hands back three fields and no issue
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
+    fixture: platform-project
+    request:
+      method: POST
+      path: /rest/api/3/issue
+      json:
+        key: PLAT-45
+        summary: Added by a test
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      status: 201
+      body:
+        key: PLAT-45
+      matches:
+        id: '^[0-9]+$'
+      # No fields object, so nothing sent in comes back and a suite asserting
+      # on the create response is asserting on almost nothing. The issue has
+      # to be fetched before anything about it is known.
+      absent:
+        - fields
+        - fields.summary
+
+  - name: failures carry an array and a map with confusingly similar names
+    source: https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/
+    fixture: platform-project
+    request:
+      method: GET
+      path: /rest/api/3/issue/99999
+      headers:
+        Authorization: Basic d29ya0BjYXVsZHJvbi50ZXN0OmNhdWxkcm9uLWppcmEtYXBpLXRva2VuLTAwMDA=
+    expect:
+      # 404 for an issue that does not exist and for one you cannot see, on
+      # purpose, so the API cannot be used to discover what exists. A client
+      # treating 404 as "deleted" and tidying up its own copy has just deleted
+      # a record over a permission change.
+      status: 404
+      body:
+        # A map, beside an array, and the names differ by two letters. Looping
+        # over the wrong one throws.
+        errors: {}
+      matches:
+        errorMessages[0]: 'do not have permission'

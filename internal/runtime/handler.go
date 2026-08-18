@@ -156,6 +156,22 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 		return status
 	}
 
+	// A route that answers with less than the record it touched. Jira's create
+	// hands back an id and a key and nothing else, so anything reading
+	// created.fields.summary gets undefined. The trim happens before shaping,
+	// so a kept field still nests where the Recipe says it does.
+	if len(matched.spec.Returns) > 0 {
+		kept := store.Record{}
+
+		for _, field := range matched.spec.Returns {
+			if value, ok := record[field]; ok {
+				kept[field] = value
+			}
+		}
+
+		record = kept
+	}
+
 	writeJSON(w, status, s.resourceBody(matched.spec.Resource, record))
 
 	return status
@@ -191,7 +207,7 @@ func identifier(matched route, r *http.Request, vars map[string]string) string {
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id := identifier(matched, r, vars)
 
-	record, err := s.store.Get(matched.spec.Resource, id)
+	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
 		return s.notFound(w, err, matched.spec.Resource, id)
 	}

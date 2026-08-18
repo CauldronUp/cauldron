@@ -142,6 +142,46 @@ func (s *Store) Get(resource, id string) (Record, error) {
 	return record.Clone(), nil
 }
 
+// GetBy returns the record whose identifier matches, or failing that, the one
+// whose named field does.
+//
+// Jira addresses an issue by a numeric id and by a project key, and both work
+// on the same path. They are not interchangeable underneath: the id is
+// permanent and the key changes when the issue moves project, which is exactly
+// why storing the readable one is the tempting mistake. An emulator accepting
+// only the identifier would reject half the calls that work against the real
+// API, and one accepting only the alias would hide the difference between
+// them.
+//
+// A scan rather than a second index, because a fixture is small and an index
+// that can fall out of step with the records is a worse thing to own than a
+// loop.
+func (s *Store) GetBy(resource, id, alias string) (Record, error) {
+	if alias == "" {
+		return s.Get(resource, id)
+	}
+
+	if record, err := s.Get(resource, id); err == nil {
+		return record, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	c, ok := s.collections[resource]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownResource, resource)
+	}
+
+	for _, held := range c.records {
+		if value, _ := held[alias].(string); value == id {
+			return held.Clone(), nil
+		}
+	}
+
+	return nil, fmt.Errorf("%w: %s %s", ErrNotFound, resource, id)
+}
+
 // Update merges changes into an existing record. Identifiers are immutable.
 func (s *Store) Update(resource, id string, changes Record) (Record, error) {
 	s.mu.Lock()
