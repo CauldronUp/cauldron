@@ -738,3 +738,38 @@ routes:
 		t.Errorf("got %q", got)
 	}
 }
+
+// The identifier is held as "id" whatever the provider calls it on the wire,
+// and returns names the record's own keys because the trim runs before the
+// rename. Writing the wire name is the obvious mistake, so the message says
+// what to write instead of reporting an unknown field.
+func TestReturnsNamingTheWireIdentifierSaysSo(t *testing.T) {
+	yaml := `
+recipe: stripe
+capability: payments
+version: 0.1.0
+upstream:
+  api: "2026-06-30"
+resources:
+  customer:
+    id:
+      prefix: cus_
+      length: 14
+      field: customerId
+    fields:
+      email:
+        type: string
+routes:
+  - method: POST
+    path: /v1/customers
+    resource: customer
+    operation: create
+    returns: [customerId]
+`
+
+	got := problems(t, yaml)
+
+	if !strings.Contains(got, "what the identifier is called on the wire") {
+		t.Errorf("got %q", got)
+	}
+}

@@ -517,7 +517,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | Plivo | Assess — SMS and voice, beside Twilio and Telnyx |
-| Bandwidth | Number provisioning is asynchronous and takes minutes, so an ordered number is not yet a usable number |
+| ~~Bandwidth~~ | Shipped, messaging only. The same message comes back with entirely different property names depending on which endpoint returned it, and a send is 202 Accepted rather than sent. Number provisioning is genuinely asynchronous and would be worth having, but that API answers in XML |
 | Twilio Verify | A code expires and a check consumes an attempt, so verifying twice with the right code fails the second time |
 | Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |

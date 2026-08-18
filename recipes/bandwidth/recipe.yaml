@@ -1,0 +1,553 @@
+# Bandwidth Recipe for Cauldron
+#
+# Bandwidth's messaging API has a trap that is rare enough to be worth the
+# whole Recipe on its own: the same message comes back with entirely
+# different property names depending on which endpoint handed it to you.
+#
+# Send a message and the response calls it id, from, to and direction: "out".
+# Search for that same message a minute later and it is messageId, sourceTn,
+# destinationTn and messageDirection: "OUTBOUND". Not one of the four names
+# survives, and the direction is not even the same string. A client that
+# stores what it sent and later reconciles against a search has to translate
+# between two vocabularies for one object, and nothing in either response
+# hints that the other exists.
+#
+# The Recipe models them as two resources, because that is what they are on
+# the wire, and a conformance case pins the disagreement rather than smoothing
+# it over.
+#
+# Four more things worth modelling exactly:
+#
+#   1. A send answers 202, not 200 or 201. Accepted means queued. Nothing has
+#      reached a handset, and the delivery outcome arrives later at a callback
+#      URL. Code that treats a 2xx as sent reports success for messages that
+#      were never delivered.
+#   2. "to" is an array even for one recipient, and stays an array in the
+#      response. A single send to three numbers is one message id and three
+#      separate delivery callbacks, so counting responses counts wrong.
+#   3. segmentCount is in the response and is not derivable from the text.
+#      One non-GSM character — a curly quote pasted from a document — drops
+#      the per-segment limit from 160 characters to 70, so a message that was
+#      one segment yesterday is three today at three times the price.
+#   4. Errors carry type and description, and no message field at all. They
+#      also carry an id, which is a request identifier for support and not
+#      the id of anything that was sent. The same property name means two
+#      unrelated things a few lines apart.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is sent and no callback fires. Delivery status is whatever a
+#     fixture says it is.
+#   - The number-ordering API is not modelled. Provisioning a number is
+#     genuinely asynchronous and takes minutes, which would be worth having,
+#     but that API answers in XML and this format describes JSON. Modelling
+#     it as JSON would be describing an API that does not exist.
+#   - accountId partitions every path and appears in no send response. It is
+#     declared as a field so scoping works and trimmed from the routes that
+#     do not send it, which is noted again where it happens.
+#   - Voice, conferences, and the campaign registry are not modelled.
+#
+# Credentials below are fixtures, not secrets, and every number is invented.
+
+recipe: bandwidth
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://dev.bandwidth.com/apis/messaging
+
+auth:
+  # Basic, with an API token as the username and a secret as the password.
+  # These are not the same as the dashboard username and password, and using
+  # those instead is the most common way to get a 401 here.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-bandwidth-api-secret
+
+responses:
+  list:
+    style: wrapped
+    count_field: totalCount
+  resource:
+    style: bare
+  error:
+    style: flat
+    # No message field anywhere. description is the prose, type is the
+    # category, and a client reading error.message finds nothing.
+    message_field: description
+    code_field: type
+    type_field: "-"
+
+resources:
+  # What a send answers with. Four of its properties are renamed in search
+  # results and one of them changes value as well.
+  message:
+    collection: messages
+    id:
+      # A millisecond timestamp with a random tail. Long enough to look
+      # opaque, and it is: nothing about it should be parsed.
+      style: opaque
+      length: 29
+    fields:
+      # Partitions every path and appears in no send response. Declared so
+      # the routes can be scoped by it, trimmed from every response below.
+      accountId:
+        type: string
+      # The number the message is billed against. For an outbound message
+      # this is the sender; for an inbound one it is the recipient, which is
+      # the opposite of what the name suggests.
+      owner:
+        type: string
+      applicationId:
+        type: string
+      time:
+        type: datetime
+      # Not derivable from the text. One non-GSM character drops the
+      # per-segment limit from 160 to 70, so the count is the provider's to
+      # give and a client that counts characters and multiplies is billing
+      # itself wrong.
+      #
+      # Cauldron does not do the segmentation either. A send always reports
+      # one, which is a guarantee about the shape of the response and not a
+      # simulation of the billing. The search fixtures carry real counts
+      # because a fixture can say what happened; a send cannot.
+      segmentCount:
+        type: integer
+        default: 1
+      # "out" or "in", lowercase and abbreviated. The search endpoint calls
+      # the same thing messageDirection and spells it OUTBOUND.
+      direction:
+        type: string
+        default: out
+      # An array even for one recipient, and an array in the response. One
+      # send to three numbers is one id and three delivery callbacks.
+      to:
+        type: list
+      from:
+        type: string
+      text:
+        type: string
+      tag:
+        type: string
+      priority:
+        type: string
+        default: default
+
+  # The same message, as the search endpoint describes it. Different names
+  # for the same facts, and a different spelling of the direction.
+  message_record:
+    collection: messages
+    id:
+      style: opaque
+      length: 29
+      # Not "id". A client holding the send response and searching for it
+      # has to know that these two properties are the same thing.
+      field: messageId
+    fields:
+      accountId:
+        type: string
+      # "from" on a send.
+      sourceTn:
+        type: string
+      # "to" on a send, and singular here: a search result is one row per
+      # recipient, so a three-recipient send is three rows and each carries
+      # one destination rather than the array the send echoed back.
+      destinationTn:
+        type: string
+      # RECEIVED, QUEUED, SENDING, SENT, FAILED, DELIVERED, ACCEPTED,
+      # UNDELIVERED. The send response has no status property at all.
+      messageStatus:
+        type: string
+      # INBOUND or OUTBOUND. A send says "out".
+      messageDirection:
+        type: string
+      messageType:
+        type: string
+        default: sms
+      segmentCount:
+        type: integer
+      # Populated only on a failure, and absent rather than null otherwise,
+      # so a client testing for null never sees one.
+      errorCode:
+        type: integer
+      receiveTime:
+        type: datetime
+      carrierName:
+        type: string
+
+routes:
+  - method: POST
+    path: /api/v2/users/{accountId}/messages
+    resource: message
+    operation: create
+    scope:
+      - accountId
+    # Accepted, not created. The message is queued and nothing has reached a
+    # handset. Code treating a 2xx as sent reports success for messages that
+    # were never delivered.
+    status: 202
+    # Everything except accountId, which partitions the path and is not in
+    # the body Bandwidth sends back.
+    returns:
+      - id
+      - owner
+      - applicationId
+      - time
+      - segmentCount
+      - direction
+      - to
+      - from
+      - text
+      - tag
+      - priority
+
+  - method: GET
+    path: /api/v2/users/{accountId}/messages
+    resource: message_record
+    operation: list
+    scope:
+      - accountId
+    returns:
+      # "id", not "messageId": the trim names the record's own keys and runs
+      # before the rename that puts messageId on the wire.
+      - id
+      - sourceTn
+      - destinationTn
+      - messageStatus
+      - messageDirection
+      - messageType
+      - segmentCount
+      - errorCode
+      - receiveTime
+      - carrierName
+
+errors:
+  rate_limit:
+    status: 429
+    code: max-message-queue-size-exceeded
+    message: "Your account has exceeded its message queue limit"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "Authentication failed"
+
+  resource_missing:
+    status: 404
+    code: not-found
+    message: "The resource could not be found"
+
+  parameter_missing:
+    status: 400
+    code: request-validation
+    message: "Your request could not be processed because of a validation error"
+
+  # The number is on the account and not associated with the application the
+  # credentials belong to. 403, and the description does not say which of the
+  # two is wrong.
+  forbidden_from_number:
+    status: 403
+    code: forbidden-from-number
+    message: "The from number is not associated with this application"
+
+  # A number Bandwidth will not send to at all. 400, so it is
+  # indistinguishable by status from a malformed request.
+  blocked_destination:
+    status: 400
+    code: blocked-destination
+    message: "The destination number is blocked"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    # One send, and the two search rows it produced. Same message, three
+    # renamed properties and a different spelling of the direction.
+    message_record:
+      # A search returns one row per recipient, so the two-recipient send
+      # above is two rows here. A client counting rows is counting
+      # recipients, not messages.
+      - id: 1755100000000abcdefghijklmnop
+        accountId: "5000001"
+        sourceTn: "+15551112222"
+        destinationTn: "+15553334444"
+        messageStatus: DELIVERED
+        messageDirection: OUTBOUND
+        messageType: sms
+        segmentCount: 2
+        receiveTime: "2026-08-14T18:20:16Z"
+        carrierName: "Example Wireless"
+
+      # The second recipient, and this one failed while the first was
+      # delivered. The send answered 202 for both. A client that read the
+      # first row and stopped believes the whole send succeeded.
+      - id: 1755100000000qrstuvwxyzabcde
+        accountId: "5000001"
+        sourceTn: "+15551112222"
+        destinationTn: "+15555556666"
+        messageStatus: UNDELIVERED
+        messageDirection: OUTBOUND
+        messageType: sms
+        segmentCount: 2
+        errorCode: 4405
+        receiveTime: "2026-08-14T18:20:16Z"
+        carrierName: "Example Mobile"
+
+      # A different sub-account. Bandwidth resellers run many, and a search
+      # that ignored the accountId in the path would hand one customer's
+      # message traffic to another.
+      - id: 1755100000000zzzzzzzzzzzzzzzz
+        accountId: "5000002"
+        sourceTn: "+15557778888"
+        destinationTn: "+15559990000"
+        messageStatus: DELIVERED
+        messageDirection: OUTBOUND
+        messageType: sms
+        segmentCount: 1
+        receiveTime: "2026-08-14T19:00:00Z"
+        carrierName: "Example Wireless"
+
+# Every case below is derived from Bandwidth's published documentation. None
+# has been run against a real Bandwidth account. The verify report says so.
+conformance:
+  - name: a send is accepted, not sent
+    # 202. The message is queued and nothing has reached a handset. The
+    # delivery outcome arrives later at a callback URL, which means code
+    # treating a 2xx as sent reports success for messages that were never
+    # delivered.
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+      json:
+        applicationId: 93de2206-9669-4e07-948d-329f4b722ee2
+        to:
+          - "+15553334444"
+        from: "+15551112222"
+        text: "Hello"
+    expect:
+      status: 202
+      body:
+        direction: out
+        priority: default
+        # Bandwidth computes this and Cauldron does not, so the value is
+        # always one here. What the case pins is that the property is on a
+        # send response at all, because a client that reads it off the send
+        # is reading something the search will later report differently.
+        segmentCount: 1
+      absent:
+        # There is no status on a send response. Nothing here says whether
+        # the message will arrive, because nothing yet knows.
+        - messageStatus
+        - status
+        - delivered
+        # accountId partitions the path and is not in the body.
+        - accountId
+
+  - name: to stays an array even for one recipient
+    # And the response echoes it as an array. A client reading to as a
+    # string gets "[object Object]" or a crash, depending on the language.
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+      json:
+        applicationId: 93de2206-9669-4e07-948d-329f4b722ee2
+        to:
+          - "+15553334444"
+        from: "+15551112222"
+        text: "Hello"
+    expect:
+      status: 202
+      body:
+        to[0]: "+15553334444"
+      absent:
+        - to[1]
+
+  - name: the search endpoint renames every property the send returned
+    # id becomes messageId, from becomes sourceTn, to becomes destinationTn,
+    # and direction becomes messageDirection. Not one name survives.
+    source: https://dev.bandwidth.com/apis/messaging/#operation/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        totalCount: 2
+        messages[0].messageId: 1755100000000abcdefghijklmnop
+        messages[0].sourceTn: "+15551112222"
+        messages[0].destinationTn: "+15553334444"
+      absent:
+        - messages[0].id
+        - messages[0].from
+        - messages[0].to
+        - messages[0].direction
+        - messages[0].owner
+        - messages[0].text
+        - messages[2]
+
+  - name: out and OUTBOUND are the same direction spelled two ways
+    # The send says "out". The search says "OUTBOUND". A client normalising
+    # on either one silently fails to match the other.
+    source: https://dev.bandwidth.com/apis/messaging/#operation/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        messages[0].messageDirection: OUTBOUND
+
+  - name: one send to two numbers is two rows, and one of them failed
+    # Both recipients were accepted with the same 202. One was delivered and
+    # one was not, and the only place that shows is the search. A client
+    # that read the first row and stopped believes the send succeeded.
+    source: https://dev.bandwidth.com/apis/messaging/#operation/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        messages[0].messageStatus: DELIVERED
+        messages[1].messageStatus: UNDELIVERED
+        messages[1].destinationTn: "+15555556666"
+
+  - name: an error code is absent rather than null on a message that worked
+    # A client testing for errorCode === null never sees one, because the
+    # property is not there at all on the rows that succeeded.
+    source: https://dev.bandwidth.com/apis/messaging/#operation/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        messages[1].errorCode: 4405
+      absent:
+        - messages[0].errorCode
+
+  - name: the segment count is in the response and not in the text
+    # 178 characters is two GSM segments. One curly quote pasted from a
+    # document would drop the limit to 70 and make the same message three,
+    # so a client counting characters and multiplying is billing itself
+    # wrong. The count is only ever the provider's to give.
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        messages[0].segmentCount: 2
+
+  - name: an error carries type and description, and no message
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    arm: blocked_destination
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 400
+      body:
+        type: blocked-destination
+        description: "The destination number is blocked"
+      absent:
+        - message
+        - error
+        - errors
+
+  - name: a blocked destination is a 400, like a malformed request
+    # Branching on status cannot tell a number Bandwidth will never send to
+    # from a typo in the payload. Only the type says which.
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 400
+      body:
+        type: request-validation
+
+  - name: a from number not on the application is 403, not 400
+    # The number is on the account and not associated with these
+    # credentials' application, and the description does not say which of
+    # the two is wrong.
+    source: https://dev.bandwidth.com/apis/messaging
+    fixture: small-account
+    arm: forbidden_from_number
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 403
+      body:
+        type: forbidden-from-number
+
+  - name: the secret is the half that is checked
+    # The API token is the username and the secret is the password, and
+    # neither is the dashboard login. Checking the wrong half means a wrong
+    # credential is never rejected.
+    source: https://dev.bandwidth.com/apis/credentials
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000001/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjp3cm9uZw==
+    expect:
+      status: 401
+      body:
+        type: unauthorized
+
+  - name: a search is scoped to the account in the path
+    # A third message exists under 5000002. Resellers run many sub-accounts,
+    # and a search that ignored the path would hand one customer's traffic
+    # to another.
+    source: https://dev.bandwidth.com/apis/messaging/#operation/listMessages
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/users/5000002/messages
+      headers:
+        Authorization: Basic Y2F1bGRyb24tYmFuZHdpZHRoLWFwaS10b2tlbjpjYXVsZHJvbi1iYW5kd2lkdGgtYXBpLXNlY3JldA==
+    expect:
+      status: 200
+      body:
+        totalCount: 1
+        messages[0].destinationTn: "+15559990000"
+      absent:
+        - messages[1]
