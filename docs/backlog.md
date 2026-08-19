@@ -1258,3 +1258,99 @@ versioned rather than replaced so the current one is the entry whose
 digits that JavaScript's `Date` silently truncates to three, there is no GET
 listing anywhere in the API, and failures are flat with the HTTP status
 repeated in the body as a number.
+
+## The unverified pagination note, and what checking it costs
+
+135 pagination declarations across 56 Recipes carry a note saying the style
+was never verified and asking somebody to check what the provider actually
+calls its parameters. The note is honest and it has been sitting there; what
+it does not say is what an unchecked declaration *does*.
+
+With no style, a route pages as though by cursor and reads `limit` from the
+query string. For a provider that calls it something else -- and most do --
+nothing is read, the limit falls back to the route's default, the default is
+larger than any fixture, and the first response holds the whole collection
+with no next page. The paging loop runs once and passes. It is the same shape
+as the body-pagination bug, and there are 135 of them.
+
+Two down. Each cost more than a parameter rename, because pulling the thread
+found things beside it.
+
+**Pub/Sub**, against Google's own discovery document: `pageSize` and
+`pageToken` in the query on both listings, `maxMessages` in the body for pull,
+which is not a paged listing at all. Beside that: no list response carried
+`nextPageToken`, which is the thing client code loops on, so the loop ended
+after one page; and every subscription and topic went out with a bare `id`
+that Google does not send, which reads far more like the identifier than the
+resource path beside it does.
+
+**Algolia**, against its own OpenAPI description: `hitsPerPage` and `page` in
+the body for search, the same two in the query for the index listing, and
+`cursor` for browse. Beside that, three more:
+
+- There is no `GET /1/indexes/{index}`. Algolia serves only DELETE and POST
+  there, and the Recipe answered a GET with a listing. No conformance case
+  ever used it, which is how a route that would 404 against the real API sat
+  there unnoticed. It is now `POST .../browse`, which is the real one.
+- Algolia counts pages **from nought**. Read as one-based, a client asking for
+  page 1 is handed page 0 again -- the same records twice, no error, and a
+  loop that never reaches the end. `positionOf` carried a comment warning
+  about losing or duplicating a record at every page break; being hard-coded
+  one-based, it was doing exactly that for every provider that counts from
+  nought. `pagination.first_page` says which.
+- The response's `page` and `hitsPerPage` were **constants**, 0 and 20. A
+  client that asked for page 3 was told it was on page 0, by the field whose
+  entire purpose is to say where you are. `page_field` and `limit_field` echo
+  what was actually served, falling back to the provider's defaults.
+
+Stated gap rather than hidden: browse honours an incoming cursor but does not
+send the next one, because `cursor_field` is Recipe-wide and search shares it
+-- and search has no cursor at all, so declaring one would put a field on
+every search response that Algolia never sends.
+
+**Adyen**: no pagination at all, checked against its own OpenAPI 3.1. The
+request for `/paymentMethods` takes no limit, offset, page or cursor of any
+kind and the response has nothing to resume from, so the declared page size
+claimed something the provider does not accept. Removed; 95 of the 345 list
+routes here already declare no pagination, which is the idiom for a listing
+that does not page.
+
+**AWS SQS**: `MaxNumberOfMessages` in the body for a receive -- a batch size
+rather than a page size, because there is no cursor and asking again is how
+you get more -- and `MaxResults` with `NextToken` for `ListQueues`.
+
+## The AWS Recipes model paths AWS does not serve
+
+Found while checking SQS's pagination, and larger than the thing it was found
+under.
+
+The AWS JSON protocol is RPC over `POST /`, with the operation named in the
+`X-Amz-Target` header. Cauldron routes on method and path, so all three of the
+AWS JSON-protocol Recipes encode the operation in the path instead:
+
+| Recipe | Paths it serves | What AWS serves |
+|---|---|---|
+| Secrets Manager | `/ListSecrets`, `/GetSecretValue`, `/DescribeSecret`, `/CreateSecret`, `/PutSecretValue` | `POST /` with `X-Amz-Target: secretsmanager.ListSecrets` and friends |
+| DynamoDB | `POST /` for query, plus `/items/{id}` and `/tables` | `POST /` with `X-Amz-Target: DynamoDB_20120810.Query` and friends |
+| SQS | `POST /` for receive, plus `/queues` and `/messages/{id}` | `POST /` with `X-Amz-Target: AmazonSQS.ReceiveMessage` and friends |
+
+SQS's own header comment already says the operation belongs in `X-Amz-Target`,
+so this is a known simplification rather than a mistake -- but it is not
+stated where it matters, and its consequence is that an SDK or a hand-written
+client that works against these Recipes is addressing URLs AWS does not have.
+The convenience routes are worse than the pagination note, because a client
+can be written entirely against them and be entirely wrong.
+
+The fix is the shape `selects:` already took for GraphQL: one path, several
+routes, disambiguated by something other than the path -- there by a word in
+the query body, here by a header value. `dispatch_on: X-Amz-Target` with a
+per-route value would let these three Recipes describe the real protocol, and
+the three of them are enough to justify it.
+
+### Remaining
+
+52 Recipes, 126 declarations. The method that works: find the provider's own
+machine-readable description, read the parameter names out of it, then write a
+case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
+`cursor_param` could be renamed to `cursor` with every case still passing,
+because nothing sent a token back until a second-page case did.
