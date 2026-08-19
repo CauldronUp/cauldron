@@ -755,6 +755,14 @@ type Route struct {
 	// parameter: "query:channel" or "body:channel". Slack and every other
 	// RPC-shaped API put it in the query string or the body, and without this
 	// the format could only describe APIs that happen to be RESTful.
+	//
+	// "auth" is the third case and it is not a location: it says the request
+	// carries no identifier at all and the provider answers about whoever the
+	// credentials belong to. GitHub's /user, Stripe's /v1/account, Slack's
+	// auth.test and Backblaze's b2_authorize_account are all this shape, and
+	// none of them could be described before, because both other forms name a
+	// place to read from and the whole point of these routes is that there is
+	// nothing to read.
 	IDFrom string `yaml:"id_from"`
 	// EmptyBody sends no body at all. SendGrid accepts a send with 202 and
 	// nothing else, and a client that calls .json() on that response throws.
@@ -1351,10 +1359,18 @@ func (r *Recipe) Validate() error {
 			source, name, ok := strings.Cut(route.IDFrom, ":")
 
 			switch {
+			case route.IDFrom == "auth":
+				// Names no location, because there is nothing to read. The
+				// only thing that can be wrong with it is a path that also
+				// carries an identifier, which would mean the request does
+				// carry one after all.
+				if strings.Contains(route.Path, "{id}") {
+					add("%s: id_from auth says the request carries no identifier, and the path carries one", where)
+				}
 			case !ok || name == "":
-				add("%s: id_from %q must look like query:channel or body:channel", where, route.IDFrom)
+				add("%s: id_from %q must look like query:channel, body:channel or auth", where, route.IDFrom)
 			case source != "query" && source != "body":
-				add("%s: id_from source %q must be query or body", where, source)
+				add("%s: id_from source %q must be query, body or auth", where, source)
 			case strings.Contains(route.Path, "{id}"):
 				add("%s: id_from and an {id} path parameter cannot both apply", where)
 			}
@@ -1696,6 +1712,21 @@ func (r *Recipe) Validate() error {
 				continue
 			}
 
+			// A route that reads its identifier from the credentials answers
+			// with the one record there is. Two of them and the runtime picks
+			// the first, which is the seeding order, which is not a decision
+			// anybody made.
+			if len(r.Fixtures[fixtureName][resourceName]) > 1 {
+				for _, route := range r.Routes {
+					if route.Resource == resourceName && route.IDFrom == "auth" {
+						add("fixture %q seeds %d records of %q, and %s %s answers about whoever asked, so there is nothing to choose between them with",
+							fixtureName, len(r.Fixtures[fixtureName][resourceName]), resourceName, route.Method, route.Path)
+
+						break
+					}
+				}
+			}
+
 			// A list field declared as one and then seeded with a scalar would
 			// serve the scalar and pass every case written about it, so the
 			// declaration has to mean something.
@@ -1725,6 +1756,11 @@ func (r *Recipe) Validate() error {
 					}
 
 					if resource.Fields[field].Type != "list" || record[field] == nil {
+						if seeded, ok := seededAs(resource.Fields[field].Type, record[field]); !ok {
+							add("fixture %q record %d of %q declares %q as %s and seeds %s, and nothing coerces it, so %s is what goes on the wire",
+								fixtureName, i, resourceName, field, resource.Fields[field].Type, seeded, seeded)
+						}
+
 						continue
 					}
 
@@ -1953,6 +1989,69 @@ func contains(haystack []string, needle string) bool {
 
 // sortedKeys keeps iteration deterministic, so validation problems always
 // appear in the same order.
+// seededAs reports whether a fixture value matches the type its field
+// declares, and names what it is when it does not.
+//
+// A field's type is documentation. Nothing in the runtime reads it: the value
+// a fixture seeds is the value that goes on the wire, with whatever type YAML
+// gave it. So a Recipe can declare a field a string, seed it with something
+// that is not one, and serve the wrong type for as long as no case looks.
+//
+// The reason to check it is YAML 1.1 rather than carelessness. An unquoted
+// off, no, on or yes is a boolean, and those are all real values of real
+// string fields: a DigitalOcean droplet's status is one of new, active, off
+// and archive, and the fixture that seeded off to say a machine was powered
+// down served false to everything that read it. The comment beside it
+// explained that a cost report counting running machines would miss that
+// droplet, and no case asserted on it, so the claim and the wire disagreed
+// from the day it was written.
+//
+// Only the unambiguous directions are checked. A number field seeded with a
+// whole number is fine, and a timestamp is a number whichever width it lands
+// in.
+func seededAs(declared string, value any) (string, bool) {
+	if value == nil {
+		return "", true
+	}
+
+	name := "something else"
+
+	switch value.(type) {
+	case bool:
+		name = "a boolean"
+	case string:
+		name = "a string"
+	case int, int64, uint64:
+		name = "a whole number"
+	case float64, float32:
+		name = "a number"
+	case []any:
+		name = "a sequence"
+	case map[string]any:
+		name = "a mapping"
+	}
+
+	switch declared {
+	case "string", "datetime":
+		_, ok := value.(string)
+
+		return name, ok
+	case "boolean":
+		_, ok := value.(bool)
+
+		return name, ok
+	case "integer", "number", "timestamp", "timestamp_ms":
+		switch value.(type) {
+		case int, int64, uint64, float64, float32:
+			return name, true
+		}
+
+		return name, false
+	}
+
+	return name, true
+}
+
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 

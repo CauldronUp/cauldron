@@ -489,7 +489,7 @@ transfers alone, and say so in the header.
 | ~~Airwallex~~ | Shipped. The settlement currency is not the charge currency and the rate was fixed at a moment nobody picked, there is a separate balance per currency so a payout can fail on a funded account, and a partial capture leaves two amounts different forever |
 | ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two characters apart with opposite obligations |
 | Moov | Transfers across rails, where the rail decides the settlement time and nothing else does |
-| Unit | An authorisation is not a transaction and the two carry different identifiers for the same purchase |
+| Unit | Assessed and left. That is the Marqeta Recipe's headline, already shipped: an authorization is a hold, the clearing is a second object pointing back at it, and the amounts legitimately differ. A Unit Recipe would need to earn its place on the banking-as-a-service parts -- the application lifecycle, the counterparty model -- rather than on the card shape |
 
 ### Billing that accrues
 
@@ -534,13 +534,13 @@ transfers alone, and say so in the header.
 | Kinde | Assess — users, organizations, feature flags in one product |
 | ~~Persona~~ | Shipped. completed is not approved, needs_review is neither, and nothing is at the top level because it is JSON:API |
 | ~~Onfido~~ | Shipped. complete is not clear, consider is neither a pass nor a failure, and the reason lives on the report rather than the check |
-| Sift | The score is computed server side and changes without any request from you |
+| Sift | Blocked on documentation, not on interest. The premise holds and the shape is good, and the public docs do not publish a score response body: the pages describe the 0-100 scale in prose while the API is widely reported to send decimals, and that number is the one every integration branches on. Building it would mean guessing the scale, which is the one thing a Recipe must not do. Worth revisiting with an account, where a single real response settles it |
 
 ### Storage and media
 
 | Provider | Why |
 |---|---|
-| Backblaze B2 | S3-compatible and not identical, which is the interesting part: the differences are where a working integration breaks |
+| ~~Backblaze B2~~ | Shipped, and the row was right about where to look. Deleting a file brings back an older one -- Backblaze's words are that the most recent older version becomes the current version -- so delete-then-read is a 200 and stale bytes rather than a 404. There is no overwrite either, so the S3 habit of writing a key to replace it accumulates billed copies. A hide is a version with its own id, the action enum is documented open, the base URL is data and comes back from authorize, and part sizes are quoted strings beside a contentLength that is a number |
 | ~~Uploadcare~~ | Shipped. A file exists before it is stored and unstored files are deleted after twenty-four hours, so the same code works on one project and loses files on another; a removed file still answers 200 with everything intact |
 | ImageKit | Assess — transformations and delivery, beside Cloudinary and Imgix |
 | Livepeer | Assess — streams and recordings, asynchronous throughout |
