@@ -551,7 +551,7 @@ transfers alone, and say so in the header.
 |---|---|
 | ~~Qdrant~~ | Shipped, and **not** for the reason this row gave. The filter behaviour needs the search itself and Cauldron does not do vector arithmetic, so the header says outright that filters are not applied. What shipped instead is the envelope: `status` is the string `ok` on success and an object `{error}` on failure, so a typed client fails to parse one of the two paths and an untyped one reads `status.error` as undefined, which is falsy, which reads like no error. Plus: `result` nests twice, a collection listing hands back names only, a write answers `acknowledged`, `points_count` and `indexed_vectors_count` disagree on purpose, and `version` is on a query result but not on a point fetched by id |
 | Weaviate | Assess — objects, classes, hybrid search |
-| Typesense | Assess — collections, documents, search parameters |
+| ~~Typesense~~ | Shipped, and the thing worth having was the relevance score. `text_match` is an int64 up near 578730123365711993, which `JSON.parse` rounds to 578730123365712000 -- and the hit ranked below it, ...994, rounds to the same number, so two differently-ranked results compare equal. This is the worse half of a problem the format already knew: Discord sends snowflakes as strings so it cannot happen, and Typesense sends a number, so no client can avoid it. Plus `search_cutoff` is a documented boolean for "your results are incomplete" at 200, and there are three counts of which one counts the array |
 | Convex | Assess — the query and mutation model is not REST-shaped, so this may belong in the not-done table |
 
 ### Hosting and deployment
@@ -961,6 +961,30 @@ The lesson for this project is small and specific: when a spec URL is used as
 evidence, parse it before believing it. Content-type is not enough either;
 ReadMe serves this as text/html and a fetcher that checked would have been
 right, but the useful check is whether the bytes are the document you wanted.
+
+## The verifier could not read the number it was checking
+
+Typesense's score made this visible and it was never about Typesense.
+`encoding/json` decodes every number into a float64 unless told otherwise, so
+`cauldron verify` could not see any integer above nine quadrillion. It read
+578730123365711993 as 578730123365712000, and read the adjacent score as the
+same thing, which means no conformance case could have told those two apart.
+
+The emulator was right the whole time -- the wire carried the exact digits, and
+a curl showed it. The tool that exists to catch an emulator sending the wrong
+number was the thing that could not see the right one.
+
+`UseNumber` fixes it, and all 1524 cases still pass afterwards, which is the
+useful part of the result: the change made the comparator stricter and nothing
+had been relying on the looseness.
+
+Two things worth keeping from how it was found. The first mutation pass on the
+fix reported two survivors, and both were correct: the test decoded the body
+itself, so `UseNumber` in the production path was never exercised. A test that
+reimplements the thing it is testing is not a test. The second is that one of
+the three branches added really was inert -- `json.Marshal` already renders a
+`json.Number` as its literal digits -- so it was removed rather than kept, on
+the same rule this project applies to Recipes.
 
 ## Assessed and deliberately not done
 
