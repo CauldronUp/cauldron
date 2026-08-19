@@ -1,0 +1,554 @@
+# Cal.com Recipe for Cauldron
+#
+# A slot listing is a view, not a reservation, and nothing in the API says so.
+#
+# You ask what is free, you show it to somebody, they pick one, and between
+# those two moments another person booked it. The booking request fails with
+# a message about the slot being unavailable, which reads like a bug in your
+# code and is the system working. Every scheduling integration meets this and
+# almost none of them test it, because reproducing a race against a real
+# calendar means two clients and precise timing.
+#
+# Four more worth modelling exactly:
+#
+#   1. A booking has two identifiers and the public one is not the numeric
+#      one. id is Cal.com's internal integer and uid is what appears in URLs
+#      and in the cancellation link the attendee is sent, and the paths take
+#      the uid.
+#   2. Cancelling does not delete. The booking stays, its status becomes
+#      cancelled, and the slot frees, so a client that counts bookings counts
+#      cancelled ones and one that expects a 404 after cancelling gets a 200.
+#   3. An event type that requires confirmation produces pending bookings
+#      that hold the slot without being confirmed. Pending is neither
+#      accepted nor rejected, and the slot is gone either way.
+#   4. Times come back in whatever timezone was asked for, and availability
+#      is defined in the host's. So a slot list requested in one zone and
+#      compared against a booking stored in another differ by an offset that
+#      changes twice a year.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No slot is ever taken while you are reading. The race is described by
+#     an error that can be armed, which is the only honest way to reach a
+#     branch that needs two clients and precise timing to reproduce.
+#   - No calendar is consulted and no availability is computed. Which slots
+#     a fixture holds is what comes back regardless of the query.
+#   - The envelope's own status is not reproduced. Cal.com stamps
+#     {"status": "success", "data": {...}} on every response, and this format
+#     carries envelope constants on listings only. Putting it on a listing
+#     and not on a single fetch would describe half a shape, and putting it
+#     on the resource collides with a booking's own status field, which is a
+#     different thing with different values. Better to describe neither than
+#     to describe one of them wrongly.
+#   - Recurring events, seats, teams, webhooks and the availability API are
+#     not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: calcom
+capability: scheduling
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://cal.com/docs/api-reference/v2/introduction
+
+auth:
+  scheme: header
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cal_live_cauldron00000000000000000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  # What is free, according to a query that has already finished. Not a hold
+  # and not a promise: a view of a moment that has passed by the time
+  # somebody reads it.
+  slot:
+    collection: data
+    id:
+      style: opaque
+      length: 20
+      # Slots have no identifier. They are a computed view, and position is
+      # all there is, which is itself the point: there is nothing to hold on
+      # to between reading one and booking it.
+      field: "-"
+    fields:
+      start:
+        type: string
+      end:
+        type: string
+
+  booking:
+    collection: data
+    id:
+      # Cal.com's internal integer, which is not what any path takes.
+      style: numeric
+      type: number
+    fields:
+      # The public one, which appears in URLs and in the cancellation link
+      # the attendee is sent. Every path takes this.
+      uid:
+        type: string
+      title:
+        type: string
+      # accepted, pending, cancelled, rejected. Pending holds the slot
+      # without being confirmed, so it is neither a success nor a failure
+      # and the time is gone either way.
+      status:
+        type: string
+        default: accepted
+      start:
+        type: string
+      end:
+        type: string
+      # The zone the times came back in, which is whatever was asked for and
+      # is not necessarily the host's. A slot list requested in one zone and
+      # a booking stored in another differ by an offset that changes twice a
+      # year.
+      timeZone:
+        type: string
+        default: UTC
+      eventTypeId:
+        type: integer
+      attendeeName:
+        type: string
+        in: attendees[0]
+        as: name
+      attendeeEmail:
+        type: string
+        in: attendees[0]
+        as: email
+      attendeeTimeZone:
+        type: string
+        in: attendees[0]
+        as: timeZone
+      # Why it was cancelled, present only on a cancelled booking and
+      # written by whoever cancelled it.
+      cancellationReason:
+        type: string
+      createdAt:
+        type: datetime
+    # Every path takes the public uid rather than the numeric id, so a
+    # client that stored data.id and later built a path from it gets a 404.
+    alias: uid
+
+  event_type:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      slug:
+        type: string
+      title:
+        type: string
+      lengthInMinutes:
+        type: integer
+      # When true, a booking is created pending rather than accepted, so the
+      # slot is held by something nobody has agreed to yet.
+      requiresConfirmation:
+        type: boolean
+        default: false
+      # The host's zone, which is what availability is defined in and is not
+      # what a slot listing necessarily returns.
+      scheduleTimeZone:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/slots
+    resource: slot
+    operation: list
+
+  - method: GET
+    path: /v2/bookings
+    resource: booking
+    operation: list
+
+  # By uid, not by the numeric id.
+  - method: GET
+    path: /v2/bookings/{id}
+    resource: booking
+    operation: get
+
+  - method: GET
+    path: /v2/event-types/{id}
+    resource: event_type
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: TooManyRequests
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: "Invalid API key"
+
+  resource_missing:
+    status: 404
+    code: NotFound
+    message: "Booking not found"
+
+  parameter_missing:
+    status: 400
+    code: BadRequest
+    message: "Invalid request"
+
+  # The slot was free when it was listed and is not now. This reads like a
+  # bug in your code and is the system working, and it is the branch nobody
+  # tests because reproducing it means two clients and precise timing.
+  slot_no_longer_available:
+    status: 400
+    code: BadRequest
+    message: "User either already has booking at this time or is not available"
+
+  # A booking that is already cancelled cannot be cancelled again, and the
+  # message does not say when it was.
+  already_cancelled:
+    status: 400
+    code: BadRequest
+    message: "Booking is already cancelled"
+
+  # Past the event type's minimum notice. The slot exists, it is free, and
+  # it is too soon, and nothing in the slot listing said so.
+  too_close_to_start:
+    status: 400
+    code: BadRequest
+    message: "Booking is too close to the event start time"
+
+fixtures:
+  empty: {}
+
+  small-calendar:
+    slot:
+      # What is free, according to a query that has already finished.
+      - id: s1
+        start: "2026-08-20T09:00:00.000Z"
+        end: "2026-08-20T09:30:00.000Z"
+      - id: s2
+        start: "2026-08-20T09:30:00.000Z"
+        end: "2026-08-20T10:00:00.000Z"
+      - id: s3
+        start: "2026-08-20T14:00:00.000Z"
+        end: "2026-08-20T14:30:00.000Z"
+
+    booking:
+      # Accepted, and holding a slot that no longer appears above.
+      - id: "41207"
+        uid: bkPhX9mQr2TnVc4dLwZ8aE
+        title: "Intro call between Ada Okonkwo and Cass"
+        status: accepted
+        start: "2026-08-20T11:00:00.000Z"
+        end: "2026-08-20T11:30:00.000Z"
+        timeZone: Europe/London
+        eventTypeId: 9001
+        attendeeName: Ada Okonkwo
+        attendeeEmail: ada@example.com
+        attendeeTimeZone: America/Toronto
+        createdAt: "2026-08-15T09:14:02Z"
+
+      # Pending, and holding the slot just as firmly. Nobody has agreed to
+      # it and the time is gone either way.
+      - id: "41208"
+        uid: bkQrT3xMnP7wYd2vB9sKfa
+        title: "Design review between Bede Marchetti and Cass"
+        status: pending
+        start: "2026-08-20T13:00:00.000Z"
+        end: "2026-08-20T14:00:00.000Z"
+        timeZone: Europe/London
+        eventTypeId: 9002
+        attendeeName: Bede Marchetti
+        attendeeEmail: bede@example.com
+        attendeeTimeZone: Europe/Berlin
+        createdAt: "2026-08-15T10:02:00Z"
+
+      # Cancelled, and still here. The slot freed and the record did not, so
+      # a client that counts bookings counts this one and one that expects a
+      # 404 after cancelling gets a 200.
+      - id: "41205"
+        uid: bkNmS8wLpQ1vXc6tA5rHgd
+        title: "Intro call between Caro Nwachukwu and Cass"
+        status: cancelled
+        start: "2026-08-19T15:00:00.000Z"
+        end: "2026-08-19T15:30:00.000Z"
+        timeZone: Europe/London
+        eventTypeId: 9001
+        attendeeName: Caro Nwachukwu
+        attendeeEmail: caro@example.com
+        attendeeTimeZone: Europe/London
+        cancellationReason: "Something came up"
+        createdAt: "2026-08-14T16:40:00Z"
+
+    event_type:
+      - id: "9001"
+        slug: intro-call
+        title: Intro call
+        lengthInMinutes: 30
+        requiresConfirmation: false
+        scheduleTimeZone: Europe/London
+
+      # Requires confirmation, so its bookings are created pending and hold
+      # the slot without anybody having agreed.
+      - id: "9002"
+        slug: design-review
+        title: Design review
+        lengthInMinutes: 60
+        requiresConfirmation: true
+        scheduleTimeZone: Europe/London
+
+# Every case below is derived from Cal.com's published documentation. None has
+# been run against a real calendar. The verify report says so.
+conformance:
+  - name: a slot has no identifier to hold on to
+    # It is a computed view rather than a reservation. There is nothing here
+    # to carry between reading a slot and booking it, which is exactly why
+    # the booking can fail.
+    source: https://cal.com/docs/api-reference/v2/slots
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/slots
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].start: "2026-08-20T09:00:00.000Z"
+        data[2].start: "2026-08-20T14:00:00.000Z"
+      absent:
+        - data[0].id
+        - data[0].uid
+        - data[3]
+
+  - name: booking a slot that was free is a 400 that reads like your bug
+    # It was free when it was listed and is not now. This is the system
+    # working, and it is the branch nobody tests because reproducing it
+    # means two clients and precise timing.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    arm: slot_no_longer_available
+    request:
+      method: GET
+      path: /v2/slots
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 400
+      body:
+        error.message: "User either already has booking at this time or is not available"
+
+  - name: a booking has two identifiers and the path takes the other one
+    # id is Cal.com's internal integer and uid is what appears in URLs and
+    # in the attendee's cancellation link.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkPhX9mQr2TnVc4dLwZ8aE
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.uid: bkPhX9mQr2TnVc4dLwZ8aE
+        data.id: 41207
+
+  - name: pending holds the slot without anybody agreeing
+    # Neither a success nor a failure, and the time is gone either way.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkQrT3xMnP7wYd2vB9sKfa
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: pending
+        data.start: "2026-08-20T13:00:00.000Z"
+
+  - name: and the event type is why
+    # requiresConfirmation turns a booking into a hold, and it is on the
+    # event type rather than on the booking, so a client reading the booking
+    # cannot tell whether pending is expected here.
+    source: https://cal.com/docs/api-reference/v2/event-types
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/event-types/9002
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.id: 9002
+        data.requiresConfirmation: true
+        data.slug: design-review
+
+  - name: cancelling does not delete
+    # The booking stays, its status becomes cancelled, and the slot frees.
+    # A client that expects a 404 after cancelling gets a 200 and an object
+    # that looks fine.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkNmS8wLpQ1vXc6tA5rHgd
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: cancelled
+        data.cancellationReason: "Something came up"
+        data.title: "Intro call between Caro Nwachukwu and Cass"
+
+  - name: and a cancelled booking is still in the listing
+    # So a client that counts bookings counts cancelled ones, and one that
+    # sums scheduled time counts half an hour nobody attended.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].status: accepted
+        data[1].status: pending
+        data[2].status: cancelled
+      absent:
+        - data[3]
+
+  - name: an accepted booking has no cancellation reason
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkPhX9mQr2TnVc4dLwZ8aE
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: accepted
+      absent:
+        - data.cancellationReason
+
+  - name: three timezones on one booking
+    # The times came back in Europe/London, the attendee is in
+    # America/Toronto, and availability is defined in the host's schedule
+    # zone. A slot list requested in one and compared against a booking
+    # stored in another differ by an offset that changes twice a year.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkPhX9mQr2TnVc4dLwZ8aE
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.timeZone: Europe/London
+        data.attendees[0].timeZone: America/Toronto
+
+  - name: and the host's schedule zone is on the event type
+    source: https://cal.com/docs/api-reference/v2/event-types
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/event-types/9001
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.scheduleTimeZone: Europe/London
+        data.lengthInMinutes: 30
+
+  - name: the attendee is nested in an array
+    # Even when there is one, so a client reading booking.attendeeEmail
+    # finds nothing.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings/bkPhX9mQr2TnVc4dLwZ8aE
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        data.attendees[0].email: ada@example.com
+        data.attendees[0].name: Ada Okonkwo
+      absent:
+        - data.attendeeEmail
+        - data.attendees[1]
+
+  - name: a slot that is free can still be too soon
+    # Past the event type's minimum notice. The slot exists, it is free, and
+    # nothing in the listing said it could not be booked.
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    arm: too_close_to_start
+    request:
+      method: GET
+      path: /v2/slots
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 400
+      body:
+        error.message: "Booking is too close to the event start time"
+
+  - name: cancelling twice is a 400 that does not say when
+    source: https://cal.com/docs/api-reference/v2/bookings
+    fixture: small-calendar
+    arm: already_cancelled
+    request:
+      method: GET
+      path: /v2/bookings
+      headers:
+        Authorization: Bearer cal_live_cauldron00000000000000000000
+    expect:
+      status: 400
+      body:
+        error.message: "Booking is already cancelled"
+
+  - name: a failure is nested under error
+    source: https://cal.com/docs/api-reference/v2/introduction
+    fixture: small-calendar
+    request:
+      method: GET
+      path: /v2/bookings
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        error.code: Unauthorized
+        error.message: "Invalid API key"
+      absent:
+        - message
+        - code

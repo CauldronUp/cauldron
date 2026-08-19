@@ -315,7 +315,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Cal.com | Assess — bookings, availability, the slot that is free when you read it and taken when you book it |
+| ~~Cal.com~~ | Shipped. A slot listing is a view rather than a reservation and has no identifier to hold on to, so booking one that was free is a 400 that reads like your bug; cancelling does not delete; and pending holds the slot without anybody agreeing |
 | Acuity Scheduling | Assess — appointments, types, intake forms |
 | Daily.co | Assess — rooms, meeting tokens, recordings that finish after the call |
 | LiveKit | Assess — rooms, participants, egress |
@@ -498,7 +498,7 @@ transfers alone, and say so in the header.
 | ~~Orb~~ | Shipped. A draft is a running total, a closed period can still be amended, and money is a decimal string |
 | Metronome | Usage events are deduplicated inside a window, so sending the same event twice is sometimes one event and sometimes two |
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
-| Lemon Squeezy | Merchant of record, so the tax is theirs, the payout is net, and the order total is not what arrives |
+| Lemon Squeezy | Merchant of record, so the tax is theirs and the order total is not what arrives. That is FastSpring's headline, shipped this cycle, and a second Recipe saying it would add a name rather than a shape. Worth doing only for what differs: the licence-key API and the store-scoped identifiers |
 | RevenueCat | The entitlement an app reads and the subscription that renews are different objects and can disagree for a whole billing period |
 | Recharge | Subscriptions on top of Shopify, so one order has two sources of truth and they drift |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
