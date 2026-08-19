@@ -723,6 +723,21 @@ type Field struct {
 	// archived at the top level, so a client reads contact.properties.email.
 	// The store stays flat; only the shape on the wire changes, and requests
 	// are flattened back on the way in.
+	//
+	// "-" nests it nowhere: the record holds the field and the wire never
+	// carries it. A route's scope needs this. A partition that lives in the
+	// path has to be a field, because that is how the record is partitioned,
+	// and most providers do not repeat it in the body -- Fly does not send
+	// app_name on a machine, Hetzner does not send its collection on a point,
+	// Tradier does not say which account an order is in.
+	//
+	// Before this the only way to say so was a route's returns naming every
+	// other field, which was twenty-three names to hide one on Fly, and which
+	// says nothing at all when the same resource is served by two routes. An
+	// audit found 115 scope fields across 37 Recipes going onto the wire with
+	// no case mentioning them; some of those providers really do echo the
+	// partition and each one has to be read before it is changed, so this is
+	// the tool for the ones that have been.
 	In string `yaml:"in"`
 	// As is the name this field takes on the wire, when it differs from the
 	// name it is stored under.
@@ -1170,6 +1185,18 @@ func (r *Recipe) Validate() error {
 				add("resource %q field %q sets as without in, and a top-level field is already named by its key", name, field)
 			}
 
+			// A field that never reaches the wire cannot be renamed on the
+			// way there, and cannot be null there either.
+			if spec.In == "-" {
+				if spec.As != "" {
+					add("resource %q field %q is not sent and also declares as, so it names a wire field that does not exist", name, field)
+				}
+
+				if spec.NullWhenUnset {
+					add("resource %q field %q is not sent and also declares null_when_unset, which is a claim about a key nobody receives", name, field)
+				}
+			}
+
 			if spec.NullWhenUnset && spec.Default != nil {
 				add("resource %q field %q is null when unset and also has a default, so it is never unset", name, field)
 			}
@@ -1186,6 +1213,12 @@ func (r *Recipe) Validate() error {
 			// naming it. That has now happened three times in different
 			// disguises, so it is a rule rather than a habit.
 			for _, segment := range splitNonEmpty(spec.In) {
+				// "-" is the whole value rather than a path: the field is not
+				// sent, so there is no segment to be well formed.
+				if spec.In == "-" {
+					continue
+				}
+
 				if plainSegment.MatchString(segment) || indexedSegment.MatchString(segment) {
 					continue
 				}

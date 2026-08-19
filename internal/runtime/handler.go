@@ -652,7 +652,15 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 		// A field declared with "in" moves under that sub-object on the wire.
 		// HubSpot reads contact.properties.email, and a client written against
 		// it finds nothing at the top level.
-		if field, declared := spec.Fields[key]; declared && field.In != "" {
+		//
+		// "-" moves it nowhere: the record holds it and the wire never sees
+		// it. That is what a route's scope needs, because a partition living
+		// in the path is not repeated in the body by most providers, and the
+		// only way to say so before this was to name every other field in the
+		// route's returns.
+		if field, declared := spec.Fields[key]; declared && field.In == "-" {
+			continue
+		} else if declared && field.In != "" {
 			// A dotted name nests twice. Brex puts a card's limit at
 			// spend_controls.limit.amount, and treating the name as one
 			// literal key produced a flat "spend_controls.limit" key that no
@@ -803,6 +811,11 @@ func splitIndex(segment string) (string, []int) {
 }
 
 // nests reports whether any of a resource's fields live under a sub-object.
+//
+// A field marked "-" is not sent, and flatten below looks for it under a key
+// literally spelled that, finds nothing, and moves on. Excluding it here
+// changed no behaviour, so it is not excluded: a guard that guards nothing is
+// the thing this project keeps telling Recipes not to write.
 func (s *Sandbox) nests(spec recipe.Resource) bool {
 	for _, field := range spec.Fields {
 		if field.In != "" {
