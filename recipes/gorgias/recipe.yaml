@@ -1,0 +1,573 @@
+# Gorgias Recipe for Cauldron
+#
+# A ticket and its messages are two paginated endpoints, and a customer
+# replying is an event that happens between them.
+#
+# So the sequence that catches people is: fetch the ticket, see it has four
+# messages, fetch page one of the messages, and get five, because the
+# customer replied while you were reading. Or fetch the messages first and
+# then the ticket, and the ticket says four while you are holding five. There
+# is no version, no etag and no consistent snapshot; there is a count on one
+# object and an array on another, and they are read at different moments.
+#
+# Four more worth modelling exactly:
+#
+#   1. A ticket's channel and its messages' channels are different fields
+#      that disagree. A ticket opened by email whose agent replied by chat
+#      has one channel on the ticket and two among the messages, and the
+#      ticket's is the one it started as.
+#   2. from_agent is the only thing separating a customer's words from an
+#      agent's. There is no sender type: there is a boolean, and a message
+#      from an integration has it true, so automated replies count as agent
+#      responses in every metric built on it.
+#   3. A closed ticket reopens when the customer replies, and nothing marks
+#      the reopening. The status changes back to open and the only trace is
+#      that closed_datetime is now in the past with a status that says open.
+#   4. Times are ISO strings without a zone, in UTC, and the field names say
+#      datetime rather than at. A client that parses them as local time is
+#      wrong by its own offset on every ticket.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing arrives while you are reading. The race is described by the
+#     fixture holding a ticket whose message count disagrees with its
+#     messages, which is the state the race produces, rather than by two
+#     reads returning different things.
+#   - Nothing is sent and no ticket changes status.
+#   - Customers, integrations, macros, rules and the events API are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: gorgias
+capability: support
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.gorgias.com/reference/introduction
+
+auth:
+  # Basic, with the account email as the username and an API key as the
+  # password, which is not what most providers do with basic auth and is easy
+  # to get the wrong way round.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-gorgias-api-key
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: meta.next_cursor
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  ticket:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      subject:
+        type: string
+      # open or closed. A closed ticket reopens when the customer replies and
+      # nothing marks the reopening: the status changes back and the only
+      # trace is a closed_datetime in the past beside a status that says
+      # open.
+      status:
+        type: string
+        default: open
+      # What the ticket started as, which is not what its messages are. A
+      # ticket opened by email whose agent replied by chat says email here
+      # and has two channels among its messages.
+      channel:
+        type: string
+      via:
+        type: string
+      # How many messages Gorgias thinks there are, read at a different
+      # moment from the messages themselves.
+      messages_count:
+        type: integer
+      # ISO without a zone, in UTC, and named datetime rather than at. A
+      # client that parses this as local time is wrong by its own offset on
+      # every ticket.
+      created_datetime:
+        type: datetime
+      updated_datetime:
+        type: datetime
+      # Set when it was closed, and still set after it reopens.
+      closed_datetime:
+        type: datetime
+        null_when_unset: true
+      customer_email:
+        type: string
+        in: customer
+        as: email
+      customer_name:
+        type: string
+        in: customer
+        as: name
+
+  message:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      ticket_id:
+        type: integer
+      # The only thing separating a customer's words from an agent's. There
+      # is no sender type: a message from an integration has this true, so
+      # automated replies count as agent responses in every metric built on
+      # it.
+      from_agent:
+        type: boolean
+        default: false
+      channel:
+        type: string
+      via:
+        type: string
+      body_text:
+        type: string
+      sender_email:
+        type: string
+        in: sender
+        as: email
+      sender_name:
+        type: string
+        in: sender
+        as: name
+      created_datetime:
+        type: datetime
+      # Whether it went out. A message that was written and never sent is
+      # here with this false, so counting messages counts drafts.
+      sent_datetime:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/tickets
+    resource: ticket
+    operation: list
+    pagination:
+      style: cursor
+      limit: 30
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/tickets/{id}
+    resource: ticket
+    operation: get
+
+  # A different endpoint, paginated separately, read at a different moment.
+  - method: GET
+    path: /api/tickets/{ticket_id}/messages
+    resource: message
+    operation: list
+    scope:
+      - ticket_id
+    returns:
+      - id
+      - from_agent
+      - channel
+      - via
+      - body_text
+      - sender_email
+      - sender_name
+      - created_datetime
+      - sent_datetime
+    pagination:
+      style: cursor
+      limit: 30
+      limit_param: limit
+      cursor_param: cursor
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    message: "Invalid credentials"
+
+  resource_missing:
+    status: 404
+    message: "Ticket not found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request body"
+
+  # The key belongs to an account without the right role. 403, and it does
+  # not say which role.
+  insufficient_role:
+    status: 403
+    message: "You do not have permission to access this resource"
+
+  # Gorgias rate limits per account and per endpoint, and a 503 here means
+  # the account is over its plan's concurrent request limit rather than the
+  # service being down. Retrying immediately makes it worse.
+  concurrency_exceeded:
+    status: 503
+    message: "Too many concurrent requests for this account"
+
+fixtures:
+  empty: {}
+
+  small-helpdesk:
+    ticket:
+      # The state the race produces. The ticket says four messages and there
+      # are five, because the customer replied between the two reads and one
+      # of the two numbers is older than the other.
+      - id: "10041"
+        subject: Where is my order
+        status: open
+        channel: email
+        via: email
+        messages_count: 4
+        created_datetime: "2026-08-14T09:02:11"
+        updated_datetime: "2026-08-15T11:40:02"
+        customer_email: ada@example.com
+        customer_name: Ada Okonkwo
+
+      # Closed, and then the customer replied. The status is open again and
+      # nothing marks the reopening except a closed_datetime in the past
+      # sitting beside it.
+      - id: "10042"
+        subject: Return label not working
+        status: open
+        channel: chat
+        via: chat
+        messages_count: 3
+        created_datetime: "2026-08-10T14:20:00"
+        updated_datetime: "2026-08-15T08:15:33"
+        closed_datetime: "2026-08-12T16:00:00"
+        customer_email: bede@example.com
+        customer_name: Bede Marchetti
+
+    message:
+      # The customer, by email.
+      - id: "500101"
+        ticket_id: 10041
+        from_agent: false
+        channel: email
+        via: email
+        body_text: "It said delivered but nothing arrived."
+        sender_email: ada@example.com
+        sender_name: Ada Okonkwo
+        created_datetime: "2026-08-14T09:02:11"
+        sent_datetime: "2026-08-14T09:02:11"
+
+      # An automated reply from an integration. from_agent is true, so every
+      # first-response metric built on that boolean counts this as an agent
+      # answering within nine seconds.
+      - id: "500102"
+        ticket_id: 10041
+        from_agent: true
+        channel: email
+        via: rule
+        body_text: "Thanks for getting in touch. We usually reply within a day."
+        sender_email: support@example.com
+        sender_name: Support
+        created_datetime: "2026-08-14T09:02:20"
+        sent_datetime: "2026-08-14T09:02:20"
+
+      # A real agent, replying on a different channel from the one the ticket
+      # says it is.
+      - id: "500103"
+        ticket_id: 10041
+        from_agent: true
+        channel: chat
+        via: helpdesk
+        body_text: "Checking with the carrier now."
+        sender_email: agent@example.com
+        sender_name: Cass
+        created_datetime: "2026-08-14T15:11:00"
+        sent_datetime: "2026-08-14T15:11:02"
+
+      # Written and never sent. It is in this list and it reached nobody, so
+      # counting messages counts drafts.
+      - id: "500104"
+        ticket_id: 10041
+        from_agent: true
+        channel: email
+        via: helpdesk
+        body_text: "The carrier says it was left with a neighbour."
+        sender_email: agent@example.com
+        sender_name: Cass
+        created_datetime: "2026-08-15T10:30:00"
+
+      # The reply that arrived while somebody was reading the ticket. The
+      # ticket still says four.
+      - id: "500105"
+        ticket_id: 10041
+        from_agent: false
+        channel: email
+        via: email
+        body_text: "No neighbour has it."
+        sender_email: ada@example.com
+        sender_name: Ada Okonkwo
+        created_datetime: "2026-08-15T11:40:02"
+        sent_datetime: "2026-08-15T11:40:02"
+
+      # On the other ticket, so the scope has something to exclude.
+      - id: "500201"
+        ticket_id: 10042
+        from_agent: false
+        channel: chat
+        via: chat
+        body_text: "The label link is dead."
+        sender_email: bede@example.com
+        sender_name: Bede Marchetti
+        created_datetime: "2026-08-15T08:15:33"
+        sent_datetime: "2026-08-15T08:15:33"
+
+# Every case below is derived from Gorgias's published documentation. None has
+# been run against a real helpdesk. The verify report says so.
+conformance:
+  - name: the ticket says four messages
+    # Read at one moment.
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        # Unquoted. Gorgias ids are JSON numbers, so id === 10041 is true
+        # against the real API and false against a quoted one.
+        id: 10041
+        messages_count: 4
+        status: open
+
+  - name: and the messages endpoint has five
+    # Read at another. The customer replied between the two, and there is no
+    # version, no etag and no consistent snapshot to notice that with: there
+    # is a count on one object and an array on another.
+    source: https://developers.gorgias.com/reference/get_api-tickets-ticket-id-messages
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041/messages
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        data[4].id: 500105
+        data[4].body_text: "No neighbour has it."
+      absent:
+        - data[5]
+
+  - name: the ticket's channel is what it started as
+    # email, while its messages are email and chat. A client that groups by
+    # the ticket's channel puts the whole conversation in the wrong bucket.
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        channel: email
+
+  - name: and its messages are not all on that channel
+    source: https://developers.gorgias.com/reference/get_api-tickets-ticket-id-messages
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041/messages
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        data[0].channel: email
+        data[2].channel: chat
+
+  - name: an automated reply is from_agent true
+    # There is no sender type: there is a boolean, and a message from an
+    # integration has it true, so every first-response metric built on it
+    # counts this as an agent answering within nine seconds.
+    source: https://developers.gorgias.com/reference/get_api-tickets-ticket-id-messages
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041/messages
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        data[1].from_agent: true
+        data[1].via: rule
+        data[1].created_datetime: "2026-08-14T09:02:20"
+      absent:
+        - data[1].sender_type
+
+  - name: a draft is in the list and reached nobody
+    # Written and never sent, so counting messages counts drafts, and a
+    # first-response time computed from created_datetime counts one that was
+    # never delivered.
+    source: https://developers.gorgias.com/reference/get_api-tickets-ticket-id-messages
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041/messages
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        data[3].body_text: "The carrier says it was left with a neighbour."
+        data[3].sent_datetime: null
+        data[0].sent_datetime: "2026-08-14T09:02:11"
+
+  - name: a reopened ticket keeps its closing time
+    # The status is open again and nothing marks the reopening. The only
+    # trace is a closed_datetime in the past sitting beside a status that
+    # says open, which no client checks for.
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10042
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        status: open
+        closed_datetime: "2026-08-12T16:00:00"
+        updated_datetime: "2026-08-15T08:15:33"
+
+  - name: a ticket that was never closed has no closing time
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        closed_datetime: null
+
+  - name: times have no zone and are named datetime
+    # ISO without an offset, in UTC, and the field is created_datetime
+    # rather than created_at. A client that parses these as local time is
+    # wrong by its own offset on every ticket.
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        created_datetime: "2026-08-14T09:02:11"
+      absent:
+        - created_at
+        - updated_at
+
+  - name: the customer is nested
+    source: https://developers.gorgias.com/reference/get_api-tickets-id
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        customer.email: ada@example.com
+        customer.name: Ada Okonkwo
+      absent:
+        - customer_email
+
+  - name: messages are scoped to their ticket
+    # The other ticket's message must not be here, or one customer's
+    # conversation is read into another's.
+    source: https://developers.gorgias.com/reference/get_api-tickets-ticket-id-messages
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10042/messages
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      body:
+        data[0].body_text: "The label link is dead."
+      absent:
+        - data[1]
+        - data[0].ticket_id
+
+  - name: the paging cursor is nested under meta
+    source: https://developers.gorgias.com/reference/pagination
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets/10041/messages
+      query:
+        limit: "2"
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 200
+      matches:
+        meta.next_cursor: '.'
+      absent:
+        - next_cursor
+        - cursor
+
+  - name: a concurrency limit is a 503 that is not an outage
+    # The account is over its plan's concurrent request limit rather than
+    # the service being down, and retrying immediately makes it worse.
+    source: https://developers.gorgias.com/reference/rate-limits
+    fixture: small-helpdesk
+    arm: concurrency_exceeded
+    request:
+      method: GET
+      path: /api/tickets
+      headers:
+        Authorization: Basic b3BzQGV4YW1wbGUuY29tOmNhdWxkcm9uLWdvcmdpYXMtYXBpLWtleQ==
+    expect:
+      status: 503
+      body:
+        error: "Too many concurrent requests for this account"
+
+  - name: the api key is the password and the email is the username
+    # Which is not what most providers do with basic auth and is easy to get
+    # the wrong way round.
+    source: https://developers.gorgias.com/reference/authentication
+    fixture: small-helpdesk
+    request:
+      method: GET
+      path: /api/tickets
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZ29yZ2lhcy1hcGkta2V5Om9wc0BleGFtcGxlLmNvbQ==
+    expect:
+      status: 401
+      body:
+        error: "Invalid credentials"
