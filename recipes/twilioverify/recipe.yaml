@@ -1,0 +1,837 @@
+# Twilio Verify Recipe for Cauldron
+#
+# A wrong code is a 200.
+#
+# That is the whole reason this Recipe exists. You post the digits somebody
+# typed, Twilio answers 200 OK, and whether they typed the right ones is a
+# word inside the body. The client everybody writes -- if (!response.ok)
+# throw, otherwise carry on -- treats every wrong code as a successful
+# verification and lets the wrong person in. Nothing errored. The check was
+# performed, which is the question the status line answers, and it is not the
+# question anybody was asking.
+#
+# This is the second factor. It is the code path where being wrong is worst,
+# and it is a branch a real integration reaches only when somebody mistypes.
+#
+# Six more the Recipe pins:
+#
+#   1. The answer is a word, and there are two words competing to be it.
+#      status says approved and valid says true, and Twilio's own schema
+#      calls valid a legacy property and tells you to read status instead.
+#      Both are in every response, so a client can be reading the field its
+#      provider has documented as the wrong one and never find out.
+#   2. Four of the seven status values mean never. pending, approved,
+#      canceled, max_attempts_reached, deleted, failed, expired: a client
+#      that treats "not approved" as "ask again" loops forever on four of
+#      them, and none of the four looks different from pending to code that
+#      only compares against approved.
+#   3. The fifth wrong code is a 429, not a 200. The failure changes shape at
+#      the boundary, so the same wrong answer produces 200, 200, 200, 200,
+#      429. A client with retry-on-429 middleware retries the one response
+#      that will never succeed, because 60202 means the verification is
+#      finished rather than that you were too fast.
+#   4. There are three 429s here and they mean different things. 20429 is
+#      the ordinary one and waiting helps. 60202 is five wrong codes and
+#      60203 is five sends, and for those two, waiting does nothing: the
+#      verification is over and only a new one moves forward. Retrying on
+#      status alone gets two of the three exactly wrong.
+#   5. A verification is consumed. Twilio deletes the sid once it is
+#      approved, expired or out of attempts, so checking a second time is a
+#      404 -- and so is checking one that never existed. Already verified
+#      and never started are the same response.
+#   6. The code length lives on the service. Six is a default, not a fact,
+#      and a form hard-wired to six inputs breaks when somebody sets that
+#      service to four. Twilio's own documented example has code_length 4.
+#
+# And one detail that is small until it costs an afternoon: channel is
+# lower-case at the top level and upper-case one level down. A verification
+# sent by SMS carries channel "sms" and a send_code_attempts entry whose
+# channel is "SMS". Not for every channel -- Twilio's published examples show
+# "SMS" and "EMAIL" upper and "whatsapp" and "sna" lower -- so it is not even
+# a rule you can invert. Comparing the two fields for equality works on two
+# channels and fails on two others.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not hold codes and cannot tell a right one from a wrong
+#     one, so a check answers pending and valid false unless the caller says
+#     otherwise. That default is deliberate: it is the answer that is a 200
+#     and is not a success, and defaulting to approved would hide the one
+#     thing this Recipe is for. Sending Status=approved to reach the other
+#     branch is Cauldron's affordance and not Twilio's, which ignores it.
+#   - Twilio documents this endpoint with two success codes, 200 and 201,
+#     for the same body. Cauldron answers 200. A client asserting on 201
+#     against production is not wrong either, which is the problem.
+#   - The paging envelope is not modelled. A real list arrives beside a meta
+#     block whose key property names the collection, and Cauldron sends the
+#     collection alone.
+#   - A created verification comes back without send_code_attempts and
+#     without url, because Cauldron cannot mint either and the channel
+#     casing above means a default would be wrong on half the channels. Both
+#     are on a fetched one. Absent is a divergence; a guess would be a lie.
+#   - lookup arrives as an empty object unless the service enables it, and
+#     carrier data is not modelled at all. Neither is sna, nor the push,
+#     totp, whatsapp and passkeys blocks on a service.
+#   - Modelled here: services, verifications and the check. Not modelled:
+#     access tokens, entities, factors and challenges (so TOTP and push are
+#     absent entirely), passkeys, rate limits and buckets, messaging
+#     configurations, webhooks, templates, the attempts API, the safe list
+#     and forms.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: twilioverify
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.twilio.com/docs/verify/api
+
+auth:
+  scheme: basic
+  keys:
+    - ACcauldron00000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+  # Flat, with a numeric code its client libraries switch on, the HTTP status
+  # repeated inside the body, and a link to the page explaining the code.
+  error:
+    style: flat
+    code_field: code
+    status_field: status
+    fields:
+      more_info: https://www.twilio.com/docs/errors
+
+resources:
+  # A verification service. Almost everything a client hard-codes about
+  # verification is configuration that lives here, on an object most
+  # integrations fetch once and never look at again.
+  service:
+    collection: services
+    id:
+      prefix: VA
+      length: 32
+      # Twilio calls the identifier sid, not id, on every resource it has.
+      field: sid
+    fields:
+      account_sid:
+        type: string
+      # Up to thirty characters, and it appears in the body of the message
+      # the person receives.
+      friendly_name:
+        type: string
+      # Six is the default and not a fact. A form with six inputs in it is
+      # coupled to this number, and Twilio's own documented example service
+      # has four.
+      code_length:
+        type: integer
+        default: 6
+      # Whether a carrier lookup runs with each verification. Off means the
+      # lookup object on every verification is empty rather than absent.
+      lookup_enabled:
+        type: boolean
+        default: false
+      # Whether amount and payee are accepted when starting a verification.
+      psd2_enabled:
+        type: boolean
+        default: false
+      # Requires lookup_enabled, so turning this on alone does nothing and
+      # says nothing about having done nothing.
+      skip_sms_to_landlines:
+        type: boolean
+        default: false
+      dtmf_input_required:
+        type: boolean
+        default: false
+      do_not_share_warning_enabled:
+        type: boolean
+        default: false
+      custom_code_enabled:
+        type: boolean
+        default: false
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+
+  # One attempt to prove a person holds a phone number or a mailbox. It is
+  # short-lived by design: ten minutes, five sends, five checks, and then it
+  # is gone rather than failed.
+  verification:
+    collection: verifications
+    id:
+      prefix: VE
+      length: 32
+      field: sid
+    fields:
+      service_sid:
+        type: string
+      account_sid:
+        type: string
+      to:
+        type: string
+      # Lower-case here. Upper-case inside send_code_attempts, for two of the
+      # four channels Twilio publishes an example for.
+      channel:
+        type: string
+        default: sms
+      # pending, approved, canceled, max_attempts_reached, deleted, failed or
+      # expired. Four of those are terminal and only one is a success, and
+      # code comparing against approved cannot tell the other six apart.
+      status:
+        type: string
+        default: pending
+      # Twilio's own schema says to use status instead and calls this legacy.
+      # It is in every response anyway, which is how a client ends up
+      # reading it.
+      valid:
+        type: boolean
+        default: false
+      # PSD2, and present as null on every verification that is not one, so
+      # "amount" in response is true while there is no amount.
+      amount:
+        type: string
+        null_when_unset: true
+      payee:
+        type: string
+        null_when_unset: true
+      # One entry per send. The channel in here is not spelled the way the
+      # channel above it is.
+      send_time:
+        type: datetime
+        in: send_code_attempts[0]
+        as: time
+      send_channel:
+        type: string
+        in: send_code_attempts[0]
+        as: channel
+      send_attempt_sid:
+        type: string
+        in: send_code_attempts[0]
+        as: attempt_sid
+      # The resource tells you where it lives, which is the only part of this
+      # object that stays true after it is consumed.
+      url:
+        type: string
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+
+  # The verdict. Not a new kind of object: it carries a VE sid, the same
+  # prefix a verification carries, and it holds fewer fields than the thing
+  # it is reporting on.
+  verification_check:
+    collection: verification_checks
+    id:
+      prefix: VE
+      length: 32
+      field: sid
+    fields:
+      service_sid:
+        type: string
+      account_sid:
+        type: string
+      to:
+        type: string
+      channel:
+        type: string
+        default: sms
+      # pending means the code was wrong. It is the same word the
+      # verification used to mean the code has not been tried yet, so the
+      # before and the failure are spelled identically.
+      status:
+        type: string
+        default: pending
+      valid:
+        type: boolean
+        default: false
+      amount:
+        type: string
+        null_when_unset: true
+      payee:
+        type: string
+        null_when_unset: true
+      # Empty on every channel but sna, and an array of objects rather than
+      # of codes when it is not. Empty is the value, not the absence of one,
+      # so it is defaulted rather than left out.
+      sna_attempts_error_codes:
+        type: list
+        default: []
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/Services
+    resource: service
+    operation: list
+
+  - method: GET
+    path: /v2/Services/{id}
+    resource: service
+    operation: get
+
+  # Starting a verification is 201. Checking one is 200. Two POSTs to the
+  # same service, two different success codes.
+  - method: POST
+    path: /v2/Services/{service_sid}/Verifications
+    resource: verification
+    operation: create
+    scope: [service_sid]
+    status: 201
+    # A create echoes what it was sent unless it is told not to, and a
+    # verification is started with rather more than it answers with:
+    # CustomFriendlyName, Locale, ChannelConfiguration, TemplateSid,
+    # RateLimits. None of those comes back.
+    returns:
+      - id
+      - service_sid
+      - account_sid
+      - to
+      - channel
+      - status
+      - valid
+      - amount
+      - payee
+      - date_created
+      - date_updated
+
+  - method: GET
+    path: /v2/Services/{service_sid}/Verifications/{id}
+    resource: verification
+    operation: get
+    scope: [service_sid]
+
+  # No identifier in the path. You name the person rather than the attempt,
+  # which is why a second check after an approval cannot say "that one is
+  # already done" and says "not found" instead.
+  - method: POST
+    path: /v2/Services/{service_sid}/VerificationCheck
+    resource: verification_check
+    operation: create
+    scope: [service_sid]
+    # The one that matters. Code is in the request and must not be in the
+    # response: Twilio does not send it back, and an emulator that did would
+    # be teaching a client that the second factor is readable from the reply
+    # to the attempt to use it. A test could assert on it and pass.
+    returns:
+      - id
+      - service_sid
+      - account_sid
+      - to
+      - channel
+      - status
+      - valid
+      - amount
+      - payee
+      - sna_attempts_error_codes
+      - date_created
+      - date_updated
+
+errors:
+  # The ordinary one. Waiting helps.
+  rate_limit:
+    status: 429
+    code: "20429"
+    message: Too many requests
+    headers:
+      Retry-After: "1"
+
+  # Five wrong codes. Same status as the one above and it means something
+  # else entirely: the verification is finished, and retrying this is
+  # retrying a request that cannot succeed. Only a new verification moves
+  # forward.
+  max_check_attempts:
+    status: 429
+    code: "60202"
+    message: Max (5) verification check attempts reached.
+
+  # Five sends. Also 429, also terminal, also not what retry middleware
+  # thinks 429 means.
+  max_send_attempts:
+    status: 429
+    code: "60203"
+    message: Max send attempts reached.
+
+  # Approved, expired or out of attempts, all of which delete the sid, plus
+  # never existed. Four situations and one response.
+  resource_missing:
+    status: 404
+    code: "20404"
+    message: The requested resource was not found
+
+  invalid_parameter:
+    status: 400
+    code: "60200"
+    message: Invalid parameter
+
+  authentication_error:
+    status: 401
+    code: "20003"
+    message: Authentication Error - invalid username
+
+fixtures:
+  empty: {}
+
+  one-account:
+    service:
+      # The default six.
+      - id: VA00000000000000000000000000000001
+        account_sid: ACcauldron00000000000000000000000
+        friendly_name: Cauldron
+        code_length: 6
+        lookup_enabled: false
+        psd2_enabled: false
+        skip_sms_to_landlines: false
+        dtmf_input_required: false
+        do_not_share_warning_enabled: false
+        custom_code_enabled: false
+        date_created: "2026-06-01T09:00:00Z"
+        date_updated: "2026-06-01T09:00:00Z"
+
+      # Four, on the same account, which is how a form hard-wired to six
+      # inputs finds out it was hard-wired to anything.
+      - id: VA00000000000000000000000000000002
+        account_sid: ACcauldron00000000000000000000000
+        friendly_name: Cauldron Support
+        code_length: 4
+        lookup_enabled: false
+        psd2_enabled: false
+        skip_sms_to_landlines: false
+        dtmf_input_required: false
+        do_not_share_warning_enabled: false
+        custom_code_enabled: false
+        date_created: "2026-06-04T14:20:00Z"
+        date_updated: "2026-06-04T14:20:00Z"
+
+    verification:
+      # Sent, not answered. Ten minutes from date_created it will not be
+      # here at all, and nothing about this object says which minute it is.
+      - id: VE00000000000000000000000000000001
+        service_sid: VA00000000000000000000000000000001
+        account_sid: ACcauldron00000000000000000000000
+        to: "+15017122661"
+        channel: sms
+        status: pending
+        valid: false
+        send_time: "2026-08-19T11:04:00Z"
+        # Upper case, one level below a channel that is lower case.
+        send_channel: SMS
+        send_attempt_sid: VL00000000000000000000000000000001
+        url: https://verify.twilio.com/v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+        date_created: "2026-08-19T11:04:00Z"
+        date_updated: "2026-08-19T11:04:00Z"
+
+      # Same account, mailbox rather than handset, and the inner channel is
+      # upper case here too. WhatsApp and sna are lower, so there is no rule
+      # to apply, only a table to look at.
+      - id: VE00000000000000000000000000000002
+        service_sid: VA00000000000000000000000000000001
+        account_sid: ACcauldron00000000000000000000000
+        to: ada@example.com
+        channel: email
+        status: pending
+        valid: false
+        send_time: "2026-08-19T11:06:30Z"
+        send_channel: EMAIL
+        send_attempt_sid: VL00000000000000000000000000000002
+        url: https://verify.twilio.com/v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000002
+        date_created: "2026-08-19T11:06:30Z"
+        date_updated: "2026-08-19T11:06:30Z"
+
+      # WhatsApp, where the inner channel matches the outer one. Two of the
+      # four channels Twilio publishes agree and two do not.
+      - id: VE00000000000000000000000000000003
+        service_sid: VA00000000000000000000000000000002
+        account_sid: ACcauldron00000000000000000000000
+        to: "+15017122662"
+        channel: whatsapp
+        status: pending
+        valid: false
+        send_time: "2026-08-19T11:09:00Z"
+        send_channel: whatsapp
+        send_attempt_sid: VL00000000000000000000000000000003
+        url: https://verify.twilio.com/v2/Services/VA00000000000000000000000000000002/Verifications/VE00000000000000000000000000000003
+        date_created: "2026-08-19T11:09:00Z"
+        date_updated: "2026-08-19T11:09:00Z"
+
+# Every case below is derived from Twilio's published documentation and from
+# the OpenAPI specification Twilio publishes for this API. None has been run
+# against a real account. The verify report says so.
+conformance:
+  - name: a wrong code is a 200
+    # The whole point. Twilio answers 200 OK and puts the verdict in a word
+    # inside the body, so a client that branches on response.ok has already
+    # let the person in. The check was performed, which is what the status
+    # line is answering, and nobody was asking that.
+    source: https://www.twilio.com/docs/verify/api/verification-check
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/VerificationCheck
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122661"
+    expect:
+      status: 200
+      body:
+        status: pending
+        valid: false
+        to: "+15017122661"
+
+  - name: and pending is the same word as before anybody tried
+    # A verification that has been sent and not answered is pending. A check
+    # that was answered wrongly is pending. The state before and the failure
+    # after are spelled identically, so a client holding the word cannot say
+    # which of the two it is looking at.
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        status: pending
+        valid: false
+
+  - name: a check answers with less than the verification carries
+    # No lookup, no send_code_attempts, no url. A client with one parser for
+    # both finds three fields missing and it is not an error.
+    source: https://www.twilio.com/docs/verify/api/verification-check
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/VerificationCheck
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122661"
+    expect:
+      status: 200
+      body:
+        status: pending
+      absent:
+        - lookup
+        - send_code_attempts
+        - url
+
+  - name: the identifier is sid, not id
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        sid: VE00000000000000000000000000000001
+      absent:
+        - id
+
+  - name: the code length lives on the service
+    # Six is a default. This service sends four, and a form with six inputs
+    # in it is coupled to a number nobody wrote down.
+    source: https://www.twilio.com/docs/verify/api/service
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000002
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        code_length: 4
+        friendly_name: Cauldron Support
+
+  - name: and the other service on the same account sends six
+    # Both are reachable with the same credentials, so which length applies
+    # is decided by which service sid the call names.
+    source: https://www.twilio.com/docs/verify/api/service
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        services[0].code_length: 6
+        services[1].code_length: 4
+      absent:
+        - services[2]
+        - data
+
+  - name: channel is lower case at the top and upper case one level down
+    # Same word, same object, two spellings. Comparing them for equality is
+    # the obvious thing to write and it is false here.
+    source: https://github.com/twilio/twilio-oai/blob/main/spec/json/twilio_verify_v2.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        channel: sms
+        send_code_attempts[0].channel: SMS
+
+  - name: email spells it the same way sms does
+    source: https://github.com/twilio/twilio-oai/blob/main/spec/json/twilio_verify_v2.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000002
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        channel: email
+        send_code_attempts[0].channel: EMAIL
+
+  - name: and whatsapp does not, so there is no rule to apply
+    # Two of the four channels Twilio publishes an example for agree and two
+    # do not. Not a convention and not an inversion of one: a table.
+    source: https://github.com/twilio/twilio-oai/blob/main/spec/json/twilio_verify_v2.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000002/Verifications/VE00000000000000000000000000000003
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        channel: whatsapp
+        send_code_attempts[0].channel: whatsapp
+
+  - name: amount and payee are there and are nothing
+    # PSD2 fields, present as null on every verification that is not a PSD2
+    # one. So the key exists, reading it gets null, and a client checking
+    # whether the property is present learns nothing.
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        amount: null
+        payee: null
+
+  - name: a verification that was approved is gone, and so is one that never existed
+    # Twilio deletes the sid once it is approved, expired or out of attempts.
+    # Four situations, one response, and no way from here to tell already
+    # verified from never started.
+    source: https://www.twilio.com/docs/verify/api/verification-check
+    fixture: one-account
+    arm: resource_missing
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 404
+      body:
+        code: 20404
+        status: 404
+
+  - name: the fifth wrong code is a 429, not a 200
+    # The failure changes shape at the boundary: 200, 200, 200, 200, 429.
+    # Retry middleware finally sees a status it recognises and retries the
+    # one request that can no longer succeed.
+    source: https://www.twilio.com/docs/api/errors/60202
+    fixture: one-account
+    arm: max_check_attempts
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/VerificationCheck
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122661"
+    expect:
+      status: 429
+      body:
+        code: 60202
+        message: Max (5) verification check attempts reached.
+
+  - name: resending is capped too, and it is a different code at the same status
+    # 60203 rather than 60202, and the same 429. Both are terminal: the
+    # verification is over and waiting does not bring it back.
+    source: https://www.twilio.com/docs/api/errors/60203
+    fixture: one-account
+    arm: max_send_attempts
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122661"
+        channel: sms
+    expect:
+      status: 429
+      body:
+        code: 60203
+        message: Max send attempts reached.
+
+  - name: and the third 429 is the one that means what 429 usually means
+    # 20429, with a Retry-After. This is the only one of the three where
+    # waiting is the right response, and nothing but the code distinguishes
+    # it from the two where waiting is pointless.
+    source: https://github.com/twilio/twilio-oai/blob/main/spec/json/twilio_verify_v2.json
+    fixture: one-account
+    arm: rate_limit
+    request:
+      method: GET
+      path: /v2/Services
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 429
+      headers:
+        Retry-After: "1"
+      body:
+        code: 20429
+        message: Too many requests
+
+  - name: starting a verification answers 201 and checking one answers 200
+    # Two POSTs to the same service, two success codes. A client asserting
+    # on the number rather than on the class has to know which is which.
+    source: https://github.com/twilio/twilio-oai/blob/main/spec/json/twilio_verify_v2.json
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122663"
+        channel: sms
+    expect:
+      status: 201
+      body:
+        status: pending
+        valid: false
+        to: "+15017122663"
+
+  - name: the verification knows where it lives
+    # The one part of this object that stays true after it is consumed, at
+    # which point the URL answers 404.
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 200
+      body:
+        url: https://verify.twilio.com/v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000001
+        send_code_attempts[0].attempt_sid: VL00000000000000000000000000000001
+
+  - name: a failure is flat, and repeats the status inside the body
+    source: https://www.twilio.com/docs/verify/api/error-codes
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services
+      headers:
+        Authorization: Basic d3Jvbmc6d3Jvbmc=
+    expect:
+      status: 401
+      body:
+        code: 20003
+        status: 401
+        message: Authentication Error - invalid username
+        more_info: https://www.twilio.com/docs/errors
+      absent:
+        - error
+        - errors
+
+  - name: a verification belongs to one service and the other cannot see it
+    # Both services are on the same account and the same credentials reach
+    # both, so the only thing keeping one service's attempts out of the
+    # other's reach is the sid in the path.
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications/VE00000000000000000000000000000003
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+    expect:
+      status: 404
+      body:
+        code: 20404
+
+  - name: the code is not in the answer
+    # It goes in the request and does not come back. An emulator echoing it
+    # would be teaching a client that the second factor is readable from the
+    # reply to the attempt to use it, and a test could assert on that and
+    # pass. sna_attempts_error_codes is empty rather than missing, which is
+    # the other half of what this endpoint sends.
+    source: https://www.twilio.com/docs/verify/api/verification-check
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/VerificationCheck
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122661"
+        code: "999999"
+    expect:
+      status: 200
+      body:
+        status: pending
+        sna_attempts_error_codes: []
+      absent:
+        - code
+        - Code
+
+  - name: and starting one does not answer with what started it
+    # A verification is created with rather more than it answers with, and
+    # none of it comes back.
+    source: https://www.twilio.com/docs/verify/api/verification
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/Services/VA00000000000000000000000000000001/Verifications
+      headers:
+        Authorization: Basic QUNjYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOmNhdWxkcm9u
+      form:
+        to: "+15017122664"
+        channel: sms
+        locale: en
+        custom_friendly_name: Cauldron
+    expect:
+      status: 201
+      body:
+        to: "+15017122664"
+        channel: sms
+      absent:
+        - locale
+        - custom_friendly_name

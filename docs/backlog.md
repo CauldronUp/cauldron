@@ -518,7 +518,7 @@ transfers alone, and say so in the header.
 |---|---|
 | Plivo | Assess — SMS and voice, beside Twilio and Telnyx |
 | ~~Bandwidth~~ | Shipped, messaging only. The same message comes back with entirely different property names depending on which endpoint returned it, and a send is 202 Accepted rather than sent. Number provisioning is genuinely asynchronous and would be worth having, but that API answers in XML |
-| Twilio Verify | A code expires and a check consumes an attempt, so verifying twice with the right code fails the second time |
+| ~~Twilio Verify~~ | Shipped. A wrong code is a 200 with the verdict in a word inside the body, so `if (!res.ok)` lets the wrong person through the second factor. Three different 429s, two of which are terminal and one of which is not. A verification is deleted on approval, so checking twice and never having started are the same 404 |
 | Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
 | Brevo | Contacts and transactional email share one quota, so sending mail exhausts the budget for reading contacts |
@@ -868,6 +868,32 @@ one that tried would have produced three hundred false alarms.
 
 The check cost two queries and is the reason this is a note rather than a
 rule. Worth doing before writing the rule, every time.
+
+## What a create echoes
+
+Twilio Verify's check takes the verification code in the request body. Cauldron
+echoed it back, because a create answers with the record it built and a record
+absorbs whatever was posted at it. So the sandbox was handing back the second
+factor in the reply to the attempt to use it, and a test asserting on that
+would have passed.
+
+`returns` fixes it, and the fix is per-route: name what the provider sends and
+the rest is dropped. Both of that Recipe's creates now do.
+
+The general question is unanswered. There are 129 create routes across the
+portfolio and 115 of them declare no `returns`, which is right for most
+providers, because most creates really do echo what you sent. The ones that
+matter are the creates whose *request* accepts something the *response* does
+not return, and where that something is a credential: a password, a token, a
+code, a key. No shipped suite demonstrates one -- a scan for conformance cases
+posting an undeclared field found zero -- but that is a statement about the
+cases, not about the mechanism. Whatever a user's own code posts is echoed
+whether a case does or not.
+
+Answering it properly means reading each provider's request schema beside its
+response schema, one provider at a time, which is the work. Nothing here can
+be inferred from the Recipes, because the field that would prove it is exactly
+the field nobody wrote down.
 
 ## Assessed and deliberately not done
 
