@@ -131,7 +131,11 @@ func TestScopedPagingCountsOnlyTheScope(t *testing.T) {
 		ghCall(t, s, http.MethodPost, "/repos/other/repo/issues", `{"title":"theirs"}`)
 	}
 
-	rec := ghCall(t, s, http.MethodGet, "/repos/acme/widgets/issues?limit=3", "")
+	// per_page, which is what GitHub calls it. This said limit, which GitHub
+	// does not accept and Cauldron used to honour anyway -- so the test was
+	// checking that paging stays inside its scope using a parameter that would
+	// not have paged anything against the real API.
+	rec := ghCall(t, s, http.MethodGet, "/repos/acme/widgets/issues?per_page=3", "")
 
 	var page []map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &page)
