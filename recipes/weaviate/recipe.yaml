@@ -1,0 +1,416 @@
+# Weaviate Recipe for Cauldron
+#
+# A batch import that half failed is a 200.
+#
+# Weaviate's own description of the endpoint: request processed successfully,
+# individual object statuses are provided in the response body. So the status
+# line reports on the request and each object reports on itself, in an array,
+# with result.status of SUCCESS or FAILED per element.
+#
+# A client that checks the status code and moves on has imported some of its
+# documents. Not none, which would be obvious, and not all, which is what it
+# believes. The ones that failed are in the response it threw away, and the
+# only symptom later is a search that returns less than it should.
+#
+# This is the shape every bulk endpoint has and almost none announce. It is
+# worth a Recipe because the failing branch cannot be reached by accident:
+# you have to send a deliberately bad object to see it, and nobody writes
+# that test against a real cluster.
+#
+# Five more the Recipe pins:
+#
+#   1. An error is an array of messages. error is a list, so error.message is
+#      undefined and error[0].message is the sentence, on every failure this
+#      API has, including the ones nested inside a successful batch.
+#   2. The same object has two URLs and one of them is deprecated.
+#      /objects/{id} still works and /objects/{className}/{id} is the
+#      replacement, so every tutorial written before the change still runs
+#      and every one of them is on the way out.
+#   3. The API tells you so in the body. deprecations is an array on the
+#      response, carrying a status of deprecated or removed, the API it
+#      affects, and what to do instead. It is in the payload rather than in
+#      a header, which is a place nobody looks, on a response that otherwise
+#      looks perfectly normal.
+#   4. vector and vectors are both there. One is the object's vector and the
+#      other is a map of named vectors, singular and plural, one letter
+#      apart, on the same object.
+#   5. The timestamps are milliseconds and are marked response-only.
+#      creationTimeUnix and lastUpdateTimeUnix are integers a thousand times
+#      larger than a Unix second, so a date built from one without dividing
+#      lands in the year 57000.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is vectorised, indexed or searched. A batch answers with the
+#     fixture's results whatever was posted, and an object is whatever was
+#     seeded.
+#   - GraphQL is where Weaviate's querying actually lives, and this format
+#     speaks REST. The _additional block, certainty, distance and hybrid
+#     scoring are all on that side and none of it is modelled.
+#   - The schema endpoints, multi-tenancy, replication, backups, classifications
+#     and the batch delete are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: weaviate
+capability: search
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://weaviate.io/developers/weaviate/api/rest
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-weaviate-api-key
+
+responses:
+  # A batch answers with the array itself.
+  list:
+    style: bare
+  resource:
+    style: bare
+  # An array of messages rather than a message. Reading error.message finds
+  # nothing on every failure this API has.
+  error:
+    style: list
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # One element of a batch response. It is the object you sent with a verdict
+  # bolted onto it, so the successes and the failures are the same shape and
+  # sit in the same array.
+  batch_result:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      class:
+        type: string
+      title:
+        type: string
+        in: properties
+        as: title
+      url:
+        type: string
+        in: properties
+        as: url
+      # SUCCESS or FAILED, per object, inside a 200.
+      result_status:
+        type: string
+        in: result
+        as: status
+      # And the reason, three levels down and inside an array.
+      result_error:
+        type: string
+        in: result.errors.error[0]
+        as: message
+
+  object:
+    collection: objects
+    id:
+      style: uuid
+    fields:
+      class:
+        type: string
+      title:
+        type: string
+        in: properties
+        as: title
+      url:
+        type: string
+        in: properties
+        as: url
+      # Milliseconds, and marked response-only, so it is not something you
+      # can set and it is a thousand times larger than a Unix second.
+      creationTimeUnix:
+        type: timestamp_ms
+      lastUpdateTimeUnix:
+        type: timestamp_ms
+      # The object's vector. Singular.
+      vector:
+        type: list
+      # And a map of named vectors. Plural, one letter apart, same object.
+      vector_default:
+        type: list
+        in: vectors
+        as: default
+      # What Weaviate says about the endpoint you used, in the body. status
+      # is deprecated or removed.
+      deprecation_id:
+        type: string
+        in: deprecations[0]
+        as: id
+      deprecation_status:
+        type: string
+        in: deprecations[0]
+        as: status
+      deprecation_api:
+        type: string
+        in: deprecations[0]
+        as: apiType
+      deprecation_msg:
+        type: string
+        in: deprecations[0]
+        as: msg
+      deprecation_mitigation:
+        type: string
+        in: deprecations[0]
+        as: mitigation
+
+routes:
+  # 200, and the failures are inside.
+  - method: POST
+    path: /v1/batch/objects
+    resource: batch_result
+    operation: list
+
+  # The current way to address an object.
+  - method: GET
+    path: /v1/objects/{class}/{id}
+    resource: object
+    operation: get
+    scope: [class]
+    # No deprecations block: this is the endpoint Weaviate wants you on.
+    returns:
+      - id
+      - class
+      - title
+      - url
+      - creationTimeUnix
+      - lastUpdateTimeUnix
+      - vector
+      - vector_default
+
+  # The older way. Still works, still documented, and it tells you it is on
+  # the way out in a field rather than in a header.
+  - method: GET
+    path: /v1/objects/{id}
+    resource: object
+    operation: get
+
+errors:
+  not_found:
+    status: 404
+    message: "no object with id 6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946 found"
+
+  unauthorized:
+    status: 401
+    message: "anonymous access is not enabled"
+
+  # The class exists, the property does not, and the object is rejected as a
+  # whole.
+  invalid_property:
+    status: 422
+    message: "invalid object: no such prop with name 'publishedAt' found in class 'Article'"
+
+  # Multi-tenancy: the class requires a tenant and the request did not name
+  # one, which is a 422 about the object rather than about the request.
+  tenant_required:
+    status: 422
+    message: "invalid object: class Article has multi-tenancy enabled, but request was without tenant"
+
+fixtures:
+  empty: {}
+
+  one-import:
+    batch_result:
+      # Imported.
+      - id: 6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+        class: Article
+        title: "The Silent Cartographer"
+        url: https://example.test/silent-cartographer
+        result_status: SUCCESS
+
+      # Not imported, in the same array, in the same 200. A client that
+      # counted the elements counted this one.
+      - id: b18d4e07-2f65-4a93-8c10-7d5e2a9b4c81
+        class: Article
+        title: "Spring Revisited"
+        url: https://example.test/spring-revisited
+        result_status: FAILED
+        result_error: "invalid object: no such prop with name 'publishedAt' found in class 'Article'"
+
+      # Also imported. Two successes and a failure, so neither counting nor
+      # checking the first element is enough.
+      - id: c92a7f14-8b03-4d56-9e2f-3a1c6b8d0752
+        class: Article
+        title: "Cartography After Dark"
+        url: https://example.test/cartography-after-dark
+        result_status: SUCCESS
+
+    object:
+      - id: 6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+        class: Article
+        title: "The Silent Cartographer"
+        url: https://example.test/silent-cartographer
+        creationTimeUnix: 1755594000123
+        lastUpdateTimeUnix: 1755680400456
+        vector: [0.031, -0.114, 0.207, 0.088]
+        vector_default: [0.031, -0.114, 0.207, 0.088]
+        deprecation_id: rest-objects-get-without-class
+        deprecation_status: deprecated
+        deprecation_api: REST
+        deprecation_msg: "Retrieving an object without specifying its collection is deprecated"
+        deprecation_mitigation: "Use /v1/objects/{className}/{id} instead"
+
+# Every case below is derived from the OpenAPI description Weaviate publishes
+# in its own repository. None has been run against a real cluster. The verify
+# report says so.
+conformance:
+  - name: a batch import that half failed is a 200
+    # Weaviate's own words for this endpoint: request processed successfully,
+    # individual object statuses are provided in the response body. Two
+    # imported and one did not, and the status line says nothing about it.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: POST
+      path: /v1/batch/objects
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+      json:
+        objects: []
+    expect:
+      status: 200
+      body:
+        "[0].result.status": SUCCESS
+        "[1].result.status": FAILED
+        "[2].result.status": SUCCESS
+
+  - name: and the reason is three levels down, inside an array
+    # result.errors.error is a list, so result.errors.error.message is
+    # undefined and the sentence is at index nought.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: POST
+      path: /v1/batch/objects
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+      json:
+        objects: []
+    expect:
+      status: 200
+      body:
+        "[1].result.errors.error[0].message": "invalid object: no such prop with name 'publishedAt' found in class 'Article'"
+      absent:
+        - "[0].result.errors"
+        - "[1].result.errors.error.message"
+
+  - name: the failure is the same shape as the successes
+    # Same class, same properties, same position in the array. Nothing about
+    # it is distinguishable except one word three levels in, so counting the
+    # elements counts it.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: POST
+      path: /v1/batch/objects
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+      json:
+        objects: []
+    expect:
+      status: 200
+      body:
+        "[1].class": Article
+        "[1].properties.title": "Spring Revisited"
+        "[1].properties.url": https://example.test/spring-revisited
+      absent:
+        - "[3]"
+
+  - name: the deprecated route says so in the body
+    # Not in a header. deprecations is a field on an otherwise ordinary
+    # response, carrying its own status and what to do instead, in the one
+    # place nobody is looking.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: GET
+      path: /v1/objects/6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+    expect:
+      status: 200
+      body:
+        deprecations[0].status: deprecated
+        deprecations[0].apiType: REST
+        deprecations[0].mitigation: "Use /v1/objects/{className}/{id} instead"
+        properties.title: "The Silent Cartographer"
+
+  - name: and the route it points at does not
+    # The same object, the same body, one field fewer. Which is the only
+    # difference between the endpoint on the way out and the one to use.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: GET
+      path: /v1/objects/Article/6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+    expect:
+      status: 200
+      body:
+        id: 6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+        properties.title: "The Silent Cartographer"
+      absent:
+        - deprecations
+
+  - name: vector and vectors are both there
+    # One is the object's vector and the other is a map of named ones,
+    # singular and plural, on the same object.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: GET
+      path: /v1/objects/Article/6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+    expect:
+      status: 200
+      body:
+        vector[0]: 0.031
+        vectors.default[0]: 0.031
+
+  - name: the timestamps are milliseconds
+    # A thousand times larger than a Unix second, so a date built from one
+    # without dividing lands tens of thousands of years out.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    request:
+      method: GET
+      path: /v1/objects/Article/6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+    expect:
+      status: 200
+      body:
+        creationTimeUnix: 1755594000123
+        lastUpdateTimeUnix: 1755680400456
+
+  - name: an outright failure is a list of messages too
+    # The same shape as the errors nested inside a successful batch, so a
+    # client that learned to read one can read the other and a client that
+    # reads error.message can read neither.
+    source: https://github.com/weaviate/weaviate/blob/main/openapi-specs/schema.json
+    fixture: one-import
+    arm: invalid_property
+    request:
+      method: GET
+      path: /v1/objects/Article/6a3f8b21-9c40-4e7d-b5a2-1f8e0c7d3946
+      headers:
+        Authorization: Bearer cauldron-weaviate-api-key
+    expect:
+      status: 422
+      body:
+        error[0].message: "invalid object: no such prop with name 'publishedAt' found in class 'Article'"
+      absent:
+        - error.message
+        - message
