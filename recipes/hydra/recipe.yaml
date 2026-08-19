@@ -1,0 +1,462 @@
+# Ory Hydra Recipe for Cauldron
+#
+# An inactive token is a 200 with one field in it.
+#
+# Introspect a token that has expired, or been revoked, or never existed, and
+# Hydra answers 200 with {"active": false}. Not an error, not a 401, and not
+# the token object with a flag on it: the whole rest of the response is gone.
+# sub, scope, client_id, exp -- all of them absent, because there is nothing
+# to say about a token that is not valid.
+#
+# active is the only required field in Hydra's own schema, which is the
+# specification's way of saying exactly this.
+#
+# So the shape of the bug is: check the status code, read result.sub, get
+# undefined, and pass undefined to whatever comes next. In a language that
+# indexes objects by string that is a lookup for the user named "undefined",
+# and in one that does not it is a null pointer three frames away from the
+# thing that caused it. Either way the token was invalid and nothing said so
+# except a boolean nobody read.
+#
+# Five more the Recipe pins:
+#
+#   1. scope is a space-separated string. Not an array -- a string, so
+#      scope.includes("admin") is true for a token holding only
+#      "administrator", and any substring test on it is a privilege check
+#      that passes for scopes nobody granted. Splitting on a space is the
+#      only correct read.
+#   2. And aud, right beside it, is an array. Two list-shaped things in one
+#      object with two representations, so code that learned one is wrong
+#      about the other.
+#   3. skip means do not ask. A login request with skip true is one where
+#      this client already has these scopes from this user, and the right
+#      response is to accept immediately. Showing a login form anyway asks
+#      somebody to sign in who is already signed in, every time, and it looks
+#      like a bug in the browser rather than in the flow.
+#   4. The subject is known before the person has done anything. On a skip,
+#      the login request already carries the user id, so the field a client
+#      would use to decide who is logging in is populated in the case where
+#      nobody is logging in.
+#   5. exp, iat and nbf are seconds. RFC 7519 seconds, in a world of
+#      millisecond timestamps, so a date built from one without multiplying
+#      lands in January 1970.
+#
+# And the error carries its own status code in the body, plus a hint, plus a
+# debug field that Hydra only fills in when it is running in development. So
+# the field most likely to explain a failure is the field guaranteed to be
+# empty in the place failures happen.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No tokens are issued, signed or verified. Introspection answers with
+#     the fixture's record for the token you name, and names nothing else.
+#   - The flow is not modelled, only its objects. Accepting or rejecting a
+#     login or consent request, and the redirects that follow, are the half
+#     that makes Hydra an OAuth2 server, and this reproduces what those
+#     endpoints hand you rather than what they do.
+#   - Clients, JWKs, trusted issuers, the OIDC discovery document and the
+#     token endpoint itself are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: hydra
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.ory.sh/docs/hydra/reference/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-hydra-admin-key
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # RFC 6749's shape, with three more fields bolted on and the HTTP status
+  # repeated inside the body.
+  error:
+    style: flat
+    code_field: error
+    message_field: error_description
+    status_field: status_code
+    type_field: "-"
+
+resources:
+  # What introspection answers with. The only field Hydra's schema requires
+  # is the first one, and on an inactive token it is the only one sent.
+  introspection:
+    collection: tokens
+    id:
+      style: opaque
+      length: 43
+      # The token is what you asked about and it is not echoed. Nothing in
+      # the answer says which token it describes.
+      field: "-"
+    fields:
+      active:
+        type: boolean
+        default: false
+      # A space-separated string. Not an array, so any substring test on it
+      # is a privilege check that passes for scopes nobody granted.
+      scope:
+        type: string
+      # And this one is an array, in the same object.
+      aud:
+        type: list
+      client_id:
+        type: string
+      sub:
+        type: string
+      username:
+        type: string
+      token_type:
+        type: string
+      # access_token or refresh_token. Introspecting a refresh token
+      # succeeds and hands back something that is not an access token.
+      token_use:
+        type: string
+      # Seconds. RFC 7519 seconds, in a world of millisecond timestamps.
+      #
+      # Not stamped, because their absence is the signal: an inactive token
+      # has no expiry, and inventing one would put a date on a token that
+      # does not exist.
+      exp:
+        type: timestamp
+        stamped: false
+      iat:
+        type: timestamp
+        stamped: false
+      nbf:
+        type: timestamp
+        stamped: false
+      iss:
+        type: string
+      # Set when the client uses pairwise subject identifiers, in which case
+      # sub is not stable across clients and this is what to store.
+      obfuscated_subject:
+        type: string
+
+  # What Hydra hands your login page when a client sends somebody to it.
+  login_request:
+    collection: requests
+    id:
+      style: opaque
+      length: 32
+      field: challenge
+    fields:
+      # True means this client already has these scopes from this user and
+      # the right answer is to accept immediately without asking anybody
+      # anything.
+      skip:
+        type: boolean
+        default: false
+      # Populated before the person has done anything, on exactly the
+      # requests where nobody is about to do anything.
+      subject:
+        type: string
+      session_id:
+        type: string
+      request_url:
+        type: string
+      # An array here. A space-separated string on the introspection above,
+      # for the same concept, from the same server.
+      requested_scope:
+        type: list
+      requested_access_token_audience:
+        type: list
+      client_id:
+        type: string
+        in: client
+        as: client_id
+      client_name:
+        type: string
+        in: client
+        as: client_name
+
+routes:
+  # A POST whose subject is in the body rather than the path.
+  - method: POST
+    path: /admin/oauth2/introspect
+    resource: introspection
+    operation: get
+    id_from: body:token
+
+  - method: GET
+    path: /admin/oauth2/auth/requests/login
+    resource: login_request
+    operation: get
+    id_from: query:login_challenge
+
+errors:
+  # The challenge has been used or has expired. A login challenge is
+  # single-use, so a page that reloads itself has already spent it.
+  invalid_challenge:
+    status: 410
+    code: invalid_request
+    message: "The login_challenge parameter is invalid or expired"
+
+  unauthorized:
+    status: 401
+    code: invalid_client
+    message: "Client authentication failed"
+
+  not_found:
+    status: 404
+    code: invalid_request
+    message: "Unable to locate the requested resource"
+
+fixtures:
+  empty: {}
+
+  one-tenant:
+    introspection:
+      # A live access token. Everything is here.
+      - id: FCq5MhDCcH1yZgLBLQ0zW6Fv3wVfKGSqLmYaNz8jXoE
+        active: true
+        scope: "openid offline profile administrator"
+        aud: ["https://api.example.test"]
+        client_id: dashboard
+        sub: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+        username: ada@example.com
+        token_type: Bearer
+        token_use: access_token
+        exp: 1787187600
+        iat: 1787184000
+        nbf: 1787184000
+        iss: https://auth.example.test/
+
+      # Revoked. Nothing else at all: no subject, no scope, no client, no
+      # expiry. The record has no fields, and active comes from the default,
+      # which is a fair picture of what Hydra knows about a dead token.
+      - id: 9pTvQmR4kXsB2nGdWyLzA7cUfEhJ0oPiNbXrM5tYqSw
+
+    login_request:
+      # skip false: nobody has authorised this client for these scopes yet,
+      # so a login form is the right answer.
+      - id: 2a7f9c04e6b1483d95e2c8a05f31d7b6
+        skip: false
+        subject: ""
+        session_id: 51d0b7e3-9a24-4c86-b1f7-0e83a5c2d947
+        request_url: "https://auth.example.test/oauth2/auth?client_id=dashboard&scope=openid+offline"
+        requested_scope: ["openid", "offline", "profile"]
+        requested_access_token_audience: ["https://api.example.test"]
+        client_id: dashboard
+        client_name: "Cauldron Dashboard"
+
+      # skip true: this client already has these scopes from this user, so
+      # the right answer is to accept immediately. The subject is already
+      # here, on the request where nobody is about to log in.
+      - id: e83b1d54a07f4926bc31f08d7a25e9c4
+        skip: true
+        subject: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+        session_id: 51d0b7e3-9a24-4c86-b1f7-0e83a5c2d947
+        request_url: "https://auth.example.test/oauth2/auth?client_id=dashboard&scope=openid+offline"
+        requested_scope: ["openid", "offline", "profile"]
+        requested_access_token_audience: ["https://api.example.test"]
+        client_id: dashboard
+        client_name: "Cauldron Dashboard"
+
+# Every case below is derived from the OpenAPI description Ory publishes for
+# Hydra. None has been run against a real deployment. The verify report says
+# so.
+conformance:
+  - name: an inactive token is a 200 with one field in it
+    # Not an error and not the token with a flag on it. sub, scope,
+    # client_id and exp are all gone, because there is nothing to say about
+    # a token that is not valid.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: POST
+      path: /admin/oauth2/introspect
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+      form:
+        token: 9pTvQmR4kXsB2nGdWyLzA7cUfEhJ0oPiNbXrM5tYqSw
+    expect:
+      status: 200
+      body:
+        active: false
+      absent:
+        - sub
+        - scope
+        - client_id
+        - exp
+        - error
+
+  - name: and a live one carries everything
+    # The same endpoint, the same status, and thirteen more fields. Which of
+    # the two you have is one boolean.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: POST
+      path: /admin/oauth2/introspect
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+      form:
+        token: FCq5MhDCcH1yZgLBLQ0zW6Fv3wVfKGSqLmYaNz8jXoE
+    expect:
+      status: 200
+      body:
+        active: true
+        sub: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+        client_id: dashboard
+        token_use: access_token
+
+  - name: scope is a string and aud is an array
+    # Two list-shaped things in one object with two representations. A
+    # substring test on the string is true for scopes nobody granted:
+    # "admin" is inside "administrator".
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: POST
+      path: /admin/oauth2/introspect
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+      form:
+        token: FCq5MhDCcH1yZgLBLQ0zW6Fv3wVfKGSqLmYaNz8jXoE
+    expect:
+      status: 200
+      body:
+        scope: "openid offline profile administrator"
+        aud[0]: https://api.example.test
+      absent:
+        # The string has no zeroth element, which is the whole difference.
+        - scope[0]
+
+  - name: the timestamps are seconds
+    # RFC 7519 seconds, so a date built from one without multiplying lands
+    # in January 1970.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: POST
+      path: /admin/oauth2/introspect
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+      form:
+        token: FCq5MhDCcH1yZgLBLQ0zW6Fv3wVfKGSqLmYaNz8jXoE
+    expect:
+      status: 200
+      body:
+        exp: 1787187600
+        iat: 1787184000
+        nbf: 1787184000
+
+  - name: the token is not in the answer
+    # You asked about one and nothing here says which. Two introspections
+    # in flight at once are two responses that cannot be told apart.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: POST
+      path: /admin/oauth2/introspect
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+      form:
+        token: FCq5MhDCcH1yZgLBLQ0zW6Fv3wVfKGSqLmYaNz8jXoE
+    expect:
+      status: 200
+      body:
+        active: true
+      absent:
+        - token
+        - id
+        - jti
+
+  - name: skip means do not ask
+    # This client already has these scopes from this user, so the right
+    # answer is to accept immediately. Showing a login form anyway asks
+    # somebody to sign in who is already signed in, every time.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/oauth2/auth/requests/login
+      query:
+        login_challenge: e83b1d54a07f4926bc31f08d7a25e9c4
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+    expect:
+      status: 200
+      body:
+        skip: true
+        subject: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+
+  - name: and the subject is known before anybody has done anything
+    # On a skip the user id is already here, so the field a client would use
+    # to decide who is logging in is populated in the case where nobody is.
+    # On the other request it is empty, which is the only difference.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/oauth2/auth/requests/login
+      query:
+        login_challenge: 2a7f9c04e6b1483d95e2c8a05f31d7b6
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+    expect:
+      status: 200
+      body:
+        skip: false
+        subject: ""
+        session_id: 51d0b7e3-9a24-4c86-b1f7-0e83a5c2d947
+        # The identifier is called challenge. Reading id gets nothing, and
+        # it is the value the next call in the flow has to carry.
+        challenge: 2a7f9c04e6b1483d95e2c8a05f31d7b6
+      absent:
+        - id
+
+  - name: requested_scope is an array, for the same concept
+    # A list here and a space-separated string on the introspection, from
+    # the same server, about the same scopes.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/oauth2/auth/requests/login
+      query:
+        login_challenge: 2a7f9c04e6b1483d95e2c8a05f31d7b6
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+    expect:
+      status: 200
+      body:
+        requested_scope[0]: openid
+        requested_scope[2]: profile
+        requested_access_token_audience[0]: https://api.example.test
+        client.client_name: "Cauldron Dashboard"
+
+  - name: a spent challenge is gone rather than wrong
+    # A login challenge is single-use, so a page that reloads itself has
+    # already spent it, and the answer says expired rather than saying what
+    # to do about it.
+    source: https://github.com/ory/hydra/blob/master/spec/api.json
+    fixture: one-tenant
+    arm: invalid_challenge
+    request:
+      method: GET
+      path: /admin/oauth2/auth/requests/login
+      query:
+        login_challenge: 2a7f9c04e6b1483d95e2c8a05f31d7b6
+      headers:
+        Authorization: Bearer cauldron-hydra-admin-key
+    expect:
+      status: 410
+      body:
+        error: invalid_request
+        error_description: "The login_challenge parameter is invalid or expired"
+        status_code: 410
+      absent:
+        - message
+        - code
