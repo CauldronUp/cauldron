@@ -921,29 +921,38 @@ down so the next person to see a false finding here knows where it came from.
 ## A partition in the path, repeated in the body
 
 A route that scopes by a path segment needs that segment as a field on the
-resource, because that is how the record is partitioned. Nothing then stops it
-being emitted, and most providers do not repeat a partition they already put
-in the URL. Fly does not send `app_name` on a machine; Hetzner does not send
-`collection_name` on a point. Both leaked until a `returns` naming every other
-field was added, which is twenty-three names to hide one.
+resource, because that is how the record is partitioned. Nothing then stopped
+it being emitted, and most providers do not repeat a partition they already put
+in the URL: Fly does not send `app_name` on a machine, Tradier does not say
+which account an order is in.
 
-The engine already knows the principle. The `beside` path deletes scope fields
-from the collections travelling alongside, with a comment saying exactly this:
-the partition is in the path, and a provider that puts it there does not
-repeat it in the body.
+The only way to say so was a route's `returns` naming every other field --
+twenty-three names to hide one on Fly, repeated per route, and silent about the
+resource itself. `in: "-"` says it once, on the field, where the fact belongs.
+It reuses the idiom `id.field: "-"` already had: a dash means the provider does
+not send this.
 
-Making that automatic everywhere would be wrong. 58 Recipes use scope and 12
-scope fields are asserted by a conformance case, and some of those assertions
-are true -- Discord really does send `channel_id` and `guild_id` on a message,
-Mailchimp really does send `list_id` on a member. So the difference is a fact
-about each provider, not a rule, and the fix has to be declarable rather than
-inferred.
+**The audit, and what it does not license.** 119 scope fields across 39 Recipes
+reach the wire with no conformance case mentioning them. That is not 119 bugs.
+Some providers really do echo the partition -- Discord sends `channel_id` and
+`guild_id` on a message, Mailchimp sends `list_id` on a member -- so the
+difference is a fact about each provider and has to be read before it is
+changed. Hetzner was checked during this work and left alone: its `resource_id`
+really is on the wire, nested inside `resources[0]`.
 
-What is not known is how many of the other 46 are emitting a field their
-provider does not send. Finding out means reading each provider's response
-schema beside its paths, one at a time -- the same audit the create-echo note
-above describes, and unresolvable from the Recipes alone for the same reason:
-the evidence is the field nobody wrote down.
+Three are done, because all three were verified while writing their Recipes:
+Fly, Tradier, and Hetzner-by-exclusion. The remaining list, largest first:
+
+```
+airtable 10   statuspage 7   dockerhub 6   gitlab 6      posthog 6
+svix 6        webflow 6      cloudflare 5  googlecalendar 5
+basecamp 4    bitbucket 4    miro 4        twilio 4      bugsnag 3
+```
+
+The work is one provider's response schema at a time, and the evidence is
+exactly the field nobody wrote down. Anyone picking this up should change a
+Recipe only after reading what the provider sends, and add a case asserting
+the absence, so the next audit counts it as decided rather than as unexamined.
 
 ## A 200 that is not the thing you asked for
 
