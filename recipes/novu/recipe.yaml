@@ -1,0 +1,450 @@
+# Novu Recipe for Cauldron
+#
+# Novu's headline behaviour is one almost every notification integration
+# relies on and nobody tests: a subscriber does not have to exist before you
+# notify them. Trigger a workflow with a subscriberId nobody has seen and Novu
+# creates the subscriber and carries on.
+#
+# That is convenient and it means a typo cannot fail. Send to "usr_1O4" when
+# you meant "usr_104" and Novu answers 201, acknowledges the trigger, creates
+# a subscriber with no email and no phone, and delivers nothing. Everything
+# reports success. The only sign is a subscriber list that grows by one every
+# time somebody fat-fingers an id, and nobody looks at that.
+#
+# Four more worth modelling exactly:
+#
+#   1. A trigger answers with acknowledged: true and a transactionId, and
+#      acknowledged means received rather than sent. The workflow has not run
+#      yet, no message exists, and a client that treats the 201 as delivery
+#      reports success for notifications nobody got.
+#   2. The transactionId is yours to supply or Novu's to mint, and it is not
+#      an id you can fetch anything by. It is a correlation key for a later
+#      search, so code that stores it expecting a resource handle stores
+#      something with no endpoint.
+#   3. A subscriber's channel credentials live in a separate array from their
+#      email and phone, keyed by provider id. Having an email does not mean
+#      having a push token, and a workflow with a push step against a
+#      subscriber with no credential is skipped rather than failed.
+#   4. Novu's own identifier and yours are different fields. _id is Novu's,
+#      subscriberId is the one you supplied, and every endpoint takes the
+#      second while every response leads with the first.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No workflow runs and nothing is delivered. Whether a trigger created a
+#     subscriber is what a fixture says, and the implicit-creation case is
+#     the fixture holding the subscriber a typo would have made.
+#   - Topics, tenants, the in-app feed and the workflow definition API are
+#     not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: novu
+capability: push
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.novu.co/api-reference/overview
+
+auth:
+  # Novu's own scheme word. A client that sends Bearer gets a 401 that says
+  # nothing about the prefix.
+  scheme: bearer
+  header: Authorization
+  prefix: "ApiKey "
+  keys:
+    - cauldron-novu-api-key
+
+responses:
+  list:
+    style: wrapped
+    count_field: totalCount
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: message
+    code_field: error
+    status_field: statusCode
+    type_field: "-"
+
+resources:
+  # What a trigger answers with, and the whole of it. acknowledged means
+  # received rather than sent: the workflow has not run, no message exists,
+  # and a client that treats the 201 as delivery reports success for
+  # notifications nobody got.
+  trigger_response:
+    collection: data
+    id:
+      style: uuid
+      # A correlation key for a later search rather than a resource handle.
+      # Nothing can be fetched by it, so code that stores it expecting an
+      # endpoint stores something with none.
+      field: transactionId
+    constants:
+      acknowledged: true
+      status: processed
+
+  subscriber:
+    collection: data
+    id:
+      # Novu's own identifier, which is a Mongo object id and not the one you
+      # supplied. Every endpoint takes subscriberId and every response leads
+      # with this.
+      style: hex
+      length: 24
+      field: _id
+    fields:
+      # Yours. The one a typo lands in, and the one every path uses.
+      subscriberId:
+        type: string
+      firstName:
+        type: string
+        null_when_unset: true
+      lastName:
+        type: string
+        null_when_unset: true
+      # Null on a subscriber Novu invented from a trigger, which is the whole
+      # trap: the record exists, has no way to be reached, and nothing
+      # errored.
+      email:
+        type: string
+        null_when_unset: true
+      phone:
+        type: string
+        null_when_unset: true
+      # A separate array keyed by provider id. Having an email does not mean
+      # having a push token, and a workflow step against a subscriber with no
+      # credential is skipped rather than failed.
+      channels:
+        type: list
+      # Novu's word for the environment the subscriber belongs to. A
+      # subscriber created in development is invisible in production, and the
+      # api key decides which.
+      _environmentId:
+        type: string
+      createdAt:
+        type: datetime
+    # Every path takes the identifier you supplied, not the one Novu minted,
+    # so a client that stores response.data._id and later builds a path from
+    # it gets a 404.
+    alias: subscriberId
+
+routes:
+  # A trigger. 201, an acknowledgement, and a correlation key. No message, no
+  # subscriber, no delivery.
+  - method: POST
+    path: /v1/events/trigger
+    resource: trigger_response
+    operation: create
+    status: 201
+    returns:
+      - id
+      - acknowledged
+      - status
+
+  - method: GET
+    path: /v1/subscribers
+    resource: subscriber
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+      limit_param: limit
+      cursor_param: page
+
+  # By subscriberId, not by _id. Every path takes the one you supplied and
+  # every response leads with the one Novu minted.
+  - method: GET
+    path: /v1/subscribers/{id}
+    resource: subscriber
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: Too Many Requests
+    message: "API rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: "API Key not found"
+
+  resource_missing:
+    status: 404
+    code: Not Found
+    message: "Subscriber not found"
+
+  parameter_missing:
+    status: 400
+    code: Bad Request
+    message: "workflowId is required"
+
+  # The workflow name does not exist in this environment. Novu keeps
+  # development and production separate, so a workflow that works locally is
+  # absent after deploy, and this is a 422 rather than a 404.
+  workflow_not_found:
+    status: 422
+    code: Unprocessable Entity
+    message: "workflow_id_not_found"
+
+  # The subscriber has no credential for a channel the workflow needs. Not an
+  # error at trigger time: the step is skipped, and this is what the message
+  # search says afterwards.
+  missing_channel_credential:
+    status: 400
+    code: Bad Request
+    message: "Subscriber does not have a configured channel for this step"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    trigger_response: []
+
+    subscriber:
+      # A real one, with somewhere to send things.
+      - id: 66a1f4c8e2b93d0517c4a801
+        subscriberId: usr_104
+        firstName: Ada
+        lastName: Okonkwo
+        email: ada@example.com
+        phone: "+15551112222"
+        channels:
+          - providerId: fcm
+            credentials:
+              deviceTokens:
+                - cauldron-device-token-0001
+        _environmentId: 66a1f4c8e2b93d0517c4a700
+        createdAt: "2026-06-02T11:00:00Z"
+
+      # What a typo makes. Somebody meant usr_104 and typed usr_1O4, Novu
+      # answered 201, created this, and delivered nothing. No email, no
+      # phone, no channels, and nothing errored anywhere.
+      - id: 66a1f4c8e2b93d0517c4a802
+        subscriberId: usr_1O4
+        channels: []
+        _environmentId: 66a1f4c8e2b93d0517c4a700
+        createdAt: "2026-08-15T09:14:00Z"
+
+      # An email and no push token. A workflow with a push step against this
+      # subscriber skips the step rather than failing, so the trigger
+      # succeeds and half the notification happens.
+      - id: 66a1f4c8e2b93d0517c4a803
+        subscriberId: usr_207
+        firstName: Bede
+        lastName: Marchetti
+        email: bede@example.com
+        channels: []
+        _environmentId: 66a1f4c8e2b93d0517c4a700
+        createdAt: "2026-07-18T14:20:00Z"
+
+# Every case below is derived from Novu's published documentation. None has
+# been run against a real workspace. The verify report says so.
+conformance:
+  - name: a trigger acknowledges rather than delivers
+    # acknowledged means received. The workflow has not run, no message
+    # exists, and a client that treats the 201 as delivery reports success
+    # for notifications nobody got.
+    source: https://docs.novu.co/api-reference/events/trigger-event
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /v1/events/trigger
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+      json:
+        name: payment-failed
+        to: usr_104
+    expect:
+      status: 201
+      body:
+        data.acknowledged: true
+        data.status: processed
+      matches:
+        data.transactionId: '^[0-9a-f-]{36}$'
+      absent:
+        - data.messageId
+        - data.delivered
+        - data.to
+
+  - name: the transactionId is a correlation key with no endpoint
+    # Nothing can be fetched by it, so code that stores it expecting a
+    # resource handle stores something with none.
+    source: https://docs.novu.co/api-reference/events/trigger-event
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /v1/events/trigger
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+      json:
+        name: payment-failed
+        to: usr_104
+    expect:
+      status: 201
+      absent:
+        - data.id
+        - data._id
+        - data.url
+
+  - name: a typo creates a subscriber with nowhere to send
+    # Somebody meant usr_104 and typed usr_1O4. Novu answered 201, created
+    # this, and delivered nothing. Everything reported success, and the only
+    # sign is a subscriber list that grows by one every time.
+    source: https://docs.novu.co/api-reference/subscribers/get-subscriber
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_1O4
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        data.subscriberId: usr_1O4
+        data.email: null
+        data.phone: null
+      absent:
+        - data.channels[0]
+
+  - name: and the real one it was meant to be looks nothing like it
+    source: https://docs.novu.co/api-reference/subscribers/get-subscriber
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_104
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        data.subscriberId: usr_104
+        data.email: ada@example.com
+        data.channels[0].providerId: fcm
+
+  - name: the two identifiers are different fields
+    # _id is Novu's and subscriberId is yours. Every path takes the second
+    # and every response leads with the first, so a client that stores
+    # response.data._id and later builds a path from it gets a 404.
+    source: https://docs.novu.co/api-reference/subscribers/get-subscriber
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_104
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        data._id: 66a1f4c8e2b93d0517c4a801
+        data.subscriberId: usr_104
+      absent:
+        - data.id
+
+  - name: an email is not a push token
+    # This subscriber has an email and no channels, so a workflow with a push
+    # step skips the step rather than failing. The trigger succeeds and half
+    # the notification happens.
+    source: https://docs.novu.co/api-reference/subscribers/get-subscriber
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_207
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        data.email: bede@example.com
+      absent:
+        - data.channels[0]
+
+  - name: the subscriber list counts the typos too
+    # Three subscribers, one of which exists only because somebody
+    # mistyped an id, and nothing distinguishes it from the others except
+    # having no way to be reached.
+    source: https://docs.novu.co/api-reference/subscribers/get-subscribers
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        totalCount: 3
+        data[0].subscriberId: usr_104
+        data[1].subscriberId: usr_1O4
+      absent:
+        - data[3]
+
+  - name: a subscriber belongs to an environment
+    # A subscriber created in development is invisible in production, and the
+    # api key decides which. So a trigger that worked locally addresses
+    # nobody after deploy, and answers 201 for that too.
+    source: https://docs.novu.co/api-reference/subscribers/get-subscriber
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_104
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 200
+      body:
+        data._environmentId: 66a1f4c8e2b93d0517c4a700
+
+  - name: a missing workflow is a 422, not a 404
+    # Novu keeps development and production separate, so a workflow that
+    # works locally is absent after deploy, and a client branching on 404
+    # never sees it.
+    source: https://docs.novu.co/api-reference/events/trigger-event
+    fixture: small-workspace
+    arm: workflow_not_found
+    request:
+      method: GET
+      path: /v1/subscribers
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 422
+      body:
+        message: workflow_id_not_found
+        statusCode: 422
+
+  - name: an error carries a statusCode in the body as well as the status
+    # So there are two of them, and code that reads only the body's is right
+    # until something upstream rewrites one of them.
+    source: https://docs.novu.co/api-reference/overview
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers/usr_nonexistent
+      headers:
+        Authorization: ApiKey cauldron-novu-api-key
+    expect:
+      status: 404
+      body:
+        statusCode: 404
+        error: Not Found
+
+  - name: the scheme word is ApiKey, not Bearer
+    # A client that sends Bearer gets a 401 that says nothing about the
+    # prefix, which is the hardest kind of authentication failure to read.
+    source: https://docs.novu.co/api-reference/overview
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/subscribers
+      headers:
+        Authorization: Bearer cauldron-novu-api-key
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+        message: "API Key not found"
