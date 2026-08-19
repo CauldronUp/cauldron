@@ -1463,9 +1463,31 @@ nested forms like `/pipelines/{id}/deals` are described. Snyk's
 `api.snyk.io/rest/openapi` answers 405 to a HEAD. Neither is modelled from a
 guess; both stay on the list.
 
+**Resend**: `limit`, `after` and `before` in the query. The cursor is a
+record's own identifier rather than an opaque token, and it points both ways.
+
+**Shortcut**: no pagination on any of the three. `/epics`, `/iterations` and
+`/epics/{id}/stories` take no page size, no offset and no cursor, and answer
+with bare arrays. Shortcut does page -- but only on its search endpoints,
+which take `page_size` and `next` and are a different set of URLs entirely. A
+page size declared on the listings was one they do not accept.
+
+**DocuSign**: `count` and `start_position` for the envelope listing, and
+**neither for recipients** -- two routes, two answers, the same split as
+Xero's. `start_position` counts records, so reading it as a page number would
+be wrong by a whole page at a time.
+
+DocuSign also carries a stated gap rather than a fix. Its envelope reports the
+position it served and the Recipe declares that as the constant `'0'`, which
+is the same lie `page_field` and `limit_field` were added to correct for
+Algolia and Bitbucket. It cannot use them yet: every numeric field in that
+envelope travels as a string (`count_as_string`) and the echo fields emit
+numbers, so switching would trade a stale value for a wrong type. Closing it
+means teaching the echo fields the same string rendering the count already has.
+
 ### Remaining
 
-43 Recipes, 106 declarations. The method that works: find the provider's own
+40 Recipes, 99 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
