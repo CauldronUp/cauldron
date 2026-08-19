@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -118,21 +117,54 @@ func coerce(value string) any {
 		return false
 	}
 
+	if !jsonNumeric(value) {
+		return value
+	}
+
 	if n, err := strconv.ParseInt(value, 10, 64); err == nil {
 		return n
 	}
 
-	// ParseFloat accepts NaN, Inf, Infinity and +Inf, case-insensitively, and
-	// none of them is a type a JSON client could have sent, which is the only
-	// thing this function is for. Storing one meant the record could never be
-	// encoded again: encoding/json refuses it, so every later read of that
-	// collection answered with an empty body until something reset the
-	// sandbox. The word is what a form carrying it actually means.
-	if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
 		return f
 	}
 
 	return value
+}
+
+// jsonNumeric reports whether value is a JSON number literal.
+//
+// strconv is more generous than JSON in three ways, and each one turns a
+// string a client posted into a number the provider never sends.
+//
+// It accepts a leading plus, so "+15017122661" becomes the integer
+// 15017122661 and the phone number loses the one character that made it
+// E.164 rather than a number somebody has to guess the country of. Every
+// provider taking a destination in a form body takes it in that format.
+//
+// It accepts redundant leading zeros, so an account code of "007" comes back
+// as 7 and a sort code beginning 04 comes back five digits long.
+//
+// And it accepts NaN, Inf, Infinity and +Inf, case-insensitively. Storing one
+// meant the record could never be encoded again: encoding/json refuses it, so
+// every later read of that collection answered with an empty body until
+// something reset the sandbox.
+//
+// None of the three is a value a JSON client could have sent, and matching a
+// JSON client is the whole job of coerce. json.Valid applies the real
+// grammar. The first-byte check is what separates a number from the other
+// things that grammar accepts, since "null" and a quoted string are both
+// valid JSON and neither is a number.
+func jsonNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	if c := value[0]; c != '-' && (c < '0' || c > '9') {
+		return false
+	}
+
+	return json.Valid([]byte(value))
 }
 
 // queryInt reads a positive integer query parameter, falling back to a default.
