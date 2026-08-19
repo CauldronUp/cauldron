@@ -1347,9 +1347,33 @@ the query body, here by a header value. `dispatch_on: X-Amz-Target` with a
 per-route value would let these three Recipes describe the real protocol, and
 the three of them are enough to justify it.
 
+**GitHub**: `per_page` and `page` in the query, counting from one, checked
+against GitHub's own OpenAPI description. Stated gap: GitHub also advertises
+the next page in a `Link` header and most client libraries follow that rather
+than counting pages, and Cauldron does not send one -- so a client written
+against the header sees no next page and stops after the first.
+
+**Cloudflare**: `page` and `per_page` in the query, from one, with
+`result_info` reporting where you are beside the total. Both of those are now
+`page_field` and `limit_field` rather than being absent.
+
+**Telnyx**: the parameter is a `deepObject`, so what goes on the wire is
+`page[size]` and `page[number]` -- brackets and all -- and the case that
+covered it sent `?limit=1`, which Telnyx does not accept. Worse underneath:
+**`meta.next_page` does not exist.** Telnyx's meta is four integers --
+`total_pages`, `total_results`, `page_number`, `page_size` -- and this Recipe
+invented a cursor beside them that its own case then asserted. A client
+reading `meta.next_page` against the real API gets undefined, and a loop that
+reads undefined as "no more pages" stops on the first one.
+
+That is the third invented field found by pulling this thread, after Pub/Sub's
+`id` and Algolia's `GET /1/indexes/{index}`. The pattern is worth naming: a
+Recipe that declares a paging mechanism nobody checked tends to have invented
+the response half of it too, because both were written from the same guess.
+
 ### Remaining
 
-52 Recipes, 126 declarations. The method that works: find the provider's own
+49 Recipes, 122 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
