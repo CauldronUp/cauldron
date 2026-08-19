@@ -1,0 +1,503 @@
+# Fivetran Recipe for Cauldron
+#
+# Fivetran has an idempotency behaviour that is easy to describe and hard to
+# discover: triggering a sync that is already running answers 200 and does not
+# start one.
+#
+# Nothing says so. The response is the same success it gives when it did
+# start one, so a client that triggers and then waits for succeeded_at to
+# change waits for the sync it did not start, and a pipeline that triggers on
+# every webhook fires a hundred times and syncs once. That is usually the
+# behaviour you want and never the behaviour you tested for.
+#
+# Four more worth modelling exactly:
+#
+#   1. paused and sync_frequency are different things. A connector that is
+#      not paused and has no schedule never runs, and one that is paused
+#      keeps its schedule and ignores it. Reading either alone tells you
+#      nothing about whether data is arriving.
+#   2. succeeded_at and failed_at are both timestamps and both persist. A
+#      connector that succeeded this morning and failed this afternoon has
+#      both, and which is later is the only thing that says how it is doing.
+#      There is no status field for that.
+#   3. setup_state, sync_state and update_state are three separate states.
+#      Broken setup, syncing, and on_schedule are all things a connector can
+#      be at once, and no one of them means it is working.
+#   4. The API answers with {"code": "Success", "data": {...}} on everything,
+#      including failures, where code carries the failure name. So the HTTP
+#      status and the body's code both have to be read, and clients that read
+#      only one of them are right most of the time.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing syncs and no trigger starts anything. Which state a connector
+#     holds is what a fixture puts there, and the already-running response is
+#     armed rather than raced, because a race is precisely what cannot be
+#     reproduced on demand.
+#   - Schemas, transformations, dbt and the metadata API are not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: fivetran
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://fivetran.com/docs/rest-api
+
+auth:
+  # Basic, with the API key as the username and the secret as the password.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-fivetran-api-secret
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: data.next_cursor
+    fields:
+      code: Success
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  connector:
+    collection: data.items
+    id:
+      style: opaque
+      length: 16
+    fields:
+      service:
+        type: string
+      group_id:
+        type: string
+      schema:
+        type: string
+      # Paused and scheduled are different things. A connector that is not
+      # paused and has no sync_frequency never runs, and one that is paused
+      # keeps its frequency and ignores it, so reading either alone tells you
+      # nothing about whether data is arriving.
+      paused:
+        type: boolean
+        default: false
+      # Minutes. Null on a connector that is only ever triggered by hand,
+      # which is not the same as one that is paused.
+      sync_frequency:
+        type: integer
+        null_when_unset: true
+      # Both of these persist. A connector that succeeded this morning and
+      # failed this afternoon has both, and which is later is the only thing
+      # that says how it is doing. There is no status field for that.
+      succeeded_at:
+        type: datetime
+        null_when_unset: true
+      failed_at:
+        type: datetime
+        null_when_unset: true
+      # Three separate states, and no one of them means the connector is
+      # working. broken setup, syncing, and on_schedule are all things it can
+      # be at once.
+      setup_state:
+        type: string
+        default: incomplete
+        in: status
+        as: setup_state
+      sync_state:
+        type: string
+        default: paused
+        in: status
+        as: sync_state
+      update_state:
+        type: string
+        default: on_schedule
+        in: status
+        as: update_state
+      # True when the last sync failed. Not the same as failed_at being set,
+      # because failed_at persists after a later success and this does not.
+      is_historical_sync:
+        type: boolean
+        default: false
+        in: status
+        as: is_historical_sync
+      # A list of what is wrong right now, which is empty on a connector that
+      # has never worked as well as on one that is fine.
+      tasks:
+        type: list
+        in: status
+        as: tasks
+      warnings:
+        type: list
+        in: status
+        as: warnings
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/connectors/{id}
+    resource: connector
+    operation: get
+
+  - method: GET
+    path: /v1/groups/{group_id}/connectors
+    resource: connector
+    operation: list
+    scope:
+      - group_id
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: cursor
+
+errors:
+  rate_limit:
+    status: 429
+    code: TooManyRequests
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: "Invalid credentials"
+
+  resource_missing:
+    status: 404
+    code: NotFound_Connector
+    message: "Connector not found"
+
+  parameter_missing:
+    status: 400
+    code: BadRequest
+    message: "The request contained invalid parameters"
+
+  # The one worth arming. Triggering a sync that is already running answers
+  # 200 with the same code every success has, and does not start one. A
+  # client that triggers and then waits for succeeded_at to change waits for
+  # the sync it did not start.
+  sync_already_running:
+    status: 200
+    code: Success
+    message: "Sync has been successfully triggered for connector with id 'cauldron_conn_01'"
+
+  # The connector's credentials stopped working at the source. Nothing about
+  # the Fivetran call is wrong and retrying it does nothing.
+  connector_setup_broken:
+    status: 400
+    code: BadRequest_ConnectorSetupIncomplete
+    message: "Connector setup is incomplete or its credentials have expired"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    connector:
+      # Working. Succeeded this morning, no failures since.
+      - id: cauldron_conn_01
+        service: postgres
+        group_id: cauldron_group
+        schema: public
+        paused: false
+        sync_frequency: 360
+        succeeded_at: "2026-08-15T06:00:00Z"
+        setup_state: connected
+        sync_state: scheduled
+        update_state: on_schedule
+        tasks: []
+        warnings: []
+        created_at: "2026-03-01T09:00:00Z"
+
+      # Succeeded this morning and failed this afternoon. Both timestamps are
+      # here and which is later is the only thing that says how it is doing,
+      # because there is no status field for that.
+      - id: cauldron_conn_02
+        service: salesforce
+        group_id: cauldron_group
+        schema: salesforce
+        paused: false
+        sync_frequency: 60
+        succeeded_at: "2026-08-15T06:00:00Z"
+        failed_at: "2026-08-15T14:30:00Z"
+        setup_state: connected
+        sync_state: rescheduled
+        update_state: delayed
+        tasks:
+          - code: reconnect
+            message: "Salesforce credentials have expired"
+        warnings: []
+        created_at: "2026-02-14T11:00:00Z"
+
+      # Not paused and no schedule, so it never runs. Reading paused alone
+      # says this connector is fine.
+      - id: cauldron_conn_03
+        service: s3
+        group_id: cauldron_group
+        schema: raw_files
+        paused: false
+        setup_state: connected
+        sync_state: paused
+        update_state: on_schedule
+        tasks: []
+        warnings: []
+        created_at: "2026-07-20T15:00:00Z"
+
+      # Paused, and it keeps its schedule while ignoring it. Reading
+      # sync_frequency alone says this connector runs hourly.
+      - id: cauldron_conn_04
+        service: stripe
+        group_id: cauldron_group
+        schema: stripe
+        paused: true
+        sync_frequency: 60
+        succeeded_at: "2026-08-01T02:00:00Z"
+        setup_state: connected
+        sync_state: paused
+        update_state: on_schedule
+        tasks: []
+        warnings: []
+        created_at: "2026-01-05T08:00:00Z"
+
+      # Broken setup, and it is in another group, so the listing above must
+      # not return it.
+      - id: cauldron_conn_05
+        service: netsuite
+        group_id: other_group
+        schema: netsuite
+        paused: false
+        sync_frequency: 1440
+        setup_state: broken
+        sync_state: paused
+        update_state: on_schedule
+        tasks:
+          - code: reauthorize
+            message: "NetSuite authorisation is no longer valid"
+        warnings: []
+        created_at: "2026-06-11T13:00:00Z"
+
+# Every case below is derived from Fivetran's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: triggering a running sync answers success and starts nothing
+    # The same code and the same 200 a real trigger gives. A client that
+    # triggers and then waits for succeeded_at to change waits for the sync
+    # it did not start, and a pipeline that triggers on every webhook fires
+    # a hundred times and syncs once.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/sync-connection
+    fixture: small-account
+    arm: sync_already_running
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        code: Success
+        message: "Sync has been successfully triggered for connector with id 'cauldron_conn_01'"
+
+  - name: succeeded_at and failed_at both persist
+    # Succeeded this morning, failed this afternoon, and both are here. Which
+    # is later is the only thing that says how the connector is doing,
+    # because there is no status field for that.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_02
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.succeeded_at: "2026-08-15T06:00:00Z"
+        data.failed_at: "2026-08-15T14:30:00Z"
+
+  - name: a working connector has failed_at present and null
+    # Rather than absent, so a client testing for the key's existence finds
+    # it on everybody and has to read the value.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.succeeded_at: "2026-08-15T06:00:00Z"
+        data.failed_at: null
+
+  - name: not paused and no schedule means it never runs
+    # sync_frequency is null and paused is false, so reading paused alone
+    # says this connector is fine and no data has arrived since July.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_03
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.paused: false
+        data.sync_frequency: null
+        data.status.sync_state: paused
+
+  - name: paused keeps its schedule and ignores it
+    # sync_frequency is 60 and paused is true, so reading sync_frequency
+    # alone says this connector runs hourly and it has not run since August.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_04
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.paused: true
+        data.sync_frequency: 60
+
+  - name: three states and none of them means it is working
+    # Connected setup, rescheduled sync, delayed update, and a task saying
+    # the credentials expired. A client that reads one of the three and
+    # branches on it is right about a third of the time.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_02
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.status.setup_state: connected
+        data.status.sync_state: rescheduled
+        data.status.update_state: delayed
+        data.status.tasks[0].code: reconnect
+      absent:
+        - data.setup_state
+        - data.tasks
+
+  - name: an empty task list means nothing about whether it ever worked
+    # The broken connector has a task and the never-scheduled one has none,
+    # and neither is syncing. Emptiness is not health.
+    source: https://fivetran.com/docs/rest-api/api-reference/connections/connection-details
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_03
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.status.setup_state: connected
+      absent:
+        - data.status.tasks[0]
+
+  - name: a listing is scoped to its group
+    # The broken NetSuite connector is in another group and must not be
+    # here, or one customer's warehouse reports another's failures.
+    source: https://fivetran.com/docs/rest-api/api-reference/groups/list-connections-in-group
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/groups/cauldron_group/connectors
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        code: Success
+        data.items[0].id: cauldron_conn_01
+        data.items[3].id: cauldron_conn_04
+        # Present, unlike most partition keys in this portfolio: Fivetran
+        # sends the group on the connector as well as in the path.
+        data.items[0].group_id: cauldron_group
+      absent:
+        # The broken NetSuite connector is in another group.
+        - data.items[4]
+
+  - name: the paging cursor is nested under data
+    # A client reading response.next_cursor finds nothing, because
+    # everything Fivetran sends is inside a data envelope including the
+    # cursor.
+    source: https://fivetran.com/docs/rest-api/api-reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/groups/cauldron_group/connectors
+      query:
+        limit: "2"
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      matches:
+        data.next_cursor: '.'
+      absent:
+        - next_cursor
+        - cursor
+
+  - name: everything is inside a data envelope
+    # Including a single connector, so a client reading response.paused finds
+    # nothing on any endpoint.
+    source: https://fivetran.com/docs/rest-api/api-reference
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 200
+      body:
+        data.id: cauldron_conn_01
+        data.service: postgres
+      absent:
+        - id
+        - paused
+        - service
+
+  - name: a broken setup is a 400 no retry fixes
+    # The credentials stopped working at the source. Nothing about the
+    # Fivetran call is wrong and retrying it does nothing.
+    source: https://fivetran.com/docs/rest-api/api-reference
+    fixture: small-account
+    arm: connector_setup_broken
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_05
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTpjYXVsZHJvbi1maXZldHJhbi1hcGktc2VjcmV0
+    expect:
+      status: 400
+      body:
+        code: BadRequest_ConnectorSetupIncomplete
+
+  - name: the secret is the half that is checked
+    source: https://fivetran.com/docs/rest-api/getting-started
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/connectors/cauldron_conn_01
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZml2ZXRyYW4tYXBpLWtleTp3cm9uZw==
+    expect:
+      status: 401
+      body:
+        code: Unauthorized

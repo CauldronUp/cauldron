@@ -676,7 +676,7 @@ what normalisation does not fix.
 
 | Provider | Why |
 |---|---|
-| Fivetran | A sync is triggered and the result polled, and a sync already running answers success without starting a new one |
+| ~~Fivetran~~ | Shipped. Triggering a sync that is already running answers success and starts nothing, succeeded_at and failed_at both persist so which is later is the only health signal, and paused and sync_frequency are different things that each look fine alone |
 | Airbyte | A job has attempts, and an attempt failing is not the job failing |
 | ~~Hightouch~~ | Shipped. A run with every row rejected finishes as success, warning is neither an error nor a success, the reasons live on an endpoint the run does not link to, and disabled and paused are different things that both stop a sync |
 | dbt Cloud | A run has steps, and the run status is not the step status |
