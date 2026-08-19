@@ -1010,6 +1010,32 @@ Recipe. Converting a 2.0 document to 3.0 before checking would close it;
 whether that belongs in this tool or in a note telling the author to run a
 converter is undecided.
 
+## Picking providers by whether their documentation exists
+
+Four dead ends in a row -- Sift, Klarna, Render, then Statsig and ImageKit in
+one sitting -- came from choosing a provider for its shape and finding out
+afterwards that nothing citable describes it. Tradier's was the worst of them:
+`api.tradier.com/v1/openapi.json` answers 200 with a documentation page.
+
+The order was wrong. Reachability is a cheap check and interest is an
+expensive one, so reachability goes first now: probe several candidate spec
+URLs in one command, look at the first thirty bytes of each, and pick from
+what actually resolved.
+
+That is how Ory Hydra was chosen. It also surfaced Keycloak, which resolves
+and is unclaimed.
+
+Providers whose API is open source or whose spec lives in a public repository
+are the reliable seam. The ones checked so far:
+
+```
+resolve:      ory/hydra, ory/kratos, typesense, weaviate, qdrant, apify,
+              twilio, hetzner, fly, polygon, finnhub (swagger 2.0)
+do not:       statsig, imagekit, render, moov, checkout.com, inngest,
+              gitea (moved), hashicorp/vault (moved)
+lies:         tradier (200, HTML)
+```
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
