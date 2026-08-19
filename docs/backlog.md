@@ -305,7 +305,7 @@ the header says so.
 |---|---|
 | ~~Svix~~ | Shipped. Delivery attempts, backoff, and the endpoint disabled after repeated failure |
 | ~~Knock~~ | Shipped. A trigger answers with a run id and nothing else, one trigger becomes several messages that disagree, a message that was never sent is still a message, and archived is not read |
-| Courier | Assess — routing across channels and the fallback that fires silently |
+| ~~Courier~~ | Shipped. Courier picks the channel at delivery time, so which one a notification went out on is a separate lookup rather than anything in the request or the response; routing that finds no channel is not an error; and SIMULATED is a real status |
 | ~~Novu~~ | Shipped. A subscriber exists implicitly on first trigger, so a typo in an id creates one with nowhere to send and everything reports success; acknowledged means received rather than sent; and Novu's identifier and yours are different fields |
 | Hookdeck | Assess — connections, retries, the paused destination |
 | Inngest | Assess — events, functions, step state |
