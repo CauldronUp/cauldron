@@ -827,6 +827,48 @@ number where the provider sends a string is as wrong as the thing this fixes.
 The five marked **string** are correct as they stand and are listed so nobody
 "fixes" them.
 
+## Rules considered and rejected
+
+The validator has grown a lot of rules, and most of them came from noticing
+the same mistake in a third or fourth Recipe and deciding it should not be
+possible to make again. That has worked well enough that the reflex now fires
+on things it should not, so the ones that were tried and abandoned are worth
+writing down. Each of these looked obviously right and was measurably wrong.
+
+### A default no fixture exercises
+
+The reasoning: four Recipes in a row had a field whose declared default every
+fixture overrode, so mutating the default proved nothing. Razorpay's
+`captured: false`, Midtrans's `fraud_status: accept`, Alpaca's `primaryKey`,
+Meilisearch's. Each time the fix was to let the declaration carry the common
+case so a mutation could reach it.
+
+Measured across the portfolio: **301 fields**. Almost all of them legitimate.
+A default is also documentation of the provider's initial value, and a safety
+net for a fixture written later that omits the field. Forcing three hundred
+fixtures to stop spelling out a status would make them harder to read, not
+easier to trust: a fixture that says `status: settled` is clearer than one
+relying on a default declared eighty lines above.
+
+### A default every fixture contradicts
+
+The narrower version, on the reasoning that a default nothing agrees with is
+probably wrong. Measured: **66 fields**, and reading them settles it. A
+counter defaulting to zero is correct even when every fixture holds a real
+count. A status defaulting to the initial state is correct even when every
+fixture holds a later one. That is what an initial value is.
+
+### What the four real findings actually were
+
+Judgement about which particular default carried the interesting claim, not a
+property of defaults in general. `fraud_status: accept` matters because the
+whole Recipe is about the one transaction where it is `challenge`. `count: 0`
+on a counter matters to nobody. No mechanical rule separates those, and the
+one that tried would have produced three hundred false alarms.
+
+The check cost two queries and is the reason this is a note rather than a
+rule. Worth doing before writing the rule, every time.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
