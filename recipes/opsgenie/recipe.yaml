@@ -1,0 +1,553 @@
+# Opsgenie Recipe for Cauldron
+#
+# Opsgenie has two objects that look like the same thing and are not, and
+# every integration that treats them as one leaves something open.
+#
+# An alert is a page: somebody's phone rings. An incident is a coordination
+# record: a channel, a timeline, stakeholder updates. They have separate ids,
+# separate lifecycles and separate close endpoints, and closing one does not
+# close the other. So the monitor recovers, the alert is closed automatically,
+# and the incident stays open for three days with nobody looking at it.
+#
+# Four more worth modelling exactly:
+#
+#   1. Almost every write is asynchronous and answers 202 with a request id
+#      that is not the alert's id. To find out whether the thing you asked
+#      for happened you fetch the request status, which for a moment says it
+#      is still processing. Code that creates an alert and immediately closes
+#      it by alias races itself.
+#   2. An alert is addressed by three different things. Its id, its tinyId
+#      (a short number for humans), and its alias (yours, and the one that
+#      makes creation idempotent). Which one a path means is decided by a
+#      query parameter, so the same URL with a different identifierType
+#      addresses a different alert.
+#   3. Creating an alert with an alias that is already open does not create
+#      one. It increments the existing alert's count and answers the same 202
+#      as a real creation, so a flapping monitor produces one alert with a
+#      count of forty rather than forty alerts, and a client counting
+#      responses counts wrong.
+#   4. Everything is wrapped in a data envelope with a took and a requestId
+#      beside it, so a client reading response.id finds nothing on any
+#      endpoint.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No write is actually asynchronous. Cauldron answers immediately, and
+#     the request-status endpoint reads a fixture rather than a queue, which
+#     is the honest half: the point is that a client must poll, and one
+#     polling this Recipe finds whatever the fixture holds.
+#   - Nothing deduplicates. An alert's count is what a fixture says.
+#   - Schedules, escalations, on-call rotations and the notification rules
+#     are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: opsgenie
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.opsgenie.com/docs/api-overview
+
+auth:
+  # GenieKey, which is neither Bearer nor Basic, so a client reaching for
+  # either produces something the server rejects without explaining.
+  scheme: header
+  header: Authorization
+  prefix: "GenieKey "
+  keys:
+    - cauldron-opsgenie-api-key
+
+responses:
+  list:
+    style: wrapped
+    # took and requestId sit beside the data on every response, including
+    # the ones that failed, so a client reading response.length reads
+    # undefined.
+    fields:
+      took: 0.031
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  alert:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      # A short number for humans, which is also a way to address the alert,
+      # which means the same path with a different identifierType addresses
+      # a different one.
+      tinyId:
+        type: string
+      # Yours, and the one that makes creation idempotent. Creating an alert
+      # with an alias that is already open increments the existing one's
+      # count instead.
+      alias:
+        type: string
+      message:
+        type: string
+      # open or closed. Not the incident's status, which is a different
+      # field on a different object.
+      status:
+        type: string
+        default: open
+      acknowledged:
+        type: boolean
+        default: false
+      # How many times this alert has been raised. A flapping monitor
+      # produces one alert with a count of forty rather than forty alerts,
+      # so a client counting responses counts wrong.
+      count:
+        type: integer
+        default: 1
+      priority:
+        type: string
+        default: P3
+      source:
+        type: string
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  # A coordination record. Separate id, separate lifecycle, separate close
+  # endpoint, and closing the alert does not touch it.
+  incident:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      tinyId:
+        type: string
+      message:
+        type: string
+      # open, resolved, closed. Three of them where an alert has two, and
+      # resolved is not closed: the impact is over and the record is still
+      # being written.
+      status:
+        type: string
+        default: open
+      priority:
+        type: string
+        default: P2
+      impactedServices:
+        type: list
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  # What an asynchronous write answers with. Not the alert: a request id, and
+  # a status you have to go and fetch.
+  request_status:
+    collection: data
+    id:
+      style: uuid
+      field: requestId
+    fields:
+      # True once the queued work has run. False for a moment after a
+      # creation, which is the moment a client that creates and immediately
+      # closes by alias races itself in.
+      isSuccess:
+        type: boolean
+        default: false
+      action:
+        type: string
+      processedAt:
+        type: datetime
+        null_when_unset: true
+      status:
+        type: string
+      # The alert this became, once it is one. Absent while the request is
+      # still processing, which is the whole reason for polling.
+      alertId:
+        type: string
+
+routes:
+  # 202 and a request id. Not the alert, which does not exist yet.
+  - method: POST
+    path: /v2/alerts
+    resource: request_status
+    operation: create
+    status: 202
+    returns:
+      - id
+      - status
+
+  - method: GET
+    path: /v2/alerts
+    resource: alert
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /v2/alerts/{id}
+    resource: alert
+    operation: get
+
+  # Where you find out whether the creation worked, and what it became.
+  - method: GET
+    path: /v2/alerts/requests/{id}
+    resource: request_status
+    operation: get
+
+  - method: GET
+    path: /v2/incidents
+    resource: incident
+    operation: list
+
+  - method: GET
+    path: /v2/incidents/{id}
+    resource: incident
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests, please try again later."
+
+  authentication_error:
+    status: 401
+    message: "Could not authenticate"
+
+  resource_missing:
+    status: 404
+    message: "Alert not found"
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. Opsgenie answers unprocessable for a body it understood
+    # and would not act on, and a client branching on 400 never sees it.
+    message: "Message field cannot be empty"
+
+  # The request id is real and the work has not finished. Not an error and
+  # not a result: a client that treats a 404 here as "the alert does not
+  # exist" gives up on one that is about to.
+  request_still_processing:
+    status: 404
+    message: "No request found for the given request id"
+
+  # The API key does not have the right access. 403, and the message does
+  # not name the missing permission.
+  insufficient_permissions:
+    status: 403
+    message: "You are not authorized to perform this action"
+
+fixtures:
+  empty: {}
+
+  small-team:
+    alert:
+      # A flapping monitor. One alert, raised forty times, and a client
+      # counting responses would have counted forty.
+      - id: 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+        tinyId: "1841"
+        alias: checkout-latency-p99
+        message: Checkout p99 above 2s
+        status: open
+        acknowledged: false
+        count: 40
+        priority: P2
+        source: prometheus
+        createdAt: "2026-08-15T09:14:02Z"
+        updatedAt: "2026-08-15T11:47:00Z"
+
+      # Closed automatically when the monitor recovered. The incident below
+      # is still open.
+      - id: 7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+        tinyId: "1839"
+        alias: checkout-500s
+        message: Checkout returning 500s
+        status: closed
+        acknowledged: true
+        count: 3
+        priority: P1
+        source: prometheus
+        createdAt: "2026-08-14T09:02:00Z"
+        updatedAt: "2026-08-14T11:40:00Z"
+
+    incident:
+      # Still open, three days later, because closing the alert did not
+      # touch it and nobody looked.
+      - id: 9b5c1e83-2f47-4d06-a951-8e34c70b2f16
+        tinyId: "412"
+        message: Checkout outage
+        status: open
+        priority: P1
+        impactedServices:
+          - checkout
+          - payments
+        createdAt: "2026-08-14T09:05:00Z"
+        updatedAt: "2026-08-14T09:05:00Z"
+
+      # Resolved is not closed. The impact is over and the record is still
+      # being written, so a client that treats resolved as finished stops
+      # collecting the postmortem.
+      - id: 3d0f7a62-8c14-4b59-9e26-1a83f5d70c49
+        tinyId: "411"
+        message: Search degraded
+        status: resolved
+        priority: P3
+        impactedServices:
+          - search
+        createdAt: "2026-08-10T14:00:00Z"
+        updatedAt: "2026-08-10T16:30:00Z"
+
+    request_status:
+      # Finished, and it became an alert.
+      - id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        isSuccess: true
+        action: createAlert
+        processedAt: "2026-08-15T09:14:03Z"
+        status: "Created alert with id 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48"
+        alertId: 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+
+      # Still going. No alertId yet, which is the moment a client that
+      # creates and immediately closes by alias races itself in.
+      - id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+        isSuccess: false
+        action: createAlert
+        status: "Request is being processed"
+
+# Every case below is derived from Opsgenie's published documentation. None
+# has been run against a real team. The verify report says so.
+conformance:
+  - name: closing the alert does not close the incident
+    # The monitor recovered, the alert closed itself, and the incident is
+    # still open three days later because nothing links their lifecycles.
+    source: https://docs.opsgenie.com/docs/incident-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/incidents/9b5c1e83-2f47-4d06-a951-8e34c70b2f16
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.status: open
+        data.message: Checkout outage
+
+  - name: and the alert it came from is closed
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.status: closed
+        data.message: Checkout returning 500s
+
+  - name: resolved is not closed
+    # The impact is over and the record is still being written, so a client
+    # that treats resolved as finished stops collecting the postmortem.
+    source: https://docs.opsgenie.com/docs/incident-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/incidents/3d0f7a62-8c14-4b59-9e26-1a83f5d70c49
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.status: resolved
+        data.priority: P3
+
+  - name: a flapping monitor is one alert with a count
+    # Raised forty times, and a client counting responses would have counted
+    # forty. The alias is what made it one.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.count: 40
+        data.alias: checkout-latency-p99
+        data.status: open
+
+  - name: a create answers with a request id, not an alert
+    # The alert does not exist yet. What comes back is a handle for asking
+    # later whether it does.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: POST
+      path: /v2/alerts
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+      json:
+        message: Disk usage above 90%
+        alias: disk-usage
+    expect:
+      status: 202
+      matches:
+        data.requestId: '^[0-9a-f-]{36}$'
+      absent:
+        - data.id
+        - data.tinyId
+        - data.alertId
+        - data.message
+        # And it does not say whether it worked. isSuccess and processedAt
+        # belong to the request-status lookup, not to the acknowledgement,
+        # so there is nothing here to branch on except the 202.
+        - data.isSuccess
+        - data.processedAt
+
+  - name: the request that finished says what it became
+    # alertId appears only once the queued work has run, so this is the
+    # first place the alert's identifier exists.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/requests/1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.isSuccess: true
+        data.action: createAlert
+        data.alertId: 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+
+  - name: the one still processing has no alert to point at
+    # Which is the moment a client that creates an alert and immediately
+    # closes it by alias races itself in.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/requests/6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.isSuccess: false
+        data.status: "Request is being processed"
+        data.processedAt: null
+      absent:
+        - data.alertId
+
+  - name: an alert has three identifiers and two of them are short
+    # The id, a tinyId for humans, and an alias that is yours. Which one a
+    # path means is decided by a query parameter, so the same URL with a
+    # different identifierType addresses a different alert.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.id: 4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+        data.tinyId: "1841"
+        data.alias: checkout-latency-p99
+
+  - name: the tinyId is a string of digits, not a number
+    # Comparing it to 1841 fails in every language that does not coerce,
+    # which is most of them.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts/4f8a2c61-9d37-4b05-8e12-7a06c3f95b48
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        data.tinyId: "1841"
+
+  - name: everything is inside a data envelope
+    # With a took beside it, so a client reading response.length on a
+    # listing reads undefined.
+    source: https://docs.opsgenie.com/docs/api-overview
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 200
+      body:
+        took: 0.031
+        data[0].tinyId: "1841"
+        data[1].status: closed
+      absent:
+        - data[2]
+        - length
+
+  - name: a request id that has not finished is a 404, not a wait
+    # A client that treats this as "the alert does not exist" gives up on
+    # one that is about to.
+    source: https://docs.opsgenie.com/docs/alert-api
+    fixture: small-team
+    arm: request_still_processing
+    request:
+      method: GET
+      path: /v2/alerts
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 404
+      body:
+        message: "No request found for the given request id"
+
+  - name: an unprocessable body is a 422, not a 400
+    source: https://docs.opsgenie.com/docs/api-overview
+    fixture: small-team
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v2/alerts
+      headers:
+        Authorization: GenieKey cauldron-opsgenie-api-key
+    expect:
+      status: 422
+      body:
+        message: "Message field cannot be empty"
+
+  - name: the scheme word is GenieKey
+    # Neither Bearer nor Basic, so a client reaching for either produces
+    # something the server rejects without explaining.
+    source: https://docs.opsgenie.com/docs/api-overview
+    fixture: small-team
+    request:
+      method: GET
+      path: /v2/alerts
+      headers:
+        Authorization: Bearer cauldron-opsgenie-api-key
+    expect:
+      status: 401
+      body:
+        message: "Could not authenticate"
+      absent:
+        - code
+        - error
