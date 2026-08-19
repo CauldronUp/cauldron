@@ -541,7 +541,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | Backblaze B2 | S3-compatible and not identical, which is the interesting part: the differences are where a working integration breaks |
-| Uploadcare | Assess — uploads, transformations, the CDN URL that is the product |
+| ~~Uploadcare~~ | Shipped. A file exists before it is stored and unstored files are deleted after twenty-four hours, so the same code works on one project and loses files on another; a removed file still answers 200 with everything intact |
 | ImageKit | Assess — transformations and delivery, beside Cloudinary and Imgix |
 | Livepeer | Assess — streams and recordings, asynchronous throughout |
 
