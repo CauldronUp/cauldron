@@ -1036,6 +1036,59 @@ do not:       statsig, imagekit, render, moov, checkout.com, inngest,
 lies:         tradier (200, HTML)
 ```
 
+## GraphQL is the biggest single gap in the format
+
+Seven providers are now blocked on the same thing, and they are recorded in
+seven different places as if each were its own judgement call. They are not:
+
+```
+Linear      ShipHero        Attio
+Monday      New Relic       Railway
+Fly.io's older platform API (the Machines API shipped; the other half did not)
+```
+
+Each row says some version of "GraphQL-only, a REST-shaped Recipe would be an
+approximation of a different API". That is still true and it is no longer the
+interesting sentence. The interesting one is that this is a single missing
+capability with seven providers behind it, and nobody has costed it.
+
+What it would take, roughly. A GraphQL endpoint is one path and one method, so
+routing is trivial; what a Recipe would have to describe instead is which
+query shapes it answers and with what. The obvious form is a list of operation
+names mapped to fixtures, matched on the operation name in the request body,
+which is a small addition to the format and a large one to the runtime -- and
+it would model the responses without modelling the query language, which is
+the same bargain every Recipe here already makes.
+
+The traps are worth having. A GraphQL error is an HTTP 200 with an `errors`
+array, which is the partial-success shape this portfolio spent five cycles
+trying to land; ShipHero's throttling arrives as an error object with a
+`code` inside a 200; and `data` can be non-null beside `errors`, so a
+half-successful query looks like a whole one.
+
+Not started, because it is a format change rather than a Recipe and the
+standing instruction is providers. Written down so the seven rows stop
+pretending to be seven decisions.
+
+## Blocked on documentation, with what would unblock each
+
+The pattern is common enough now to be worth one list rather than a sentence
+per row.
+
+| Provider | What is reachable | What is not | What would unblock it |
+|---|---|---|---|
+| Logiwa | Marketing pages, a webhooks blog post | Every endpoint reference. The developer centre needs a purchased API user seat | An account, or a customer's copy of the reference |
+| Intelcom / Dragonfly | The introduction page at developers.intelcomexpress.com, which names six APIs and their required call order | Every reference page under it: `/reference/tracking-api` and friends 404, and the site's own `llms.txt` answers 200 with the ReadMe shell | A partner login, or one captured response per endpoint |
+| Sift | Prose describing a 0-100 score | The score response body. The scale is decimals on the wire and prose in the docs, and that number is what every integration branches on | One real response |
+| Klarna | Navigation | Every schema. The portal renders through JavaScript | An account or a published spec |
+| Render | Marketing | `api-docs.render.com` 404s on its reference pages and the OpenAPI its own docs name is not at that URL | A spec that resolves |
+
+The useful observation is that four of these five are ReadMe or JavaScript
+portals, and the fifth is a login. A provider that publishes a spec file --
+in its own repository, or at a URL that answers with the spec rather than
+with a page about the spec -- is a provider that can be modelled honestly.
+That is now the first thing checked, not the last.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
