@@ -1,0 +1,598 @@
+# Fly.io Machines Recipe for Cauldron
+#
+# started does not mean your application is up.
+#
+# A machine has a state, and everybody reads it, and three other fields on
+# the same object independently contradict it.
+#
+#   host_status can be unreachable. The machine is started, on a host Fly
+#   cannot currently talk to. Not stopped, not failed, not anything the
+#   state field has a word for.
+#
+#   cordoned can be true. The machine is started and taking no new traffic,
+#   on purpose, because somebody is draining it. Nothing in state says so.
+#
+#   checks can be critical. The process is running and failing its own
+#   health check, which is the situation health checks exist to describe.
+#
+# So "is this machine up" has four answers on one object and they disagree
+# by design. A deploy script that waits for state == "started" and then
+# declares success has waited for the least informative of the four.
+#
+# Four more the Recipe pins:
+#
+#   1. The identifier you watch is not the identifier that lasts. Fly's own
+#      words: instance_id is unique for each version of the machine. The
+#      machine id is stable across updates and the instance id is not, so
+#      metrics and logs keyed on the wrong one lose their history at every
+#      deploy and gain a new series that looks like a new machine.
+#   2. nonce is returned once and only sometimes. Fly's words again: only
+#      ever returned on machine creation, and only if a lease_duration was
+#      provided. It is the token that lets you update the machine later, no
+#      other endpoint returns it, and asking for one without a lease
+#      duration gets a machine with no way to write to it.
+#   3. The machine carries its own history. events is an array on the
+#      object, newest first, so the state above it is the latest entry of a
+#      log that came in the same response, and the two can be read
+#      separately by code that does not know they are the same thing.
+#   4. Waiting is an endpoint. GET .../wait blocks until the machine reaches
+#      a state you name, or until a timeout you name. An API that ships a
+#      blocking call is an API telling you its other calls do not wait, and
+#      it is the one call a mock never reproduces.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - wait is not modelled. Answering it immediately would be the helpful
+#     lie: a client would learn that waiting is free and instant, which is
+#     the opposite of what the endpoint exists to teach.
+#   - No machine changes state. Nothing starts, stops, cordons, suspends or
+#     destroys, so the states in the fixture are the states you get.
+#   - Fly has a second API. The older platform API is GraphQL, at a
+#     different host, describing the same apps in a different shape, and
+#     this format speaks REST. That was the reason this provider was on the
+#     backlog and it is the one thing here that is not modelled.
+#   - Volumes, secrets, certificates, releases, allocations, exec, ps,
+#     metadata and the org-wide machine listing are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: fly
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.machines.dev/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - FlyV1cauldron000000000000000000
+
+responses:
+  list:
+    style: bare
+  error:
+    style: flat
+    code_field: "-"
+    message_field: error
+    type_field: "-"
+
+resources:
+  machine:
+    collection: machines
+    id:
+      style: opaque
+      length: 14
+    fields:
+      app_name:
+        type: string
+      name:
+        type: string
+      # created, starting, started, stopping, stopped, suspending,
+      # suspended, replacing, destroying or destroyed. The most-read field
+      # here and the least conclusive.
+      state:
+        type: string
+        default: started
+      region:
+        type: string
+      # Unique for each version of the machine, in Fly's words. It changes
+      # on every update while the id above does not, so anything keyed on
+      # it loses its history at each deploy.
+      instance_id:
+        type: string
+      private_ip:
+        type: string
+      # ok, unknown or unreachable. A separate question from state, and a
+      # machine can be started on a host nobody can reach.
+      host_status:
+        type: string
+        default: ok
+      # Running and taking no new traffic. Deliberate, invisible in state,
+      # and the reason a machine that looks healthy is serving nothing.
+      cordoned:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      image:
+        type: string
+        in: image_ref
+        as: repository
+      image_tag:
+        type: string
+        in: image_ref
+        as: tag
+      image_digest:
+        type: string
+        in: image_ref
+        as: digest
+
+      # The health check. Its status is a third opinion about whether this
+      # machine is working, and the output is the only place the reason is.
+      check_name:
+        type: string
+        in: checks[0]
+        as: name
+      check_status:
+        type: string
+        in: checks[0]
+        as: status
+      check_output:
+        type: string
+        in: checks[0]
+        as: output
+      check_updated_at:
+        type: datetime
+        in: checks[0]
+        as: updated_at
+
+      # The machine's own history, newest first, in the same response as
+      # the state it produced.
+      event_id:
+        type: string
+        in: events[0]
+        as: id
+      event_type:
+        type: string
+        in: events[0]
+        as: type
+      event_status:
+        type: string
+        in: events[0]
+        as: status
+      event_source:
+        type: string
+        in: events[0]
+        as: source
+      event_timestamp:
+        type: timestamp_ms
+        in: events[0]
+        as: timestamp
+
+  # What you must hold to update a machine. Its nonce is the token, and the
+  # only other time Fly hands one over is at creation, once, and only if you
+  # asked for a lease then.
+  lease:
+    collection: leases
+    id:
+      style: opaque
+      length: 14
+      # Fly does not echo the machine id in a lease. The lease is addressed
+      # by the machine it belongs to, which lives in the path.
+      field: "-"
+    fields:
+      app_name:
+        type: string
+      nonce:
+        type: string
+      owner:
+        type: string
+      expires_at:
+        type: timestamp
+      description:
+        type: string
+      version:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1/apps/{app_name}/machines
+    resource: machine
+    operation: list
+    scope: [app_name]
+    # app_name is here so a machine can be partitioned by the app in its
+    # path, and Fly does not repeat it in the body. Naming everything else
+    # is how this format says that.
+    returns:
+      - id
+      - name
+      - state
+      - region
+      - instance_id
+      - private_ip
+      - host_status
+      - cordoned
+      - created_at
+      - updated_at
+      - image
+      - image_tag
+      - image_digest
+      - check_name
+      - check_status
+      - check_output
+      - check_updated_at
+      - event_id
+      - event_type
+      - event_status
+      - event_source
+      - event_timestamp
+
+  - method: GET
+    path: /v1/apps/{app_name}/machines/{id}
+    resource: machine
+    operation: get
+    scope: [app_name]
+    # app_name is here so a machine can be partitioned by the app in its
+    # path, and Fly does not repeat it in the body. Naming everything else
+    # is how this format says that.
+    returns:
+      - id
+      - name
+      - state
+      - region
+      - instance_id
+      - private_ip
+      - host_status
+      - cordoned
+      - created_at
+      - updated_at
+      - image
+      - image_tag
+      - image_digest
+      - check_name
+      - check_status
+      - check_output
+      - check_updated_at
+      - event_id
+      - event_type
+      - event_status
+      - event_source
+      - event_timestamp
+
+  - method: GET
+    path: /v1/apps/{app_name}/machines/{id}/lease
+    resource: lease
+    operation: get
+    scope: [app_name]
+    returns:
+      - nonce
+      - owner
+      - expires_at
+      - description
+      - version
+
+errors:
+  # Updating without holding the lease. The machine is fine, the request is
+  # fine, and somebody else is holding the token.
+  lease_held:
+    status: 409
+    message: "failed to acquire lease: machine is already locked"
+
+  machine_not_found:
+    status: 404
+    message: "machine not found"
+
+  app_not_found:
+    status: 404
+    message: "app not found"
+
+  unauthorized:
+    status: 401
+    message: "You are not authorized to perform this action."
+
+  # Asking for capacity that is not there right now. The request is well
+  # formed and the region is full.
+  capacity:
+    status: 422
+    message: "insufficient capacity to create the machine in region lhr"
+
+fixtures:
+  empty: {}
+
+  one-app:
+    machine:
+      # Started, on a host Fly cannot reach. state says the machine is
+      # running and host_status says nobody can talk to the computer it is
+      # running on, and those are both true.
+      - id: "148e2d1d7d1289"
+        app_name: cauldron-web
+        name: winter-frost-4821
+        state: started
+        region: lhr
+        instance_id: 01HQ8Z3K5N7P9R2T4V6X8Y0A2C
+        private_ip: fdaa:0:2c1f:a7b:1de:1234:5678:2
+        host_status: unreachable
+        cordoned: false
+        created_at: "2026-06-14T09:22:41Z"
+        updated_at: "2026-08-19T06:11:03Z"
+        image: registry.fly.io/cauldron-web
+        image_tag: deployment-01HQ8Z3K5N
+        image_digest: "sha256:7f3a1c9e2b5d8046af1e73c2d90b6845e3f7a1c9e2b5d8046af1e73c2d90b684"
+        check_name: http
+        check_status: passing
+        check_output: "200 OK"
+        check_updated_at: "2026-08-19T06:10:58Z"
+        event_id: 01HQ8Z9M2P4R6T8V0X2Z4A6C8E
+        event_type: start
+        event_status: started
+        event_source: flyd
+        event_timestamp: 1787131863000
+
+      # Started, reachable, and cordoned. Draining on purpose, serving
+      # nothing new, and indistinguishable from the healthy one if you read
+      # only state.
+      - id: "3d8ee2f1c47398"
+        app_name: cauldron-web
+        name: spring-thaw-1177
+        state: started
+        region: lhr
+        instance_id: 01HQ8ZB4M6Q8S0U2W4Y6A8C0E2
+        private_ip: fdaa:0:2c1f:a7b:1de:1234:5678:3
+        host_status: ok
+        cordoned: true
+        created_at: "2026-07-02T14:05:18Z"
+        updated_at: "2026-08-19T05:58:44Z"
+        image: registry.fly.io/cauldron-web
+        image_tag: deployment-01HQ8Z3K5N
+        image_digest: "sha256:7f3a1c9e2b5d8046af1e73c2d90b6845e3f7a1c9e2b5d8046af1e73c2d90b684"
+        check_name: http
+        check_status: passing
+        check_output: "200 OK"
+        check_updated_at: "2026-08-19T05:58:40Z"
+        event_id: 01HQ8ZC6N8R0T2V4X6Z8B0D2F4
+        event_type: cordon
+        event_status: started
+        event_source: user
+        event_timestamp: 1787130524000
+
+      # Started, reachable, uncordoned, and failing its health check. The
+      # process is up and the application is not.
+      - id: "9081f4a2e6b537"
+        app_name: cauldron-web
+        name: autumn-haze-6390
+        state: started
+        region: cdg
+        instance_id: 01HQ8ZD8P0S2U4W6Y8A0C2E4G6
+        private_ip: fdaa:0:2c1f:a7b:1de:1234:5678:4
+        host_status: ok
+        cordoned: false
+        created_at: "2026-08-11T08:44:02Z"
+        updated_at: "2026-08-19T07:02:19Z"
+        image: registry.fly.io/cauldron-web
+        image_tag: deployment-01HQ8Z3K5N
+        image_digest: "sha256:7f3a1c9e2b5d8046af1e73c2d90b6845e3f7a1c9e2b5d8046af1e73c2d90b684"
+        check_name: http
+        check_status: critical
+        check_output: "dial tcp 127.0.0.1:8080: connect: connection refused"
+        check_updated_at: "2026-08-19T07:02:14Z"
+        event_id: 01HQ8ZE0R2T4V6X8Z0B2D4F6H8
+        event_type: start
+        event_status: started
+        event_source: flyd
+        event_timestamp: 1787134939000
+
+    lease:
+      - id: "148e2d1d7d1289"
+        app_name: cauldron-web
+        nonce: "8f4c1e93a70b25d6"
+        owner: ada@example.com
+        expires_at: 1787135400
+        description: "flyctl deploy"
+        version: 01HQ8ZF2T4V6X8Z0B2D4F6H8J0
+
+# Every case below is derived from the OpenAPI description Fly publishes for
+# the Machines API. None has been run against a real organisation. The verify
+# report says so.
+conformance:
+  - name: started, on a host nobody can reach
+    # Not stopped, not failed, not anything state has a word for. Two
+    # fields on one object, both true, and only one of them is read.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/148e2d1d7d1289
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        state: started
+        host_status: unreachable
+
+  - name: started, and taking no traffic on purpose
+    # Cordoned. Draining, deliberately, and indistinguishable from a
+    # healthy machine if you read only state.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/3d8ee2f1c47398
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        state: started
+        host_status: ok
+        cordoned: true
+
+  - name: started, and failing its own health check
+    # The process is up and the application is not, and the reason is in
+    # the check's output rather than anywhere near the state.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/9081f4a2e6b537
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        state: started
+        cordoned: false
+        checks[0].status: critical
+        checks[0].output: "dial tcp 127.0.0.1:8080: connect: connection refused"
+
+  - name: three machines, all started, none of them the same
+    # A deploy script that waits for state == started and declares success
+    # has waited for the field that cannot tell these apart.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].state": started
+        "[1].state": started
+        "[2].state": started
+        "[0].host_status": unreachable
+        "[1].cordoned": true
+        "[2].checks[0].status": critical
+      absent:
+        - "[3]"
+        - machines
+
+  - name: the identifier you watch is not the one that lasts
+    # instance_id is unique for each version of the machine, in Fly's
+    # words. The id above it survives an update and this does not, so a
+    # metric keyed on it starts a new series at every deploy.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/148e2d1d7d1289
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        id: "148e2d1d7d1289"
+        instance_id: 01HQ8Z3K5N7P9R2T4V6X8Y0A2C
+        # Three machines, one image, three instance ids. What is deployed
+        # is the digest, and what changes per machine is the field beside
+        # it.
+        image_ref.repository: registry.fly.io/cauldron-web
+        image_ref.tag: deployment-01HQ8Z3K5N
+        image_ref.digest: "sha256:7f3a1c9e2b5d8046af1e73c2d90b6845e3f7a1c9e2b5d8046af1e73c2d90b684"
+
+  - name: the machine carries its own history
+    # events is on the object, newest first, so the state and the log that
+    # produced it arrive together and can be read apart by code that does
+    # not know they are the same thing.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/3d8ee2f1c47398
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        events[0].type: cordon
+        events[0].source: user
+        events[0].status: started
+      absent:
+        - events[1]
+
+  - name: the event status is the machine state, spelled the same and meaning less
+    # This machine is cordoned and its newest event says started, because
+    # the event's status is the state the machine entered, not the outcome
+    # of the event. A log line reading "cordon: started" is an event that
+    # began, not a machine that is serving.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/3d8ee2f1c47398
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        cordoned: true
+        events[0].type: cordon
+        events[0].status: started
+
+  - name: a lease is addressed by the machine and does not name it
+    # Fly does not echo the machine id here. The nonce is the whole point:
+    # it is the token an update must carry, and no other endpoint but
+    # creation ever hands one over.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/148e2d1d7d1289/lease
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        nonce: "8f4c1e93a70b25d6"
+        owner: ada@example.com
+        description: "flyctl deploy"
+      absent:
+        - id
+        - machine_id
+        - app_name
+
+  - name: somebody else holding the lease is a 409 about the machine
+    # The machine is fine and the request is fine. What is wrong is that a
+    # deploy is already in flight, and the message says locked rather than
+    # saying who.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    arm: lease_held
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/148e2d1d7d1289/lease
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 409
+      body:
+        error: "failed to acquire lease: machine is already locked"
+      absent:
+        - code
+        - message
+
+  - name: the app name is in the path and not in the body
+    # A partition that lives in the URL is not repeated in the object, so a
+    # machine on its own cannot say which app it belongs to.
+    source: https://docs.machines.dev/spec/openapi3.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/apps/cauldron-web/machines/148e2d1d7d1289
+      headers:
+        Authorization: Bearer FlyV1cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        name: winter-frost-4821
+        region: lhr
+      absent:
+        - app_name
+        - app
