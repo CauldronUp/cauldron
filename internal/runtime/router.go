@@ -44,6 +44,46 @@ func newRouter(r *recipe.Recipe) *router {
 	return out
 }
 
+// mentions reports whether a GraphQL query names a field, as a whole word.
+//
+// A substring match is not good enough and the difference is not theoretical:
+// selects "me" matched `query { viewer { name email } }`, because "name"
+// contains it. Short root fields are common -- me, user, node, team -- and an
+// accidental match sends a request to the wrong fixture, which is a bug this
+// project exists to catch rather than commit.
+//
+// A GraphQL name is a letter or underscore followed by letters, digits or
+// underscores, so a match is a real one when neither neighbour could be part
+// of the same name.
+func mentions(query, field string) bool {
+	if query == "" || field == "" {
+		return false
+	}
+
+	for from := 0; ; {
+		at := strings.Index(query[from:], field)
+		if at < 0 {
+			return false
+		}
+
+		at += from
+		end := at + len(field)
+
+		if (at == 0 || !isNameRune(query[at-1])) && (end == len(query) || !isNameRune(query[end])) {
+			return true
+		}
+
+		from = at + 1
+	}
+}
+
+func isNameRune(c byte) bool {
+	return c == '_' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
+}
+
 func compilePath(path string) []segment {
 	var out []segment
 
@@ -109,7 +149,7 @@ func (r *router) matchSelecting(method, path, query string) (route, map[string]s
 		}
 
 		if candidate.spec.Selects != "" {
-			if query == "" || !strings.Contains(query, candidate.spec.Selects) {
+			if !mentions(query, candidate.spec.Selects) {
 				continue
 			}
 

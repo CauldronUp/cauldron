@@ -190,3 +190,27 @@ func TestRoutingOnThePathAloneStillWorks(t *testing.T) {
 		t.Errorf("the body was consumed before the handler read it: %v", created)
 	}
 }
+
+func TestASelectorMatchesAWholeFieldOnly(t *testing.T) {
+	// A substring match is not good enough. selects "me" matched
+	// `query { viewer { name email } }`, because "name" contains it, and
+	// short root fields are common: me, user, node, team.
+	for _, c := range []struct {
+		query string
+		field string
+		want  bool
+	}{
+		{"query { viewer { name email } }", "me", false},
+		{"query { me { name } }", "me", true},
+		{"query { orders { id } }", "orders", true},
+		{"query { orders { id } }", "order", false},
+		{"query { preorders { id } }", "orders", false},
+		{"query { issues(first: 5) { nodes { id } } }", "issues", true},
+		{"", "issues", false},
+		{"query { issues { id } }", "", false},
+	} {
+		if got := mentions(c.query, c.field); got != c.want {
+			t.Errorf("mentions(%q, %q) = %v, want %v", c.query, c.field, got, c.want)
+		}
+	}
+}

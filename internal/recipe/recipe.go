@@ -800,9 +800,10 @@ type Route struct {
 	// only when the body's query mentions it.
 	//
 	// This does not parse GraphQL and does not pretend to. It looks for the
-	// word, which is enough to pick a fixture and is exactly the bargain
-	// every Recipe here already makes: model what comes back, not how the
-	// provider decided it.
+	// field named as a whole word -- a substring match sent `viewer` queries
+	// to a route selecting `me`, because "name" contains it -- which is
+	// enough to pick a fixture and is exactly the bargain every Recipe here
+	// already makes: model what comes back, not how the provider decided it.
 	//
 	// Seven providers were unreachable without this -- Linear, Monday, Attio,
 	// New Relic, Railway, ShipHero, and half of Fly.io -- and each had been
