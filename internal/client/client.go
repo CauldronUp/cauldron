@@ -139,6 +139,7 @@ type RecipeStatus struct {
 	Fixture  string   `json:"fixture"`
 	Requests int      `json:"requests"`
 	Faults   int      `json:"armed_faults"`
+	Network  []string `json:"network,omitempty"`
 	Webhooks int      `json:"webhooks_sent"`
 	Errors   []string `json:"injectable_errors"`
 }
@@ -169,6 +170,7 @@ type Exchange struct {
 	Fault    string `json:"Fault"`
 	Resource string `json:"Resource"`
 	Op       string `json:"Op"`
+	Network  string `json:"Network"`
 }
 
 // Requests fetches the request log for a recipe.
@@ -211,6 +213,40 @@ type Fault struct {
 // Arm installs a fault.
 func (c *Client) Arm(recipe string, fault Fault) error {
 	return c.do(http.MethodPost, "/_cauldron/"+url.PathEscape(recipe)+"/fault", fault, nil)
+}
+
+// Network is a degraded link, armed against one recipe.
+//
+// Durations are strings so they carry their unit over the wire: "800ms" says
+// what it means where 800 would not.
+type Network struct {
+	Latency     string  `json:"latency,omitempty"`
+	Jitter      string  `json:"jitter,omitempty"`
+	Bandwidth   int     `json:"bandwidth,omitempty"`
+	Timeout     string  `json:"timeout,omitempty"`
+	Reset       bool    `json:"reset,omitempty"`
+	Limit       int     `json:"limit,omitempty"`
+	Slice       int     `json:"slice,omitempty"`
+	Probability float64 `json:"probability,omitempty"`
+	Count       int     `json:"count,omitempty"`
+	For         string  `json:"for,omitempty"`
+	Path        string  `json:"path,omitempty"`
+	Clear       bool    `json:"clear,omitempty"`
+}
+
+// Degrade arms network conditions, and returns the server's description of
+// what it armed.
+func (c *Client) Degrade(recipe string, network Network) (string, error) {
+	var out struct {
+		Armed   string `json:"armed"`
+		Cleared bool   `json:"cleared"`
+	}
+
+	if err := c.do(http.MethodPost, "/_cauldron/"+url.PathEscape(recipe)+"/network", network, &out); err != nil {
+		return "", err
+	}
+
+	return out.Armed, nil
 }
 
 // Emit fires a webhook.

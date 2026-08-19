@@ -141,6 +141,12 @@ func commands() map[string]command {
 			usage:   "cauldron fault <recipe> --error <name>",
 			run:     runFault,
 		},
+		"network": {
+			name:    "network",
+			summary: "Make the connection to a provider slow, flaky or dead",
+			usage:   "cauldron network <recipe> --latency 800ms [--jitter 200ms]",
+			run:     runNetwork,
+		},
 		"emit": {
 			name:    "emit",
 			summary: "Fire a webhook at your application",

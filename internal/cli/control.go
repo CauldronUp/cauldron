@@ -80,7 +80,7 @@ func runStatus(ctx *context, args []string) int {
 	fmt.Fprintf(ctx.stdout, "Sandbox time %s\n\n", status.Time)
 
 	w := tabwriter.NewWriter(ctx.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprint(w, "RECIPE\tVERSION\tFIXTURE\tREQUESTS\tFAULTS\tWEBHOOKS\n")
+	fmt.Fprint(w, "RECIPE\tVERSION\tFIXTURE\tREQUESTS\tFAULTS\tWEBHOOKS\tNETWORK\n")
 
 	for _, r := range status.Recipes {
 		fixture := r.Fixture
@@ -88,7 +88,14 @@ func runStatus(ctx *context, args []string) int {
 			fixture = "-"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n", r.Recipe, r.Version, fixture, r.Requests, r.Faults, r.Webhooks)
+		// Degraded conditions are invisible until they bite, so status is the
+		// one place they have to be stated plainly.
+		network := "-"
+		if len(r.Network) > 0 {
+			network = strings.Join(r.Network, "; ")
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n", r.Recipe, r.Version, fixture, r.Requests, r.Faults, r.Webhooks, network)
 	}
 
 	_ = w.Flush()
@@ -134,7 +141,23 @@ func runRequests(ctx *context, args []string) int {
 			note = "fault: " + e.Fault
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", e.Seq, e.Method, e.Path, e.Status, note)
+		// A degraded request is often the one somebody is squinting at, so the
+		// cause belongs in the log rather than only in status.
+		if e.Network != "" {
+			if note == "" {
+				note = "network: " + e.Network
+			} else {
+				note += "  network: " + e.Network
+			}
+		}
+
+		status := fmt.Sprintf("%d", e.Status)
+		if e.Status == 0 {
+			// A severed connection never produced one.
+			status = "-"
+		}
+
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", e.Seq, e.Method, e.Path, status, note)
 	}
 
 	_ = w.Flush()
@@ -283,6 +306,92 @@ func describeFault(f client.Fault) string {
 	}
 
 	return " " + strings.Join(parts, ", ")
+}
+
+// runNetwork arms degraded network conditions.
+//
+// The flag names are Toxiproxy's on purpose. Anyone who has run
+// `toxiproxy-cli toxic add -t latency` against their database already knows
+// what --latency and --jitter mean here, and making them learn a second
+// vocabulary for the same idea would buy nothing.
+func runNetwork(ctx *context, args []string) int {
+	var (
+		base        string
+		latency     string
+		jitter      string
+		timeout     string
+		duration    string
+		path        string
+		bandwidth   int
+		limit       int
+		slice       int
+		count       int
+		probability float64
+		reset       bool
+		clear       bool
+	)
+
+	fs := flag.NewFlagSet("network", flag.ContinueOnError)
+	fs.SetOutput(ctx.stderr)
+	urlFlag(fs, &base)
+	fs.StringVar(&latency, "latency", "", "delay every response, e.g. 800ms")
+	fs.StringVar(&jitter, "jitter", "", "vary the delay by plus or minus this, e.g. 200ms")
+	fs.IntVar(&bandwidth, "bandwidth", 0, "throttle the response body, in KB/s")
+	fs.StringVar(&timeout, "timeout", "", "answer nothing, then close the connection after this long")
+	fs.BoolVar(&reset, "reset", false, "close the connection immediately, with no response")
+	fs.IntVar(&limit, "limit", 0, "close after this many bytes of body")
+	fs.IntVar(&slice, "slice", 0, "write the body in chunks of roughly this many bytes")
+	fs.Float64Var(&probability, "probability", 0, "affect this share of requests, 0 to 1 (default all)")
+	fs.IntVar(&count, "count", 0, "affect only this many requests")
+	fs.StringVar(&duration, "for", "", "expire after this long, e.g. 30s")
+	fs.StringVar(&path, "path", "", "only affect paths containing this")
+	fs.BoolVar(&clear, "clear", false, "remove every armed condition")
+
+	positional, err := parseFlags(fs, args)
+	if err != nil {
+		return 1
+	}
+
+	recipe := arg(positional, 0)
+	if recipe == "" {
+		fmt.Fprint(ctx.stderr, "cauldron: which recipe? e.g. 'cauldron network stripe --latency 800ms'\n")
+		return 1
+	}
+
+	c := client.New(base)
+
+	if clear {
+		if _, err := c.Degrade(recipe, client.Network{Clear: true}); err != nil {
+			return fail(ctx, err)
+		}
+
+		fmt.Fprintf(ctx.stdout, "Cleared network conditions on %s.\n", recipe)
+
+		return 0
+	}
+
+	network := client.Network{
+		Latency:     latency,
+		Jitter:      jitter,
+		Bandwidth:   bandwidth,
+		Timeout:     timeout,
+		Reset:       reset,
+		Limit:       limit,
+		Slice:       slice,
+		Probability: probability,
+		Count:       count,
+		For:         duration,
+		Path:        path,
+	}
+
+	armed, err := c.Degrade(recipe, network)
+	if err != nil {
+		return fail(ctx, err)
+	}
+
+	fmt.Fprintf(ctx.stdout, "Degraded %s: %s.\n", recipe, armed)
+
+	return 0
 }
 
 func runEmit(ctx *context, args []string) int {

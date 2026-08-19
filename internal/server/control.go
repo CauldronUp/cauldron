@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/CauldronUp/cauldron/internal/clock"
 	"github.com/CauldronUp/cauldron/internal/runtime"
@@ -19,6 +20,7 @@ import (
 //	POST /_cauldron/{recipe}/seed?fixture=small-shop
 //	POST /_cauldron/{recipe}/reset
 //	POST /_cauldron/{recipe}/fault      {"error":"rate_limit","count":3}
+//	POST /_cauldron/{recipe}/network    {"latency":"800ms","jitter":"200ms"}
 //	POST /_cauldron/{recipe}/emit       {"event":"customer.created","data":{}}
 //	POST /_cauldron/{recipe}/subscribe  {"url":"http://localhost:8000/webhooks"}
 //	POST /_cauldron/clock/advance       {"duration":"30d"}
@@ -79,7 +81,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	switch rest {
 	case "requests":
 		s.requests(w, sandbox)
-	case "seed", "reset", "fault", "emit", "subscribe":
+	case "seed", "reset", "fault", "network", "emit", "subscribe":
 		if !s.mutation(w, r) {
 			return
 		}
@@ -91,6 +93,8 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			s.reset(w, sandbox)
 		case "fault":
 			s.fault(w, r, sandbox)
+		case "network":
+			s.network(w, r, sandbox)
 		case "emit":
 			s.emit(w, r, sandbox)
 		case "subscribe":
@@ -170,6 +174,7 @@ func (s *Server) status(w http.ResponseWriter) {
 		Fixture  string   `json:"fixture,omitempty"`
 		Requests int      `json:"requests"`
 		Faults   int      `json:"armed_faults"`
+		Network  []string `json:"network,omitempty"`
 		Webhooks int      `json:"webhooks_sent"`
 		Errors   []string `json:"injectable_errors"`
 	}
@@ -191,6 +196,7 @@ func (s *Server) status(w http.ResponseWriter) {
 			Fixture:  sandbox.Fixture(),
 			Requests: len(sandbox.Exchanges(0)),
 			Faults:   len(sandbox.ArmedFaults()),
+			Network:  describeNetwork(sandbox),
 			Webhooks: len(sandbox.Webhooks().Deliveries()),
 			Errors:   sandbox.Errors(),
 		})
@@ -319,6 +325,98 @@ func (s *Server) fault(w http.ResponseWriter, r *http.Request, sandbox *runtime.
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"recipe": sandbox.Name(), "armed": name})
+}
+
+// network arms degraded network conditions, or clears them.
+//
+// Unlike fault, this needs nothing from the Recipe: a slow or broken link is
+// not something a provider declares, it happens to all of them equally.
+func (s *Server) network(w http.ResponseWriter, r *http.Request, sandbox *runtime.Sandbox) {
+	body, err := recordFrom(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "Body could not be parsed.")
+		return
+	}
+
+	if clear, ok := body["clear"].(bool); ok && clear {
+		sandbox.ClearNetwork()
+		writeJSON(w, http.StatusOK, map[string]any{"recipe": sandbox.Name(), "cleared": true})
+
+		return
+	}
+
+	conditions := runtime.Conditions{
+		Bandwidth: intFrom(body["bandwidth"]),
+		Limit:     int64(intFrom(body["limit"])),
+		Slice:     intFrom(body["slice"]),
+		Count:     intFrom(body["count"]),
+	}
+
+	if reset, ok := body["reset"].(bool); ok {
+		conditions.Reset = reset
+	}
+
+	if probability, ok := body["probability"].(float64); ok {
+		conditions.Probability = probability
+	}
+
+	if path, ok := body["path"].(string); ok {
+		conditions.Path = path
+	}
+
+	for field, into := range map[string]*time.Duration{
+		"latency": &conditions.Latency,
+		"jitter":  &conditions.Jitter,
+		"timeout": &conditions.Timeout,
+	} {
+		raw, ok := body[field].(string)
+		if !ok || raw == "" {
+			continue
+		}
+
+		d, err := clock.ParseDuration(raw)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, capitalise(field)+": "+err.Error())
+			return
+		}
+
+		*into = d
+	}
+
+	if raw, ok := body["for"].(string); ok && raw != "" {
+		d, err := clock.ParseDuration(raw)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		conditions.Until = s.clock.Now().Add(d)
+	}
+
+	if err := sandbox.Degrade(conditions); err != nil {
+		s.writeError(w, http.StatusBadRequest, capitalise(err.Error())+".")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recipe": sandbox.Name(),
+		"armed":  runtime.Describe(conditions),
+	})
+}
+
+// describeNetwork renders a sandbox's armed conditions for the status payload.
+func describeNetwork(sandbox *runtime.Sandbox) []string {
+	armed := sandbox.ArmedNetwork()
+	if len(armed) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(armed))
+	for _, c := range armed {
+		out = append(out, runtime.Describe(c))
+	}
+
+	return out
 }
 
 func (s *Server) emit(w http.ResponseWriter, r *http.Request, sandbox *runtime.Sandbox) {

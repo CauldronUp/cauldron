@@ -34,12 +34,13 @@ type Options struct {
 
 // Sandbox is one running Recipe.
 type Sandbox struct {
-	recipe *recipe.Recipe
-	store  *store.Store
-	clock  *clock.Clock
-	router *router
-	faults *faultSet
-	log    *requestLog
+	recipe  *recipe.Recipe
+	store   *store.Store
+	clock   *clock.Clock
+	router  *router
+	faults  *faultSet
+	network *networkSet
+	log     *requestLog
 
 	mu       sync.RWMutex
 	fixture  string
@@ -67,6 +68,7 @@ func New(r *recipe.Recipe, opts Options) (*Sandbox, error) {
 		clock:    c,
 		router:   newRouter(r),
 		faults:   newFaultSet(c),
+		network:  newNetworkSet(c, opts.Seed),
 		log:      newRequestLog(opts.LogSize),
 		webhooks: newWebhookQueue(r, c),
 	}
@@ -191,6 +193,30 @@ func (s *Sandbox) Arm(fault Fault) error {
 
 // ClearFaults disarms every fault.
 func (s *Sandbox) ClearFaults() { s.faults.Clear() }
+
+// Degrade arms network conditions: latency, throttling, timeouts, resets.
+//
+// Unlike Arm, this needs nothing from the Recipe. A slow link is not something
+// a provider declares; it happens to every provider equally.
+func (s *Sandbox) Degrade(c Conditions) error {
+	if !c.Degrades() {
+		return fmt.Errorf("recipe %s: nothing to degrade (set at least one of latency, jitter, bandwidth, timeout, reset, limit, slice)", s.recipe.Name)
+	}
+
+	if c.Probability < 0 || c.Probability > 1 {
+		return fmt.Errorf("recipe %s: probability must be between 0 and 1, got %v", s.recipe.Name, c.Probability)
+	}
+
+	s.network.Arm(c)
+
+	return nil
+}
+
+// ClearNetwork restores an undegraded network.
+func (s *Sandbox) ClearNetwork() { s.network.Clear() }
+
+// ArmedNetwork returns the currently armed network conditions.
+func (s *Sandbox) ArmedNetwork() []Conditions { return s.network.Armed() }
 
 // ArmedFaults returns the currently armed faults.
 func (s *Sandbox) ArmedFaults() []Fault { return s.faults.Armed() }
