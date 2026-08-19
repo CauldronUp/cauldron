@@ -560,7 +560,7 @@ transfers alone, and say so in the header.
 |---|---|
 | ~~Netlify~~ | Shipped. A deploy has an id before it has a site, ready is not published, and a missing URL means two different things |
 | Render | Services, deploys, and the gap between build finished and live |
-| Fly.io | The Machines API and the older platform API are different shapes for the same account |
+| ~~Fly.io~~ | Shipped, and **not** for the reason this row gave: the older platform API is GraphQL at a different host, and this format speaks REST, so the two-shapes half is stated in the header and not modelled. What shipped is better anyway. `state: started` does not mean the application is up, and three fields on the same object independently say so -- `host_status` can be `unreachable`, `cordoned` can be true, and `checks[0].status` can be `critical`. Four answers to one question, disagreeing by design. Plus: `instance_id` is unique per *version*, so anything keyed on it loses its history at every deploy, and `nonce` is returned once, at creation, and only if a lease duration was asked for |
 | ~~Heroku~~ | Shipped, and the header was the smaller half. A successful list is **206**: Heroku pages with the `Range` header and answers `206 Partial Content` while there is more, with the resume point in `Next-Range` rather than in the body -- so comparing against 200 rejects every page but the last, and testing `ok` accepts them and never looks for the rest. The `Accept` version header is a 406 when missing, errors are keyed by `id` rather than `code`, `url` is on an error only sometimes, and a formation with `quantity: 0` is a process type that exists and is not running |
 | ~~Hetzner Cloud~~ | Shipped, and the row was exactly right. Powering off a server answers 201 with a job: status running, progress 0, finished null, and the machine still on. Every mutation in the API is that shape, so nothing that changes anything answers with the thing it changed. An action can fail long after its 201, its reason is an object rather than a sentence, progress reaches 100 while still running, a server has nine statuses of which eight are not running, and `locked` is a separate question from `status` whose refusal is a 423 |
 
@@ -917,6 +917,33 @@ preferring the template whose parameter name matches the Recipe's, or
 reporting every candidate rather than the first, and both want a second
 provider showing the same shape before the right answer is obvious. Written
 down so the next person to see a false finding here knows where it came from.
+
+## A partition in the path, repeated in the body
+
+A route that scopes by a path segment needs that segment as a field on the
+resource, because that is how the record is partitioned. Nothing then stops it
+being emitted, and most providers do not repeat a partition they already put
+in the URL. Fly does not send `app_name` on a machine; Hetzner does not send
+`collection_name` on a point. Both leaked until a `returns` naming every other
+field was added, which is twenty-three names to hide one.
+
+The engine already knows the principle. The `beside` path deletes scope fields
+from the collections travelling alongside, with a comment saying exactly this:
+the partition is in the path, and a provider that puts it there does not
+repeat it in the body.
+
+Making that automatic everywhere would be wrong. 58 Recipes use scope and 12
+scope fields are asserted by a conformance case, and some of those assertions
+are true -- Discord really does send `channel_id` and `guild_id` on a message,
+Mailchimp really does send `list_id` on a member. So the difference is a fact
+about each provider, not a rule, and the fix has to be declarable rather than
+inferred.
+
+What is not known is how many of the other 46 are emitting a field their
+provider does not send. Finding out means reading each provider's response
+schema beside its paths, one at a time -- the same audit the create-echo note
+above describes, and unresolvable from the Recipes alone for the same reason:
+the evidence is the field nobody wrote down.
 
 ## Assessed and deliberately not done
 
