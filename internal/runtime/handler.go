@@ -363,10 +363,14 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// reached by POST it is usually the body.
 	from := pagingFrom(r, matched.spec.Pagination)
 
-	if name := matched.spec.Pagination.LimitParam; name != "" {
-		limit = from.int(name, limit)
-	} else {
+	switch name := matched.spec.Pagination.LimitParam; name {
+	case "":
 		limit = from.int("limit", limit)
+	case "-":
+		// The provider accepts no name for the page size, so the declared one
+		// is the only one there is.
+	default:
+		limit = from.int(name, limit)
 	}
 
 	// The declared style decides what the position parameter means. It was
