@@ -413,9 +413,24 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 		return failures
 	}
 
+	// UseNumber, because encoding/json decodes every number into a float64 by
+	// default and a float64 cannot hold an int64.
+	//
+	// Typesense sends a relevance score up near 578730123365711993, which is
+	// what made this visible: the emulator put those exact digits on the wire
+	// and this comparator read 578730123365712000, so a case asserting the
+	// true value failed against a response that carried it. Worse, the hit
+	// ranked below it -- 578730123365711994 -- read as the same number, so a
+	// case could not have told the two apart either.
+	//
+	// The tool that exists to catch an emulator sending the wrong number was
+	// itself unable to see the right one.
 	var decoded any
 
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+
+	if err := decoder.Decode(&decoded); err != nil {
 		return append(failures, fmt.Sprintf("response is not JSON: %v", err))
 	}
 
@@ -630,6 +645,9 @@ func text(value any) string {
 	case bool:
 		return strconv.FormatBool(typed)
 	default:
+		// json.Number lands here and marshals as the literal the provider
+		// sent, digit for digit, which is exactly what is wanted. A case of
+		// its own above would have been a branch that changed nothing.
 		encoded, err := json.Marshal(typed)
 		if err != nil {
 			return fmt.Sprint(typed)
@@ -651,6 +669,10 @@ func kindOf(value any) string {
 		return "the string"
 	case bool:
 		return "the boolean"
+	case json.Number:
+		// Decoded with UseNumber, so it is a number that has not been through
+		// a float64. It is a string type and it is not a string.
+		return "the number"
 	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return "the number"
 	default:

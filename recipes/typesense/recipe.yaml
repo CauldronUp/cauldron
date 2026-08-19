@@ -1,0 +1,427 @@
+# Typesense Recipe for Cauldron
+#
+# The relevance score is a number no browser can read.
+#
+# text_match is an int64, and Typesense's real values live up near
+# 578730123365711993 -- sixty-odd bits. JavaScript numbers are float64, so
+# JSON.parse rounds it to 578730123365712000 and the last seven are gone.
+# The hit ranked immediately below it, 578730123365711994, rounds to exactly
+# the same thing.
+#
+# So two hits with different scores compare equal, a sort by text_match is
+# stable only by accident, and a client that re-ranks results client-side is
+# re-ranking numbers it never received. Nothing errors. The JSON is valid,
+# the field is present, and the value is wrong by seven before any of your
+# code has run.
+#
+# This is the worse half of a problem the format already knew about. Discord
+# sends its snowflakes as strings precisely so this cannot happen, and the
+# id style called digits exists to describe that. Typesense sends a number,
+# so there is nothing a client can do about it short of a custom parser.
+#
+# Five more the Recipe pins:
+#
+#   1. search_cutoff is a boolean saying the answer is incomplete, at 200.
+#      Typesense stopped early because the query was taking too long, and
+#      the results you got are the ones it had. found is smaller than it
+#      would have been and nothing else says so.
+#   2. There are three counts and only one of them counts the array. found
+#      is how many matched, out_of is how many documents exist in the
+#      collection, found_docs is a fourth thing for grouped queries, and
+#      hits.length is what you actually got, which is the page.
+#   3. The document is one level down. hits[] holds text_match, highlight
+#      and document, so the thing you searched for is hits[i].document and
+#      everything beside it is about the search rather than about the
+#      record.
+#   4. highlight and highlights are both there and one is deprecated. An
+#      object and an array, one letter apart, in the same hit.
+#   5. num_documents is an int64 too. A large collection's count has the
+#      same problem as the score, and it is the number most likely to be
+#      shown to somebody.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is searched. The hits are the fixture's, in the fixture's
+#     order, with the fixture's scores, whatever q, filter_by, sort_by or
+#     query_by was asked for.
+#   - The import endpoint is not modelled and it is the other thing worth
+#     knowing about this API. Typesense answers a bulk import with 200 and a
+#     body of newline-delimited JSON at application/octet-stream, one line
+#     per document, so a partial failure is a success status and a body that
+#     response.json() throws on. Its own documented example is a successful
+#     line followed by {"success": false, "error": "Bad JSON."}. This format
+#     writes JSON, so the shape is described here rather than served.
+#   - Faceting, grouping, vector and hybrid search, synonyms, curation,
+#     aliases, analytics and the multi-search endpoint are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: typesense
+capability: search
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://typesense.org/docs/latest/api/
+
+auth:
+  scheme: header
+  header: X-TYPESENSE-API-KEY
+  keys:
+    - cauldron-typesense-key
+
+responses:
+  list:
+    style: wrapped
+    # How many matched. Not how many came back, and not how many exist.
+    count_field: found
+    fields:
+      # How many documents are in the collection at all, which is a
+      # different question from either of the other two.
+      out_of: 2481
+      page: 1
+      search_time_ms: 3
+      # The results are incomplete and the status is 200.
+      search_cutoff: true
+  resource:
+    style: bare
+  # One field. No code, no type, no envelope.
+  error:
+    style: flat
+    code_field: "-"
+    message_field: message
+    type_field: "-"
+
+resources:
+  # One search result. Most of it is about the search rather than about the
+  # thing found.
+  hit:
+    collection: hits
+    id:
+      style: opaque
+      length: 6
+      # A hit has no identifier. The document inside it does, and that is a
+      # different object one level down.
+      field: "-"
+    fields:
+      collection_name:
+        type: string
+      # An int64, in a response most often read by something that cannot
+      # hold one.
+      text_match:
+        type: integer
+      # The record. Everything else in this object is metadata.
+      doc_id:
+        type: string
+        in: document
+        as: id
+      doc_title:
+        type: string
+        in: document
+        as: title
+      doc_author:
+        type: string
+        in: document
+        as: author
+      doc_year:
+        type: integer
+        in: document
+        as: publication_year
+      # The replacement for highlights below, and an object rather than an
+      # array.
+      highlight_title:
+        type: string
+        in: highlight.title
+        as: snippet
+      # Deprecated, still sent, one letter away, and an array.
+      highlights_field:
+        type: string
+        in: highlights[0]
+        as: field
+      highlights_snippet:
+        type: string
+        in: highlights[0]
+        as: snippet
+
+  collection:
+    collection: collections
+    id:
+      style: opaque
+      length: 8
+      # Typesense addresses a collection by the name you gave it.
+      field: name
+    fields:
+      # An int64 as well, and the number most likely to be shown to
+      # somebody.
+      num_documents:
+        type: integer
+      created_at:
+        type: timestamp
+      default_sorting_field:
+        type: string
+      field_name:
+        type: string
+        in: fields[0]
+        as: name
+      field_type:
+        type: string
+        in: fields[0]
+        as: type
+      field_facet:
+        type: boolean
+        in: fields[0]
+        as: facet
+
+routes:
+  - method: GET
+    path: /collections/{collection_name}/documents/search
+    resource: hit
+    operation: list
+    scope: [collection_name]
+    # Typesense does not repeat the collection inside a hit.
+    returns:
+      - text_match
+      - doc_id
+      - doc_title
+      - doc_author
+      - doc_year
+      - highlight_title
+      - highlights_field
+      - highlights_snippet
+
+  - method: GET
+    path: /collections/{id}
+    resource: collection
+    operation: get
+
+errors:
+  not_found:
+    status: 404
+    message: "Not found."
+
+  unauthorized:
+    status: 401
+    message: "Forbidden - a valid `x-typesense-api-key` header must be sent."
+
+  # Filtering or sorting on a field the schema does not index. The field is
+  # in every document and the query still fails.
+  not_indexed:
+    status: 404
+    message: "Could not find a filter field named `notes` in the schema."
+
+  # Typesense refuses writes when the disk or memory watermark is passed,
+  # and keeps serving reads, so a cluster that looks healthy silently stops
+  # accepting documents.
+  out_of_resources:
+    status: 422
+    message: "Rejecting write: running out of resource type: OUT_OF_DISK"
+
+fixtures:
+  empty: {}
+
+  one-index:
+    hit:
+      # 578730123365711993. In float64 this is 578730123365712000, so the
+      # last seven digits are gone before any client code has run.
+      - id: h1
+        collection_name: books
+        text_match: 578730123365711993
+        doc_id: "1042"
+        doc_title: "The Silent Cartographer"
+        doc_author: "Ada Okonkwo"
+        doc_year: 2019
+        highlight_title: "The <mark>Silent</mark> Cartographer"
+        highlights_field: title
+        highlights_snippet: "The <mark>Silent</mark> Cartographer"
+
+      # 578730123365711994: one more than the hit above, ranked below it,
+      # and the same number after JSON.parse. Sorting these two by score is
+      # sorting by nothing.
+      - id: h2
+        collection_name: books
+        text_match: 578730123365711994
+        doc_id: "1043"
+        doc_title: "Silent Spring Revisited"
+        doc_author: "Bede Marchetti"
+        doc_year: 2021
+        highlight_title: "<mark>Silent</mark> Spring Revisited"
+        highlights_field: title
+        highlights_snippet: "<mark>Silent</mark> Spring Revisited"
+
+    collection:
+      - id: books
+        num_documents: 2481
+        created_at: 1755594000
+        default_sorting_field: publication_year
+        field_name: title
+        field_type: string
+        field_facet: false
+
+# Every case below is derived from the OpenAPI description Typesense
+# publishes. None has been run against a real cluster. The verify report says
+# so.
+conformance:
+  - name: two scores that are one apart and the same after parsing
+    # 578730123365711993 and 578730123365711994 both become
+    # 578730123365712000 in float64, so a client that sorts hits by
+    # text_match is sorting by a number it never received.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        hits[0].text_match: 578730123365711993
+        hits[1].text_match: 578730123365711994
+
+  - name: the answer is incomplete and the status is 200
+    # search_cutoff means Typesense stopped early because the query was
+    # taking too long. found is smaller than it would have been and nothing
+    # else in the response says so.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        search_cutoff: true
+        search_time_ms: 3
+
+  - name: three counts and only one counts the array
+    # found is how many matched, out_of is how many exist in the
+    # collection, and hits.length is the page. Sizing anything from out_of
+    # sizes it by the corpus.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        found: 2
+        out_of: 2481
+        page: 1
+      absent:
+        - hits[2]
+
+  - name: the document is one level down
+    # A hit holds the search metadata; hits[i].document holds the record.
+    # Reading hits[i].title finds nothing.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        hits[0].document.id: "1042"
+        hits[0].document.title: "The Silent Cartographer"
+        hits[0].document.publication_year: 2019
+      absent:
+        - hits[0].title
+        - hits[0].id
+        - hits[0].collection_name
+
+  - name: highlight and highlights are both there
+    # An object and an array, one letter apart, in the same hit, and the
+    # array is the deprecated one.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        hits[0].highlight.title.snippet: "The <mark>Silent</mark> Cartographer"
+        hits[0].highlights[0].field: title
+        hits[0].highlights[0].snippet: "The <mark>Silent</mark> Cartographer"
+
+  - name: a collection count is an int64 as well
+    # The same problem as the score, on the number most likely to be shown
+    # to somebody.
+    source: https://github.com/typesense/typesense-api-spec/blob/master/openapi.yml
+    fixture: one-index
+    request:
+      method: GET
+      path: /collections/books
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 200
+      body:
+        name: books
+        num_documents: 2481
+        default_sorting_field: publication_year
+        fields[0].name: title
+
+  - name: a field the schema does not index cannot be filtered on
+    # It is in every document and the query fails anyway, with a 404 about
+    # a field rather than about the collection.
+    source: https://typesense.org/docs/latest/api/
+    fixture: one-index
+    arm: not_indexed
+    request:
+      method: GET
+      path: /collections/books/documents/search
+      query:
+        q: silent
+        query_by: title
+        filter_by: "notes:foo"
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 404
+      body:
+        message: "Could not find a filter field named `notes` in the schema."
+      absent:
+        - code
+        - error
+
+  - name: reads keep working when writes have stopped
+    # Typesense refuses writes past a disk or memory watermark and goes on
+    # serving searches, so a cluster that looks healthy has silently
+    # stopped accepting documents.
+    source: https://typesense.org/docs/latest/api/
+    fixture: one-index
+    arm: out_of_resources
+    request:
+      method: GET
+      path: /collections/books
+      headers:
+        X-TYPESENSE-API-KEY: cauldron-typesense-key
+    expect:
+      status: 422
+      body:
+        message: "Rejecting write: running out of resource type: OUT_OF_DISK"
