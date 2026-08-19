@@ -1,0 +1,715 @@
+# RevenueCat Recipe for Cauldron
+#
+# There is no is_active field, and the documentation tells you to read one.
+#
+# RevenueCat's own guidance is customerInfo.entitlements[id].isActive, which
+# is a property the SDKs compute for you. This API does not have it. So the
+# moment the question moves to a server -- a webhook handler, an entitlement
+# check behind your own endpoints, anything that is not the app -- somebody
+# writes that comparison by hand, and the advice they were following does not
+# apply any more.
+#
+# The comparison is expires_date against now, and it has four special cases
+# the property was quietly handling:
+#
+#   1. null does not mean expired. It means lifetime. So
+#      new Date(null) > new Date() is false, and the customers who paid the
+#      most are the ones who lose access first.
+#   2. An unsubscribe is not an expiry. RevenueCat's words: an unsubscribe
+#      does not mean that the entitlement is inactive. unsubscribe_detected_at
+#      says auto-renewal is off and the customer keeps everything until
+#      expires_date, which may be eleven months away. Cutting them off when
+#      that field appears is cutting off a paying customer.
+#   3. A trial is active. period_type trial with a date in the future is
+#      somebody who has paid nothing and is entitled to everything.
+#   4. Family sharing is active. ownership_type FAMILY_SHARED is an
+#      entitlement belonging to a purchase this customer did not make, cannot
+#      manage, and whose refund you will hear about from somebody else.
+#
+# The fixture has four active entitlements and no two of them are active for
+# the same reason. One is cancelled, one never expires, one is failing to
+# pay, and one was bought by somebody else. "Is this user subscribed" is true
+# for all four.
+#
+# Three more the Recipe pins:
+#
+#   - The two maps are keyed differently. entitlements is keyed by the
+#     entitlement identifiers you named in the dashboard; subscriptions is
+#     keyed by the product identifiers the stores gave you. The only join
+#     between them is product_identifier inside the entitlement, and code
+#     that reaches into subscriptions with an entitlement key finds nothing
+#     and reports no subscription.
+#   - A billing failure keeps the entitlement. billing_issues_detected_at is
+#     set on the subscription, grace_period_expires_date is set on both, and
+#     the entitlement stays active throughout. The customer is failing to pay
+#     and is entitled, at the same time, on purpose.
+#   - The identifier you asked with is not the one that comes back.
+#     original_app_user_id is the identity RevenueCat merged the customer
+#     into, so a client keying its own records on the id it sent is keying on
+#     something the next response may not contain.
+#
+# And the endpoint is a GET that creates. It is titled Get or Create
+# Customer: 200 means the customer was there and 201 means this request
+# invented them. Same body either way, entitlements empty. So a status code
+# on a GET -- which nobody branches on, because a GET returning 201 is not a
+# thing people expect -- is the only difference between a customer with no
+# subscription and a customer who did not exist until you asked about them.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron answers 404 for a customer it does not hold. RevenueCat
+#     answers 201 and a new customer. The Recipe cannot model a route that
+#     creates on read, and pretending otherwise would hide the more
+#     interesting half of the behaviour, so this is written down instead.
+#   - request_date and request_date_ms are constants here. They are real
+#     fields and the documentation is explicit that they are not the current
+#     time and you should use device time for that, so a fixed value carries
+#     the shape and misrepresents nothing anybody should be reading.
+#   - The maps are keyed by identifiers, so a Recipe has to name them, the
+#     same way client code does. The keys below are the fixture's.
+#   - Aliasing is described above and not modelled. A customer here is
+#     addressed by the original_app_user_id the body carries, so fetching one
+#     by an identifier that was merged into it is not something this
+#     reproduces. What it does show is that the identifier in the body is
+#     RevenueCat's own rather than one an app chose.
+#   - Purchases, receipts, granting and revoking entitlements, aliases,
+#     offerings, attribution and the v2 developer API are not modelled. This
+#     is the read path.
+#   - RevenueCat publishes no error-code table. See the note on errors.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: revenuecat
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.revenuecat.com/docs/api-v1
+
+auth:
+  scheme: header
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk_cauldron00000000000000000000
+
+responses:
+  # request_date is beside the subscriber rather than inside it, and it is
+  # not the current time.
+  success:
+    fields:
+      request_date: "2026-08-19T09:00:00Z"
+      request_date_ms: 1755594000000
+  list:
+    style: wrapped
+  resource:
+    style: wrapped
+    key: subscriber
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    type_field: "-"
+
+resources:
+  customer:
+    collection: subscribers
+    id:
+      style: opaque
+      length: 20
+      # Not the identifier you asked with. This is the identity RevenueCat
+      # merged this customer into, and it can differ from the app user id in
+      # the path.
+      field: original_app_user_id
+    fields:
+      first_seen:
+        type: datetime
+      last_seen:
+        type: datetime
+      # Where to send somebody who wants to cancel. Null on the stores that
+      # have nowhere to send them.
+      management_url:
+        type: string
+        null_when_unset: true
+      original_application_version:
+        type: string
+      original_purchase_date:
+        type: datetime
+
+      # --- entitlements, keyed by the names you chose in the dashboard ---
+
+      # Active, and the customer has already cancelled. Renewal is off and
+      # everything stays theirs until the date below.
+      pro_expires_date:
+        type: datetime
+        in: entitlements.pro
+        as: expires_date
+      pro_purchase_date:
+        type: datetime
+        in: entitlements.pro
+        as: purchase_date
+      # The join to the other map. It is a product identifier, and the map
+      # it points into is keyed by product identifiers rather than by "pro".
+      pro_product_identifier:
+        type: string
+        in: entitlements.pro
+        as: product_identifier
+      pro_grace_period_expires_date:
+        type: datetime
+        in: entitlements.pro
+        as: grace_period_expires_date
+        null_when_unset: true
+
+      # Never expires. null here is the whole trap: it is lifetime access,
+      # and every naive comparison reads it as long expired.
+      lifetime_expires_date:
+        type: datetime
+        in: entitlements.lifetime
+        as: expires_date
+        null_when_unset: true
+      lifetime_purchase_date:
+        type: datetime
+        in: entitlements.lifetime
+        as: purchase_date
+      lifetime_product_identifier:
+        type: string
+        in: entitlements.lifetime
+        as: product_identifier
+      lifetime_grace_period_expires_date:
+        type: datetime
+        in: entitlements.lifetime
+        as: grace_period_expires_date
+        null_when_unset: true
+
+      # Active while the card is failing. The grace period is the reason.
+      team_expires_date:
+        type: datetime
+        in: entitlements.team
+        as: expires_date
+      team_purchase_date:
+        type: datetime
+        in: entitlements.team
+        as: purchase_date
+      team_product_identifier:
+        type: string
+        in: entitlements.team
+        as: product_identifier
+      team_grace_period_expires_date:
+        type: datetime
+        in: entitlements.team
+        as: grace_period_expires_date
+        null_when_unset: true
+
+      # Active, bought by somebody else, on a trial. Two reasons at once to
+      # be entitled without having paid.
+      starter_expires_date:
+        type: datetime
+        in: entitlements.starter
+        as: expires_date
+      starter_purchase_date:
+        type: datetime
+        in: entitlements.starter
+        as: purchase_date
+      starter_product_identifier:
+        type: string
+        in: entitlements.starter
+        as: product_identifier
+      starter_grace_period_expires_date:
+        type: datetime
+        in: entitlements.starter
+        as: grace_period_expires_date
+        null_when_unset: true
+
+      # --- subscriptions, keyed by the identifiers the stores gave you ---
+
+      annual_expires_date:
+        type: datetime
+        in: subscriptions.annual
+        as: expires_date
+      annual_purchase_date:
+        type: datetime
+        in: subscriptions.annual
+        as: purchase_date
+      annual_original_purchase_date:
+        type: datetime
+        in: subscriptions.annual
+        as: original_purchase_date
+      annual_store:
+        type: string
+        in: subscriptions.annual
+        as: store
+      # normal, intro or trial. This one pays full price.
+      annual_period_type:
+        type: string
+        in: subscriptions.annual
+        as: period_type
+      # PURCHASED or FAMILY_SHARED.
+      annual_ownership_type:
+        type: string
+        in: subscriptions.annual
+        as: ownership_type
+      # Auto-renewal is off. The entitlement above is active anyway, until
+      # its expires_date, which is the thing this field does not say.
+      annual_unsubscribe_detected_at:
+        type: datetime
+        in: subscriptions.annual
+        as: unsubscribe_detected_at
+        null_when_unset: true
+      annual_billing_issues_detected_at:
+        type: datetime
+        in: subscriptions.annual
+        as: billing_issues_detected_at
+        null_when_unset: true
+      annual_grace_period_expires_date:
+        type: datetime
+        in: subscriptions.annual
+        as: grace_period_expires_date
+        null_when_unset: true
+      annual_refunded_at:
+        type: datetime
+        in: subscriptions.annual
+        as: refunded_at
+        null_when_unset: true
+      annual_auto_resume_date:
+        type: datetime
+        in: subscriptions.annual
+        as: auto_resume_date
+        null_when_unset: true
+      annual_is_sandbox:
+        type: boolean
+        in: subscriptions.annual
+        as: is_sandbox
+      annual_store_transaction_id:
+        type: string
+        in: subscriptions.annual
+        as: store_transaction_id
+
+      team_monthly_expires_date:
+        type: datetime
+        in: subscriptions.team_monthly
+        as: expires_date
+      team_monthly_purchase_date:
+        type: datetime
+        in: subscriptions.team_monthly
+        as: purchase_date
+      team_monthly_store:
+        type: string
+        in: subscriptions.team_monthly
+        as: store
+      team_monthly_period_type:
+        type: string
+        in: subscriptions.team_monthly
+        as: period_type
+      team_monthly_ownership_type:
+        type: string
+        in: subscriptions.team_monthly
+        as: ownership_type
+      # The card is failing. The entitlement is still active.
+      team_monthly_billing_issues_detected_at:
+        type: datetime
+        in: subscriptions.team_monthly
+        as: billing_issues_detected_at
+        null_when_unset: true
+      team_monthly_grace_period_expires_date:
+        type: datetime
+        in: subscriptions.team_monthly
+        as: grace_period_expires_date
+        null_when_unset: true
+      team_monthly_unsubscribe_detected_at:
+        type: datetime
+        in: subscriptions.team_monthly
+        as: unsubscribe_detected_at
+        null_when_unset: true
+      team_monthly_is_sandbox:
+        type: boolean
+        in: subscriptions.team_monthly
+        as: is_sandbox
+
+      starter_monthly_expires_date:
+        type: datetime
+        in: subscriptions.starter_monthly
+        as: expires_date
+      starter_monthly_purchase_date:
+        type: datetime
+        in: subscriptions.starter_monthly
+        as: purchase_date
+      starter_monthly_store:
+        type: string
+        in: subscriptions.starter_monthly
+        as: store
+      # A trial. Nothing has been paid and the entitlement is active.
+      starter_monthly_period_type:
+        type: string
+        in: subscriptions.starter_monthly
+        as: period_type
+      # Somebody else's purchase. This customer cannot manage it and cannot
+      # be refunded for it.
+      starter_monthly_ownership_type:
+        type: string
+        in: subscriptions.starter_monthly
+        as: ownership_type
+      starter_monthly_unsubscribe_detected_at:
+        type: datetime
+        in: subscriptions.starter_monthly
+        as: unsubscribe_detected_at
+        null_when_unset: true
+      starter_monthly_billing_issues_detected_at:
+        type: datetime
+        in: subscriptions.starter_monthly
+        as: billing_issues_detected_at
+        null_when_unset: true
+      starter_monthly_is_sandbox:
+        type: boolean
+        in: subscriptions.starter_monthly
+        as: is_sandbox
+
+      # --- non_subscriptions, a map of arrays: one entry per purchase ---
+
+      onetime_id:
+        type: string
+        in: non_subscriptions.onetime[0]
+        as: id
+      onetime_purchase_date:
+        type: datetime
+        in: non_subscriptions.onetime[0]
+        as: purchase_date
+      onetime_store:
+        type: string
+        in: non_subscriptions.onetime[0]
+        as: store
+      onetime_is_sandbox:
+        type: boolean
+        in: non_subscriptions.onetime[0]
+        as: is_sandbox
+
+routes:
+  # Titled "Get or Create Customer". 200 means found and 201 means this
+  # request made them, and the body is the same either way. Cauldron cannot
+  # create on read, so an unknown identifier is a 404 here and would be a
+  # 201 there. The header says so.
+  - method: GET
+    path: /v1/subscribers/{id}
+    resource: customer
+    operation: get
+
+# RevenueCat publishes no error-code table. The codes below are ones that
+# appear in its own documentation and support material, so the number and
+# the sentence beside it are quoted rather than invented. The HTTP status
+# each is paired with is the weakest part of this table: 400 and 401 are
+# what the endpoint documents, and which code arrives with which status has
+# not been observed against a live account.
+errors:
+  # Two kinds of key exist and the one in your app is not the one this API
+  # takes. Using the wrong one is not a 401 that says "bad key", it is a
+  # sentence about where you are calling from.
+  wrong_key_kind:
+    status: 401
+    code: "7243"
+    message: "Secret API keys should not be used in your app."
+
+  bad_content_type:
+    status: 400
+    code: "7227"
+    message: "Content-Type not application/json"
+
+  invalid_receipt:
+    status: 400
+    code: "7103"
+    message: "The receipt is not valid."
+
+  internal_error:
+    status: 500
+    code: "7110"
+    message: "Internal server error."
+
+fixtures:
+  empty: {}
+
+  one-customer:
+    customer:
+      # Four active entitlements, and no two of them are active for the same
+      # reason.
+      - id: "$RCAnonymousID:8f3d1c0b4a7e"
+        first_seen: "2024-11-02T18:31:07Z"
+        last_seen: "2026-08-19T08:44:12Z"
+        management_url: https://apps.apple.com/account/subscriptions
+        original_application_version: "1.0"
+        original_purchase_date: "2024-11-02T18:31:07Z"
+
+        # Cancelled and entitled. Renewal is off; access runs to September.
+        pro_expires_date: "2026-09-14T21:07:40Z"
+        pro_purchase_date: "2025-09-14T21:07:40Z"
+        pro_product_identifier: annual
+
+        # Never expires. null is lifetime, and it is the customers who paid
+        # the most who read as expired.
+        lifetime_purchase_date: "2025-03-19T12:02:55Z"
+        lifetime_product_identifier: onetime
+
+        # Entitled while the card is failing.
+        team_expires_date: "2026-09-20T00:00:00Z"
+        team_purchase_date: "2026-08-20T00:00:00Z"
+        team_product_identifier: team_monthly
+        team_grace_period_expires_date: "2026-08-25T00:00:00Z"
+
+        # Entitled without having paid, twice over: a trial, bought by
+        # somebody else.
+        starter_expires_date: "2026-08-26T09:15:00Z"
+        starter_purchase_date: "2026-08-19T09:15:00Z"
+        starter_product_identifier: starter_monthly
+
+        annual_expires_date: "2026-09-14T21:07:40Z"
+        annual_purchase_date: "2025-09-14T21:07:40Z"
+        annual_original_purchase_date: "2024-11-02T18:31:07Z"
+        annual_store: play_store
+        annual_period_type: normal
+        annual_ownership_type: PURCHASED
+        annual_unsubscribe_detected_at: "2026-08-12T10:22:03Z"
+        annual_is_sandbox: false
+        annual_store_transaction_id: "GPA.6801-7988-0152-76034"
+
+        team_monthly_expires_date: "2026-09-20T00:00:00Z"
+        team_monthly_purchase_date: "2026-08-20T00:00:00Z"
+        team_monthly_store: app_store
+        team_monthly_period_type: normal
+        team_monthly_ownership_type: PURCHASED
+        team_monthly_billing_issues_detected_at: "2026-08-18T04:11:59Z"
+        team_monthly_grace_period_expires_date: "2026-08-25T00:00:00Z"
+        team_monthly_is_sandbox: false
+
+        starter_monthly_expires_date: "2026-08-26T09:15:00Z"
+        starter_monthly_purchase_date: "2026-08-19T09:15:00Z"
+        starter_monthly_store: app_store
+        starter_monthly_period_type: trial
+        starter_monthly_ownership_type: FAMILY_SHARED
+        starter_monthly_is_sandbox: false
+
+        onetime_id: cadba0c81b
+        onetime_purchase_date: "2025-03-19T12:02:55Z"
+        onetime_store: app_store
+        onetime_is_sandbox: false
+
+# Every case below is derived from RevenueCat's published documentation. None
+# has been run against a real project. The verify report says so.
+conformance:
+  - name: there is no is_active anywhere
+    # The documentation's own advice is to read isActive, which is a property
+    # the SDKs compute. This API has expires_date and leaves the comparison
+    # to you, and that comparison has four special cases.
+    source: https://www.revenuecat.com/docs/api-v1
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.entitlements.pro.expires_date: "2026-09-14T21:07:40Z"
+      absent:
+        - subscriber.entitlements.pro.is_active
+        - subscriber.entitlements.pro.active
+        - subscriber.entitlements.pro.is_subscribed
+        - subscriber.is_subscribed
+
+  - name: null is lifetime, not expired
+    # So new Date(null) > new Date() is false, and the customers who paid the
+    # most are the first to lose access.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.entitlements.lifetime.expires_date: null
+        subscriber.entitlements.lifetime.purchase_date: "2025-03-19T12:02:55Z"
+        subscriber.entitlements.lifetime.product_identifier: onetime
+
+  - name: an unsubscribe is not an expiry
+    # RevenueCat's words: an unsubscribe does not mean that the entitlement
+    # is inactive. Renewal stopped in August and access runs to September, so
+    # cutting somebody off when this field appears cuts off a paying customer
+    # with a month left.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.subscriptions.annual.unsubscribe_detected_at: "2026-08-12T10:22:03Z"
+        subscriber.subscriptions.annual.expires_date: "2026-09-14T21:07:40Z"
+        subscriber.entitlements.pro.expires_date: "2026-09-14T21:07:40Z"
+
+  - name: a trial is an active entitlement
+    # Nothing has been paid and everything is unlocked.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.subscriptions.starter_monthly.period_type: trial
+        subscriber.entitlements.starter.expires_date: "2026-08-26T09:15:00Z"
+
+  - name: and somebody else bought it
+    # FAMILY_SHARED is an entitlement from a purchase this customer did not
+    # make, cannot manage and cannot be refunded for.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.subscriptions.starter_monthly.ownership_type: FAMILY_SHARED
+        subscriber.subscriptions.annual.ownership_type: PURCHASED
+
+  - name: a billing failure keeps the entitlement
+    # The card has been failing since the eighteenth, the grace period runs
+    # to the twenty-fifth, and the entitlement is good until September.
+    # Failing to pay and being entitled are the same week, on purpose.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.subscriptions.team_monthly.billing_issues_detected_at: "2026-08-18T04:11:59Z"
+        subscriber.subscriptions.team_monthly.grace_period_expires_date: "2026-08-25T00:00:00Z"
+        subscriber.entitlements.team.expires_date: "2026-09-20T00:00:00Z"
+        subscriber.entitlements.team.grace_period_expires_date: "2026-08-25T00:00:00Z"
+
+  - name: the two maps are keyed differently
+    # entitlements by the names you chose, subscriptions by the identifiers
+    # the stores gave you. The only join is product_identifier, and reaching
+    # into subscriptions with an entitlement key finds nothing at all.
+    source: https://www.revenuecat.com/docs/api-v1
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.entitlements.pro.product_identifier: annual
+        subscriber.subscriptions.annual.store: play_store
+      absent:
+        - subscriber.subscriptions.pro
+        - subscriber.entitlements.annual
+
+  - name: four active entitlements and one paying customer
+    # Cancelled, lifetime, failing to pay, and somebody else's family. "Is
+    # this user subscribed" is true four times and means four things.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.entitlements.pro.expires_date: "2026-09-14T21:07:40Z"
+        subscriber.entitlements.lifetime.expires_date: null
+        subscriber.entitlements.team.expires_date: "2026-09-20T00:00:00Z"
+        subscriber.entitlements.starter.expires_date: "2026-08-26T09:15:00Z"
+
+  - name: a consumable is a list under its product identifier
+    # non_subscriptions is a map of arrays, one entry per purchase, so
+    # reading it as an object gets undefined however many times somebody
+    # bought the thing.
+    source: https://www.revenuecat.com/docs/api-v1
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.non_subscriptions.onetime[0].id: cadba0c81b
+        subscriber.non_subscriptions.onetime[0].store: app_store
+      absent:
+        - subscriber.non_subscriptions.onetime.id
+        - subscriber.non_subscriptions.onetime[1]
+
+  - name: request_date is outside the customer and is not now
+    # It sits beside the subscriber rather than in it, and the documentation
+    # is explicit that it is not the current time and that device time is
+    # what you should use for that.
+    source: https://www.revenuecat.com/docs/customers/customer-info
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        request_date: "2026-08-19T09:00:00Z"
+        request_date_ms: 1755594000000
+      absent:
+        - subscriber.request_date
+        - entitlements
+
+  - name: the identifier in the body is RevenueCat's own
+    # $RCAnonymousID is what it mints when an app has not named the customer
+    # yet, so the id a client stores may be a name RevenueCat chose rather
+    # than one the app did.
+    source: https://www.revenuecat.com/docs/api-v1
+    fixture: one-customer
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        subscriber.original_app_user_id: "$RCAnonymousID:8f3d1c0b4a7e"
+        subscriber.first_seen: "2024-11-02T18:31:07Z"
+
+  - name: the wrong kind of key is a sentence about where you called from
+    # Two kinds exist and the one in your app is not the one this takes.
+    source: https://www.revenuecat.com/docs/api-v1
+    fixture: one-customer
+    arm: wrong_key_kind
+    request:
+      method: GET
+      path: /v1/subscribers/$RCAnonymousID:8f3d1c0b4a7e
+      headers:
+        Authorization: Bearer sk_cauldron00000000000000000000
+    expect:
+      status: 401
+      body:
+        code: 7243
+        message: "Secret API keys should not be used in your app."
+      absent:
+        - error
+        - errors
