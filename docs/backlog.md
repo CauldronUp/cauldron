@@ -549,7 +549,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| Qdrant | Vector search, where a filter changes which vectors are even considered, so the same query with a filter is not a subset of the same query without one |
+| ~~Qdrant~~ | Shipped, and **not** for the reason this row gave. The filter behaviour needs the search itself and Cauldron does not do vector arithmetic, so the header says outright that filters are not applied. What shipped instead is the envelope: `status` is the string `ok` on success and an object `{error}` on failure, so a typed client fails to parse one of the two paths and an untyped one reads `status.error` as undefined, which is falsy, which reads like no error. Plus: `result` nests twice, a collection listing hands back names only, a write answers `acknowledged`, `points_count` and `indexed_vectors_count` disagree on purpose, and `version` is on a query result but not on a point fetched by id |
 | Weaviate | Assess — objects, classes, hybrid search |
 | Typesense | Assess — collections, documents, search parameters |
 | Convex | Assess — the query and mutation model is not REST-shaped, so this may belong in the not-done table |
