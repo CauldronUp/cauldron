@@ -1415,9 +1415,30 @@ apart -- one dashboard makes `count=1` and the default identical, two make an
 offset of one indistinguishable from a page size of one. A case only checks a
 parameter when the data would differ if the parameter were ignored.
 
+**Stytch** had two routes that are not listings.
+
+`GET /v1/sessions` is not paged at all: it takes `user_id` and nothing else,
+and answers with every session that user has. A page size was declared that
+Stytch does not accept.
+
+The member listing is a search, and it is a POST.
+`/v1/b2b/organizations/{organization_id}/members` exists in Stytch for POST
+only -- that path *creates* a member -- so the GET listing declared here was a
+route Stytch does not serve, and a conformance case used it. The real one is
+`POST /v1/b2b/organizations/members/search`, paging by `cursor` and `limit` in
+the body, with the next page at `results_metadata.next_cursor`, which nothing
+was emitting.
+
+Stated gap: the real search narrows by an `organization_ids` array in the
+body, and Cauldron scopes a listing from the path, so this one answers with
+every member rather than one organisation's. The scope declared before came
+from a path parameter that does not exist.
+
+That is the sixth phantom route or invented field, out of ten Recipes checked.
+
 ### Remaining
 
-47 Recipes, 116 declarations. The method that works: find the provider's own
+46 Recipes, 114 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
