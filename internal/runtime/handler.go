@@ -176,7 +176,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 // identifier resolves the record id for a request. Most providers put it in
 // the path; RPC-shaped ones like Slack put it in the query string or the body,
 // which the Recipe declares with id_from.
-func identifier(matched route, r *http.Request, vars map[string]string) string {
+func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]string) string {
 	if matched.spec.IDFrom == "" {
 		return vars["id"]
 	}
@@ -184,6 +184,23 @@ func identifier(matched route, r *http.Request, vars map[string]string) string {
 	source, name, _ := strings.Cut(matched.spec.IDFrom, ":")
 
 	switch source {
+	case "auth":
+		// The caller names nothing and the provider answers about whoever
+		// asked. GitHub's /user, Stripe's /v1/account, Slack's auth.test and
+		// Backblaze's b2_authorize_account all work this way, and none of
+		// them could be described at all before this: the format could say
+		// "the id is in the path" or "the id is in the body", and the whole
+		// point of these routes is that the request does not carry one.
+		//
+		// A sandbox holds one identity per Recipe, so this is the only record
+		// in the collection. The validator refuses a fixture with more than
+		// one, because there would be nothing to choose between them with.
+		page, err := s.store.List(matched.spec.Resource, "", 2)
+		if err != nil || len(page.Records) == 0 {
+			return ""
+		}
+
+		return fmt.Sprint(page.Records[0]["id"])
 	case "query":
 		return r.URL.Query().Get(name)
 	case "body":
@@ -235,7 +252,7 @@ func trim(spec recipe.Route, record store.Record) store.Record {
 }
 
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := identifier(matched, r, vars)
+	id := s.identifier(matched, r, vars)
 
 	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
@@ -257,7 +274,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 }
 
 func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := identifier(matched, r, vars)
+	id := s.identifier(matched, r, vars)
 
 	changes, err := decodeBody(r)
 	if err != nil {
@@ -288,7 +305,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 }
 
 func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := identifier(matched, r, vars)
+	id := s.identifier(matched, r, vars)
 
 	record, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {

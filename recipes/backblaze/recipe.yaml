@@ -1,0 +1,654 @@
+# Backblaze B2 Recipe for Cauldron
+#
+# Deleting a file brings back an older one.
+#
+# B2 keeps every upload as a version, and b2_delete_file_version deletes one
+# version rather than the file. Backblaze's own words for what happens next:
+# the most recent older version will become the current version. So a client
+# that deletes something and reads it back gets 200 and content -- not the
+# content it deleted, and not a 404 either. It is whatever was there before,
+# which for a file that has been written a few times is a copy from some
+# Tuesday nobody remembers.
+#
+# Delete twice and you get the one before that. The loop terminates
+# eventually, at a 404, after handing back every draft in reverse order.
+#
+# The reason this is worth a Recipe rather than a paragraph is that B2 is
+# advertised as S3-compatible, and it is, for the calls. It is the semantics
+# underneath that differ, and those are exactly the parts a working
+# integration never exercises until production.
+#
+# Five more the Recipe pins:
+#
+#   1. There is no overwrite. Uploading to a name that exists adds a version
+#      and keeps the old one, so the S3 habit of writing the same key to
+#      replace its contents accumulates copies and bills for all of them.
+#      Backblaze's documentation warns that enough of them will degrade
+#      performance and can get an account blocked.
+#   2. A hide is a version, not an absence. action "hide" is a tombstone with
+#      its own fileId and the same fileName, so it is a row in the listing
+#      with contentLength 0 that is not a file. Counting files counts it.
+#   3. The action enum is documented open: one of start, upload, hide,
+#      folder, "or other values added in the future". A switch on it is
+#      documented to break, in writing, in advance.
+#   4. The base URL is data. b2_authorize_account answers with the apiUrl to
+#      use, and it is per-account: api001 for one, api005 for another.
+#      Hardcoding the host works until Backblaze moves you. downloadUrl is a
+#      second host and s3ApiUrl is a third, so "the endpoint" is three
+#      different answers depending on what you are doing.
+#   5. Sizes are strings on one endpoint and numbers on another.
+#      recommendedPartSize and absoluteMinimumPartSize come back quoted --
+#      "100000000" and "5000000" -- and contentLength on a file version does
+#      not. Same concept, same API, two types, and adding a quoted one to a
+#      number concatenates in the language most of this is written in.
+#
+# And three smaller ones that cost an afternoon each: deleting needs both the
+# fileName and the fileId, so a client that stored only the id cannot delete
+# what it uploaded; there are two continuation tokens, nextFileName and
+# nextFileId, and paging needs both; and a key can be allowed a bucket whose
+# name comes back null, so the list of what you may touch contains an entry
+# you cannot name.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - b2_list_file_names is not modelled. It is the listing most people use
+#     and it shows only current, unhidden versions, which is to say it hides
+#      exactly the versions being billed for. What is here is
+#     b2_list_file_versions, which shows the truth.
+#   - Nothing is uploaded and nothing is downloaded. b2_get_upload_url,
+#     b2_upload_file, the large-file endpoints and the download hosts are not
+#     modelled, so the version history in the fixture is a history somebody
+#     wrote down rather than one this produced.
+#   - Deleting a version does not promote the next one here. Cauldron deletes
+#     the record. The behaviour is the headline of this Recipe and it is
+#     described rather than reproduced, which is worth saying twice.
+#   - Application keys, capabilities enforcement, lifecycle rules, server-side
+#     encryption, object lock, legal hold and replication are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: backblaze
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://www.backblaze.com/apidocs/introduction-to-the-b2-native-api
+
+auth:
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldron_b2_authorization_token
+
+responses:
+  list:
+    style: wrapped
+  error:
+    style: flat
+    code_field: code
+    status_field: status
+    message_field: message
+    type_field: "-"
+
+resources:
+  # What b2_authorize_account answers with. Almost all of it is
+  # configuration a client would otherwise have hardcoded.
+  authorization:
+    collection: authorizations
+    id:
+      style: opaque
+      length: 12
+      field: accountId
+    fields:
+      # Valid for at most twenty-four hours, so a long-lived process holding
+      # one has a scheduled failure in it.
+      authorizationToken:
+        type: string
+      # The host to talk to, per account. Not a constant, and not the one in
+      # the documentation's examples.
+      apiUrl:
+        type: string
+        in: apiInfo.storageApi
+        as: apiUrl
+      # A second host, for getting bytes back.
+      downloadUrl:
+        type: string
+        in: apiInfo.storageApi
+        as: downloadUrl
+      # A third, for the S3-compatible surface. "The endpoint" has three
+      # answers and which one is right depends on the call.
+      s3ApiUrl:
+        type: string
+        in: apiInfo.storageApi
+        as: s3ApiUrl
+      # Quoted. A hundred million, as text, next to a contentLength that is
+      # a number.
+      recommendedPartSize:
+        type: string
+        in: apiInfo.storageApi
+        as: recommendedPartSize
+      absoluteMinimumPartSize:
+        type: string
+        in: apiInfo.storageApi
+        as: absoluteMinimumPartSize
+      allowedBucketId:
+        type: string
+        in: apiInfo.storageApi.allowed.buckets[0]
+        as: id
+      allowedBucketName:
+        type: string
+        in: apiInfo.storageApi.allowed.buckets[0]
+        as: name
+      # Allowed, and unnamed. The list of what a key may touch can contain an
+      # entry you cannot print.
+      unnamedBucketId:
+        type: string
+        in: apiInfo.storageApi.allowed.buckets[1]
+        as: id
+      unnamedBucketName:
+        type: string
+        in: apiInfo.storageApi.allowed.buckets[1]
+        as: name
+        null_when_unset: true
+      namePrefix:
+        type: string
+        in: apiInfo.storageApi.allowed
+        as: namePrefix
+        null_when_unset: true
+      applicationKeyExpirationTimestamp:
+        type: timestamp_ms
+        null_when_unset: true
+
+  bucket:
+    collection: buckets
+    id:
+      style: opaque
+      length: 24
+      field: bucketId
+    fields:
+      accountId:
+        type: string
+      bucketName:
+        type: string
+      # allPublic, allPrivate or a snapshot type.
+      bucketType:
+        type: string
+        default: allPrivate
+
+  # A version, not a file. B2 has no object that means "the file"; it has a
+  # name and a stack of versions under it, and the top of the stack is
+  # whatever has not been deleted yet.
+  file:
+    collection: files
+    id:
+      style: opaque
+      length: 40
+      field: fileId
+    fields:
+      fileName:
+        type: string
+      # start, upload, hide, folder, "or other values added in the future".
+      # The enum is documented open, so a switch on it is documented to
+      # break.
+      action:
+        type: string
+        default: upload
+      # A number here. A quoted string on the authorization above.
+      contentLength:
+        type: integer
+      contentType:
+        type: string
+      contentSha1:
+        type: string
+        null_when_unset: true
+      uploadTimestamp:
+        type: timestamp_ms
+      bucketId:
+        type: string
+      accountId:
+        type: string
+
+  # What a delete answers with: the two things you sent it. Not what is
+  # current now, which is the question you asked by deleting.
+  deleted_version:
+    collection: deletions
+    id:
+      style: opaque
+      length: 40
+      field: fileId
+    fields:
+      fileName:
+        type: string
+
+routes:
+  # No identifier: there is one answer and it is about the credentials that
+  # asked.
+  - method: GET
+    path: /b2api/v3/b2_authorize_account
+    resource: authorization
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /b2api/v3/b2_list_buckets
+    resource: bucket
+    operation: list
+
+  # Everything: current versions, superseded ones, and the tombstones that
+  # mark a name hidden. b2_list_file_names is the one that shows less.
+  - method: GET
+    path: /b2api/v3/b2_list_file_versions
+    resource: file
+    operation: list
+
+  # A POST that deletes, and the body carries both the name and the id
+  # because either one alone is ambiguous: the name has many versions and
+  # B2 wants both anyway.
+  - method: POST
+    path: /b2api/v3/b2_delete_file_version
+    resource: deleted_version
+    operation: create
+    returns:
+      - id
+      - fileName
+
+errors:
+  # Twenty-four hours, at most. A process that authorised at boot and has
+  # been running a week meets this.
+  expired_auth_token:
+    status: 401
+    code: expired_auth_token
+    message: "Authorization token has expired"
+
+  bad_auth_token:
+    status: 401
+    code: bad_auth_token
+    message: "Invalid authorization token"
+
+  # The file existed and the version did not, which is what a client that
+  # kept a fileId across a delete is holding.
+  not_found:
+    status: 404
+    code: not_found
+    message: "File not present: photos/2026/portrait.jpg"
+
+  bad_request:
+    status: 400
+    code: bad_request
+    message: "fileId and fileName are both required"
+
+  # Storage, not requests. The cap is on how much is kept, and every version
+  # nobody deleted counts towards it.
+  storage_cap_exceeded:
+    status: 403
+    code: storage_cap_exceeded
+    message: "Cannot upload files, storage cap exceeded."
+
+  too_many_requests:
+    status: 429
+    code: too_many_requests
+    message: "Too many requests"
+
+fixtures:
+  empty: {}
+
+  one-account:
+    authorization:
+      - id: b2a41c8f0e19
+        authorizationToken: cauldron_b2_authorization_token
+        apiUrl: https://api001.backblazeb2.com
+        downloadUrl: https://f001.backblazeb2.com
+        s3ApiUrl: https://s3.us-west-001.backblazeb2.com
+        # Quoted, both of them.
+        recommendedPartSize: "100000000"
+        absoluteMinimumPartSize: "5000000"
+        allowedBucketId: 4a48fe8875c6214145260818
+        allowedBucketName: cauldron-photos
+        # Allowed and unnamed.
+        unnamedBucketId: 7c22ff9931a4708250371929
+
+    bucket:
+      - id: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+        bucketName: cauldron-photos
+        bucketType: allPrivate
+
+    file:
+      # The current version of portrait.jpg. Delete it and the one below
+      # becomes current: same name, different bytes, no error anywhere.
+      - id: 4_z4a48fe8875c6214145260818_f200ec353a2184825_d20260817
+        fileName: photos/2026/portrait.jpg
+        action: upload
+        contentLength: 284617
+        contentType: image/jpeg
+        contentSha1: 4d1e0f1e6b6f2d0a9f3b8c7d6e5a4b3c2d1e0f9a
+        uploadTimestamp: 1755422400000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+      # The one that comes back. Uploaded in June, superseded in August,
+      # still stored, still billed, and one delete away from being what
+      # anybody downloading this name receives.
+      - id: 4_z4a48fe8875c6214145260818_f100bd241a1073714_d20260602
+        fileName: photos/2026/portrait.jpg
+        action: upload
+        contentLength: 191244
+        contentType: image/jpeg
+        contentSha1: 8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b
+        uploadTimestamp: 1748865600000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+      # And the one before that.
+      - id: 4_z4a48fe8875c6214145260818_f000ac13090962603_d20260114
+        fileName: photos/2026/portrait.jpg
+        action: upload
+        contentLength: 88310
+        contentType: image/jpeg
+        contentSha1: 1f0e9d8c7b6a5948372615043f2e1d0c9b8a7968
+        uploadTimestamp: 1736812800000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+      # A tombstone. Not a file: it is the marker that says receipt.pdf is
+      # hidden, it has its own fileId, its contentLength is zero and its
+      # contentType is the one B2 uses for exactly this. A count of files
+      # counts it and a sum of bytes does not notice it.
+      - id: 4_z4a48fe8875c6214145260818_f400cd575b3295936_d20260818
+        fileName: invoices/receipt.pdf
+        action: hide
+        contentLength: 0
+        contentType: application/x-bz-hide-marker
+        uploadTimestamp: 1755508800000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+      # The file the tombstone is hiding. Still here, still billed, and
+      # absent from b2_list_file_names.
+      - id: 4_z4a48fe8875c6214145260818_f300be464c2184a25_d20260710
+        fileName: invoices/receipt.pdf
+        action: upload
+        contentLength: 40218
+        contentType: application/pdf
+        contentSha1: 0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d
+        uploadTimestamp: 1752105600000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+      # A large upload that was started and never finished. It is not a file
+      # and it is not nothing: the parts are stored and charged for until
+      # somebody cancels it.
+      - id: 4_z4a48fe8875c6214145260818_f500df686d43a6047_d20260819
+        fileName: archive/2026-backup.tar
+        action: start
+        contentLength: 0
+        contentType: application/x-tar
+        uploadTimestamp: 1755561600000
+        bucketId: 4a48fe8875c6214145260818
+        accountId: b2a41c8f0e19
+
+# Every case below is derived from Backblaze's published API documentation.
+# None has been run against a real account. The verify report says so.
+conformance:
+  - name: three versions of one name, and only the top one is the file
+    # Delete the first and the second becomes what anybody downloading this
+    # name receives: same name, different bytes, no error anywhere. Delete
+    # that and you get the January one.
+    source: https://www.backblaze.com/apidocs/b2-list-file-versions
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        files[0].fileName: photos/2026/portrait.jpg
+        files[0].contentLength: 284617
+        files[1].fileName: photos/2026/portrait.jpg
+        files[1].contentLength: 191244
+        files[2].fileName: photos/2026/portrait.jpg
+        files[2].contentLength: 88310
+
+  - name: a hide is a version, not an absence
+    # A tombstone with its own fileId, contentLength 0 and a content type
+    # that exists for nothing else. It is a row in this listing and it is
+    # not a file, so counting files counts it.
+    source: https://www.backblaze.com/apidocs/b2-list-file-versions
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        files[3].action: hide
+        files[3].fileName: invoices/receipt.pdf
+        files[3].contentLength: 0
+        files[3].contentType: application/x-bz-hide-marker
+
+  - name: and the file it is hiding is still there
+    # Still stored and still billed, at the same name, one row below the
+    # marker that hides it.
+    source: https://www.backblaze.com/apidocs/b2-list-file-versions
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        files[4].action: upload
+        files[4].fileName: invoices/receipt.pdf
+        files[4].contentLength: 40218
+
+  - name: an unfinished upload is neither a file nor nothing
+    # action start: the parts are stored and charged for until somebody
+    # cancels it, and it has a fileName that will never resolve.
+    source: https://www.backblaze.com/apidocs/b2-list-file-versions
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        files[5].action: start
+        files[5].fileName: archive/2026-backup.tar
+      absent:
+        - files[6]
+
+  - name: the base URL is data, and there are three of them
+    # apiUrl is per-account, so hardcoding the host in the documentation's
+    # examples works until Backblaze moves you. downloadUrl is a second host
+    # and s3ApiUrl a third, so "the endpoint" has three answers.
+    source: https://www.backblaze.com/apidocs/b2-authorize-account
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        apiInfo.storageApi.apiUrl: https://api001.backblazeb2.com
+        apiInfo.storageApi.downloadUrl: https://f001.backblazeb2.com
+        apiInfo.storageApi.s3ApiUrl: https://s3.us-west-001.backblazeb2.com
+
+  - name: the part sizes are strings
+    # Quoted, both of them, beside a contentLength that is a number. Adding
+    # a quoted one to a number concatenates in the language most of this is
+    # written in, and the result is a plausible-looking part size that is
+    # eight digits too long.
+    source: https://www.backblaze.com/apidocs/b2-authorize-account
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        apiInfo.storageApi.recommendedPartSize: "100000000"
+        apiInfo.storageApi.absoluteMinimumPartSize: "5000000"
+
+  - name: and the file size beside it is not
+    source: https://www.backblaze.com/apidocs/b2-list-file-versions
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        files[0].contentLength: 284617
+        files[0].fileId: 4_z4a48fe8875c6214145260818_f200ec353a2184825_d20260817
+      absent:
+        - files[0].size
+        - files[0].id
+
+  - name: a key can be allowed a bucket it cannot name
+    # id set, name null. The list of what these credentials may touch
+    # contains an entry nothing can print.
+    source: https://www.backblaze.com/apidocs/b2-authorize-account
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        apiInfo.storageApi.allowed.buckets[0].name: cauldron-photos
+        apiInfo.storageApi.allowed.buckets[1].id: 7c22ff9931a4708250371929
+        apiInfo.storageApi.allowed.buckets[1].name: null
+        apiInfo.storageApi.allowed.namePrefix: null
+
+  - name: the request carries no identifier and the answer is about you
+    # b2_authorize_account takes nothing. Which account it describes is
+    # decided by the credentials, which is why the accountId arrives in the
+    # response rather than going out in the request.
+    source: https://www.backblaze.com/apidocs/b2-authorize-account
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        accountId: b2a41c8f0e19
+        applicationKeyExpirationTimestamp: null
+
+  - name: deleting answers with what you sent it
+    # The name and the id, and nothing about what is current now, which is
+    # the question you asked by deleting. Finding out takes another call.
+    source: https://www.backblaze.com/apidocs/b2-delete-file-version
+    fixture: one-account
+    request:
+      method: POST
+      path: /b2api/v3/b2_delete_file_version
+      headers:
+        Authorization: cauldron_b2_authorization_token
+      json:
+        fileName: photos/2026/portrait.jpg
+        id: 4_z4a48fe8875c6214145260818_f200ec353a2184825_d20260817
+        bucketId: 4a48fe8875c6214145260818
+        bypassGovernance: false
+    expect:
+      status: 200
+      body:
+        fileId: 4_z4a48fe8875c6214145260818_f200ec353a2184825_d20260817
+        fileName: photos/2026/portrait.jpg
+      absent:
+        - action
+        - contentLength
+        - uploadTimestamp
+        - bucketId
+        - bypassGovernance
+
+  - name: a bucket listing is wrapped under its collection
+    source: https://www.backblaze.com/apidocs/b2-list-buckets
+    fixture: one-account
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_buckets
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 200
+      body:
+        buckets[0].bucketName: cauldron-photos
+        buckets[0].bucketType: allPrivate
+      absent:
+        - buckets[1]
+        - data
+
+  - name: the token expires and the failure names it
+    # At most twenty-four hours. A process that authorised at boot and has
+    # been up a week meets this, and the only fix is to authorise again and
+    # take the new apiUrl with it.
+    source: https://www.backblaze.com/apidocs/b2-authorize-account
+    fixture: one-account
+    arm: expired_auth_token
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 401
+      body:
+        status: 401
+        code: expired_auth_token
+        message: "Authorization token has expired"
+
+  - name: a version id kept across a delete points at nothing
+    source: https://www.backblaze.com/apidocs/b2-delete-file-version
+    fixture: one-account
+    arm: not_found
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_file_versions
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 404
+      body:
+        status: 404
+        code: not_found
+
+  - name: the cap is on what is kept, not on what is sent
+    # Every version nobody deleted counts towards it, which is what makes
+    # the no-overwrite behaviour expensive rather than merely surprising.
+    source: https://www.backblaze.com/apidocs/b2-upload-file
+    fixture: one-account
+    arm: storage_cap_exceeded
+    request:
+      method: GET
+      path: /b2api/v3/b2_list_buckets
+      headers:
+        Authorization: cauldron_b2_authorization_token
+    expect:
+      status: 403
+      body:
+        status: 403
+        code: storage_cap_exceeded
+        message: "Cannot upload files, storage cap exceeded."
+      absent:
+        - error
+        - errors
