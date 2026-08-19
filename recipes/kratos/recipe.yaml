@@ -1,0 +1,839 @@
+# Ory Kratos Recipe for Cauldron
+#
+# The server sends you the form.
+#
+# Every other login API in this portfolio takes a username and a password at
+# an endpoint you hardcoded. Kratos inverts it: you ask for a flow, and the
+# flow comes back carrying the URL to submit to, the method to use, and the
+# list of fields to render -- their names, their types, their values, and
+# which of them are required. Your login page is a renderer for somebody
+# else's JSON.
+#
+# That is a good design and it breaks every habit. A client that posts
+# {email, password} to a path it wrote down works against one deployment and
+# fails against the next, because the next one added a field, or turned on a
+# second factor, or swapped the identifier for a phone number. None of that
+# is a code change on the server. It is configuration, and the flow is how
+# the server tells you about it.
+#
+# Five more the Recipe pins:
+#
+#   1. An expired flow is 410, and 410 is not a retry. Kratos's own words:
+#      if the user still wishes to log in, a new flow has to be initiated.
+#      So the fix is to start over, and whatever the person had typed is
+#      gone. A client with generic retry logic re-requests the same expired
+#      flow id forever.
+#   2. The CSRF token is a field in the list. It is a node like any other,
+#      with a name and a value, sitting among the ones a person fills in.
+#      Nothing marks it as the one that must be echoed, and omitting it is a
+#      403 that says a security violation was detected and does not say
+#      which.
+#   3. A node's type and its attribute's type are different words at
+#      different depths. The node is an "input"; the attribute says
+#      "hidden", "password" or "submit". Reading the outer one to decide
+#      what to render gets "input" for every field on the page.
+#   4. identity.state does nothing. The specification says so in as many
+#      words -- this value has currently no effect -- and it still has an
+#      enum with active and inactive in it. Code that deactivates somebody
+#      by setting it has done nothing at all, and the read-back confirms the
+#      change.
+#   5. There is no fixed identity shape. traits validate against a JSON
+#      schema named by schema_id, so two Kratos deployments have different
+#      identity objects and neither is wrong. A client that reads
+#      traits.email is coupled to a schema file it does not own.
+#
+# And the state machine is marked experimental in the specification that
+# defines it: the enum for a login flow's state is choose_method, sent_email
+# and passed_challenge, above a note saying the field is EXPERIMENTAL and
+# subject to change. Branching on it is branching on something whose author
+# has said not to rely on it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is submitted. Kratos's whole point is the round trip -- fetch a
+#     flow, post to its action, get a session or a flow with errors in it --
+#     and the posting half is not modelled. What is here is the shape of what
+#     comes back, which is the half that decides whether a client can render
+#     anything at all.
+#   - One flow, one state. Advancing choose_method to passed_challenge is the
+#     submission this does not do.
+#   - The public and admin APIs are two ports in a real deployment. They are
+#     one host here, and a path is the only thing separating them.
+#   - Registration, recovery, verification and settings flows share the login
+#     flow's shape and are not modelled separately. Neither are WebAuthn,
+#     TOTP, OIDC, courier messages or identity schemas themselves.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: kratos
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.ory.sh/docs/kratos/reference/api
+
+auth:
+  scheme: header
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-kratos-admin-key
+
+responses:
+  list:
+    style: bare
+  # The standard Ory JSON API error format: everything under error, with a
+  # numeric code, a machine-readable id, a reason phrase and two kinds of
+  # message.
+  error:
+    style: nested
+    key: error
+    code_field: code
+    message_field: message
+    type_field: id
+
+resources:
+  # A login flow: a server-owned, expiring state machine that carries the
+  # form you are supposed to render.
+  login_flow:
+    collection: flows
+    id:
+      style: uuid
+    fields:
+      type:
+        type: string
+        default: browser
+      # If the user still wishes to log in after this, a new flow has to be
+      # initiated. Not a retry.
+      expires_at:
+        type: datetime
+      issued_at:
+        type: datetime
+      request_url:
+        type: string
+      # choose_method, sent_email or passed_challenge, above a note in the
+      # specification saying the field is experimental and subject to change.
+      state:
+        type: string
+        default: choose_method
+      refresh:
+        type: boolean
+        default: false
+      # Where to post. Not a path you wrote down: it carries the flow id, and
+      # it is the only correct target.
+      ui_action:
+        type: string
+        in: ui
+        as: action
+      ui_method:
+        type: string
+        in: ui
+        as: method
+
+      # --- the form, as data ---
+
+      # A field like any other. Nothing marks it as the one that must be
+      # echoed back, and leaving it out is a 403 about a security violation.
+      csrf_node_type:
+        type: string
+        in: ui.nodes[0]
+        as: type
+      csrf_group:
+        type: string
+        in: ui.nodes[0]
+        as: group
+      csrf_name:
+        type: string
+        in: ui.nodes[0].attributes
+        as: name
+      # "hidden", while the node above it says "input". Two words called
+      # type, two depths, two meanings.
+      csrf_input_type:
+        type: string
+        in: ui.nodes[0].attributes
+        as: type
+      csrf_value:
+        type: string
+        in: ui.nodes[0].attributes
+        as: value
+      csrf_required:
+        type: boolean
+        in: ui.nodes[0].attributes
+        as: required
+
+      # The identifier. Called "identifier" rather than "email", because what
+      # it holds is whatever the identity schema says it is.
+      identifier_node_type:
+        type: string
+        in: ui.nodes[1]
+        as: type
+      identifier_group:
+        type: string
+        in: ui.nodes[1]
+        as: group
+      identifier_name:
+        type: string
+        in: ui.nodes[1].attributes
+        as: name
+      identifier_input_type:
+        type: string
+        in: ui.nodes[1].attributes
+        as: type
+      identifier_autocomplete:
+        type: string
+        in: ui.nodes[1].attributes
+        as: autocomplete
+      identifier_required:
+        type: boolean
+        in: ui.nodes[1].attributes
+        as: required
+      identifier_label:
+        type: string
+        in: ui.nodes[1].meta.label
+        as: text
+
+      password_node_type:
+        type: string
+        in: ui.nodes[2]
+        as: type
+      password_group:
+        type: string
+        in: ui.nodes[2]
+        as: group
+      password_name:
+        type: string
+        in: ui.nodes[2].attributes
+        as: name
+      password_input_type:
+        type: string
+        in: ui.nodes[2].attributes
+        as: type
+      password_required:
+        type: boolean
+        in: ui.nodes[2].attributes
+        as: required
+
+      # A button is a node too, so even the submit control is the server's
+      # decision.
+      submit_node_type:
+        type: string
+        in: ui.nodes[3]
+        as: type
+      submit_group:
+        type: string
+        in: ui.nodes[3]
+        as: group
+      submit_name:
+        type: string
+        in: ui.nodes[3].attributes
+        as: name
+      submit_input_type:
+        type: string
+        in: ui.nodes[3].attributes
+        as: type
+      submit_value:
+        type: string
+        in: ui.nodes[3].attributes
+        as: value
+
+  identity:
+    collection: identities
+    id:
+      style: uuid
+    fields:
+      # Which JSON schema the traits below validate against. Two deployments
+      # with different schemas have different identity objects and neither is
+      # wrong.
+      schema_id:
+        type: string
+        default: default
+      schema_url:
+        type: string
+      # The specification says this value has currently no effect, and gives
+      # it an enum anyway. Setting it to inactive changes nothing except what
+      # the read-back says.
+      state:
+        type: string
+        default: active
+      state_changed_at:
+        type: datetime
+      # Schema-defined. There is no fixed shape here, so a client reading
+      # traits.email is coupled to a file it does not own.
+      trait_email:
+        type: string
+        in: traits
+        as: email
+      trait_first_name:
+        type: string
+        in: traits.name
+        as: first
+      trait_last_name:
+        type: string
+        in: traits.name
+        as: last
+      # Verified is a property of the address, not of the identity, and an
+      # identity can have several.
+      address_value:
+        type: string
+        in: verifiable_addresses[0]
+        as: value
+      address_verified:
+        type: boolean
+        in: verifiable_addresses[0]
+        as: verified
+      address_via:
+        type: string
+        in: verifiable_addresses[0]
+        as: via
+      address_status:
+        type: string
+        in: verifiable_addresses[0]
+        as: status
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  session:
+    collection: sessions
+    id:
+      style: uuid
+    fields:
+      active:
+        type: boolean
+        default: true
+      expires_at:
+        type: datetime
+      # When the credentials were checked. Not the same as issued_at once a
+      # second factor is involved.
+      authenticated_at:
+        type: datetime
+      issued_at:
+        type: datetime
+      # aal1 or aal2. A session is valid and still not good enough for a
+      # route that demands the second factor.
+      authenticator_assurance_level:
+        type: string
+        default: aal1
+      method:
+        type: string
+        in: authentication_methods[0]
+        as: method
+      method_aal:
+        type: string
+        in: authentication_methods[0]
+        as: aal
+      identity_id:
+        type: string
+        in: identity
+        as: id
+      identity_email:
+        type: string
+        in: identity.traits
+        as: email
+      identity_schema_id:
+        type: string
+        in: identity
+        as: schema_id
+
+routes:
+  # The flow id is a query parameter, because the flow is what the browser
+  # was redirected with.
+  - method: GET
+    path: /self-service/login/flows
+    resource: login_flow
+    operation: get
+    id_from: query:id
+
+  # Answers about whoever the cookie or token belongs to. Nothing in the
+  # request names a session.
+  - method: GET
+    path: /sessions/whoami
+    resource: session
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /admin/identities
+    resource: identity
+    operation: list
+
+  - method: GET
+    path: /admin/identities/{id}
+    resource: identity
+    operation: get
+
+errors:
+  # Gone, not "try again". Kratos's own message says to initialize a new one,
+  # and a client with generic retry logic re-requests the same dead id until
+  # it gives up.
+  flow_expired:
+    status: 410
+    code: "410"
+    type: self_service_flow_expired
+    message: "The self-service flow expired 3.00 minutes ago, initialize a new one."
+    # Nested under the envelope key, because that is where Ory puts them:
+    # a reason phrase beside a numeric code, and a second copy of the prose
+    # under a different name.
+    fields:
+      error:
+        reason: "The self-service flow expired 3.00 minutes ago, initialize a new one."
+        status: Gone
+
+  # What omitting the csrf_token node gets you. It does not say which field
+  # was missing.
+  security_csrf_violation:
+    status: 403
+    code: "403"
+    type: security_csrf_violation
+    message: "A security violation was detected, please fill out the form again."
+    fields:
+      error:
+        status: Forbidden
+
+  session_inactive:
+    status: 401
+    code: "401"
+    type: session_inactive
+    message: "No active session was found in this request."
+    fields:
+      error:
+        status: Unauthorized
+
+  flow_not_found:
+    status: 404
+    code: "404"
+    type: self_service_flow_not_found
+    message: "Unable to locate the resource"
+    fields:
+      error:
+        status: "Not Found"
+
+fixtures:
+  empty: {}
+
+  one-tenant:
+    login_flow:
+      - id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+        type: browser
+        expires_at: "2026-08-19T10:30:00Z"
+        issued_at: "2026-08-19T10:00:00Z"
+        request_url: https://auth.example.com/self-service/login/browser
+        state: choose_method
+        refresh: false
+        # Carries the flow id. Posting anywhere else is posting to the wrong
+        # flow, or to no flow at all.
+        ui_action: https://auth.example.com/self-service/login?flow=9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+        ui_method: POST
+
+        csrf_node_type: input
+        csrf_group: default
+        csrf_name: csrf_token
+        csrf_input_type: hidden
+        csrf_value: 6RcVjJDvSm0KpN4xQwLzYtBhFgAe2u7X
+        csrf_required: true
+
+        identifier_node_type: input
+        identifier_group: default
+        identifier_name: identifier
+        identifier_input_type: text
+        identifier_autocomplete: username
+        identifier_required: true
+        identifier_label: "ID"
+
+        password_node_type: input
+        password_group: password
+        password_name: password
+        password_input_type: password
+        password_required: true
+
+        submit_node_type: input
+        submit_group: password
+        submit_name: method
+        submit_input_type: submit
+        submit_value: password
+
+    identity:
+      - id: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+        schema_id: default
+        schema_url: https://auth.example.com/schemas/ZGVmYXVsdA
+        state: active
+        state_changed_at: "2026-03-11T08:20:14Z"
+        trait_email: ada@example.com
+        trait_first_name: Ada
+        trait_last_name: Okonkwo
+        address_value: ada@example.com
+        address_verified: true
+        address_via: email
+        address_status: completed
+        created_at: "2026-03-11T08:20:14Z"
+        updated_at: "2026-07-02T13:41:55Z"
+
+      # Marked inactive, and it has no effect. The specification says so, and
+      # the read-back confirms the change that did not happen.
+      - id: 71e5c9a4-8f30-4b2d-9c16-0a3e8d47b5f2
+        schema_id: default
+        schema_url: https://auth.example.com/schemas/ZGVmYXVsdA
+        state: inactive
+        state_changed_at: "2026-08-05T16:02:09Z"
+        trait_email: bede@example.com
+        trait_first_name: Bede
+        trait_last_name: Marchetti
+        address_value: bede@example.com
+        address_verified: false
+        address_via: email
+        address_status: sent
+        created_at: "2026-01-22T11:07:43Z"
+        updated_at: "2026-08-05T16:02:09Z"
+
+    session:
+      - id: 2b6f1d84-0e57-4c93-a8b2-5f4d1c9e6073
+        active: true
+        expires_at: "2026-08-20T10:04:12Z"
+        authenticated_at: "2026-08-19T10:04:12Z"
+        issued_at: "2026-08-19T10:04:12Z"
+        # One factor. Valid, and not good enough for anything that asks for
+        # two, which is a 403 rather than a 401.
+        authenticator_assurance_level: aal1
+        method: password
+        method_aal: aal1
+        identity_id: 4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+        identity_email: ada@example.com
+        identity_schema_id: default
+
+# Every case below is derived from the OpenAPI specification Ory publishes for
+# Kratos. None has been run against a real deployment. The verify report says
+# so.
+conformance:
+  - name: the server sends you the form
+    # The URL to post to, the method, and the fields to render. A login page
+    # is a renderer for this object rather than something you wrote.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        ui.method: POST
+        ui.action: https://auth.example.com/self-service/login?flow=9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+        ui.nodes[1].attributes.name: identifier
+        ui.nodes[2].attributes.name: password
+
+  - name: and the action carries the flow, so it is not a path you can write down
+    # Posting to a hardcoded /self-service/login is posting to no flow at
+    # all. The id is in the query string of the URL the server handed over.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+        ui.action: https://auth.example.com/self-service/login?flow=9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+        # The state machine, whose own specification marks it experimental
+        # and subject to change. choose_method is the first of three.
+        state: choose_method
+        type: browser
+
+  - name: the csrf token is a field in the list like any other
+    # Same shape as the ones a person fills in, at the front of the same
+    # array. Nothing marks it as the one that must be echoed.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        ui.nodes[0].attributes.name: csrf_token
+        ui.nodes[0].attributes.value: 6RcVjJDvSm0KpN4xQwLzYtBhFgAe2u7X
+        ui.nodes[0].attributes.required: true
+
+  - name: a node's type and its attribute's type are different words
+    # The node is an input. What kind of input is one level down, and reading
+    # the outer one to decide what to render gets "input" for every field on
+    # the page, including the hidden one and the button.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        ui.nodes[0].type: input
+        ui.nodes[0].attributes.type: hidden
+        ui.nodes[2].type: input
+        ui.nodes[2].attributes.type: password
+        ui.nodes[3].type: input
+        ui.nodes[3].attributes.type: submit
+
+  - name: the submit button is the server's decision too
+    # Which method is being submitted is a value on a node, so even the
+    # button is configuration.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        ui.nodes[3].attributes.name: method
+        ui.nodes[3].attributes.value: password
+        ui.nodes[3].group: password
+      absent:
+        - ui.nodes[4]
+
+  - name: the identifier is not called email
+    # What it holds is whatever the identity schema says, so the label is
+    # data as well.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        ui.nodes[1].attributes.autocomplete: username
+        ui.nodes[1].meta.label.text: "ID"
+      absent:
+        - ui.nodes[1].attributes.email
+
+  - name: an expired flow is 410 and 410 is not a retry
+    # Kratos's own message says to initialize a new one. A client with
+    # generic retry logic re-requests the same dead id, and whatever the
+    # person had typed is gone either way.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    arm: flow_expired
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 410
+      body:
+        error.id: self_service_flow_expired
+        error.code: 410
+        error.status: Gone
+        # The prose arrives twice under two names, so a client that logs one
+        # and shows the other is showing the same sentence it already logged.
+        error.message: "The self-service flow expired 3.00 minutes ago, initialize a new one."
+        error.reason: "The self-service flow expired 3.00 minutes ago, initialize a new one."
+
+  - name: and a flow that never existed is 404, which is a different problem
+    # Both are dead ends and only one of them means the person was too slow.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    arm: flow_not_found
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 404
+      body:
+        error.id: self_service_flow_not_found
+        error.status: "Not Found"
+
+  - name: omitting the token is a 403 that does not say which field
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    arm: security_csrf_violation
+    request:
+      method: GET
+      path: /self-service/login/flows
+      query:
+        id: 9f2ad0b1-6c47-4a1e-8d3f-51b0c2e7a904
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 403
+      body:
+        error.id: security_csrf_violation
+        error.message: "A security violation was detected, please fill out the form again."
+
+  - name: whoami names no session and answers about one
+    # Nothing in the request identifies it. The cookie or the token does.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /sessions/whoami
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        id: 2b6f1d84-0e57-4c93-a8b2-5f4d1c9e6073
+        active: true
+        identity.traits.email: ada@example.com
+
+  - name: a valid session can still not be enough
+    # aal1 is one factor. A route that demands two rejects this session
+    # without it being expired, inactive or wrong, and the field that says so
+    # is not "active".
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /sessions/whoami
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        active: true
+        authenticator_assurance_level: aal1
+        authentication_methods[0].method: password
+        authentication_methods[0].aal: aal1
+
+  - name: no session is 401 with a machine-readable id
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    arm: session_inactive
+    request:
+      method: GET
+      path: /sessions/whoami
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 401
+      body:
+        error.id: session_inactive
+        error.message: "No active session was found in this request."
+        error.status: Unauthorized
+      absent:
+        - message
+        - id
+
+  - name: identity state does nothing and reads back as though it did
+    # The specification says this value has currently no effect, and gives it
+    # an enum anyway. So deactivating somebody sets a word, the read-back
+    # confirms the word, and they can still log in.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/identities/71e5c9a4-8f30-4b2d-9c16-0a3e8d47b5f2
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        state: inactive
+        state_changed_at: "2026-08-05T16:02:09Z"
+        traits.email: bede@example.com
+
+  - name: there is no fixed identity shape
+    # traits validate against the schema named beside them, so two
+    # deployments have different identity objects and neither is wrong. A
+    # client reading traits.email is coupled to a file it does not own.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/identities/4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        schema_id: default
+        schema_url: https://auth.example.com/schemas/ZGVmYXVsdA
+        traits.email: ada@example.com
+        traits.name.first: Ada
+      absent:
+        - email
+        - name
+
+  - name: verified belongs to the address, not to the identity
+    # An identity can have several addresses and they verify separately, so
+    # "is this user verified" has no answer at this level.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/identities/71e5c9a4-8f30-4b2d-9c16-0a3e8d47b5f2
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        verifiable_addresses[0].verified: false
+        verifiable_addresses[0].status: sent
+        verifiable_addresses[0].via: email
+      absent:
+        - verified
+
+  - name: and the other identity's address is verified
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/identities/4c8b3e70-2d19-45af-b6c1-7e0d9a5f3821
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        verifiable_addresses[0].verified: true
+        verifiable_addresses[0].status: completed
+
+  - name: the admin listing is a bare array
+    # No envelope, no collection name, no paging block: the identities are
+    # the body. Reading response.identities gets undefined.
+    source: https://github.com/ory/kratos/blob/master/spec/api.json
+    fixture: one-tenant
+    request:
+      method: GET
+      path: /admin/identities
+      headers:
+        Authorization: Bearer cauldron-kratos-admin-key
+    expect:
+      status: 200
+      body:
+        "[0].traits.email": ada@example.com
+        "[1].state": inactive
+      absent:
+        - identities
+        - data
+        - "[2]"
