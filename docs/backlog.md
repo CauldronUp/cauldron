@@ -1485,9 +1485,40 @@ envelope travels as a string (`count_as_string`) and the echo fields emit
 numbers, so switching would trade a stale value for a wrong type. Closing it
 means teaching the echo fields the same string rendering the count already has.
 
+**Ably** is the first row where the checked answer is that no style belongs
+here at all. `limit` is the page size, but the next page is not a parameter:
+Ably returns RFC 5988 `Link` headers, one per relative link, and a client
+follows the one with `rel="next"`. Cauldron does not send them, so the page
+size is honoured and the next page is unreachable.
+
+That makes two providers whose real paging mechanism is a response header --
+GitHub is the other -- and between them they are the argument for modelling
+`Link`. It is a small feature with a clear shape: render the next page's URL
+into a header rather than a body field, from the same position the cursor
+already comes from.
+
+**Documenso** pages its documents by `page` and `perPage`, from one. That part
+is done. The rest of the Recipe needs a rework rather than a paging fix, and
+tidying its pagination would have polished the surface of something that
+should not exist:
+
+- `GET /api/v1/documents/{id}/recipients` is **POST only** in Documenso -- it
+  creates a recipient. Three conformance cases read it as a listing.
+- `GET /api/v1/recipients/{id}` does not exist either. Documenso addresses a
+  recipient at `/documents/{id}/recipients/{recipientId}`, and only for DELETE
+  and PATCH. Two more cases use it.
+- Recipients come back **embedded in the document**, which is where those five
+  cases should be reading them.
+- `count_field: totalPages` is the right name carrying the wrong quantity.
+  Documenso's list envelope is `{documents, totalPages}` and nothing else, and
+  `count_field` emits the number of records rather than the number of pages.
+  Three documents at ten per page is one page, and this reports three. That is
+  worse than an invented field, because the name is real and the value looks
+  plausible. Closing it means a `pages_field` that divides rather than counts.
+
 ### Remaining
 
-40 Recipes, 99 declarations. The method that works: find the provider's own
+38 Recipes, 96 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
