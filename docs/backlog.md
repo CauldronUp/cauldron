@@ -687,7 +687,7 @@ what normalisation does not fix.
 
 | Provider | Why |
 |---|---|
-| incident.io | Status and severity move independently and both have custom values per workspace, so neither is an enum you can hard-code |
+| ~~incident.io~~ | Shipped. Status and severity are configured per workspace so neither is an enum you can hard-code, the category is the only fixed thing, the rank is the orderable thing rather than the name, and the two move independently |
 | Opsgenie | An alert and an incident are separate objects with separate lifecycles, and closing one does not close the other |
 | Checkly | A check run has assertions, and a passing run containing a failed assertion is possible |
 | Rev.ai | A job is asynchronous and the transcript is a separate fetch with its own content types, so the job being done is not the transcript being readable |

@@ -1,0 +1,570 @@
+# incident.io Recipe for Cauldron
+#
+# Almost every status field in this portfolio is an enum: a fixed set of words
+# the provider documents and your code branches on. incident.io's are not.
+# Status and severity are configured per workspace, so the words are whatever
+# somebody at that company typed into a settings page, and a client that
+# hard-codes "resolved" works against the workspace it was written for and
+# silently never matches anywhere else.
+#
+# The API tells you this by giving each one an id and a rank alongside the
+# name. The rank is the orderable thing: severity "Major" is not greater than
+# "Minor" because of the words, it is greater because its rank is higher, and
+# sorting on the name gives alphabetical order dressed up as urgency.
+#
+# Four more worth modelling exactly:
+#
+#   1. Status and severity move independently. An incident can be resolved
+#      and still critical, or triaging and minor, and neither field
+#      constrains the other. Code that infers one from the other is inventing
+#      a relationship the product does not have.
+#   2. A status has a category, and the category is the only fixed thing.
+#      triage, active, learning, closed: four words that are the same in
+#      every workspace, underneath a status name that is not. A client that
+#      wants to know whether an incident is over should read the category and
+#      never the name.
+#   3. Custom fields are a map keyed by field id, not by name, so reading an
+#      incident's "Affected Team" means looking up the field's id first and
+#      the ids differ per workspace too.
+#   4. An incident's timestamps are a list rather than properties. There is
+#      no created_at and reported_at; there is an array of named timestamps
+#      whose names are also configurable.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The configured statuses and severities are a fixture rather than a real
+#     per-workspace table. That is the point being made rather than a
+#     shortcoming: every workspace has different ones and no Recipe can carry
+#     the right set for anybody.
+#   - Nothing transitions. Which status an incident holds is what a fixture
+#     puts there.
+#   - Follow-ups, actions, workflows and the catalog are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: incidentio
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://api-docs.incident.io/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - inc_cauldron000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: pagination_meta.after
+  resource:
+    style: bare
+  error:
+    # One request can fail several ways at once, so the failures are an
+    # array. A client reading response.message finds undefined even on the
+    # errors that carry exactly one.
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  incident:
+    collection: incidents
+    id:
+      style: opaque
+      length: 26
+    fields:
+      reference:
+        type: string
+      name:
+        type: string
+      summary:
+        type: string
+      # The status, as an object rather than a word. The name is whatever
+      # somebody at that company typed into a settings page, so a client that
+      # compares it to "Resolved" works in the workspace it was written for
+      # and never matches anywhere else.
+      status_id:
+        type: string
+        in: incident_status
+        as: id
+      status_name:
+        type: string
+        in: incident_status
+        as: name
+      # The only fixed thing. triage, active, learning, closed: four words
+      # that are the same in every workspace, underneath a name that is not.
+      # A client that wants to know whether an incident is over should read
+      # this and never the name.
+      status_category:
+        type: string
+        in: incident_status
+        as: category
+      # Severity, also configured per workspace, and independent of status:
+      # an incident can be resolved and still critical.
+      severity_id:
+        type: string
+        in: severity
+        as: id
+      severity_name:
+        type: string
+        in: severity
+        as: name
+      # The orderable thing. "Major" is not greater than "Minor" because of
+      # the words; it is greater because its rank is higher, and sorting on
+      # the name gives alphabetical order dressed up as urgency.
+      severity_rank:
+        type: integer
+        in: severity
+        as: rank
+      mode:
+        type: string
+        default: standard
+      # A list of named timestamps rather than properties. There is no
+      # created_at and no reported_at: there is an array whose names are
+      # configurable too.
+      incident_timestamp_values:
+        type: list
+      # Keyed by field id rather than by name, so reading "Affected Team"
+      # means looking up that field's id first, and the ids differ per
+      # workspace.
+      custom_field_entries:
+        type: list
+      created_at:
+        type: datetime
+
+  # What this workspace calls its statuses. Fetching this is the only way to
+  # know what any incident's status name means.
+  incident_status:
+    collection: incident_statuses
+    id:
+      style: opaque
+      length: 26
+    fields:
+      name:
+        type: string
+      description:
+        type: string
+      category:
+        type: string
+      rank:
+        type: integer
+
+  severity:
+    collection: severities
+    id:
+      style: opaque
+      length: 26
+    fields:
+      name:
+        type: string
+      description:
+        type: string
+      rank:
+        type: integer
+
+routes:
+  - method: GET
+    path: /v2/incidents
+    resource: incident
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+      limit_param: page_size
+      cursor_param: after
+
+  - method: GET
+    path: /v2/incidents/{id}
+    resource: incident
+    operation: get
+
+  - method: GET
+    path: /v1/incident_statuses
+    resource: incident_status
+    operation: list
+
+  - method: GET
+    path: /v1/severities
+    resource: severity
+    operation: list
+
+errors:
+  rate_limit:
+    status: 429
+    code: rate_limited
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "Your API key is not valid"
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: "The requested resource could not be found"
+
+  parameter_missing:
+    status: 422
+    # 422, not 400. incident.io answers unprocessable for a body it
+    # understood and would not act on, and a client branching on 400 never
+    # sees it.
+    code: validation_error
+    message: "The request was invalid"
+
+  # The key is valid and the role it has does not cover this. 403, and the
+  # message does not name the missing scope.
+  insufficient_scope:
+    status: 403
+    code: forbidden
+    message: "Your API key does not have permission to perform this action"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    incident_status:
+      # What this workspace calls its statuses. Another workspace's are
+      # different words for the same four categories, which is why the
+      # category is the only thing worth branching on.
+      - id: 01HQ3STATUS00000000000TRI
+        name: Triage
+        description: Working out whether this is real
+        category: triage
+        rank: 1
+
+      - id: 01HQ3STATUS00000000000INV
+        name: Investigating
+        description: Someone is on it
+        category: active
+        rank: 2
+
+      - id: 01HQ3STATUS00000000000FIX
+        name: Fix in progress
+        description: We know what is wrong
+        category: active
+        rank: 3
+
+      # "Stood down" is this workspace's word for over. A client looking for
+      # "Resolved" or "Closed" finds neither and treats every finished
+      # incident as open.
+      - id: 01HQ3STATUS00000000000STD
+        name: Stood down
+        description: No longer impacting anyone
+        category: closed
+        rank: 4
+
+    severity:
+      # The rank is the orderable thing. Sorting these by name gives
+      # Cosmetic, Degraded, Outage, which is alphabetical order dressed up
+      # as urgency and exactly backwards.
+      - id: 01HQ3SEVERITY0000000000C
+        name: Cosmetic
+        description: Nobody has noticed
+        rank: 1
+
+      - id: 01HQ3SEVERITY0000000000D
+        name: Degraded
+        description: Slow, working
+        rank: 2
+
+      - id: 01HQ3SEVERITY0000000000O
+        name: Outage
+        description: Down
+        rank: 3
+
+    incident:
+      # Resolved and still an outage. Status and severity move independently
+      # and neither constrains the other, so code that infers one from the
+      # other is inventing a relationship the product does not have.
+      - id: 01HQ3INCIDENT00000000001
+        reference: INC-142
+        name: Checkout returning 500s
+        summary: A deploy shipped a null dereference in the payment path.
+        status_id: 01HQ3STATUS00000000000STD
+        status_name: Stood down
+        status_category: closed
+        severity_id: 01HQ3SEVERITY0000000000O
+        severity_name: Outage
+        severity_rank: 3
+        mode: standard
+        incident_timestamp_values:
+          - value:
+              value: "2026-08-14T09:02:00Z"
+            incident_timestamp:
+              id: 01HQ3TS000000000000RPT
+              name: Reported at
+          - value:
+              value: "2026-08-14T11:40:00Z"
+            incident_timestamp:
+              id: 01HQ3TS000000000000RES
+              name: Resolved at
+        custom_field_entries:
+          - custom_field:
+              id: 01HQ3CF000000000000TEAM
+              name: Affected Team
+            values:
+              - value_text: Payments
+        created_at: "2026-08-14T09:02:11Z"
+
+      # Still open and only cosmetic. The other half of the independence.
+      - id: 01HQ3INCIDENT00000000002
+        reference: INC-143
+        name: Footer logo misaligned on Safari
+        summary: Two pixels left of where it should be.
+        status_id: 01HQ3STATUS00000000000TRI
+        status_name: Triage
+        status_category: triage
+        severity_id: 01HQ3SEVERITY0000000000C
+        severity_name: Cosmetic
+        severity_rank: 1
+        mode: standard
+        incident_timestamp_values:
+          - value:
+              value: "2026-08-15T08:15:00Z"
+            incident_timestamp:
+              id: 01HQ3TS000000000000RPT
+              name: Reported at
+        custom_field_entries: []
+        created_at: "2026-08-15T08:15:22Z"
+
+# Every case below is derived from incident.io's published documentation. None
+# has been run against a real workspace. The verify report says so.
+conformance:
+  - name: the status name is whatever this workspace calls it
+    # "Stood down" is this workspace's word for over. A client looking for
+    # "Resolved" or "Closed" finds neither and treats every finished
+    # incident as open.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000001
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_status.name: Stood down
+      absent:
+        - status
+        - status_name
+
+  - name: the category is the only fixed thing
+    # triage, active, learning, closed: four words that are the same in every
+    # workspace, underneath a name that is not. A client that wants to know
+    # whether an incident is over should read this and never the name.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000001
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_status.category: closed
+        incident_status.id: 01HQ3STATUS00000000000STD
+
+  - name: resolved and still an outage
+    # Status and severity move independently and neither constrains the
+    # other, so code that infers one from the other is inventing a
+    # relationship the product does not have.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000001
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_status.category: closed
+        severity.name: Outage
+        severity.rank: 3
+
+  - name: and open and only cosmetic
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000002
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_status.category: triage
+        severity.name: Cosmetic
+        severity.rank: 1
+
+  - name: the rank is the orderable thing, not the name
+    # Sorting these by name gives Cosmetic, Degraded, Outage: alphabetical
+    # order dressed up as urgency, and exactly backwards.
+    source: https://api-docs.incident.io/tag/Severities-V1
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/severities
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        severities[0].name: Cosmetic
+        severities[0].rank: 1
+        severities[2].name: Outage
+        severities[2].rank: 3
+      absent:
+        - severities[3]
+
+  - name: two workspaces would answer this differently
+    # Four statuses, four names somebody chose, and four categories that are
+    # the same everywhere. Fetching this is the only way to know what any
+    # incident's status name means.
+    source: https://api-docs.incident.io/tag/Incident-Statuses-V1
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incident_statuses
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_statuses[0].name: Triage
+        incident_statuses[0].category: triage
+        incident_statuses[3].name: Stood down
+        incident_statuses[3].category: closed
+      absent:
+        - incident_statuses[4]
+
+  - name: the paging cursor is nested under pagination_meta
+    # A client reading response.after finds nothing, on every listing.
+    source: https://api-docs.incident.io/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents
+      query:
+        page_size: "1"
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      matches:
+        pagination_meta.after: '.'
+      absent:
+        - after
+        - cursor
+        - next
+
+  - name: a timestamp is a list entry, not a property
+    # There is no created_at and no reported_at: there is an array of named
+    # timestamps whose names are configurable too, so reading
+    # incident.reported_at finds nothing anywhere.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000001
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        incident_timestamp_values[0].incident_timestamp.name: Reported at
+        incident_timestamp_values[0].value.value: "2026-08-14T09:02:00Z"
+        incident_timestamp_values[1].incident_timestamp.name: Resolved at
+      absent:
+        - reported_at
+        - resolved_at
+
+  - name: a custom field is keyed by id, not by name
+    # Reading "Affected Team" means looking up that field's id first, and the
+    # ids differ per workspace too, so the lookup is a second request before
+    # the first one means anything.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000001
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      body:
+        custom_field_entries[0].custom_field.id: 01HQ3CF000000000000TEAM
+        custom_field_entries[0].custom_field.name: Affected Team
+        custom_field_entries[0].values[0].value_text: Payments
+
+  - name: an incident with no custom fields has an empty array
+    # Rather than the property being absent, so a client that checks for
+    # undefined before iterating iterates nothing and one that does not is
+    # fine either way.
+    source: https://api-docs.incident.io/tag/Incidents-V2
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents/01HQ3INCIDENT00000000002
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 200
+      absent:
+        - custom_field_entries[0]
+
+  - name: failures are an array even when there is one
+    # A client reading response.message finds undefined on every error,
+    # including the ones that carry exactly one.
+    source: https://api-docs.incident.io/
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v2/incidents
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        errors[0].message: "Your API key is not valid"
+      absent:
+        - message
+        - error
+
+  - name: a key without the right role is a 403 that does not name it
+    source: https://api-docs.incident.io/
+    fixture: small-workspace
+    arm: insufficient_scope
+    request:
+      method: GET
+      path: /v2/incidents
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 403
+      body:
+        errors[0].code: forbidden
+
+  - name: an invalid request is a 422, not a 400
+    source: https://api-docs.incident.io/
+    fixture: small-workspace
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /v2/incidents
+      headers:
+        Authorization: Bearer inc_cauldron000000000000000000000000
+    expect:
+      status: 422
+      body:
+        errors[0].code: validation_error
