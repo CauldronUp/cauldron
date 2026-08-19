@@ -1,0 +1,530 @@
+# FastSpring Recipe for Cauldron
+#
+# One purchase is three objects with three different identifiers, and which
+# one a webhook hands you depends on which event fired.
+#
+# There is an order, which is the transaction. There is a subscription, if
+# what was bought recurs. And there is an account, which is the customer. An
+# order.completed webhook carries the order id; a subscription.charge.completed
+# carries the subscription id and a different order id for that period's
+# charge; a subscription.deactivated carries only the subscription. So code
+# that keys everything on "the order id" has three different values over the
+# life of one customer, and no single lookup reconciles them.
+#
+# Four more worth modelling exactly:
+#
+#   1. FastSpring is the merchant of record, so the price the customer paid
+#      is not the price you set. Tax is added on top per jurisdiction, the
+#      currency may be theirs rather than yours, and what arrives is the
+#      total minus FastSpring's cut. Three numbers on one order and none of
+#      them is what you listed.
+#   2. Every amount comes twice: a number and a preformatted string with a
+#      currency symbol in it. total and totalDisplay, and the display one is
+#      localised, so a client that shows it gets the right symbol and one
+#      that parses it gets whatever the locale did to the separators.
+#   3. A subscription that has been cancelled keeps running until its period
+#      ends. state is "active" with deactivationDate set in the future, so
+#      reading state alone bills somebody who has already left, and reading
+#      the date alone cuts off somebody who has paid through next month.
+#   4. Test and live orders live in the same API and differ by a boolean. A
+#      client that forgets to filter on it reports test purchases as revenue.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No order is placed and nothing recurs. Which state a subscription holds
+#     is what a fixture puts there.
+#   - The webhook payloads are not modelled. They are the reason the three
+#     identifiers matter, and describing them would mean describing an
+#     event envelope this Recipe does not carry.
+#   - Products, coupons, returns and the storefront API are not modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: fastspring
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.fastspring.com/reference
+
+auth:
+  # Basic, with an API username and password that are not the account login.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-fastspring-api-password
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  order:
+    collection: orders
+    id:
+      style: opaque
+      length: 22
+    fields:
+      # A short human-facing reference, which is not the id and is what
+      # support will quote at you.
+      reference:
+        type: string
+      # The account this belongs to, which is the customer and the only
+      # thing tying an order to a subscription.
+      account:
+        type: string
+      # A test order and a live one live in the same API and differ by this,
+      # so a client that forgets to filter reports test purchases as revenue.
+      live:
+        type: boolean
+        default: true
+      # What the customer paid, in their currency. Not what you listed: tax
+      # is added on top per jurisdiction and FastSpring is the merchant of
+      # record.
+      total:
+        type: number
+      # The same number preformatted and localised, symbol included. A client
+      # that parses this gets whatever the locale did to the separators.
+      totalDisplay:
+        type: string
+      # Tax, separately, because it was added rather than included.
+      tax:
+        type: number
+      # What you actually receive, which is the total minus FastSpring's cut
+      # and the tax they remit. Three numbers on one order and none of them
+      # is the price you set.
+      netTotal:
+        type: number
+      currency:
+        type: string
+        default: USD
+      # Milliseconds. A client that treats it as seconds lands in 1970.
+      changed:
+        type: timestamp_ms
+      # completed, failed. An order that failed is still an order and is
+      # still in the listing.
+      completed:
+        type: boolean
+        default: true
+      # The subscription this order's line item created or renewed, if it
+      # created one. Absent on a one-off purchase, so a client that reads it
+      # everywhere reads undefined on half its orders.
+      subscription:
+        type: string
+
+  subscription:
+    collection: subscriptions
+    id:
+      style: opaque
+      length: 22
+    fields:
+      account:
+        type: string
+      product:
+        type: string
+      # active, overdue, canceled, deactivated, trial. A cancelled
+      # subscription that has paid through the month is still active, which
+      # is the trap below.
+      state:
+        type: string
+        default: active
+      # Set the moment somebody cancels, and in the future. So state says
+      # active and this says when it stops, and reading either alone gets it
+      # wrong in opposite directions.
+      deactivationDate:
+        type: timestamp_ms
+        null_when_unset: true
+      nextChargeDate:
+        type: timestamp_ms
+        null_when_unset: true
+      # What the next charge will be, which is not what the first one was:
+      # tax follows the customer, and they may have moved.
+      nextChargeTotalValue:
+        type: number
+        null_when_unset: true
+      currency:
+        type: string
+        default: USD
+      # How many periods have been charged. A subscription in its trial has
+      # zero and is still active.
+      periods:
+        type: integer
+        default: 0
+      live:
+        type: boolean
+        default: true
+
+routes:
+  - method: GET
+    path: /orders
+    resource: order
+    operation: list
+
+  - method: GET
+    path: /orders/{id}
+    resource: order
+    operation: get
+
+  - method: GET
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    message: "Unauthorized"
+
+  resource_missing:
+    status: 404
+    message: "Order not found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request"
+
+  # FastSpring answers 200 with an error inside for some failures, which is
+  # its own trap, and 400 for others. This is the 400 kind: the identifier
+  # was not one this account owns.
+  not_your_order:
+    status: 400
+    message: "The specified order does not belong to this account"
+
+  # A subscription that has already been deactivated cannot be cancelled
+  # again, and the message does not say when it was.
+  already_deactivated:
+    status: 400
+    message: "Subscription is already deactivated"
+
+fixtures:
+  empty: {}
+
+  small-store:
+    order:
+      # A subscription's first charge. Listed at 49.00 and the customer paid
+      # 58.31, because Germany's VAT was added on top, and what arrives is
+      # 51.72 after FastSpring's cut. Three numbers and none of them is the
+      # price on the pricing page.
+      - id: 8kQmT2xLnR7vBcW4dY9pAe
+        reference: EXAMPLE260814-1234-56789
+        account: aCc0uNt1x9KmQ2vTnB7pLe
+        live: true
+        total: 58.31
+        totalDisplay: "58,31 €"
+        tax: 9.31
+        netTotal: 51.72
+        currency: EUR
+        changed: 1786893242000
+        completed: true
+        subscription: sUb5cR1pT10nQ2vTnB7pLe
+
+      # A one-off purchase. No subscription at all, so a client that reads
+      # order.subscription everywhere reads undefined on half its orders.
+      - id: 3nFbY7wKmP2xTcQ8vZ5rDa
+        reference: EXAMPLE260812-9876-54321
+        account: aCc0uNt2y8LnR3wUoC8qMf
+        live: true
+        total: 19.0
+        totalDisplay: "$19.00"
+        tax: 0.0
+        netTotal: 17.29
+        currency: USD
+        changed: 1786720442000
+        completed: true
+
+      # A test order, in the same listing as the live ones, and the only
+      # thing marking it is a boolean.
+      - id: 6pLxV4zNqT8yEdW1uB3sGh
+        reference: EXAMPLE260815-1111-22222
+        account: aCc0uNt3z7MoS4xVpD9rNg
+        live: false
+        total: 49.0
+        totalDisplay: "$49.00"
+        tax: 0.0
+        netTotal: 44.55
+        currency: USD
+        changed: 1786979642000
+        completed: true
+
+      # Failed, and still here. An order that did not complete is in the
+      # listing with the rest, so a total that does not filter on completed
+      # counts money that never moved.
+      - id: 9wRcX6yMpQ3zFeT2vA8nJk
+        reference: EXAMPLE260815-3333-44444
+        account: aCc0uNt2y8LnR3wUoC8qMf
+        live: true
+        total: 99.0
+        totalDisplay: "$99.00"
+        tax: 0.0
+        netTotal: 0.0
+        currency: USD
+        changed: 1786983242000
+        completed: false
+
+    subscription:
+      # Cancelled and still running. state says active, deactivationDate is
+      # in the future, and reading either alone gets it wrong in opposite
+      # directions: state bills somebody who has left, the date cuts off
+      # somebody who has paid through next month.
+      - id: sUb5cR1pT10nQ2vTnB7pLe
+        account: aCc0uNt1x9KmQ2vTnB7pLe
+        product: pro-monthly
+        state: active
+        deactivationDate: 1789485242000
+        currency: EUR
+        periods: 3
+        live: true
+
+      # In trial. Active, zero periods charged, and a next charge that has
+      # not happened.
+      - id: tR1aLsUb5cR1pT10nQ2vTn
+        account: aCc0uNt3z7MoS4xVpD9rNg
+        product: pro-monthly
+        state: trial
+        nextChargeDate: 1787498042000
+        nextChargeTotalValue: 49.0
+        currency: USD
+        periods: 0
+        live: true
+
+# Every case below is derived from FastSpring's published documentation. None
+# has been run against a real store. The verify report says so.
+conformance:
+  - name: three numbers on one order and none is the price you set
+    # Listed at 49.00. The customer paid 58.31 because German VAT was added
+    # on top, and 51.72 arrives after FastSpring's cut. FastSpring is the
+    # merchant of record, so the price on the pricing page appears nowhere.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/8kQmT2xLnR7vBcW4dY9pAe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        total: 58.31
+        tax: 9.31
+        netTotal: 51.72
+        currency: EUR
+
+  - name: every amount comes twice and one of them is localised
+    # "58,31 €" with a comma, because the customer is in Germany. A client
+    # that shows this gets the right symbol and one that parses it gets
+    # whatever the locale did to the separators.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/8kQmT2xLnR7vBcW4dY9pAe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        totalDisplay: "58,31 €"
+        total: 58.31
+
+  - name: a one-off purchase has no subscription
+    # So a client that reads order.subscription everywhere reads undefined
+    # on half its orders, and one that keys its own records on it drops
+    # them.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/3nFbY7wKmP2xTcQ8vZ5rDa
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        total: 19.0
+        tax: 0.0
+      absent:
+        - subscription
+
+  - name: and a subscription order carries a third identifier
+    # The order id, the account, and the subscription. Three values over the
+    # life of one customer and no single lookup reconciles them.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/8kQmT2xLnR7vBcW4dY9pAe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        id: 8kQmT2xLnR7vBcW4dY9pAe
+        account: aCc0uNt1x9KmQ2vTnB7pLe
+        subscription: sUb5cR1pT10nQ2vTnB7pLe
+        reference: EXAMPLE260814-1234-56789
+
+  - name: a cancelled subscription is still active
+    # deactivationDate is in the future and state says active. Reading state
+    # alone bills somebody who has already left; reading the date alone cuts
+    # off somebody who has paid through next month.
+    source: https://developer.fastspring.com/reference/subscriptions-get-subscription
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/sUb5cR1pT10nQ2vTnB7pLe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        state: active
+        deactivationDate: 1789485242000
+        periods: 3
+
+  - name: a cancelled subscription has no next charge
+    # It will not be charged again, so the two fields that say when and how
+    # much are absent, and a client that computes forecast revenue from
+    # them skips this one rather than counting it as zero.
+    source: https://developer.fastspring.com/reference/subscriptions-get-subscription
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/sUb5cR1pT10nQ2vTnB7pLe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        nextChargeDate: null
+        nextChargeTotalValue: null
+
+  - name: a trial is active with nothing charged
+    # Zero periods and a next charge that has not happened. A client that
+    # treats active as paying counts this as revenue it does not have.
+    source: https://developer.fastspring.com/reference/subscriptions-get-subscription
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/tR1aLsUb5cR1pT10nQ2vTn
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        state: trial
+        periods: 0
+        nextChargeTotalValue: 49.0
+        deactivationDate: null
+
+  - name: test and live orders are in the same listing
+    # The only thing marking one is a boolean, so a client that forgets to
+    # filter reports test purchases as revenue.
+    source: https://developer.fastspring.com/reference/orders-list-orders
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        orders[0].live: true
+        orders[2].live: false
+        orders[2].total: 49.0
+      absent:
+        - orders[4]
+
+  - name: a failed order is still an order
+    # It did not complete, it is in the listing with the rest, and a total
+    # that does not filter on completed counts ninety-nine dollars that
+    # never moved.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/9wRcX6yMpQ3zFeT2vA8nJk
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        completed: false
+        total: 99.0
+        netTotal: 0.0
+
+  - name: the reference is not the identifier
+    # It is what support will quote at you and it is not what any path
+    # takes, so a client that stores the reference cannot look the order up
+    # again.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/3nFbY7wKmP2xTcQ8vZ5rDa
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        id: 3nFbY7wKmP2xTcQ8vZ5rDa
+        reference: EXAMPLE260812-9876-54321
+
+  - name: timestamps are milliseconds
+    # A client that treats them as seconds lands in 1970.
+    source: https://developer.fastspring.com/reference/orders-get-order
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders/8kQmT2xLnR7vBcW4dY9pAe
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 200
+      body:
+        changed: 1786893242000
+
+  - name: an order from another account is a 400, not a 404
+    # So a client branching on 404 to mean "not found" treats somebody
+    # else's order as a malformed request, which is closer to the truth than
+    # it looks and still not what it expected.
+    source: https://developer.fastspring.com/reference/api-errors
+    fixture: small-store
+    arm: not_your_order
+    request:
+      method: GET
+      path: /orders
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjpjYXVsZHJvbi1mYXN0c3ByaW5nLWFwaS1wYXNzd29yZA==
+    expect:
+      status: 400
+      body:
+        error: "The specified order does not belong to this account"
+
+  - name: the api password is the half that is checked
+    source: https://developer.fastspring.com/reference/authentication
+    fixture: small-store
+    request:
+      method: GET
+      path: /orders
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZmFzdHNwcmluZy1hcGktdXNlcjp3cm9uZw==
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+      absent:
+        - code
+        - message

@@ -647,7 +647,7 @@ what normalisation does not fix.
 | dLocal | The settlement currency is not the charge currency and the rate is fixed at a moment you did not choose |
 | Rapyd | Payouts and payments have separate id namespaces that look identical |
 | Worldpay | Two APIs, one modern and one not, and the older one is what most accounts are still on |
-| FastSpring | One purchase is an order, a subscription and a sale, with three different ids, and which one a webhook names depends on the event |
+| ~~FastSpring~~ | Shipped. One purchase is an order, a subscription and an account with three different ids and which one a webhook hands you depends on the event; FastSpring is the merchant of record so three amounts sit on one order and none is the price you set; a cancelled subscription is still active until its period ends |
 
 ### Notification and messaging infrastructure
 
