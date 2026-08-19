@@ -781,6 +781,33 @@ type Route struct {
 	// answers a create with 201, Stripe with 200, and a client checking for one
 	// exact code is not being unreasonable.
 	Status int `yaml:"status"`
+	// Fields are constants this route adds to its response body, on top of
+	// whatever the Recipe-wide response constants already put there.
+	//
+	// A one-path API needs them. ShipHero puts request_id and complexity
+	// beside each connection -- data.orders.complexity, data.products.complexity
+	// -- so the key depends on which query was asked, and a Recipe-wide
+	// constant would stamp the orders metadata onto a products response. A
+	// dotted name nests, the same way the Recipe-wide ones do.
+	Fields map[string]any `yaml:"fields"`
+	// Selects disambiguates several routes that share one path by what the
+	// request body asks for.
+	//
+	// A GraphQL API is one path and one method, so the path cannot say which
+	// route should answer. What can is the query itself: a request naming
+	// `orders` wants the orders route and one naming `products` wants that
+	// one. Selects holds the root field to look for, and the route matches
+	// only when the body's query mentions it.
+	//
+	// This does not parse GraphQL and does not pretend to. It looks for the
+	// word, which is enough to pick a fixture and is exactly the bargain
+	// every Recipe here already makes: model what comes back, not how the
+	// provider decided it.
+	//
+	// Seven providers were unreachable without this -- Linear, Monday, Attio,
+	// New Relic, Railway, ShipHero, and half of Fly.io -- and each had been
+	// recorded as its own judgement call rather than as one missing feature.
+	Selects string `yaml:"selects"`
 	// IDFrom says where the identifier comes from when it is not a path
 	// parameter: "query:channel" or "body:channel". Slack and every other
 	// RPC-shaped API put it in the query string or the body, and without this
@@ -1291,7 +1318,11 @@ func (r *Recipe) Validate() error {
 			add("%s: path must start with /", where)
 		}
 
-		key := route.Method + " " + route.Path
+		// Selects is part of the identity: a GraphQL Recipe is several routes
+		// on one path, told apart by what the query asks for, and two of them
+		// selecting the same field would still be the duplicate this rule
+		// exists to catch.
+		key := route.Method + " " + route.Path + " " + route.Selects
 		if seen[key] {
 			add("%s: duplicate route", where)
 		}

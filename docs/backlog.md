@@ -1036,39 +1036,33 @@ do not:       statsig, imagekit, render, moov, checkout.com, inngest,
 lies:         tradier (200, HTML)
 ```
 
-## GraphQL is the biggest single gap in the format
+## GraphQL, now reachable
 
-Seven providers are now blocked on the same thing, and they are recorded in
-seven different places as if each were its own judgement call. They are not:
+Seven providers were blocked on one missing feature and recorded as seven
+separate judgements: Linear, Monday, Attio, New Relic, Railway, ShipHero, and
+half of Fly.io. It was costed here one cycle and built the next.
 
-```
-Linear      ShipHero        Attio
-Monday      New Relic       Railway
-Fly.io's older platform API (the Machines API shipped; the other half did not)
-```
+What it took was smaller than the note guessed. A GraphQL API is one path and
+one method, so the path cannot say which route answers -- but the query can.
+`selects:` names the root field a route serves, and the route matches only
+when the body's query mentions it. Nothing parses GraphQL: it looks for the
+word, which is enough to pick a fixture and is the same bargain every Recipe
+here already makes.
 
-Each row says some version of "GraphQL-only, a REST-shaped Recipe would be an
-approximation of a different API". That is still true and it is no longer the
-interesting sentence. The interesting one is that this is a single missing
-capability with seven providers behind it, and nobody has costed it.
+Two things came with it. `fields:` on a route, because a one-path API keys its
+envelope metadata by the query that was asked -- ShipHero puts complexity and
+request_id at `data.orders.*` and `data.products.*`, so a Recipe-wide constant
+would stamp one connection's numbers onto the other's response. And an
+unmodelled query is a 404 rather than a 405: counting selecting routes as
+"methods this path allows" told a client to change the method it already had
+right.
 
-What it would take, roughly. A GraphQL endpoint is one path and one method, so
-routing is trivial; what a Recipe would have to describe instead is which
-query shapes it answers and with what. The obvious form is a list of operation
-names mapped to fixtures, matched on the operation name in the request body,
-which is a small addition to the format and a large one to the runtime -- and
-it would model the responses without modelling the query language, which is
-the same bargain every Recipe here already makes.
+The Relay shape needed nothing new. `collection: data.orders.data.edges` with
+every field declared `in: node` produces edges holding a node and a cursor
+side by side, which is what Relay is.
 
-The traps are worth having. A GraphQL error is an HTTP 200 with an `errors`
-array, which is the partial-success shape this portfolio spent five cycles
-trying to land; ShipHero's throttling arrives as an error object with a
-`code` inside a 200; and `data` can be non-null beside `errors`, so a
-half-successful query looks like a whole one.
-
-Not started, because it is a format change rather than a Recipe and the
-standing instruction is providers. Written down so the seven rows stop
-pretending to be seven decisions.
+ShipHero is shipped on it. The other six are now ordinary provider work: find
+the queries, find the responses, write the Recipe.
 
 ## Blocked on documentation, with what would unblock each
 

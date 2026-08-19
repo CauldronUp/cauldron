@@ -1,0 +1,410 @@
+# ShipHero Recipe for Cauldron
+#
+# The order is five levels down and two of the levels are called data.
+#
+# data.orders.data.edges[0].node. The outer data is GraphQL's envelope, the
+# orders is the query you asked, the inner data is ShipHero's own wrapper
+# around the connection, and then Relay's edges and node. A client that reads
+# response.data.orders.edges finds nothing, and the thing it is missing is one
+# word that is the same word as the one two levels up.
+#
+# This is the first GraphQL Recipe here, and it exists because seven providers
+# were blocked on the same missing feature rather than on seven separate
+# judgements. A GraphQL API is one path and one method, so the path cannot say
+# which route answers; the query can, and a route now says which root field it
+# serves. Nothing parses GraphQL: it looks for the word, which is enough to
+# pick a fixture and is the same bargain every Recipe here makes.
+#
+# Five more the Recipe pins:
+#
+#   1. A failure is a 200. GraphQL puts errors in the body, so the status
+#      line is about the transport and says nothing about whether the query
+#      worked. Every HTTP-level check a client has is looking at the wrong
+#      thing.
+#   2. And data can be there beside them. A query that half worked returns
+#      both, so a client that reads data without checking errors gets a
+#      partial answer that looks whole.
+#   3. Every object has two identifiers and they are not interchangeable.
+#      id is base64 -- T3JkZXI6MTAwNTc0MjM1 decodes to Order:100574235 --
+#      and legacy_id is the number inside it. Mutations and the older
+#      integrations want different ones.
+#   4. The rate limit is priced per query, not per request. complexity comes
+#      back with the answer, so what a call costs depends on what it asked
+#      for, and a client that adds one field to a query can start being
+#      throttled without sending any more requests.
+#   5. order_date has no timezone. "2019-07-16T14:46:03", parsed as local by
+#      most things that parse it, which moves an order across a day boundary
+#      depending on where the server is.
+#
+# And request_id is inside the result rather than in a header, so the value
+# support will ask for is one a client has to dig out of the payload it may
+# already have discarded.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No GraphQL is parsed, executed or validated. A query naming orders gets
+#     the orders fixture whatever fields it asked for, so this reproduces the
+#     envelope, the nesting and the failure shapes rather than the query
+#     language.
+#   - Which means over-fetching and under-fetching both look identical here
+#     and do not there. Asking for a field that does not exist is an error
+#     against ShipHero and is silence against this.
+#   - Mutations, webhooks, the 28-day token refresh and the whole third-party
+#     shipping surface are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: shiphero
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: "2020-04"
+  docs: https://developer.shiphero.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.shiphero.jwt.000000
+
+responses:
+  # The connection, five levels down, with ShipHero's own metadata beside the
+  # inner wrapper rather than at the top.
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  # GraphQL's own shape: a list of errors, at 200, beside whatever data
+  # survived.
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  # One edge of the orders connection. Everything about the order sits under
+  # node; the cursor sits beside it, which is Relay's shape and is why the
+  # order is one level deeper than it looks.
+  order:
+    collection: data.orders.data.edges
+    id:
+      style: opaque
+      length: 17
+      # The base64 one, under node with the rest of the order.
+      field: node.id
+    fields:
+      cursor:
+        type: string
+      # The number inside the base64 above. Older integrations and some
+      # mutations want this one instead.
+      legacy_id:
+        type: integer
+        in: node
+        as: legacy_id
+      order_number:
+        type: string
+        in: node
+        as: order_number
+      shop_name:
+        type: string
+        in: node
+        as: shop_name
+      fulfillment_status:
+        type: string
+        in: node
+        as: fulfillment_status
+      # No timezone. Parsed as local by most things that parse it.
+      order_date:
+        type: string
+        in: node
+        as: order_date
+      total_price:
+        type: string
+        in: node
+        as: total_price
+
+  product:
+    collection: data.products.data.edges
+    id:
+      style: opaque
+      length: 17
+      field: node.id
+    fields:
+      cursor:
+        type: string
+      legacy_id:
+        type: integer
+        in: node
+        as: legacy_id
+      sku:
+        type: string
+        in: node
+        as: sku
+      name:
+        type: string
+        in: node
+        as: name
+
+routes:
+  # One path, one method, and the query decides. A request naming orders gets
+  # this; one naming products gets the next.
+  - method: POST
+    path: /graphql
+    resource: order
+    operation: list
+    selects: orders
+    # Beside this connection rather than at the top of the response, and
+    # keyed by the query that was asked, so they belong to the route.
+    fields:
+      data.orders.request_id: 664fa4c96a9d0b7c9f4d3b21
+      data.orders.complexity: 12
+
+  - method: POST
+    path: /graphql
+    resource: product
+    operation: list
+    selects: products
+    fields:
+      data.products.request_id: 664fa4c96a9d0b7c9f4d3b22
+      data.products.complexity: 4
+
+errors:
+  # Throttling, at 200, in the errors array, with the credits arithmetic in
+  # the message.
+  throttled:
+    status: 200
+    code: "30"
+    message: "Query cost is 12, current balance is 3. Please wait 18 seconds and try again."
+
+  # A field that does not exist. Against ShipHero this is an error; against
+  # this Recipe nothing is validated, so it is armed rather than provoked.
+  unknown_field:
+    status: 200
+    code: "10"
+    message: "Cannot query field 'ordr_number' on type 'Order'."
+
+  # The token expires every 28 days and nothing renews it on your behalf.
+  expired_token:
+    status: 401
+    code: "20"
+    message: "Signature has expired"
+
+fixtures:
+  empty: {}
+
+  one-account:
+    order:
+      - id: T3JkZXI6MTAwNTc0MjM1
+        cursor: YXJyYXljb25uZWN0aW9uOjA=
+        legacy_id: 100574235
+        order_number: MO519
+        shop_name: "Manual Order"
+        fulfillment_status: pending
+        order_date: "2019-07-16T14:46:03"
+        total_price: "48.50"
+
+      - id: T3JkZXI6MTAwNTc0MjM2
+        cursor: YXJyYXljb25uZWN0aW9uOjE=
+        legacy_id: 100574236
+        order_number: MO520
+        shop_name: Shopify
+        fulfillment_status: fulfilled
+        order_date: "2019-07-16T22:41:58"
+        total_price: "112.00"
+
+    product:
+      - id: UHJvZHVjdDoxMjM0NQ==
+        cursor: YXJyYXljb25uZWN0aW9uOjA=
+        legacy_id: 12345
+        sku: KETTLE-1L
+        name: "Stovetop kettle, 1L"
+
+# Every case below is derived from ShipHero's published developer
+# documentation. None has been run against a real account, which would need a
+# username and a password. The verify report says so.
+conformance:
+  - name: the order is five levels down and two of them are called data
+    # data.orders.data.edges[0].node. The outer data is GraphQL's, the inner
+    # one is ShipHero's, and a client reading data.orders.edges finds
+    # nothing.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { data { edges { node { id order_number } } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.data.edges[0].node.order_number: MO519
+        data.orders.data.edges[1].node.order_number: MO520
+      absent:
+        - data.orders.edges
+        - data.edges
+
+  - name: the query picks the route, because the path cannot
+    # One path and one method. A request naming products gets products, and
+    # nothing about the URL differs.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { products { data { edges { node { id sku } } } } }"
+    expect:
+      status: 200
+      body:
+        data.products.data.edges[0].node.sku: KETTLE-1L
+      absent:
+        - data.orders
+
+  - name: two identifiers and they are not interchangeable
+    # id is base64 and legacy_id is the number inside it.
+    # T3JkZXI6MTAwNTc0MjM1 decodes to Order:100574235.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { data { edges { node { id legacy_id } } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.data.edges[0].node.id: T3JkZXI6MTAwNTc0MjM1
+        data.orders.data.edges[0].node.legacy_id: 100574235
+
+  - name: the cursor is beside the node, not inside it
+    # Relay's shape: the edge holds the cursor and the node holds the order,
+    # so paging state and record are siblings rather than one containing the
+    # other.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { data { edges { cursor node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.data.edges[0].cursor: YXJyYXljb25uZWN0aW9uOjA=
+        data.orders.data.edges[1].cursor: YXJyYXljb25uZWN0aW9uOjE=
+      absent:
+        - data.orders.data.edges[0].node.cursor
+
+  - name: the query is priced and the price comes back with the answer
+    # complexity is what this call cost. Adding one field to a query can
+    # start you being throttled without sending any more requests.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { complexity data { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.complexity: 12
+        data.orders.request_id: 664fa4c96a9d0b7c9f4d3b21
+
+  - name: the order date has no timezone
+    # Parsed as local by most things that parse it, which moves an order
+    # across a day boundary depending on where the server is.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { data { edges { node { order_date } } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.data.edges[0].node.order_date: "2019-07-16T14:46:03"
+        data.orders.data.edges[1].node.order_date: "2019-07-16T22:41:58"
+
+  - name: being throttled is a 200
+    # GraphQL puts errors in the body, so the status line is about the
+    # transport and every HTTP-level check a client has is looking at the
+    # wrong thing.
+    source: https://developer.shiphero.com/getting-started
+    fixture: one-account
+    arm: throttled
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { orders { data { edges { node { id } } } } }"
+    expect:
+      status: 200
+      body:
+        errors[0].message: "Query cost is 12, current balance is 3. Please wait 18 seconds and try again."
+        errors[0].code: 30
+      absent:
+        - error
+        - message
+
+  - name: each connection carries its own metadata
+    # request_id and complexity sit beside the connection that was asked
+    # for, so a products query is priced separately from an orders one and
+    # neither response mentions the other.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { products { complexity data { edges { node { sku } } } } }"
+    expect:
+      status: 200
+      body:
+        data.products.complexity: 4
+        data.products.request_id: 664fa4c96a9d0b7c9f4d3b22
+      absent:
+        - data.orders
+        - data.products.data.edges[0].node.order_number
+
+  - name: a query for something unmodelled is not answered
+    # Every route on this path says what it serves. A query naming none of
+    # them has no route, and answering anyway would be the helpful lie: a
+    # client would learn that a field exists here and find out otherwise
+    # against ShipHero.
+    source: https://developer.shiphero.com/examples
+    fixture: one-account
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.shiphero.jwt.000000
+      json:
+        query: "query { warehouses { data { edges { node { id } } } } }"
+    expect:
+      status: 404
+      body:
+        errors[0].code: unknown_route
+      absent:
+        - data

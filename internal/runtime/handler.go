@@ -58,7 +58,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matched, vars, ok := s.router.match(r.Method, r.URL.Path)
+	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r))
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
 			w.Header().Set("Allow", strings.Join(allowed, ", "))
@@ -473,6 +473,14 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 			}
 
 			setPath(object, s.collectionName(name, ""), records)
+		}
+	}
+
+	// Constants this route adds, after the Recipe-wide ones, because on a
+	// one-path API the envelope depends on which query was asked.
+	if len(matched.spec.Fields) > 0 {
+		if object, ok := body.(map[string]any); ok {
+			body = withFields(object, matched.spec.Fields)
 		}
 	}
 

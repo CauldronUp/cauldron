@@ -17,6 +17,36 @@ import (
 // gigabyte by mistake.
 const maxBody = 8 << 20 // 8 MiB
 
+// graphQLQuery reads the query out of a GraphQL request so routing can tell
+// several routes on one path apart.
+//
+// It reads the body and puts it back, because the handlers downstream read it
+// again, and it answers with an empty string for anything that is not a
+// GraphQL-shaped POST. That is the common case by far: 158 of the 159 Recipes
+// here route on the path alone and must keep doing so.
+func graphQLQuery(r *http.Request) string {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return ""
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil {
+		return ""
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var envelope struct {
+		Query string `json:"query"`
+	}
+
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+
+	return envelope.Query
+}
+
 // decodeBody reads a request body as either JSON or form encoding.
 //
 // Supporting both is a fidelity requirement, not a convenience: Stripe's
