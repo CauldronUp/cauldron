@@ -612,7 +612,7 @@ An order is not a fill, and the gap between them is where the bugs live.
 |---|---|
 | ~~Alpaca~~ | Shipped. A partially filled order is a real position that is still open, the listing hides everything that finished, and every number is a string |
 | Tradier | The same order in two accounts is two objects, and the account is a path segment rather than a field |
-| Polygon.io | Aggregates are bucketed and a bucket with no trades is absent rather than zero, so a chart drawn from the response has invisible gaps |
+| ~~Polygon.io~~ | Shipped, and the row understated it. `t` is documented as the **start** of the window on the range endpoint and the **end** of it on the grouped one -- same one-letter field, same API, Polygon's own words on each. A missing bucket is also not a quiet one: Polygon does not populate an aggregate unless OHLC changed or *eligible* trades occurred, so absence means nothing eligible happened. Plus `T` is the ticker and `t` the timestamp on one object, `otc` is left off when false, `limit` limits base aggregates rather than results, and three counts mean three things |
 | Finnhub | The free tier truncates history rather than refusing, so a backtest runs on less data than it asked for and says nothing |
 
 ### Open banking and financial aggregation
@@ -894,6 +894,29 @@ Answering it properly means reading each provider's request schema beside its
 response schema, one provider at a time, which is the work. Nothing here can
 be inferred from the Recipes, because the field that would prove it is exactly
 the field nobody wrote down.
+
+## What `check` cannot disambiguate
+
+Polygon's description declares four paths that differ only in the name of a
+path parameter: `{stocksTicker}`, `{cryptoTicker}`, `{forexTicker}` and
+`{optionsTicker}`, all at
+`/v2/aggs/ticker/{...}/range/{multiplier}/{timespan}/{from}/{to}`.
+
+`templatePattern` deliberately ignores parameter names, because a Recipe names
+its parameters for itself and a description names them for its own reasons.
+That is right almost everywhere and wrong here: the first match wins, and the
+first of those four in sorted order is crypto.
+
+The visible symptom is a finding that is not true. Only the stocks variant
+carries `otc`, so a stocks Recipe checked against this description is told
+`otc` is undeclared -- by the crypto schema, which the reader has no way to
+know was consulted.
+
+Nothing is broken enough to warrant a change yet. Fixing it means either
+preferring the template whose parameter name matches the Recipe's, or
+reporting every candidate rather than the first, and both want a second
+provider showing the same shape before the right answer is obvious. Written
+down so the next person to see a false finding here knows where it came from.
 
 ## Assessed and deliberately not done
 
