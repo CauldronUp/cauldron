@@ -485,7 +485,7 @@ transfers alone, and say so in the header.
 | ~~Marqeta~~ | Shipped, without the JIT funding path. It puts a webhook in the authorisation with a response deadline on it, so a slow test is a declined payment, and Cauldron delivers webhooks without waiting for an answer. The Recipe states the gap rather than pretending to close it |
 | ~~Dwolla~~ | Shipped. Three attempts and then the funding source is finished, not rate limited and not retryable tomorrow |
 | Checkout.com | Authorised is not captured, and the two have separate identifiers |
-| Klarna | The session expires between authorise and capture, so an order can be approved and unpayable |
+| Klarna | Blocked on documentation, like Sift. The premise is good -- an authorization token expires while the order it approved has not been created, so a customer can be approved and unpayable -- and docs.klarna.com renders its API reference through a portal that serves navigation rather than schemas, so the response bodies cannot be read or cited. Revisit with an account or a published spec |
 | ~~Airwallex~~ | Shipped. The settlement currency is not the charge currency and the rate was fixed at a moment nobody picked, there is a separate balance per currency so a payout can fail on a funded account, and a partial capture leaves two amounts different forever |
 | ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two characters apart with opposite obligations |
 | Moov | Transfers across rails, where the rail decides the settlement time and nothing else does |
@@ -521,7 +521,7 @@ transfers alone, and say so in the header.
 | ~~Twilio Verify~~ | Shipped. A wrong code is a 200 with the verdict in a word inside the body, so `if (!res.ok)` lets the wrong person through the second factor. Three different 429s, two of which are terminal and one of which is not. A verification is deleted on approval, so checking twice and never having started are the same 404 |
 | Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
-| Brevo | Contacts and transactional email share one quota, so sending mail exhausts the budget for reading contacts |
+| Brevo | The premise is wrong and the row is kept to stop it being re-derived. Brevo's limits are **per-endpoint**, not one pool: `POST /v3/smtp/email` gets 1,000 RPS while `GET /v3/contacts/{id}` gets 10. What is true is duller and still real -- two endpoints on one API differ by a hundredfold, so a throttle calibrated on the send is wrong on the read -- and Cauldron models rate limits as armable errors rather than as counters, so a Recipe could only restate it |
 | Kit | Assess — subscribers, sequences, tags |
 | Beehiiv | Assess — publications, posts, subscribers |
 
@@ -530,7 +530,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | AWS Cognito | The SDK is the API, and the token lifecycle is the whole integration |
-| Ory | Assess — identities, sessions, flows. The flow object is the unusual part |
+| ~~Ory Kratos~~ | Shipped, and the flow object was the unusual part. The server sends you the form: a flow carries the URL to post to, the method, and the list of fields to render, so a login page is a renderer for somebody else's JSON and a hardcoded {email, password} POST works against one deployment and not the next. An expired flow is 410 and 410 is not a retry -- Ory's words are that a new flow has to be initiated. The CSRF token is a node in the same array as the visible fields, a node's `type` and its attribute's `type` are different words at different depths, and `identity.state` is documented as having no effect while still carrying an enum |
 | Kinde | Assess — users, organizations, feature flags in one product |
 | ~~Persona~~ | Shipped. completed is not approved, needs_review is neither, and nothing is at the top level because it is JSON:API |
 | ~~Onfido~~ | Shipped. complete is not clear, consider is neither a pass nor a failure, and the reason lives on the report rather than the check |
