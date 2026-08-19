@@ -653,7 +653,7 @@ what normalisation does not fix.
 
 | Provider | Why |
 |---|---|
-| Xendit | A virtual account exists before it can receive money, and the callback is the only signal that it can |
+| ~~Xendit~~ | Shipped. A virtual account number exists in the 201 and does not work at the bank for minutes, so the customer is told it does not exist by their own bank; a closed account accepts one exact amount and a short payment bounces days later; amounts are integer rupiah with no subunit at all |
 | ~~Midtrans~~ | Shipped. transaction_status and fraud_status are two fields and a payment is only safe when both agree; capture plus challenge means the card was charged and the funds are held; a bank transfer never passes through capture at all |
 | PayU | The same merchant has different endpoints per country and the response fields differ between them |
 | Gorgias | A ticket and its messages page separately, so a message can arrive between the two reads and belong to neither |

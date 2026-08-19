@@ -1,0 +1,494 @@
+# Xendit Recipe for Cauldron
+#
+# A virtual account is a bank account number Xendit mints for one customer to
+# pay into. Creating one answers 201 with the number, and for a few minutes
+# that number does not work: the bank has not registered it yet. A customer
+# who tries immediately is told the account does not exist by their own bank,
+# which is the one place your logs will never see.
+#
+# Nothing in the create response says this. The status field says PENDING and
+# almost every integration treats a 201 as done.
+#
+# Four more worth modelling exactly:
+#
+#   1. There is no polling endpoint worth having. Xendit's model is that the
+#      callback tells you money arrived, and the API tells you the account
+#      exists. Code that reconciles by fetching the virtual account learns
+#      nothing about payments, because payments are separate objects that
+#      only the callback announces.
+#   2. expected_amount is optional and changes the meaning of the account. An
+#      open account accepts any amount any number of times; a closed one
+#      accepts exactly one payment of exactly one amount, and a customer who
+#      pays a rupiah short has paid nothing and the money bounces back days
+#      later.
+#   3. Amounts are integers in rupiah, which has no subunit at all. Not minor
+#      units, not decimals: 50000 is fifty thousand rupiah, and there is
+#      nothing after a decimal point because there is no decimal point.
+#   4. Every write takes an idempotency key in a header and Xendit remembers
+#      it for twenty-four hours. Replaying the same key returns the original
+#      response rather than an error, so a retry loop that reuses a key gets
+#      the first answer forever and a retry loop that generates a new one
+#      creates duplicates.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account ever becomes active and no payment arrives. Which status a
+#     virtual account holds is what a fixture puts there, and the fixtures
+#     hold one of each so both branches can be written.
+#   - Idempotency is described rather than enforced. Replaying a key here
+#     creates a second record, which is the one behaviour this Recipe cannot
+#     reproduce and the header says so.
+#   - Invoices, e-wallets, QRIS, disbursements and the balance API are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: xendit
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.xendit.co/api-reference/
+
+auth:
+  # Basic, with the secret key as the username and an empty password. The
+  # trailing colon matters and nothing says so.
+  scheme: basic
+  credential: username
+  keys:
+    - xnd_development_cauldron00000000000000
+
+responses:
+  list:
+    style: wrapped
+    has_more_field: has_more
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: error_code
+    type_field: "-"
+
+resources:
+  virtual_account:
+    collection: data
+    id:
+      style: hex
+      length: 24
+    fields:
+      # Yours. The only thing tying a callback back to an order, because the
+      # callback carries this and not much else.
+      external_id:
+        type: string
+      bank_code:
+        type: string
+      name:
+        type: string
+      # The number the customer pays into. It exists in this response and
+      # does not work at the bank for a few minutes, and nothing here says
+      # which of those two states it is in except the status below.
+      account_number:
+        type: string
+      # PENDING or ACTIVE. PENDING means the bank has not registered the
+      # number yet, so a customer who tries immediately is told by their own
+      # bank that the account does not exist, which is the one place your
+      # logs will never see.
+      status:
+        type: string
+        default: PENDING
+      # Open accepts any amount any number of times. Closed accepts exactly
+      # one payment of exactly one amount, and a customer who pays a rupiah
+      # short has paid nothing.
+      is_closed:
+        type: boolean
+        default: false
+      # Integer rupiah. Not minor units and not decimals: there is no
+      # subunit, so 50000 is fifty thousand and there is nothing after a
+      # decimal point because there is no decimal point.
+      expected_amount:
+        type: integer
+      currency:
+        type: string
+        default: IDR
+      # When the number stops working. A closed account that nobody pays
+      # expires and the customer's later attempt fails at their bank.
+      expiration_date:
+        type: datetime
+      merchant_code:
+        type: string
+      owner_id:
+        type: string
+
+  # What arrived. A separate object from the account it arrived into, and the
+  # callback is the only thing that announces one.
+  payment:
+    collection: data
+    id:
+      style: hex
+      length: 24
+    fields:
+      external_id:
+        type: string
+      # The account it came into, which is the only link back.
+      callback_virtual_account_id:
+        type: string
+      # What the customer actually sent, which on an open account is not
+      # necessarily what anybody expected.
+      amount:
+        type: integer
+      currency:
+        type: string
+        default: IDR
+      bank_code:
+        type: string
+      # The name on the sending account, as the bank rendered it. Not the
+      # name on the virtual account, and not stable between banks.
+      sender_name:
+        type: string
+      transaction_timestamp:
+        type: datetime
+      payment_id:
+        type: string
+
+routes:
+  # 201 and an account number that does not work yet.
+  - method: POST
+    path: /callback_virtual_accounts
+    resource: virtual_account
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /callback_virtual_accounts/{id}
+    resource: virtual_account
+    operation: get
+
+  - method: GET
+    path: /callback_virtual_accounts
+    resource: virtual_account
+    operation: list
+
+  - method: GET
+    path: /callback_virtual_account_payments/{id}
+    resource: payment
+    operation: get
+
+errors:
+  rate_limit:
+    status: 429
+    code: TOO_MANY_REQUESTS_ERROR
+    message: "You have sent too many requests"
+
+  authentication_error:
+    status: 401
+    code: INVALID_API_KEY
+    message: "The API key provided is invalid"
+
+  resource_missing:
+    status: 404
+    code: DATA_NOT_FOUND
+    message: "Virtual account not found"
+
+  parameter_missing:
+    status: 400
+    code: API_VALIDATION_ERROR
+    message: "There was an error with the format submitted to the server"
+
+  # A closed account that has already been paid. Not a failure of the
+  # request: the account did its one job and will not do another.
+  virtual_account_already_paid:
+    status: 400
+    code: CALLBACK_VIRTUAL_ACCOUNT_ALREADY_PAID
+    message: "This closed virtual account has already received its payment"
+
+  # An amount below what the bank will accept for a virtual account, which
+  # differs per bank and is not in any response. A client that validates
+  # against one bank's minimum ships something that fails on another.
+  amount_below_minimum:
+    status: 400
+    code: MINIMUM_EXPECTED_AMOUNT_ERROR
+    message: "The expected amount is below the minimum this bank accepts"
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    virtual_account:
+      # Just created. The number is here, the bank has not registered it, and
+      # a customer who tries in the next few minutes is told by their own
+      # bank that the account does not exist.
+      - id: 66a1f4c8e2b93d0517c4a801
+        external_id: order-4471
+        bank_code: BCA
+        name: ADA OKONKWO
+        account_number: "1082201234567890"
+        status: PENDING
+        is_closed: true
+        expected_amount: 450000
+        currency: IDR
+        expiration_date: "2026-08-16T09:14:02Z"
+        merchant_code: "10822"
+        owner_id: 66a1f4c8e2b93d0517c4a700
+
+      # Registered and working. Open, so it accepts any amount any number of
+      # times, and expected_amount is absent because there is nothing to
+      # expect.
+      - id: 66a1f4c8e2b93d0517c4a802
+        external_id: subscriber-207
+        bank_code: MANDIRI
+        name: BEDE MARCHETTI
+        account_number: "8890123456789012"
+        status: ACTIVE
+        is_closed: false
+        currency: IDR
+        expiration_date: "2027-08-15T00:00:00Z"
+        merchant_code: "88901"
+        owner_id: 66a1f4c8e2b93d0517c4a700
+
+    payment:
+      # What arrived into the open account. Fifty thousand rupiah, which
+      # nobody asked for and which the account accepted anyway, and the
+      # sender's name as their bank rendered it rather than as anybody
+      # registered it.
+      - id: 66a1f4c8e2b93d0517c4a901
+        external_id: subscriber-207
+        callback_virtual_account_id: 66a1f4c8e2b93d0517c4a802
+        amount: 50000
+        currency: IDR
+        bank_code: MANDIRI
+        sender_name: B MARCHETTI
+        transaction_timestamp: "2026-08-15T11:02:44Z"
+        payment_id: "1531217399"
+
+# Every case below is derived from Xendit's published documentation. None has
+# been run against a real account. The verify report says so.
+conformance:
+  - name: a created account has a number that does not work yet
+    # 201, an account number, and PENDING. The bank has not registered it, so
+    # a customer who tries in the next few minutes is told by their own bank
+    # that the account does not exist, which is the one place your logs will
+    # never see.
+    source: https://developers.xendit.co/api-reference/#create-virtual-account
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /callback_virtual_accounts
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+      json:
+        external_id: order-4472
+        bank_code: BCA
+        name: CARO NWACHUKWU
+        expected_amount: 129000
+    expect:
+      status: 201
+      body:
+        status: PENDING
+        external_id: order-4472
+        expected_amount: 129000
+        # And open, because the request did not say otherwise. An account
+        # created without is_closed accepts any amount any number of times,
+        # including the expected one twice.
+        is_closed: false
+
+  - name: an active account is one the bank has registered
+    # The same shape, one field different, and it is the field that decides
+    # whether a customer can pay.
+    source: https://developers.xendit.co/api-reference/#get-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts/66a1f4c8e2b93d0517c4a802
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: ACTIVE
+        account_number: "8890123456789012"
+
+  - name: a closed account expects one exact amount
+    # And a customer who pays a rupiah short has paid nothing: the money
+    # bounces back days later and there is no record of an attempt here.
+    source: https://developers.xendit.co/api-reference/#create-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        is_closed: true
+        expected_amount: 450000
+
+  - name: an open account expects nothing at all
+    # It accepts any amount any number of times, so expected_amount is
+    # absent rather than zero, and a client that reads it to reconcile has
+    # nothing to reconcile against.
+    source: https://developers.xendit.co/api-reference/#create-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts/66a1f4c8e2b93d0517c4a802
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        is_closed: false
+      absent:
+        - expected_amount
+
+  - name: amounts are integer rupiah with no subunit
+    # 450000 is four hundred and fifty thousand. Not minor units and not
+    # decimals: there is nothing after a decimal point because there is no
+    # decimal point, so a client that multiplies by a hundred out of habit
+    # asks for forty-five million.
+    source: https://developers.xendit.co/api-reference/#create-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        expected_amount: 450000
+        currency: IDR
+
+  - name: a payment is a separate object from the account it arrived into
+    # And the only link back is the account's id on the payment. Fetching the
+    # virtual account tells you nothing about what has been paid into it.
+    source: https://developers.xendit.co/api-reference/#virtual-account-payment
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_account_payments/66a1f4c8e2b93d0517c4a901
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        callback_virtual_account_id: 66a1f4c8e2b93d0517c4a802
+        amount: 50000
+        external_id: subscriber-207
+
+  - name: the sender's name is their bank's rendering, not yours
+    # "B MARCHETTI" against a virtual account registered as "BEDE
+    # MARCHETTI". Matching a payment to a customer on the name fails, and
+    # differently at every bank.
+    source: https://developers.xendit.co/api-reference/#virtual-account-payment
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_account_payments/66a1f4c8e2b93d0517c4a901
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        sender_name: B MARCHETTI
+
+  - name: and the account it landed in is registered under a different name
+    source: https://developers.xendit.co/api-reference/#get-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts/66a1f4c8e2b93d0517c4a802
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        name: BEDE MARCHETTI
+
+  - name: a payment_id is a string of digits
+    # Comparing it to a number fails in every language that does not coerce,
+    # and it is a different identifier from the payment's own id.
+    source: https://developers.xendit.co/api-reference/#virtual-account-payment
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_account_payments/66a1f4c8e2b93d0517c4a901
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        payment_id: "1531217399"
+        id: 66a1f4c8e2b93d0517c4a901
+
+  - name: a listing says whether there is more
+    source: https://developers.xendit.co/api-reference/#get-virtual-account
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        has_more: false
+        data[0].external_id: order-4471
+        # Both states side by side. One of these numbers works and one does
+        # not, and they are otherwise the same shape.
+        data[0].status: PENDING
+        data[1].status: ACTIVE
+      absent:
+        - data[2]
+
+  - name: a closed account that has been paid refuses another
+    # Not a failure of the request: the account did its one job and will not
+    # do another, and the code is the only thing that says which of the two
+    # 400s this is.
+    source: https://developers.xendit.co/api-reference/#errors
+    fixture: small-merchant
+    arm: virtual_account_already_paid
+    request:
+      method: GET
+      path: /callback_virtual_accounts
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 400
+      body:
+        error_code: CALLBACK_VIRTUAL_ACCOUNT_ALREADY_PAID
+
+  - name: the bank's minimum is not in any response
+    # It differs per bank, so a client that validates against one bank's
+    # minimum ships something that fails on another and finds out from this.
+    source: https://developers.xendit.co/api-reference/#errors
+    fixture: small-merchant
+    arm: amount_below_minimum
+    request:
+      method: GET
+      path: /callback_virtual_accounts
+      headers:
+        Authorization: Basic eG5kX2RldmVsb3BtZW50X2NhdWxkcm9uMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 400
+      body:
+        error_code: MINIMUM_EXPECTED_AMOUNT_ERROR
+        message: "The expected amount is below the minimum this bank accepts"
+
+  - name: the secret key is the username and the password is empty
+    source: https://developers.xendit.co/api-reference/#authentication
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /callback_virtual_accounts
+      headers:
+        Authorization: Basic d3Jvbmc6
+    expect:
+      status: 401
+      body:
+        error_code: INVALID_API_KEY
+      absent:
+        - code
+        - type
