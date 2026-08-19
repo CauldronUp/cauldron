@@ -1436,9 +1436,36 @@ from a path parameter that does not exist.
 
 That is the sixth phantom route or invented field, out of ten Recipes checked.
 
+**LaunchDarkly**: `limit` and `offset` in the query. `limit` happened to be
+the name the runtime already guessed, so the page size looked like it worked
+-- but `offset` was not read at all while no style was declared, so every
+request answered with the first page and a loop that asks for the next offset
+never moved.
+
+**Bitbucket**: `pagelen` and `page`, from one, and the envelope's own
+definition names them. Its `page` and `pagelen` were declared as the constants
+1 and 10, the same shape as Algolia's, so the response said page one whatever
+was asked for. Also: the one case covering paging existed **twice, byte for
+byte**, and both copies sent `?limit=1` and asserted only that `next` was
+non-empty. A duplicate adds no coverage and hides how little there is.
+
+**Xero**: `page` and `pageSize` for Invoices and Contacts, and **neither for
+Accounts** -- three routes in one Recipe where the third takes no paging at
+all. That distinction is only visible in the spec; a Recipe written from the
+shape of its siblings would have declared a page size Xero does not accept.
+
+### Where the specs run out
+
+Reachability first still holds, and two providers failed it this round.
+Pipedrive publishes an OpenAPI document that does not contain its own top-level
+collections -- `/deals`, `/persons` and `/organizations` are absent, and only
+nested forms like `/pipelines/{id}/deals` are described. Snyk's
+`api.snyk.io/rest/openapi` answers 405 to a HEAD. Neither is modelled from a
+guess; both stay on the list.
+
 ### Remaining
 
-46 Recipes, 114 declarations. The method that works: find the provider's own
+43 Recipes, 106 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
