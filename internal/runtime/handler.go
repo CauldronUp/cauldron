@@ -989,6 +989,17 @@ func setPath(body map[string]any, path string, value any) {
 	head, rest, nested := strings.Cut(path, ".")
 
 	if !nested {
+		if name, indexes := splitIndex(head); len(indexes) > 0 {
+			if object, ok := value.(map[string]any); ok {
+				target := descendIndexed(body, name, indexes)
+				for key, nestedValue := range object {
+					setPath(target, key, nestedValue)
+				}
+
+				return
+			}
+		}
+
 		// A declared constant must not destroy data already in the body.
 		// Intercom's pages object carries both a declared type and a computed
 		// next cursor, and whichever landed second used to erase the other.
@@ -1003,6 +1014,20 @@ func setPath(body map[string]any, path string, value any) {
 		}
 
 		body[head] = value
+
+		return
+	}
+
+	// An indexed segment, the same way nestedObject already handles one for a
+	// field's "in". Without it a constant declared at data.boards[0].name
+	// produced a key literally spelled "boards[0]" -- a shape no provider
+	// sends, produced in silence, and the fourth time a key like that has
+	// been written here.
+	//
+	// The asymmetry was the tell: a conformance case could already assert
+	// data.boards[0].name and a Recipe could not emit it.
+	if name, indexes := splitIndex(head); len(indexes) > 0 {
+		setPath(descendIndexed(body, name, indexes), rest, value)
 
 		return
 	}
