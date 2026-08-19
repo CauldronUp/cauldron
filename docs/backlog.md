@@ -1100,7 +1100,7 @@ That is now the first thing checked, not the last.
 | Provider | Why not |
 |---|---|
 | ~~Linear~~ | Shipped, on the GraphQL support ShipHero brought. Priority counts down and zero is not the top -- Linear's own words are 0 = No priority, 1 = Urgent, 4 = Low -- so sorting ascending puts untriaged issues above the ones on fire and descending puts Low above Urgent. Plus: a state's `name` belongs to the team and its `type` does not, three of the seven types close an issue and `duplicate` is the forgotten one, a connection carries the same list twice as `edges` and `nodes`, and `number` is team-scoped so two issues are both 123 |
-| Attio | Recorded here as GraphQL-only, which is wrong: it is REST and publishes OpenAPI 3.1 at `https://api.attio.com/openapi/api`. It is ordinary provider work and belongs in the queue, not on this list |
+| ~~Attio~~ | Shipped. It was recorded here as GraphQL-only, which was simply wrong -- it is REST and publishes OpenAPI 3.1 at `https://api.attio.com/openapi/api`. Its records are queried by POST with the paging in the body, which is what found that bug in four other Recipes |
 | New Relic | NerdGraph is GraphQL-only. Same reason again |
 | Railway | GraphQL-only. Same reason |
 | Temporal Cloud | gRPC rather than HTTP. The format describes HTTP surfaces and nothing here would be a Temporal client |
@@ -1232,3 +1232,29 @@ asked of its provider:
 | Bill.com | `/api/v2/List/*.json` | `start` and `max`, inside a JSON document inside a form field |
 | Adyen | `/v71/paymentMethods` | Not paged at all, in which case the declaration should go |
 | AWS SQS | `/` | Depends which protocol the Recipe models |
+
+## What Attio found
+
+An identifier that is an object. A record's `id` is three UUIDs -- workspace,
+object and record -- so `record.id === other.id` is never true, `record.id` as
+a map key is `[object Object]`, and anything that logs or compares one gets
+nonsense rather than an error. Two of the three are constant, and declaring
+them at `id.workspace_id` produced a key literally spelled that way: resource
+constants were the fifth mechanism in the runtime to treat a dotted name as a
+key rather than a path, after route fields, a renamed identifier, a field's
+`in`, and the comparator.
+
+The reason it keeps happening is now stated as a rule rather than fixed a
+sixth time: a dotted name is a path only where somebody remembered to make it
+one. `recipe.IsPath` decides it in one place, and the exception is what makes
+it worth having -- Dropbox names a field `.tag`, where the leading dot is part
+of the name. A path is at least two segments and every one of them is a name,
+so `.tag` is a key and `id.workspace_id` is a path.
+
+The rest of Attio is ordinary but unusually rich in things worth catching:
+every attribute value is an array even when single-valued, values are
+versioned rather than replaced so the current one is the entry whose
+`active_until` is null rather than `[0]`, timestamps carry nine fractional
+digits that JavaScript's `Date` silently truncates to three, there is no GET
+listing anywhere in the API, and failures are flat with the HTTP status
+repeated in the body as a number.

@@ -2316,3 +2316,25 @@ func isDecimalDigit(b byte) bool { return b >= '0' && b <= '9' }
 func isHexDigit(b byte) bool {
 	return isDecimalDigit(b) || (b >= 'a' && b <= 'f')
 }
+
+// IsPath reports whether a name is a well-formed dotted path rather than a
+// literal key that happens to contain a dot.
+//
+// The distinction is not academic. Dropbox names a field ".tag" -- the leading
+// dot is part of the name, not a separator -- so treating every dotted name as
+// a path turns it into an object under an empty key. A path is at least two
+// segments and every one of them is a name.
+func IsPath(name string) bool {
+	segments := strings.Split(name, ".")
+	if len(segments) < 2 {
+		return false
+	}
+
+	for _, segment := range segments {
+		if !plainSegment.MatchString(segment) && !indexedSegment.MatchString(segment) {
+			return false
+		}
+	}
+
+	return true
+}
