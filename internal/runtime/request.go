@@ -198,7 +198,6 @@ func jsonNumeric(value string) bool {
 	return json.Valid([]byte(value))
 }
 
-
 // paging reads a pagination parameter from wherever the provider carries it.
 //
 // A listing reached by POST usually takes its paging in the JSON body, and
