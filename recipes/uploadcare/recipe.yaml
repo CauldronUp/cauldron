@@ -1,0 +1,485 @@
+# Uploadcare Recipe for Cauldron
+#
+# A file that exists is not a file that will still be there tomorrow.
+#
+# Uploadcare separates uploading from storing. An upload succeeds, the file
+# gets a UUID, the CDN serves it, everything works — and unless something
+# calls store, it is deleted after twenty-four hours. The project can be
+# configured to store automatically, so the same code works on one project
+# and quietly loses files on another, and the difference is a setting nobody
+# in the codebase can see.
+#
+# The failure is the worst shape there is: it works in development, it works
+# in staging, it works in production on the day it ships, and the images go
+# missing the following afternoon.
+#
+# Four more worth modelling exactly:
+#
+#   1. datetime_stored is null on a file that is not stored, and null is also
+#      what it holds while a store request is in flight. Reading it to decide
+#      whether a file is safe is right eventually and wrong for a while.
+#   2. There are two APIs with two authentication schemes. Uploading goes to
+#      upload.uploadcare.com with a public key in the body; everything else
+#      goes to api.uploadcare.com with a signed header. A client that has the
+#      public key and expects to manage files has half of what it needs.
+#   3. A deleted file still answers. datetime_removed is set, the metadata is
+#      all there, and only that one field says the content is gone, so a
+#      client checking for a 404 finds a 200 and a working-looking object.
+#   4. is_image and mime_type disagree about what an image is. A PDF has a
+#      mime type Uploadcare will render pages from and is_image false, so
+#      code that gates on is_image refuses to preview things it could.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is uploaded and nothing expires. Whether a file is stored is
+#     what a fixture says, and the twenty-four hour window is described
+#     rather than counted down.
+#   - The upload API is not modelled. It is a different host with a different
+#     scheme, and describing one endpoint from it inside a Recipe for the
+#     other would misdescribe both.
+#   - Groups, add-ons, webhooks and the conversion API are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: uploadcare
+capability: files
+version: 0.1.0
+
+upstream:
+  api: v0.7
+  docs: https://uploadcare.com/api-refs/rest-api/
+
+auth:
+  # Uploadcare.Simple with the public and secret key joined by a colon, which
+  # is not Basic and is not base64, so a client that reaches for a Basic auth
+  # helper produces something the server rejects without explaining.
+  scheme: header
+  header: Authorization
+  prefix: "Uploadcare.Simple "
+  keys:
+    - cauldron_public_key:cauldron_secret_key
+
+required_headers:
+  Accept:
+    error: unsupported_version
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: next
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  file:
+    collection: results
+    id:
+      style: uuid
+      field: uuid
+    fields:
+      original_filename:
+        type: string
+      size:
+        type: integer
+      mime_type:
+        type: string
+      # Uploadcare's own judgement, and it disagrees with the mime type. A
+      # PDF has a mime type Uploadcare will render pages from and this is
+      # false, so code that gates previews on it refuses things it could
+      # show.
+      is_image:
+        type: boolean
+        default: false
+      # Whether the content is ready. An upload that is still being processed
+      # answers with the file and this false, so a client that reads the CDN
+      # url straight away gets a 404 from a different host.
+      is_ready:
+        type: boolean
+        default: true
+      # The whole trap. Null means the file is not stored and will be deleted
+      # twenty-four hours after upload, and null is also what it holds while
+      # a store request is in flight, so reading it to decide whether a file
+      # is safe is right eventually and wrong for a while.
+      datetime_stored:
+        type: datetime
+        null_when_unset: true
+      # A deleted file still answers with everything else intact. Only this
+      # says the content is gone, so a client checking for a 404 finds a 200
+      # and a working-looking object.
+      datetime_removed:
+        type: datetime
+        null_when_unset: true
+      datetime_uploaded:
+        type: datetime
+      # Where the content is, and it is a different host from this API. It
+      # keeps answering for a while after a file is removed, which is how
+      # nobody notices.
+      original_file_url:
+        type: string
+      url:
+        type: string
+      # Dimensions, nested, and absent on anything Uploadcare did not treat
+      # as an image, which is not the same as anything that is not one.
+      width:
+        type: integer
+        in: content_info.image
+        as: width
+      height:
+        type: integer
+        in: content_info.image
+        as: height
+
+routes:
+  - method: GET
+    path: /files/
+    resource: file
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /files/{id}/
+    resource: file
+    operation: get
+
+  # Storing is a separate call, and not making it is what deletes the file.
+  - method: PUT
+    path: /files/{id}/storage/
+    resource: file
+    operation: update
+
+  # A delete answers with the file rather than nothing, and the file it
+  # answers with looks fine except for one field.
+  - method: DELETE
+    path: /files/{id}/storage/
+    resource: file
+    operation: delete
+    deleted_body: record
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Request was throttled. Expected available in 10 seconds."
+
+  authentication_error:
+    status: 401
+    message: "Incorrect authentication credentials."
+
+  resource_missing:
+    status: 404
+    message: "Not found."
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request."
+
+  # No Accept header naming the version. Uploadcare pins the API version in
+  # the Accept header rather than the path, so a client that omits it gets
+  # whichever version was current when it was written and no warning when
+  # that changes.
+  unsupported_version:
+    status: 406
+    message: "Version is not supported. Use the Accept header to request one."
+
+  # The file was deleted. Not a 404: the metadata endpoint still answers, and
+  # this is what the CDN says once it catches up.
+  file_removed:
+    status: 404
+    message: "This file was removed."
+
+fixtures:
+  empty: {}
+
+  small-project:
+    file:
+      # Stored. This one is safe.
+      - id: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        original_filename: invoice-4471.pdf
+        size: 184320
+        mime_type: application/pdf
+        # False, on a file Uploadcare will happily render pages from. Code
+        # that gates previews on this refuses a document it could show.
+        is_image: false
+        is_ready: true
+        datetime_stored: "2026-08-14T10:02:00Z"
+        datetime_uploaded: "2026-08-14T10:01:55Z"
+        original_file_url: https://ucarecdn.com/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/invoice-4471.pdf
+        url: https://api.uploadcare.com/files/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/
+
+      # Uploaded and not stored. It works right now, the CDN serves it, and
+      # it will be gone twenty-four hours after it was uploaded unless
+      # something calls store. Nothing about this response says so except a
+      # null.
+      - id: 7c2e9b51-4d68-4a03-b17f-3e95a60c8d24
+        original_filename: headshot.jpg
+        size: 512000
+        mime_type: image/jpeg
+        is_image: true
+        is_ready: true
+        datetime_uploaded: "2026-08-15T09:40:00Z"
+        original_file_url: https://ucarecdn.com/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24/headshot.jpg
+        url: https://api.uploadcare.com/files/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24/
+        width: 1200
+        height: 1600
+
+      # Removed. Everything is still here and only one field says the content
+      # is gone, so a client checking for a 404 finds a 200 and an object
+      # that looks fine.
+      - id: 3d0f7a62-8c14-4b59-9e26-1a83f5d70c49
+        original_filename: old-logo.png
+        size: 20480
+        mime_type: image/png
+        is_image: true
+        is_ready: true
+        datetime_stored: "2026-05-01T08:00:00Z"
+        datetime_removed: "2026-08-10T12:00:00Z"
+        datetime_uploaded: "2026-05-01T07:59:00Z"
+        original_file_url: https://ucarecdn.com/3d0f7a62-8c14-4b59-9e26-1a83f5d70c49/old-logo.png
+        url: https://api.uploadcare.com/files/3d0f7a62-8c14-4b59-9e26-1a83f5d70c49/
+        width: 240
+        height: 80
+
+      # Still being processed. The file exists, the metadata answers, and
+      # reading the CDN url right now gets a 404 from a different host.
+      - id: 9b5c1e83-2f47-4d06-a951-8e34c70b2f16
+        original_filename: recording.mov
+        size: 41943040
+        mime_type: video/quicktime
+        is_image: false
+        is_ready: false
+        datetime_stored: "2026-08-15T09:58:00Z"
+        datetime_uploaded: "2026-08-15T09:57:30Z"
+        original_file_url: https://ucarecdn.com/9b5c1e83-2f47-4d06-a951-8e34c70b2f16/recording.mov
+        url: https://api.uploadcare.com/files/9b5c1e83-2f47-4d06-a951-8e34c70b2f16/
+
+# Every case below is derived from Uploadcare's published documentation. None
+# has been run against a real project. The verify report says so.
+conformance:
+  - name: an uploaded file is not a stored file
+    # It works right now, the CDN serves it, and it will be gone
+    # twenty-four hours after upload unless something calls store. Nothing
+    # about this response says so except a null.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        original_filename: headshot.jpg
+        is_ready: true
+        datetime_stored: null
+        datetime_removed: null
+
+  - name: and a stored one looks almost identical
+    # One field different, and it is the one that decides whether the file
+    # is there next week.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        datetime_stored: "2026-08-14T10:02:00Z"
+        is_ready: true
+
+  - name: a removed file answers 200 with everything intact
+    # The metadata is all here and only datetime_removed says the content is
+    # gone, so a client checking for a 404 finds a working-looking object.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/3d0f7a62-8c14-4b59-9e26-1a83f5d70c49/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        original_filename: old-logo.png
+        datetime_removed: "2026-08-10T12:00:00Z"
+        datetime_stored: "2026-05-01T08:00:00Z"
+        original_file_url: https://ucarecdn.com/3d0f7a62-8c14-4b59-9e26-1a83f5d70c49/old-logo.png
+
+  - name: is_image and the mime type disagree
+    # A PDF Uploadcare will render pages from, with is_image false. Code
+    # that gates previews on the flag refuses a document it could show.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        mime_type: application/pdf
+        is_image: false
+      absent:
+        - content_info
+
+  - name: a file that exists is not a file that is ready
+    # is_ready false, and reading the CDN url right now gets a 404 from a
+    # different host than the one that just answered 200.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/9b5c1e83-2f47-4d06-a951-8e34c70b2f16/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        is_ready: false
+        datetime_stored: "2026-08-15T09:58:00Z"
+
+  - name: dimensions are nested and absent on anything not treated as an image
+    # Which is not the same as anything that is not one: the PDF above has no
+    # content_info at all, and Uploadcare would still render it.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        content_info.image.width: 1200
+        content_info.image.height: 1600
+      absent:
+        - width
+        - height
+
+  - name: storing is a separate call
+    # Not making it is what deletes the file. The response is the file with
+    # its stored timestamp filled in, so the only way to know a store worked
+    # is to read the field that was null before.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/storeFile
+    fixture: small-project
+    request:
+      method: PUT
+      path: /files/7c2e9b51-4d68-4a03-b17f-3e95a60c8d24/storage/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+      json:
+        datetime_stored: "2026-08-15T10:00:00Z"
+    expect:
+      status: 200
+      body:
+        datetime_stored: "2026-08-15T10:00:00Z"
+        original_filename: headshot.jpg
+
+  - name: a delete answers with the file, not with nothing
+    # And the file it answers with looks fine except for one field, so a
+    # client that checks the response for emptiness finds a full object and
+    # concludes nothing happened.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/deleteFileStorage
+    fixture: small-project
+    request:
+      method: DELETE
+      path: /files/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/storage/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        uuid: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+        original_filename: invoice-4471.pdf
+
+  - name: the listing pages by offset and points at a URL called next
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/filesList
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/
+      query:
+        limit: "2"
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      matches:
+        next: '.'
+      absent:
+        - cursor
+        - after
+        - page
+
+  - name: the identifier is a uuid, not an id
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/#tag/File/operation/fileInfo
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/1f8a4c30-6b25-4e97-a013-5d72c9f40e68/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 200
+      body:
+        uuid: 1f8a4c30-6b25-4e97-a013-5d72c9f40e68
+      absent:
+        - id
+
+  - name: the version lives in the Accept header, not the path
+    # So a client that omits it gets whichever version was current when it
+    # was written, and no warning when that changes.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/
+      headers:
+        Authorization: Uploadcare.Simple cauldron_public_key:cauldron_secret_key
+    expect:
+      status: 406
+      body:
+        detail: "Version is not supported. Use the Accept header to request one."
+
+  - name: the scheme is Uploadcare.Simple, not Basic
+    # Public and secret joined by a colon and not base64 encoded, so a
+    # client that reaches for a Basic auth helper produces something the
+    # server rejects without explaining.
+    source: https://uploadcare.com/api-refs/rest-api/v0.7.0/
+    fixture: small-project
+    request:
+      method: GET
+      path: /files/
+      headers:
+        Authorization: Basic Y2F1bGRyb25fcHVibGljX2tleTpjYXVsZHJvbl9zZWNyZXRfa2V5
+        Accept: application/vnd.uploadcare-v0.7+json
+    expect:
+      status: 401
+      body:
+        detail: "Incorrect authentication credentials."
+      absent:
+        - code
+        - error
