@@ -1,0 +1,429 @@
+# Tradier Recipe for Cauldron
+#
+# The shape of the answer depends on how many answers there are.
+#
+# Tradier's own words: if you have a single order, it will be returned as a
+# JSON obj/dict whereas multiple orders will be returned as an array/list of
+# JSON objects. So orders.order is an object when you have one and an array
+# when you have two, and the code that reads it has to check which before it
+# can do anything.
+#
+# This is what happens when JSON is generated from XML, where one child
+# element and a repeated one are the same thing. It is not a bug and it is
+# not going away, and it applies to every collection here: orders, positions,
+# quotes, balances.
+#
+# The failure it produces is the worst kind of delayed. A test account has
+# two orders in it, so the array branch is the one that gets written and the
+# one that passes. Production has one, on the quiet morning after somebody
+# cancels the rest, and orders.order.map is not a function.
+#
+# And Tradier's own OpenAPI description says order is always an array, which
+# contradicts the prose above it. Two descriptions of one endpoint by one
+# provider, disagreeing about the thing most likely to break you, and a
+# client generated from the schema is a client written for the branch that is
+# not always true.
+#
+# Four more the Recipe pins:
+#
+#   1. The account is a path segment and not a field. An order does not say
+#      which account it belongs to, so the same order in two accounts is two
+#      objects that look identical, and a list of orders pulled from several
+#      accounts cannot be sorted back out.
+#   2. An order id is a number. Not a string of digits: an integer, which
+#      loses its identity the moment somebody puts it through a system that
+#      rounds, and compares unequal to the "12345" a JSON-decoding client
+#      might have kept.
+#   3. Eight statuses and the interesting one is in the middle.
+#      partially_filled is an order that has bought something and is still
+#      working, so treating anything other than filled as "nothing happened"
+#      loses a real position.
+#   4. exec_quantity and avg_fill_price are the only record of what actually
+#      happened. quantity is what was asked for, and the two are equal only
+#      on a filled order, so a ledger built from quantity is a ledger of
+#      intentions.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing trades. Orders are the fixture's, in the fixture's states, and
+#     no order moves from open to filled however long you wait.
+#   - The collapse is modelled and the contradiction is not. Cauldron sends
+#     the object when the fixture holds one order and the array when it holds
+#     more, which is what the prose describes and what the schema denies.
+#   - Only a subset of an order is here. Legs, option symbols, class-specific
+#     fields, the multileg and combo shapes, and the whole preview flow are
+#     not modelled.
+#   - Market data, watchlists, streaming and the sandbox's own separate host
+#     are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: tradier
+capability: brokerage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.tradier.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron000000000000000tradier
+
+responses:
+  list:
+    style: wrapped
+    # One order is an object and two are an array, which is the whole point
+    # of this Recipe.
+    collapse_single: true
+  error:
+    style: nested
+    key: fault
+    code_field: faultstring
+    message_field: "-"
+    type_field: "-"
+
+resources:
+  order:
+    # orders.order, so the collection nests one level under the plural and
+    # the singular is what holds the records.
+    collection: orders.order
+    id:
+      style: numeric
+      # An integer, not a string of digits.
+      type: number
+    fields:
+      account_id:
+        type: string
+      # market, limit, stop, stop_limit, debit, credit or even.
+      type:
+        type: string
+        default: market
+      symbol:
+        type: string
+      # buy, sell, buy_to_cover, sell_short and the four option variants.
+      side:
+        type: string
+      # What was asked for. Not what happened.
+      quantity:
+        type: number
+      # pending, open, partially_filled, filled, expired, canceled, rejected
+      # or pending_cancel. Only one of those is done and only one of those
+      # is nothing.
+      status:
+        type: string
+        default: open
+      # day, gtc, pre or post.
+      duration:
+        type: string
+        default: day
+      price:
+        type: number
+        null_when_unset: true
+      # What actually happened, and zero on an order that has done nothing.
+      avg_fill_price:
+        type: number
+        default: 0
+      exec_quantity:
+        type: number
+        default: 0
+      last_fill_price:
+        type: number
+        default: 0
+      last_fill_quantity:
+        type: number
+        default: 0
+      remaining_quantity:
+        type: number
+        default: 0
+      create_date:
+        type: datetime
+      transaction_date:
+        type: datetime
+      # equity, option, multileg or combo.
+      class:
+        type: string
+        default: equity
+
+routes:
+  # The account is here and nowhere in the body.
+  - method: GET
+    path: /v1/accounts/{account_id}/orders
+    resource: order
+    operation: list
+    scope: [account_id]
+    # Tradier does not repeat the account inside an order, which is why one
+    # cannot say where it came from.
+    returns:
+      - id
+      - type
+      - symbol
+      - side
+      - quantity
+      - status
+      - duration
+      - price
+      - avg_fill_price
+      - exec_quantity
+      - last_fill_price
+      - last_fill_quantity
+      - remaining_quantity
+      - create_date
+      - transaction_date
+      - class
+
+  - method: GET
+    path: /v1/accounts/{account_id}/orders/{id}
+    resource: order
+    operation: get
+    scope: [account_id]
+    returns:
+      - id
+      - type
+      - symbol
+      - side
+      - quantity
+      - status
+      - duration
+      - price
+      - avg_fill_price
+      - exec_quantity
+      - last_fill_price
+      - last_fill_quantity
+      - remaining_quantity
+      - create_date
+      - transaction_date
+      - class
+
+errors:
+  # Tradier's failures arrive under fault, with the sentence in faultstring,
+  # which is the SOAP shape this API grew out of showing through.
+  invalid_token:
+    status: 401
+    code: "Invalid Access Token"
+
+  order_not_found:
+    status: 404
+    code: "Order not found"
+
+  # The account is real, the token is real, and the token is not for that
+  # account.
+  account_not_authorized:
+    status: 401
+    code: "Account not authorized for this operation"
+
+  rate_limit:
+    status: 429
+    code: "Rate limit exceeded"
+
+fixtures:
+  empty: {}
+
+  # Two orders. The array branch, which is the one a test account produces
+  # and the one everybody writes.
+  busy-account:
+    order:
+      - id: "228175"
+        account_id: VA000001
+        type: limit
+        symbol: AAPL
+        side: buy
+        quantity: 100
+        status: partially_filled
+        duration: gtc
+        price: 216.5
+        avg_fill_price: 216.42
+        exec_quantity: 40
+        last_fill_price: 216.44
+        last_fill_quantity: 15
+        remaining_quantity: 60
+        create_date: "2026-08-19T13:31:02.000Z"
+        transaction_date: "2026-08-19T13:47:18.000Z"
+        class: equity
+
+      - id: "228176"
+        account_id: VA000001
+        type: market
+        symbol: MSFT
+        side: sell
+        quantity: 25
+        status: filled
+        duration: day
+        avg_fill_price: 506.42
+        exec_quantity: 25
+        last_fill_price: 506.42
+        last_fill_quantity: 25
+        remaining_quantity: 0
+        create_date: "2026-08-19T14:02:55.000Z"
+        transaction_date: "2026-08-19T14:02:56.000Z"
+        class: equity
+
+  # One order. The object branch, which is what production has on the quiet
+  # morning after somebody cancels the rest.
+  quiet-account:
+    order:
+      - id: "228175"
+        account_id: VA000001
+        type: limit
+        symbol: AAPL
+        side: buy
+        quantity: 100
+        status: partially_filled
+        duration: gtc
+        price: 216.5
+        avg_fill_price: 216.42
+        exec_quantity: 40
+        last_fill_price: 216.44
+        last_fill_quantity: 15
+        remaining_quantity: 60
+        create_date: "2026-08-19T13:31:02.000Z"
+        transaction_date: "2026-08-19T13:47:18.000Z"
+        class: equity
+
+# Every case below is derived from Tradier's published documentation. None has
+# been run against a real account. The verify report says so.
+conformance:
+  - name: two orders are an array
+    # The branch a test account produces and the one everybody writes.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        orders.order[0].symbol: AAPL
+        orders.order[1].symbol: MSFT
+
+  - name: one order is an object
+    # Tradier's own words, and the reason orders.order.map is not a function
+    # on the first quiet morning. Nothing about the request changed: the
+    # account has one order instead of two.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: quiet-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        orders.order.symbol: AAPL
+        orders.order.status: partially_filled
+        # The collapsed object is the record, not a summary of it.
+        orders.order.exec_quantity: 40
+        orders.order.remaining_quantity: 60
+      absent:
+        - orders.order[0]
+
+  - name: the account is in the path and nowhere in the order
+    # So the same order in two accounts is two objects that look identical,
+    # and a list pulled from several accounts cannot be sorted back out.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: quiet-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        orders.order.id: 228175
+      absent:
+        - orders.order.account_id
+        - orders.order.account
+
+  - name: an order id is a number
+    # Not a string of digits. It compares unequal to "228175" and loses its
+    # identity through anything that rounds.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders/228175
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        id: 228175
+        symbol: AAPL
+
+  - name: partially_filled is a real position that is still working
+    # Forty shares bought, sixty outstanding, and one order. Treating
+    # anything other than filled as nothing happened loses the forty.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders/228175
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        status: partially_filled
+        quantity: 100
+        exec_quantity: 40
+        remaining_quantity: 60
+
+  - name: quantity is what was asked for and exec_quantity is what happened
+    # They are equal only on a filled order, so a ledger built from quantity
+    # is a ledger of intentions.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders/228176
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        status: filled
+        quantity: 25
+        exec_quantity: 25
+        remaining_quantity: 0
+
+  - name: a market order has no price and a limit order does
+    # price is what was asked for and avg_fill_price is what was paid, and
+    # only one of the two exists on a market order.
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders/228176
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 200
+      body:
+        type: market
+        price: null
+        avg_fill_price: 506.42
+
+  - name: a failure arrives under fault, in the shape SOAP left behind
+    source: https://docs.tradier.com/reference/brokerage-api-accounts-get-account-orders
+    fixture: busy-account
+    arm: invalid_token
+    request:
+      method: GET
+      path: /v1/accounts/VA000001/orders
+      headers:
+        Authorization: Bearer cauldron000000000000000tradier
+    expect:
+      status: 401
+      body:
+        fault.faultstring: "Invalid Access Token"
+      absent:
+        - error
+        - message
+        - orders

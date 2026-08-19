@@ -1015,6 +1015,23 @@ func (s *Sandbox) listBody(page store.Page, resource, path string) any {
 		items = wrapped
 	}
 
+	// A collection of one, sent as the object. Tradier's words: if you have a
+	// single order, it will be returned as a JSON obj/dict whereas multiple
+	// orders will be returned as an array.
+	//
+	// This runs after the entry wrapping above, so a Recipe that does both
+	// collapses to the wrapped item rather than to the bare record, which is
+	// what an XML-shaped API sending one child element would produce.
+	if spec.CollapseSingle {
+		if list, ok := items.([]any); ok && len(list) == 1 {
+			items = list[0]
+		}
+
+		if list, ok := items.([]store.Record); ok && len(list) == 1 {
+			items = list[0]
+		}
+	}
+
 	switch spec.Style {
 	case "map":
 		// Keyed by identifier rather than ordered. Pusher answers with an

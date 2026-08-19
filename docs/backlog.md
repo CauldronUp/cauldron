@@ -611,7 +611,7 @@ An order is not a fill, and the gap between them is where the bugs live.
 | Provider | Why |
 |---|---|
 | ~~Alpaca~~ | Shipped. A partially filled order is a real position that is still open, the listing hides everything that finished, and every number is a string |
-| Tradier | The same order in two accounts is two objects, and the account is a path segment rather than a field |
+| ~~Tradier~~ | Shipped, and the row was the smaller half. The shape of the answer depends on how many answers there are: Tradier's own words are that a single order is returned as a JSON obj/dict whereas multiple orders are returned as an array. Its own OpenAPI says `order` is always an array, contradicting the prose, so a generated client is written for the branch that is not always true. The account really is a path segment and nowhere in the order, an order id is an integer, and `quantity` is what was asked for while `exec_quantity` is what happened |
 | ~~Polygon.io~~ | Shipped, and the row understated it. `t` is documented as the **start** of the window on the range endpoint and the **end** of it on the grouped one -- same one-letter field, same API, Polygon's own words on each. A missing bucket is also not a quiet one: Polygon does not populate an aggregate unless OHLC changed or *eligible* trades occurred, so absence means nothing eligible happened. Plus `T` is the ticker and `t` the timestamp on one object, `otc` is left off when false, `limit` limits base aggregates rather than results, and three counts mean three things |
 | ~~Finnhub~~ | Shipped, though not on the row's claim, which is an account fact rather than a documented one. What is documented and worse: `c` is "List of close prices" on a candle and "Current price" on a quote -- Finnhub's own words -- so five one-letter fields are arrays on one endpoint and scalars on another. A candle response is seven parallel columns with no object for a bar, `no_data` is a 200 whose arrays are *absent* rather than empty, and the response echoes neither the symbol nor the range, which is exactly what makes a shortened range invisible |
 
@@ -944,6 +944,23 @@ provider does not send. Finding out means reading each provider's response
 schema beside its paths, one at a time -- the same audit the create-echo note
 above describes, and unresolvable from the Recipes alone for the same reason:
 the evidence is the field nobody wrote down.
+
+## A 200 that is not the thing you asked for
+
+`https://api.tradier.com/v1/openapi.json` answers 200 with 115 kilobytes of
+HTML: a ReadMe documentation page, not a specification. Nothing in the status,
+the size or the URL says so.
+
+That is the same shape half the Recipes here describe, arriving in the middle
+of writing one, and worth recording for two reasons. It is the third
+documentation dead end in this stretch -- after Sift, Klarna and Render -- and
+it is the only one that looked like a success. A script fetching specs on a
+schedule would store this and never notice.
+
+The lesson for this project is small and specific: when a spec URL is used as
+evidence, parse it before believing it. Content-type is not enough either;
+ReadMe serves this as text/html and a fetcher that checked would have been
+right, but the useful check is whether the bytes are the document you wanted.
 
 ## Assessed and deliberately not done
 

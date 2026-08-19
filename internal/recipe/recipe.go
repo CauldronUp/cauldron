@@ -543,6 +543,21 @@ type ListResponse struct {
 	// list[0].subscription.id and anyone indexing straight into the item
 	// finds nothing.
 	EntryStyle string `yaml:"entry_style"`
+	// CollapseSingle sends a collection of one as the object rather than as a
+	// list of one.
+	//
+	// Tradier documents it in its own words: if you have a single order, it
+	// will be returned as a JSON obj/dict whereas multiple orders will be
+	// returned as an array. Every API that grew out of XML does this, because
+	// a single child element and a repeated one are the same thing there and
+	// are not the same thing in JSON.
+	//
+	// It is the dangerous half of an axis this format already had. Xero sends
+	// one invoice as a list of one, which resource.array describes, and that
+	// is the safe direction: a client written for the list keeps working. This
+	// is the other way round, and a client written against a fixture with two
+	// records in it crashes the first time production has one.
+	CollapseSingle bool `yaml:"collapse_single"`
 }
 
 // Resource is an object type the provider exposes.
