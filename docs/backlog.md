@@ -1061,8 +1061,20 @@ The Relay shape needed nothing new. `collection: data.orders.data.edges` with
 every field declared `in: node` produces edges holding a node and a cursor
 side by side, which is what Relay is.
 
-ShipHero is shipped on it. The other six are now ordinary provider work: find
-the queries, find the responses, write the Recipe.
+ShipHero and Linear are shipped on it, and the two differ in every way that
+matters: ShipHero nests its connection under a second `data` and answers a bad
+query with 200, Linear puts `edges` and `nodes` side by side and answers 400.
+A client written for one is written for the other until it is not, which is
+the argument for having both.
+
+Linear also tightened the mechanism. `selects: me` matched
+`query { viewer { name email } }`, because "name" contains "me", so the match
+is now a whole-word one. Short root fields are common -- me, user, node, team
+-- and an accidental match sends a request to the wrong fixture, which is a
+bug this project exists to catch rather than commit.
+
+The other five are ordinary provider work: find the queries, find the
+responses, write the Recipe.
 
 ## Blocked on documentation, with what would unblock each
 
@@ -1087,7 +1099,7 @@ That is now the first thing checked, not the last.
 
 | Provider | Why not |
 |---|---|
-| Linear | GraphQL-only. A REST-shaped Recipe would be an approximation of a different API, and saying so is more useful than shipping one |
+| ~~Linear~~ | Shipped, on the GraphQL support ShipHero brought. Priority counts down and zero is not the top -- Linear's own words are 0 = No priority, 1 = Urgent, 4 = Low -- so sorting ascending puts untriaged issues above the ones on fire and descending puts Low above Urgent. Plus: a state's `name` belongs to the team and its `type` does not, three of the seven types close an issue and `duplicate` is the forgotten one, a connection carries the same list twice as `edges` and `nodes`, and `number` is team-scoped so two issues are both 123 |
 | Attio | Same reason |
 | New Relic | NerdGraph is GraphQL-only. Same reason again |
 | Railway | GraphQL-only. Same reason |
