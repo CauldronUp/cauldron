@@ -934,6 +934,21 @@ type Pagination struct {
 	// from, for the providers that call it neither cursor nor starting_after.
 	// Google calls it pageToken and Shopify calls it page_info.
 	CursorParam string `yaml:"cursor_param"`
+	// In is where the parameters travel: "query" (the default) or "body".
+	//
+	// A listing reached by POST usually carries its paging in the JSON body,
+	// and reading it from the query string means reading nothing at all. What
+	// that produced was worse than an error: the caller's limit was ignored,
+	// so the first request answered with the entire collection and no next
+	// page, and a paging loop written against it ran exactly once and looked
+	// correct. Dropbox shipped that way, and its own conformance case sent
+	// ?limit=1 -- a parameter Dropbox does not read -- because the case was
+	// written against what came out rather than against the provider.
+	//
+	// A dotted name nests, because a provider that puts paging in the body
+	// often puts it inside something: Plaid's count and offset live under
+	// options.
+	In string `yaml:"in"`
 }
 
 // Webhooks describes what the provider sends back, and how it signs it.
@@ -1429,6 +1444,10 @@ func (r *Recipe) Validate() error {
 					add("%s: scope %q is not a field on resource %q", where, name, route.Resource)
 				}
 			}
+		}
+
+		if in := route.Pagination.In; in != "" && in != "query" && in != "body" {
+			add("%s: pagination in %q must be query or body", where, in)
 		}
 
 		if !contains(validPagination, route.Pagination.Style) {

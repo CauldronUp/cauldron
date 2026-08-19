@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
@@ -197,9 +198,73 @@ func jsonNumeric(value string) bool {
 	return json.Valid([]byte(value))
 }
 
-// queryInt reads a positive integer query parameter, falling back to a default.
-func queryInt(r *http.Request, key string, fallback int) int {
-	raw := r.URL.Query().Get(key)
+// paging reads a pagination parameter from wherever the provider carries it.
+//
+// A listing reached by POST usually takes its paging in the JSON body, and
+// reading the query string for it finds nothing. Nothing is the dangerous
+// answer here: the limit falls back to the route's default, the default is
+// larger than any fixture, so the first response holds the whole collection
+// and reports no next page. The paging loop a client wrote runs once, takes
+// neither branch, and passes.
+type paging struct {
+	query url.Values
+	body  map[string]any
+}
+
+func pagingFrom(r *http.Request, spec recipe.Pagination) paging {
+	if spec.In != "body" {
+		return paging{query: r.URL.Query()}
+	}
+
+	return paging{body: jsonBody(r)}
+}
+
+// get returns a parameter as text, whichever JSON type carried it. A dotted
+// name nests: Plaid keeps count and offset under options.
+func (p paging) get(name string) string {
+	if name == "" {
+		return ""
+	}
+
+	if p.body == nil {
+		return p.query.Get(name)
+	}
+
+	var current any = p.body
+
+	for _, segment := range strings.Split(name, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+
+		current, ok = object[segment]
+		if !ok {
+			return ""
+		}
+	}
+
+	switch value := current.(type) {
+	case string:
+		return value
+
+	case json.Number:
+		return value.String()
+
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+
+	case bool:
+		return strconv.FormatBool(value)
+	}
+
+	return ""
+}
+
+// int reads a parameter as a positive count, falling back when it is absent
+// or unusable.
+func (p paging) int(name string, fallback int) int {
+	raw := p.get(name)
 	if raw == "" {
 		return fallback
 	}
@@ -210,4 +275,37 @@ func queryInt(r *http.Request, key string, fallback int) int {
 	}
 
 	return n
+}
+
+// jsonBody parses the request body and puts it back, so that everything
+// downstream still reads a full body.
+func jsonBody(r *http.Request) map[string]any {
+	if r.Body == nil {
+		return map[string]any{}
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil {
+		return map[string]any{}
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	if len(body) == 0 {
+		return map[string]any{}
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+
+	// The same reason conform decodes this way: a cursor can be a long
+	// number, and float64 loses the end of one.
+	decoder.UseNumber()
+
+	var out map[string]any
+
+	if err := decoder.Decode(&out); err != nil {
+		return map[string]any{}
+	}
+
+	return out
 }

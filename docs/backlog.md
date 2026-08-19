@@ -1168,3 +1168,67 @@ whose ids are opaque use lower case only -- Statuspage among them. A client
 lower-casing an id before comparing would not notice; one comparing directly
 would, and only against the emulator. A `lowercase` flag or a distinct style
 would close it.
+
+## Paging that travels in the request body
+
+Attio asked one question -- it pages by `limit` and `offset` inside a POST
+body -- and the answer turned out to be a bug in four shipped Recipes.
+
+Every pagination parameter was read from the query string. A listing reached
+by POST usually carries its paging in the JSON body, so for those routes there
+was nothing to read. What that produced is worse than an error: the limit fell
+back to the route's default, the default is larger than any fixture, so the
+first response held the whole collection and reported no next page. A paging
+loop written against that runs exactly once, takes neither branch, and passes.
+The first collection large enough to page is in production.
+
+Dropbox is the clearest case, because its own conformance suite had been
+written around the gap:
+
+```yaml
+      json:
+        path: /documents
+      query:
+        limit: "1"      # a parameter Dropbox does not read
+```
+
+That case passed. It was a record of what Cauldron did, not of what Dropbox
+does. Sending what a real client sends -- `{"path": "/documents", "limit": 1}`
+-- returned the whole folder with `has_more: false`.
+
+`pagination.in: body` fixes it, and a dotted parameter name nests, because a
+provider that puts paging in the body often puts it inside something.
+
+| Recipe | Was | Is |
+|---|---|---|
+| Dropbox | `?limit=1`, a parameter Dropbox does not accept | `limit` and `cursor` in the body |
+| Plaid | `?limit=2` beside a top-level `count`, neither of which Plaid reads | `options.count` and `options.offset`, and offset style rather than cursor |
+| AWS Secrets Manager | `?limit=1` | `MaxResults` and `NextToken` in the body |
+| DynamoDB | `?limit=1` | `Limit` in the body |
+
+Two of those had a note in them already saying the style was unverified. The
+note was right to be there and this is the check it asked for.
+
+Three further corrections came out of it. Plaid's two account listings
+declared cursor pagination and Plaid does not page them at all, so the
+declaration claimed a round trip that does not exist. DynamoDB resumes from
+`ExclusiveStartKey`, which is the whole primary key in attribute-value form
+rather than a string, so no cursor name is declared for it -- naming one would
+claim a round trip that does not work. And both Dropbox and Plaid now have a
+second-page case, which is the branch a paging loop actually depends on and
+the branch no case here had ever taken.
+
+### Still to audit
+
+Five more POST listings declare a `limit` that nothing reads. None of them
+asserts anything false today, because no conformance case exercises the limit
+-- which is also why none of them was caught. Each needs the same question
+asked of its provider:
+
+| Recipe | Path | Suspected |
+|---|---|---|
+| Algolia | `/1/indexes/{index}/query` | `hitsPerPage` in the body, and a `params` string that is URL-encoded inside the JSON |
+| Google Pub/Sub | `...:pull` | `maxMessages` in the body |
+| Bill.com | `/api/v2/List/*.json` | `start` and `max`, inside a JSON document inside a form field |
+| Adyen | `/v71/paymentMethods` | Not paged at all, in which case the declaration should go |
+| AWS SQS | `/` | Depends which protocol the Recipe models |

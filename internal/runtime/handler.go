@@ -359,10 +359,14 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// A declared name replaces the defaults rather than joining them. Google
 	// does not accept limit, and an emulator that honours both spellings lets
 	// the wrong one work locally and fail nowhere until production.
+	// Where the parameters travel is the provider's choice, and for a listing
+	// reached by POST it is usually the body.
+	from := pagingFrom(r, matched.spec.Pagination)
+
 	if name := matched.spec.Pagination.LimitParam; name != "" {
-		limit = queryInt(r, name, limit)
+		limit = from.int(name, limit)
 	} else {
-		limit = queryInt(r, "limit", limit)
+		limit = from.int("limit", limit)
 	}
 
 	// The declared style decides what the position parameter means. It was
@@ -410,7 +414,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	switch matched.spec.Pagination.Style {
 	case "offset", "page":
-		offset := positionOf(r, matched.spec.Pagination, limit)
+		offset := positionOf(from, matched.spec.Pagination, limit)
 
 		page, err = s.store.ListFrom(matched.spec.Resource, where, offset, limit)
 
@@ -423,7 +427,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 			page.NextCursor = nextPosition(matched.spec.Pagination, offset, limit)
 		}
 	default:
-		cursor := cursorOf(r, matched.spec.Pagination)
+		cursor := cursorOf(from, matched.spec.Pagination)
 
 		page, err = s.store.ListWhere(matched.spec.Resource, where, cursor, limit)
 
@@ -508,16 +512,16 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 }
 
 // cursorOf reads the identifier a cursor-paged listing resumes after.
-func cursorOf(r *http.Request, spec recipe.Pagination) string {
+func cursorOf(from paging, spec recipe.Pagination) string {
 	if name := spec.CursorParam; name != "" {
-		return r.URL.Query().Get(name)
+		return from.get(name)
 	}
 
-	if cursor := r.URL.Query().Get("starting_after"); cursor != "" {
+	if cursor := from.get("starting_after"); cursor != "" {
 		return cursor
 	}
 
-	return r.URL.Query().Get("cursor")
+	return from.get("cursor")
 }
 
 // positionOf turns an offset or page parameter into a record offset.
@@ -527,13 +531,13 @@ func cursorOf(r *http.Request, spec recipe.Pagination) string {
 // two begins one page-length in. Getting that boundary wrong by one page is
 // the classic way to lose or duplicate a record at every page break, which is
 // exactly the bug an emulator is supposed to catch rather than commit.
-func positionOf(r *http.Request, spec recipe.Pagination, limit int) int {
+func positionOf(from paging, spec recipe.Pagination, limit int) int {
 	name := spec.CursorParam
 	if name == "" {
 		name = spec.Style
 	}
 
-	raw := r.URL.Query().Get(name)
+	raw := from.get(name)
 	if raw == "" {
 		return 0
 	}
