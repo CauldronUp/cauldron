@@ -79,6 +79,16 @@ func compilePath(path string) []segment {
 // over /v1/customers/{id} regardless of declaration order. Providers routinely
 // have both, and matching on declaration order alone is a subtle trap.
 func (r *router) match(method, path string) (route, map[string]string, bool) {
+	return r.matchSelecting(method, path, "")
+}
+
+// matchSelecting is match with the request's GraphQL query in hand, so routes
+// that share a path can be told apart by what the body asks for.
+//
+// A route declaring selects matches only when the query mentions that word,
+// and beats an equally-scoring route that declares nothing, so a Recipe can
+// have several selecting routes and one fallback for everything else.
+func (r *router) matchSelecting(method, path, query string) (route, map[string]string, bool) {
 	parts := splitPath(path)
 
 	var (
@@ -96,6 +106,16 @@ func (r *router) match(method, path string) (route, map[string]string, bool) {
 		vars, score, ok := candidate.matches(parts)
 		if !ok {
 			continue
+		}
+
+		if candidate.spec.Selects != "" {
+			if query == "" || !strings.Contains(query, candidate.spec.Selects) {
+				continue
+			}
+
+			// A route that asked for this query beats one that takes
+			// anything, however the paths scored.
+			score += 1000
 		}
 
 		if score > bestScore {
@@ -116,6 +136,14 @@ func (r *router) allowedMethods(path string) []string {
 	seen := map[string]bool{}
 
 	for _, candidate := range r.routes {
+		// A route that answers only certain queries says nothing about which
+		// methods a path supports. Counting it turned an unmodelled GraphQL
+		// query into 405 with Allow: POST, which tells a client to change
+		// the method it already got right. Not being modelled is a 404.
+		if candidate.spec.Selects != "" {
+			continue
+		}
+
 		if _, _, ok := candidate.matches(parts); ok && !seen[candidate.method] {
 			out = append(out, candidate.method)
 			seen[candidate.method] = true
