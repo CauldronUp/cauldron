@@ -1817,6 +1817,24 @@ func (r *Recipe) Validate() error {
 			// that succeeded without speaker labels, so a rule that refused
 			// null would block a true claim.
 			for i, record := range r.Fixtures[fixtureName][resourceName] {
+				// The identifier, which is not among the declared fields and
+				// so is checked on its own.
+				idField := resource.ID.Field
+				if idField == "" || idField == "-" {
+					idField = "id"
+				}
+
+				// An identifier the provider never echoes cannot disagree
+				// with anything a client can see, so its shape is free.
+				// Cohere keys embeddings e1 and e2 to find them again and
+				// emits neither.
+				if seeded, present := record[idField]; present && resource.ID.Field != "-" {
+					if why, ok := seededID(resource.ID, seeded); !ok {
+						add("fixture %q record %d of %q seeds an id that %s, so seeded records and created ones would not have the same shape",
+							fixtureName, i, resourceName, why)
+					}
+				}
+
 				for _, field := range sortedKeys(record) {
 					// A key the resource does not declare is dropped on the
 					// way in, so a fixture can set it, a reader can believe
@@ -2166,4 +2184,116 @@ func splitNonEmpty(path string) []string {
 	}
 
 	return strings.Split(path, ".")
+}
+
+// seededID reports whether a fixture's explicit identifier has the shape the
+// same resource would mint. It returns what is wrong with it, and true when
+// nothing is.
+//
+// A fixture that seeds an id in a shape the generator would never produce puts
+// two shapes in one collection: the seeded records look one way and anything
+// created during a run looks another. Client code that parses or
+// prefix-matches an id -- which is common enough that ID exists as a concept
+// here at all -- then works against the fixtures and fails against the
+// records it made itself.
+//
+// It was a surviving mutation that found this. Monday declares ten-digit ids
+// and seeds ten-digit ids, and changing the declaration to six broke nothing:
+// every case reads a seeded record, so the declared shape was never on the
+// wire and could have drifted from the provider without a single case
+// noticing.
+func seededID(id ID, value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok {
+		// A numeric id is checked as a number elsewhere; nothing to say here.
+		return "", true
+	}
+
+	if text == "" {
+		return "is empty", false
+	}
+
+	switch id.Style {
+	case "uuid":
+		if !looksUUID(text) {
+			return "is not a UUID", false
+		}
+
+	case "hex":
+		body, ok := strings.CutPrefix(text, id.Prefix)
+		if !ok {
+			return "does not start with " + id.Prefix, false
+		}
+
+		if !all(body, isHexDigit) {
+			return "is not hexadecimal", false
+		}
+
+		if id.Length > 0 && len(body) != id.Length {
+			return fmt.Sprintf("is %d characters, not the declared %d", len(body), id.Length), false
+		}
+
+	case "digits":
+		body, ok := strings.CutPrefix(text, id.Prefix)
+		if !ok {
+			return "does not start with " + id.Prefix, false
+		}
+
+		if !all(body, isDecimalDigit) {
+			return "is not all digits", false
+		}
+
+		// A snowflake is a number written as text, and a number does not
+		// begin with a zero.
+		if body[0] == '0' {
+			return "begins with a zero, which a number written as text does not", false
+		}
+
+		if id.Length > 0 && len(body) != id.Length {
+			return fmt.Sprintf("is %d digits, not the declared %d", len(body), id.Length), false
+		}
+
+	case "numeric":
+		if !all(text, isDecimalDigit) {
+			return "is not a number", false
+		}
+
+	case "", "prefixed":
+		if id.Prefix != "" && !strings.HasPrefix(text, id.Prefix) {
+			return "does not start with " + id.Prefix, false
+		}
+	}
+
+	return "", true
+}
+
+func looksUUID(text string) bool {
+	runs := strings.Split(text, "-")
+	if len(runs) != 5 {
+		return false
+	}
+
+	for i, want := range []int{8, 4, 4, 4, 12} {
+		if len(runs[i]) != want || !all(runs[i], isHexDigit) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func all(text string, predicate func(byte) bool) bool {
+	for i := 0; i < len(text); i++ {
+		if !predicate(text[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isDecimalDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+func isHexDigit(b byte) bool {
+	return isDecimalDigit(b) || (b >= 'a' && b <= 'f')
 }

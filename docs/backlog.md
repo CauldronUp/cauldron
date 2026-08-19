@@ -1100,10 +1100,71 @@ That is now the first thing checked, not the last.
 | Provider | Why not |
 |---|---|
 | ~~Linear~~ | Shipped, on the GraphQL support ShipHero brought. Priority counts down and zero is not the top -- Linear's own words are 0 = No priority, 1 = Urgent, 4 = Low -- so sorting ascending puts untriaged issues above the ones on fire and descending puts Low above Urgent. Plus: a state's `name` belongs to the team and its `type` does not, three of the seven types close an issue and `duplicate` is the forgotten one, a connection carries the same list twice as `edges` and `nodes`, and `number` is team-scoped so two issues are both 123 |
-| Attio | Same reason |
+| Attio | Recorded here as GraphQL-only, which is wrong: it is REST and publishes OpenAPI 3.1 at `https://api.attio.com/openapi/api`. It is ordinary provider work and belongs in the queue, not on this list |
 | New Relic | NerdGraph is GraphQL-only. Same reason again |
 | Railway | GraphQL-only. Same reason |
 | Temporal Cloud | gRPC rather than HTTP. The format describes HTTP surfaces and nothing here would be a Temporal client |
 
-Monday.com belongs here too, on the same grounds, unless the format grows a way
-to describe a GraphQL surface honestly.
+~~Monday.com belongs here too~~ -- shipped, and it was the one that found the
+next two bugs.
+
+## What Monday found
+
+Two of them, and both were asymmetries rather than mistakes: something the
+format could say in one place and not honour in another.
+
+**A conformance case could assert an array position that no Recipe could
+emit.** The comparator has understood `data.boards[0].name` from the
+beginning, and `nestedObject` has built arrays for a field's `in` for almost
+as long, but `setPath` -- which puts a route's declared constants into the
+body -- treated the whole segment as a key. So Monday's board went out under a
+key literally spelled `boards[0]`, and a case asserting the array form
+reported the field missing. A key like that has now been written four times by
+four different mechanisms, and every one was silent: no provider sends it, so
+nothing errors, the field simply is not the one anyone asked for.
+
+**A declared identifier shape was never on the wire.** Monday mints ten-digit
+item ids. Changing the Recipe to say six broke nothing at all, because every
+conformance case reads a seeded record and the generator only runs when
+something is created. The declaration could have disagreed with the provider
+from the first commit and no case would have said so. A fixture now has to
+seed an identifier the generator could have minted, and that check found four
+more Recipes where it could not have:
+
+| Recipe | What was seeded | What it should have been |
+|---|---|---|
+| Discord | 18-digit snowflakes under a 19-digit declaration | 19, which is what Discord mints now |
+| Mailchimp | `c1a2m3p4g5`, and a member id ending `grc2`, under a hex declaration | Hex. A member id is the MD5 of the lower-cased email and no MD5 produces a g |
+| Trello | `...l01` under a hex declaration | Hex. Board and card ids happened to be valid hex already; only list ids were not |
+| Statuspage | `comp0000000001` under a hex declaration | The declaration was the wrong one. Statuspage ids are lower-case alphanumeric -- `kh2n5rn2rgsk` -- so hex would mint from a narrower alphabet than the provider uses, and a client validating one against `[a-f0-9]+` would pass here and fail there |
+
+Cohere is the exception that shaped the rule: it keys embeddings `e1` and `e2`
+and declares `field: "-"`, so no client ever sees them. An identifier that is
+never emitted cannot disagree with anything, and its shape carries no claim.
+
+## Two limits of the GraphQL support, stated
+
+Neither is a bug, and both would read as one to somebody writing a Recipe.
+
+**A route answers with everything it declares, not with your selection set.**
+Nothing here parses GraphQL; `selects:` looks for a word. So a query naming
+one field of one object is handed the whole modelled shape. Monday's
+complexity case originally asserted that a complexity-only query carried no
+board, which is true of Monday and false of Cauldron, and asserting it would
+have been asserting a pruning step that does not exist.
+
+**Two selecting routes on one path are ambiguous when a query names both.**
+Monday's complexity started as a route of its own, and a realistic query --
+asking for the cost alongside the data it is the cost of -- matched both
+routes equally, so which answered was arbitrary. It is now a route field on
+the query it belongs to, the way ShipHero's already was. The general shape of
+the rule: envelope metadata rides with the query it describes rather than
+becoming a route.
+
+## Smaller, noted rather than done
+
+`opaque` mints from an alphabet with upper case in it, and several providers
+whose ids are opaque use lower case only -- Statuspage among them. A client
+lower-casing an id before comparing would not notice; one comparing directly
+would, and only against the emulator. A `lowercase` flag or a distinct style
+would close it.
