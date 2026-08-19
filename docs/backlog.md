@@ -1371,9 +1371,53 @@ That is the third invented field found by pulling this thread, after Pub/Sub's
 Recipe that declares a paging mechanism nobody checked tends to have invented
 the response half of it too, because both were written from the same guess.
 
+**Datadog** is the argument against reading one endpoint and assuming the
+rest. Three listings page three different ways: monitors by `page_size` and
+`page`, dashboards by `count` and `start`, events by `page` alone with the size
+fixed at a thousand. `start` is an offset on the dashboard endpoint -- "the
+specific offset to use as the beginning of the returned response" -- and a
+POSIX timestamp on the events endpoint. Declaring it as the cursor for both
+would page one of them by reading a clock.
+
+That endpoint also needed a third thing a parameter name can be. Empty falls
+back to reading `limit`, a spelling names the provider's word, and `"-"` now
+says the provider accepts no name at all -- Datadog fixes the event page at a
+thousand, and honouring an invented size would let code that sends one work
+here and be ignored in production. The idiom already existed for `field`,
+`message_field` and `code_field`.
+
+**Shippo** had three inventions in one Recipe:
+
+- `GET /rates` does not exist. Shippo serves `/rates/{RateId}` for one and
+  `/shipments/{ShipmentId}/rates` for the list, and two conformance cases used
+  the bare path.
+- There is no `count`. The envelope is `next`, `previous` and `results` and
+  nothing else, and a case asserted the count that was declared beside them.
+- `?limit=1`, again, where Shippo calls it `results`.
+
+Stated gap rather than hidden: `next` and `previous` are full URLs in this API
+-- the spec's own example is `baseurl?page=3&results=10` -- and Cauldron puts
+a position there instead. A client that follows `next` as a URL, which is the
+entire point of that shape, cannot follow this one. A `cursor_field` that can
+render a URL would close it, and this is not the only provider shaped that way.
+
+### On what keeps being found
+
+Every Recipe checked so far has had something invented beside the paging: a
+field the provider does not send, or a path it does not serve. Five now --
+Pub/Sub's `id`, Algolia's GET listing, Telnyx's `meta.next_page`, Shippo's
+`count` and its `GET /rates`. The paging note was the thread; the guess it
+records was never confined to the paging.
+
+The second lesson is about the cases. Four mutations survived their first
+conformance case this round because the fixture could not tell the outcomes
+apart -- one dashboard makes `count=1` and the default identical, two make an
+offset of one indistinguishable from a page size of one. A case only checks a
+parameter when the data would differ if the parameter were ignored.
+
 ### Remaining
 
-49 Recipes, 122 declarations. The method that works: find the provider's own
+47 Recipes, 116 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,

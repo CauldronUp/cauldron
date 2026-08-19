@@ -930,6 +930,11 @@ type Pagination struct {
 	// maxResults, GitHub calls it per_page, Salesforce does not accept one at
 	// all.
 	//
+	// "-" says the provider accepts no name for it, which is different from
+	// leaving it empty: empty falls back to reading "limit", and "-" reads
+	// nothing and keeps the declared page size. Datadog's event listing fixes
+	// the page at a thousand and takes no size parameter.
+	//
 	// It matters more than it looks. An emulator that only understands "limit"
 	// ignores the size the caller asked for and answers with its own default,
 	// and for a fixture of four records that default is the whole collection.
@@ -1412,6 +1417,12 @@ func (r *Recipe) Validate() error {
 		//
 		// 146 routes declared a style with no names, which was harmless while
 		// nothing read the style and became a claim the moment something did.
+		//
+		// "-" is the third thing a name can be, beside a spelling and an
+		// omission: the provider accepts no name for this at all. Datadog's
+		// event listing fixes the page at a thousand and takes no size
+		// parameter, so honouring an invented one would let code that sends
+		// it work here and be ignored in production.
 		if s := route.Pagination.Style; s == "offset" || s == "page" {
 			if route.Pagination.LimitParam == "" || route.Pagination.CursorParam == "" {
 				add("%s: declares %s paging without naming the provider's parameters, so the runtime would read `limit` and %q, which is a guess; set limit_param and cursor_param", where, s, s)
