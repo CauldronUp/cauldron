@@ -1,0 +1,470 @@
+# Midtrans Recipe for Cauldron
+#
+# Midtrans reports the outcome of a payment in two fields, and a payment is
+# only safe when both of them agree.
+#
+# transaction_status says what happened to the money. fraud_status says what
+# Midtrans thinks of it. A transaction can be "capture" and "challenge" at the
+# same time: the card was charged and the funds are held pending a human
+# deciding whether the order is fraudulent. Code that reads transaction_status
+# and sees a word meaning success ships the goods, and the merchant either
+# refunds later or eats a chargeback.
+#
+# Nobody discovers this from a happy-path integration, because a test card
+# never gets challenged.
+#
+# Four more worth modelling exactly:
+#
+#   1. There are two status codes and they are not the same thing. The HTTP
+#      status is one, and status_code in the body is a string that carries
+#      Midtrans's own meaning. A 200 with status_code "404" is a real
+#      response, and code that branches on the HTTP status alone treats it as
+#      a successful lookup of nothing.
+#   2. gross_amount is a decimal string in a currency with no cents.
+#      "10000.00" is ten thousand rupiah, and the two zeroes after the point
+#      are always zero, so a client that divides by a hundred somewhere
+#      reports every amount as a hundredth of itself.
+#   3. settlement is later than capture and is a different word. A card
+#      payment goes capture then settlement, a bank transfer goes pending
+#      then settlement, and only one of the two ever passes through capture,
+#      so a client that waits for capture waits forever on half its payments.
+#   4. The notification signature is the security boundary and it is over four
+#      things joined without separators. Getting the order or the amount
+#      formatting wrong produces a hash that never matches and a webhook
+#      handler that rejects everything, or worse, one that skips the check.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No signature is computed or verified. The signature_key in a fixture is
+#     a plausible-looking hex string and nothing more. Verifying it is the
+#     whole security boundary and a fake that accepted any signature would
+#     teach the opposite of the lesson, so this Recipe describes the field
+#     and does not offer a verification endpoint.
+#   - Nothing is charged and no status ever moves. Which pair of statuses a
+#     transaction holds is what a fixture puts there, and the pairs are the
+#     point.
+#   - Snap tokens, recurring, payouts and the disbursement API are not
+#     modelled.
+#
+# Keys below are fixtures, not secrets, and every figure is invented.
+
+recipe: midtrans
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.midtrans.com/reference/backend-integration
+
+auth:
+  # Basic, with the server key as the username and an empty password. The
+  # trailing colon matters: a client that omits it sends a different string
+  # and gets a 401 that says nothing about the colon.
+  scheme: basic
+  credential: username
+  keys:
+    - SB-Mid-server-cauldron0000000000000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: status_message
+    code_field: status_code
+    code_type: string
+    type_field: "-"
+
+resources:
+  transaction:
+    collection: transactions
+    id:
+      # Midtrans's own identifier. order_id is yours, and every status
+      # endpoint takes yours while every response carries both.
+      style: uuid
+      field: transaction_id
+    # Which is why the status path resolves by order_id.
+    alias: order_id
+    fields:
+      # Yours. The one the status endpoint is addressed by.
+      order_id:
+        type: string
+      # A string, and not the HTTP status. "200" on a successful lookup,
+      # "404" on a lookup of an order that does not exist, and the HTTP
+      # status is its own thing.
+      status_code:
+        type: string
+        default: "200"
+      status_message:
+        type: string
+      # capture, settlement, pending, deny, cancel, expire, failure, refund,
+      # partial_refund, authorize. Only some of these mean money moved and
+      # none of them means it is safe on its own.
+      transaction_status:
+        type: string
+      # accept, challenge, deny. The other half of the answer. capture and
+      # challenge together means the card was charged and the funds are held
+      # pending a human deciding whether the order is fraudulent.
+      fraud_status:
+        type: string
+        default: accept
+      # A decimal string in a currency with no cents. "10000.00" is ten
+      # thousand rupiah and the two zeroes are always zero.
+      gross_amount:
+        type: string
+      currency:
+        type: string
+        default: IDR
+      # credit_card, bank_transfer, gopay, qris, echannel. Which one decides
+      # whether the transaction ever passes through capture.
+      payment_type:
+        type: string
+      transaction_time:
+        type: datetime
+      # When the money actually arrived, which is later than the charge and
+      # absent until then. Absent rather than null, so a client testing for
+      # null never finds one and has to test for the key.
+      settlement_time:
+        type: datetime
+        stamped: false
+      # The last four, and there is no way to get the rest.
+      masked_card:
+        type: string
+      # SHA512 over four things joined without separators. Verifying it is
+      # the security boundary for notifications, and nothing here computes
+      # it: this is a plausible-looking string and nothing more.
+      signature_key:
+        type: string
+
+routes:
+  # Addressed by your order id, not by Midtrans's transaction id.
+  - method: GET
+    path: /v2/{id}/status
+    resource: transaction
+    operation: get
+
+  - method: GET
+    path: /v2/transactions
+    resource: transaction
+    operation: list
+
+errors:
+  rate_limit:
+    status: 429
+    code: "429"
+    message: "Too many requests"
+
+  authentication_error:
+    status: 401
+    code: "401"
+    message: "Unauthorized transaction, please check client or server key"
+
+  resource_missing:
+    status: 404
+    code: "404"
+    message: "Transaction doesn't exist."
+
+  parameter_missing:
+    status: 400
+    code: "400"
+    message: "Validation error"
+
+  # The card was declined by the issuing bank. 202 rather than 4xx, because
+  # Midtrans processed the request successfully and the answer was no, so a
+  # client branching on the HTTP status treats a decline as a success.
+  card_declined:
+    status: 202
+    code: "202"
+    message: "Deny by Bank [BANK] with code [05] and message [Do not honour]"
+
+  # Midtrans's fraud detection said no. Also a 202, also a processed request,
+  # and the only difference from the one above is the wording.
+  denied_by_fraud_detection:
+    status: 202
+    code: "202"
+    message: "Deny by Fraud Detection System"
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    transaction:
+      # The one that matters. The card was charged and the funds are held
+      # pending a human deciding whether the order is fraudulent. Reading
+      # transaction_status alone says capture, which sounds like success, and
+      # shipping on it is how a merchant eats a chargeback.
+      - id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+        order_id: order-4471
+        status_code: "200"
+        status_message: Success, Credit Card transaction is successful
+        transaction_status: capture
+        fraud_status: challenge
+        gross_amount: "450000.00"
+        currency: IDR
+        payment_type: credit_card
+        transaction_time: "2026-08-15T09:14:02Z"
+        masked_card: "48111111-1114"
+        signature_key: 4e1f2a7c9b0d6e3f8a52c14b7d09e63f2a8c5107b4e93d6f0a271c85b39e4d02
+
+      # Charged and cleared. Same transaction_status, different fraud_status,
+      # and this is the one that is safe.
+      - id: 9a4d2c67-1e83-4f50-b729-8c05e31a6d47
+        order_id: order-4472
+        status_code: "200"
+        status_message: Success, Credit Card transaction is successful
+        transaction_status: capture
+        gross_amount: "129900.00"
+        currency: IDR
+        payment_type: credit_card
+        transaction_time: "2026-08-15T10:02:00Z"
+        masked_card: "48111111-1114"
+        signature_key: 7b3c1e94a2f0d857e6b4a930c5127f8de409a1b62c3f7d05e81a4936b207c5fd
+
+      # A bank transfer that has settled. It never passed through capture, so
+      # a client waiting for capture waits forever on every payment that is
+      # not a card.
+      - id: 2b7e5f13-6c04-4a98-9d31-7f62a08c5e39
+        order_id: order-4473
+        status_code: "200"
+        status_message: Success, transaction is found
+        transaction_status: settlement
+        gross_amount: "89000.00"
+        currency: IDR
+        payment_type: bank_transfer
+        transaction_time: "2026-08-14T16:40:00Z"
+        settlement_time: "2026-08-15T02:11:00Z"
+        signature_key: c05a8f27e14b3d69072cf85a1b4e93d0672a5c18f30be74a29d16508c3f7ba41
+
+      # Waiting for the customer to pay. Not a failure and not a success, and
+      # it will expire on its own if nobody does.
+      - id: 5e0a9c38-7b12-4d56-a94f-3f81c26b0d75
+        order_id: order-4474
+        status_code: "201"
+        status_message: Success, Bank Transfer transaction is created
+        transaction_status: pending
+        gross_amount: "25000.00"
+        currency: IDR
+        payment_type: bank_transfer
+        transaction_time: "2026-08-15T11:30:00Z"
+        signature_key: a91b4e07c2d5f83610a7e94b2c05d371f68a02e5b43c97d18f025a6c3b70e94d
+
+# Every case below is derived from Midtrans's published documentation. None
+# has been run against a real account. The verify report says so.
+conformance:
+  - name: capture and challenge together means the money is held
+    # The card was charged and the funds are held pending a human deciding
+    # whether the order is fraudulent. Reading transaction_status alone says
+    # capture, which sounds like success, and shipping on it is how a
+    # merchant eats a chargeback.
+    source: https://docs.midtrans.com/reference/status-cycle
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        transaction_status: capture
+        fraud_status: challenge
+        order_id: order-4471
+
+  - name: the same transaction_status with a different fraud_status is safe
+    # One field apart, and it is the field nobody reads.
+    source: https://docs.midtrans.com/reference/status-cycle
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4472/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        transaction_status: capture
+        fraud_status: accept
+
+  - name: a bank transfer never passes through capture
+    # It goes pending then settlement. A client waiting for capture waits
+    # forever on every payment that is not a card, which is most of them in
+    # this market.
+    source: https://docs.midtrans.com/reference/status-cycle
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4473/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        transaction_status: settlement
+        payment_type: bank_transfer
+        settlement_time: "2026-08-15T02:11:00Z"
+
+  - name: and a card that has settled has a settlement time and the other does not
+    # capture is the charge and settlement is the money arriving, days apart.
+    source: https://docs.midtrans.com/reference/status-cycle
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4472/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        transaction_status: capture
+      absent:
+        - settlement_time
+
+  - name: pending is neither a failure nor a success
+    # It will expire on its own if the customer never pays, so treating it
+    # as either cancels an order somebody is about to pay for or ships one
+    # nobody paid for.
+    source: https://docs.midtrans.com/reference/status-cycle
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4474/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        transaction_status: pending
+        status_code: "201"
+      absent:
+        - settlement_time
+        - masked_card
+
+  - name: the body carries its own status code and it is a string
+    # Not the HTTP status. "201" on a created bank transfer that answered
+    # 200, so a client branching on the HTTP status alone is reading a
+    # different question's answer.
+    source: https://docs.midtrans.com/reference/status-code
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4474/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status_code: "201"
+
+  - name: the amount is a decimal string in a currency with no cents
+    # "450000.00" is four hundred and fifty thousand rupiah, and the two
+    # zeroes after the point are always zero. A client that divides by a
+    # hundred somewhere reports every amount as a hundredth of itself.
+    source: https://docs.midtrans.com/reference/get-transaction-status
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        gross_amount: "450000.00"
+        currency: IDR
+
+  - name: the status path takes your order id, not Midtrans's transaction id
+    # Both are in the response and only one of them works in a path.
+    source: https://docs.midtrans.com/reference/get-transaction-status
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        order_id: order-4471
+        transaction_id: 6c1f8a20-4b95-4d73-8e06-2a37f59c1b84
+      absent:
+        - id
+
+  - name: a card number is four digits at each end and nothing between
+    source: https://docs.midtrans.com/reference/get-transaction-status
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        masked_card: "48111111-1114"
+
+  - name: a decline is a 202, not a 4xx
+    # Midtrans processed the request successfully and the answer was no, so
+    # a client branching on the HTTP status treats a declined card as a
+    # successful call and reads no further.
+    source: https://docs.midtrans.com/reference/status-code
+    fixture: small-merchant
+    arm: card_declined
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 202
+      body:
+        status_code: "202"
+        status_message: "Deny by Bank [BANK] with code [05] and message [Do not honour]"
+
+  - name: and a fraud denial is the same 202 with different words
+    # Same status, same code, and the only thing distinguishing a bank
+    # decline from a fraud rejection is prose meant for a human.
+    source: https://docs.midtrans.com/reference/status-code
+    fixture: small-merchant
+    arm: denied_by_fraud_detection
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 202
+      body:
+        status_code: "202"
+        status_message: "Deny by Fraud Detection System"
+
+  - name: a missing order is a 404 with a matching code in the body
+    source: https://docs.midtrans.com/reference/status-code
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-does-not-exist/status
+      headers:
+        Authorization: Basic U0ItTWlkLXNlcnZlci1jYXVsZHJvbjAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 404
+      body:
+        status_code: "404"
+        status_message: "Transaction doesn't exist."
+
+  - name: the server key is the username and the password is empty
+    # The trailing colon matters. A client that omits it sends a different
+    # string and gets a 401 that says nothing about the colon.
+    source: https://docs.midtrans.com/reference/api-methods
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /v2/order-4471/status
+      headers:
+        Authorization: Basic d3Jvbmc6
+    expect:
+      status: 401
+      body:
+        status_code: "401"
+        status_message: "Unauthorized transaction, please check client or server key"

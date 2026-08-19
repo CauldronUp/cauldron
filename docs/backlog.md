@@ -654,7 +654,7 @@ what normalisation does not fix.
 | Provider | Why |
 |---|---|
 | Xendit | A virtual account exists before it can receive money, and the callback is the only signal that it can |
-| Midtrans | transaction_status and fraud_status are two fields, and a payment is only safe when both agree |
+| ~~Midtrans~~ | Shipped. transaction_status and fraud_status are two fields and a payment is only safe when both agree; capture plus challenge means the card was charged and the funds are held; a bank transfer never passes through capture at all |
 | PayU | The same merchant has different endpoints per country and the response fields differ between them |
 | Gorgias | A ticket and its messages page separately, so a message can arrive between the two reads and belong to neither |
 | Kustomer | A conversation is a customer timeline rather than a thread, so assignment is a state of the conversation and not of any message |
