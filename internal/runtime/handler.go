@@ -111,7 +111,7 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	record = s.flatten(matched.spec.Resource, record)
 
-	for field, value := range scopeVars(matched, vars) {
+	for field, value := range s.scopeVars(matched, vars) {
 		record[field] = value
 	}
 
@@ -262,7 +262,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 	// A record that exists but belongs to another scope must look absent, not
 	// forbidden. Leaking existence across tenants is a real provider bug we do
 	// not want to teach an application to rely on.
-	if !store.Matches(record, scopeVars(matched, vars)) {
+	if !store.Matches(record, s.scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
 			"No such "+matched.spec.Resource+": "+id+".",
 			matched.spec.Resource+": "+id)
@@ -288,7 +288,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
-	if !store.Matches(existing, scopeVars(matched, vars)) {
+	if !store.Matches(existing, s.scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
 			"No such "+matched.spec.Resource+": "+id+".",
 			matched.spec.Resource+": "+id)
@@ -312,7 +312,7 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.notFound(w, err, matched.spec.Resource, id)
 	}
 
-	if !store.Matches(record, scopeVars(matched, vars)) {
+	if !store.Matches(record, s.scopeVars(matched, vars)) {
 		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
 			"No such "+matched.spec.Resource+": "+id+".",
 			matched.spec.Resource+": "+id)
@@ -376,7 +376,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		err  error
 	)
 
-	where := scopeVars(matched, vars)
+	where := s.scopeVars(matched, vars)
 
 	// A listing that narrows itself whether or not the caller asked. The
 	// filter joins the scope because it does the same job: both decide which
@@ -1119,18 +1119,55 @@ func finalToken(resource string, page store.Page) string {
 }
 
 // scopeVars extracts the scope filters for a request from its path parameters.
-func scopeVars(matched route, vars map[string]string) map[string]any {
+func (s *Sandbox) scopeVars(matched route, vars map[string]string) map[string]any {
 	if len(matched.spec.Scope) == 0 {
 		return nil
 	}
 
+	fields := s.recipe.Resources[matched.spec.Resource].Fields
 	out := make(map[string]any, len(matched.spec.Scope))
 
 	for _, name := range matched.spec.Scope {
-		out[name] = vars[name]
+		out[name] = scoped(fields[name].Type, vars[name])
 	}
 
 	return out
+}
+
+// scoped converts a path parameter to the type its field declares.
+//
+// A path is text and a field is not. Help Scout's conversationId, Gorgias's
+// ticket_id, Shortcut's epic_id, Documenso's documentId and Hetzner's
+// resources[0].id are all integers on the wire, and a record created through
+// a scoped route carried the string out of the URL instead. So the same field
+// was a number when a fixture seeded it and a string when a create produced
+// it, in the same collection, in the same response shape, and only one of the
+// two matched what the provider sends.
+//
+// Matching is done with fmt.Sprint on both sides, so a scope that changes
+// type still finds the records it scoped.
+//
+// The JSON grammar decides, for the same reason it decides in a form body: a
+// leading plus or a redundant leading zero is not something a JSON client
+// could have sent, and an identifier that begins with one is an identifier
+// rather than a number however the field is declared.
+func scoped(declared, value string) any {
+	switch declared {
+	case "integer", "number", "timestamp", "timestamp_ms":
+		if !jsonNumeric(value) {
+			return value
+		}
+
+		if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return n
+		}
+
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return f
+		}
+	}
+
+	return value
 }
 
 // collectionName resolves the key a wrapped list is nested under: the

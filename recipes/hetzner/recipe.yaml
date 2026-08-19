@@ -1,0 +1,595 @@
+# Hetzner Cloud Recipe for Cauldron
+#
+# Powering off a server does not answer with the server.
+#
+# It answers with an action: a job, with a status of running, a progress
+# percentage, and a finished timestamp that is null. The machine is still on.
+# Whether it will go off is a second request, to a different endpoint, about a
+# different object, and there is no version of this call that waits.
+#
+# Every mutation in this API is that shape. Attach a volume, change a type,
+# rebuild, enable rescue, request a console: each answers 201 with a job.
+# Nothing that changes anything answers with the thing it changed.
+#
+# The failure this produces is the one asynchronous APIs always produce and
+# this one produces on every single write: the call returned 201, so the code
+# carried on, and the work had not happened. A test that powers a server off
+# and asserts it is off passes against a mock, passes against a fixture, and
+# is a race against the real thing.
+#
+# Five more the Recipe pins:
+#
+#   1. An action can fail after a 201. status goes running, then success or
+#      error, and error arrives long after the HTTP call that started it
+#      returned successfully. Nothing about the 201 was wrong.
+#   2. The reason is an object, not a sentence. action.error is null on
+#      success and {code, message} on failure, so reading it as a string
+#      gets [object Object] into a log and code that checks
+#      `if (action.error)` is right while code that prints it is not.
+#   3. progress is a percentage and it is not a promise. It reaches 100 on
+#      an action that is still running, and it counts the job rather than
+#      the thing: an action at 100 per cent has not necessarily produced a
+#      server you can reach.
+#   4. A server has nine statuses and "not running" is eight of them.
+#      running, initializing, starting, stopping, off, deleting, migrating,
+#      rebuilding and unknown. Code that branches on running and off has
+#      seven unhandled cases, two of which are ordinary boot.
+#   5. locked is a separate field from status. A server can be running and
+#      locked, which means an action is in flight and the next mutation will
+#      be refused -- and the refusal is a 423 rather than a conflict about
+#      the thing you asked for.
+#
+# And one that costs a machine: the root password is returned once. Creating
+# a server without an SSH key answers with root_password beside the action,
+# and no other endpoint has it, ever. A client that reads the action out of
+# that response and discards the rest has an unreachable server and no error
+# anywhere.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Actions do not progress. An action here has whatever status its fixture
+#     gave it and stays there, so the polling loop this Recipe exists to
+#     provoke will not terminate on its own. Arm an error, or seed the state
+#     you want to test.
+#   - Creating a server is not modelled. Its response is the one place
+#     Hetzner puts four things side by side -- the server, the action, an
+#     array of next_actions that have not started, and root_password -- and
+#     this format wraps one resource per response. The header says what is in
+#     there because the once-only password matters more than the shape does.
+#   - A running action omits error rather than sending it as null. Hetzner
+#     sends the key with nothing in it, and this format cannot both nest a
+#     field under a name and declare that name null when the nesting is
+#     empty. finished does carry its null, because it is a field of its own.
+#   - Nothing is provisioned, billed or metered. Volumes, networks,
+#     firewalls, load balancers, images, ISOs, placement groups, primary IPs
+#     and certificates are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: hetzner
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.hetzner.cloud/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-hetzner-api-token
+
+responses:
+  list:
+    style: wrapped
+  # No key: each resource is wrapped under its own name, which is what
+  # Hetzner does. A server arrives as {"server": {...}} and an action as
+  # {"action": {...}}, so the two are never confusable and never
+  # interchangeable either.
+  resource:
+    style: wrapped
+  error:
+    style: nested
+    key: error
+    code_field: code
+    message_field: message
+    type_field: "-"
+
+resources:
+  # A job. This is what every mutation answers with, and it is not the thing
+  # you changed.
+  action:
+    collection: actions
+    id:
+      style: numeric
+      type: number
+    fields:
+      # What was asked for: poweroff_server, attach_volume, create_server.
+      # Only one mutation is modelled, so this defaults to its command. A
+      # Recipe covering the rest would need one route per verb, which is
+      # what Hetzner has: every one of them answers with this object.
+      command:
+        type: string
+        default: poweroff_server
+      # running, success or error. It starts at running and the request that
+      # started it has already returned.
+      status:
+        type: string
+        default: running
+      started:
+        type: datetime
+      # Null while it is running, which is the state a client meets first.
+      finished:
+        type: datetime
+        null_when_unset: true
+      # A percentage of the job, not of the outcome. It reaches 100 on
+      # actions that are still running.
+      progress:
+        type: integer
+        default: 0
+      # What the job is about. An array, because one action can touch
+      # several things, and the server id is in here rather than at the top.
+      resource_id:
+        type: integer
+        in: resources[0]
+        as: id
+      resource_type:
+        type: string
+        in: resources[0]
+        as: type
+        default: server
+      # Null on success and an object on failure. Not a string: reading it
+      # as one puts [object Object] in a log.
+      error_code:
+        type: string
+        in: error
+        as: code
+      error_message:
+        type: string
+        in: error
+        as: message
+
+  server:
+    collection: servers
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      # running, initializing, starting, stopping, off, deleting, migrating,
+      # rebuilding or unknown. Two of those are ordinary boot.
+      status:
+        type: string
+        default: running
+      created:
+        type: datetime
+      # An action is in flight and the next mutation will be refused. A
+      # separate question from status, and a server can be running and
+      # locked at once.
+      locked:
+        type: boolean
+        default: false
+      ipv4:
+        type: string
+        in: public_net.ipv4
+        as: ip
+      ipv4_blocked:
+        type: boolean
+        in: public_net.ipv4
+        as: blocked
+      server_type:
+        type: string
+        in: server_type
+        as: name
+      server_cores:
+        type: integer
+        in: server_type
+        as: cores
+      # location, not datacenter. Hetzner had a datacenter field on a
+      # server once and the current API does not, so a client written
+      # against an older example reads undefined and places nothing.
+      location:
+        type: string
+        in: location
+        as: name
+      image:
+        type: string
+        in: image
+        as: name
+
+routes:
+  - method: GET
+    path: /v1/servers
+    resource: server
+    operation: list
+
+  - method: GET
+    path: /v1/servers/{id}
+    resource: server
+    operation: get
+
+  # The headline. A 201 and a job, and the server is still on.
+  - method: POST
+    path: /v1/servers/{resource_id}/actions/poweroff
+    resource: action
+    operation: create
+    # The server the job is about lands where Hetzner puts it: inside the
+    # resources array rather than at the top of the action.
+    scope: [resource_id]
+    status: 201
+    # A newly started action has nothing in it but the fact that it started.
+    # No finished time, no error, and a progress of zero.
+    returns:
+      - id
+      - command
+      - status
+      - started
+      - progress
+      - finished
+      - resource_id
+      - resource_type
+
+  # Where you find out. A different endpoint, about a different object, and
+  # the only way to learn whether the thing you asked for happened.
+  - method: GET
+    path: /v1/actions/{id}
+    resource: action
+    operation: get
+
+  - method: GET
+    path: /v1/actions
+    resource: action
+    operation: list
+
+errors:
+  # An action is in flight. Not a conflict about what you asked for: a
+  # refusal to queue anything at all while the last job finishes.
+  locked:
+    status: 423
+    code: locked
+    message: "The resource is locked. The caller should contact support."
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: "unable to authenticate"
+
+  not_found:
+    status: 404
+    code: not_found
+    message: "Server not found"
+
+  rate_limit_exceeded:
+    status: 429
+    code: rate_limit_exceeded
+    message: "limit of 3600 requests per hour reached"
+
+  # Asking for a machine that is not available in that location. The request
+  # is well formed and the answer is that there is nothing to give you.
+  resource_unavailable:
+    status: 400
+    code: resource_unavailable
+    message: "The requested resource is currently unavailable"
+
+fixtures:
+  empty: {}
+
+  one-project:
+    server:
+      # Running, and locked: a job is in flight, so the next mutation is a
+      # 423 rather than anything about what was asked for.
+      - id: "42"
+        name: web-01
+        status: running
+        created: "2026-02-14T09:12:33Z"
+        locked: true
+        ipv4: 5.75.182.44
+        ipv4_blocked: false
+        server_type: cpx21
+        server_cores: 3
+        location: fsn1
+        image: ubuntu-24.04
+
+      # Initializing. Not running, not off, and not an error either: this is
+      # what a server looks like for the first minute of its life, and code
+      # that branches on running and off has no case for it.
+      - id: "43"
+        name: batch-02
+        status: initializing
+        created: "2026-08-19T11:02:07Z"
+        locked: false
+        ipv4: 5.75.182.51
+        ipv4_blocked: false
+        server_type: cx22
+        server_cores: 2
+        location: nbg1
+        image: debian-12
+
+      - id: "44"
+        name: archive-03
+        status: off
+        created: "2025-11-30T16:45:12Z"
+        locked: false
+        ipv4: 5.75.182.63
+        ipv4_blocked: false
+        server_type: cx22
+        server_cores: 2
+        location: hel1
+        image: debian-12
+
+    action:
+      # Running, at zero, with no finished time. What a mutation hands back.
+      - id: "13907231"
+        command: poweroff_server
+        status: running
+        started: "2026-08-19T11:14:02Z"
+        progress: 0
+        resource_id: 42
+        resource_type: server
+
+      # A hundred per cent and still running. The job is done counting and
+      # is not done.
+      - id: "13907198"
+        command: create_server
+        status: running
+        started: "2026-08-19T11:02:07Z"
+        progress: 100
+        resource_id: 43
+        resource_type: server
+
+      # Failed, long after its 201. The reason is an object with a code in
+      # it, and finished is set while status is not success.
+      - id: "13906844"
+        command: attach_volume
+        status: error
+        started: "2026-08-19T10:41:55Z"
+        finished: "2026-08-19T10:42:09Z"
+        progress: 100
+        resource_id: 44
+        resource_type: server
+        error_code: server_not_stopped
+        error_message: "The server is not stopped"
+
+      - id: "13906712"
+        command: start_server
+        status: success
+        started: "2026-08-19T10:20:00Z"
+        finished: "2026-08-19T10:20:31Z"
+        progress: 100
+        resource_id: 42
+        resource_type: server
+
+# Every case below is derived from the OpenAPI specification Hetzner publishes
+# for its Cloud API. None has been run against a real project. The verify
+# report says so.
+conformance:
+  - name: powering off a server answers with a job
+    # Not the server. A running action, at zero per cent, with no finished
+    # time, and the machine is still on. Whether it goes off is a second
+    # request to a different endpoint about a different object.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: POST
+      path: /v1/servers/42/actions/poweroff
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+      json: {}
+    expect:
+      status: 201
+      body:
+        action.command: poweroff_server
+        action.status: running
+        action.progress: 0
+        action.resources[0].id: 42
+        action.resources[0].type: server
+        # Present and empty, which is not the same as absent: a client
+        # checking whether the key exists learns nothing about whether the
+        # job is done.
+        action.finished: null
+      absent:
+        - server
+
+  - name: and the server it was aimed at is still running
+    # The 201 has already been returned and nothing has changed. A test that
+    # powers a server off and asserts it is off passes against a mock and is
+    # a race against this.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers/42
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        server.status: running
+        server.name: web-01
+
+  - name: an action can fail long after its 201
+    # status error, finished set, and the request that started this returned
+    # successfully fourteen seconds earlier. Nothing about the 201 was wrong.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/actions/13906844
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        action.status: error
+        action.command: attach_volume
+        action.finished: "2026-08-19T10:42:09Z"
+
+  - name: the reason is an object, not a sentence
+    # Reading action.error as a string puts [object Object] in a log, and
+    # code that tests its truthiness is right while code that prints it is
+    # not.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/actions/13906844
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        action.error.code: server_not_stopped
+        action.error.message: "The server is not stopped"
+
+  - name: a hundred per cent is not finished
+    # progress counts the job rather than the outcome, and this one is still
+    # running with nothing left to count.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/actions/13907198
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        action.progress: 100
+        action.status: running
+        action.command: create_server
+        action.finished: null
+
+  - name: and the server that action is creating is not usable yet
+    # initializing: not running, not off, and not an error. Code that
+    # branches on running and off has no case for the first minute of a
+    # machine's life.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers/43
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        server.status: initializing
+        server.public_net.ipv4.ip: 5.75.182.51
+
+  - name: a server can be running and locked at the same time
+    # An action is in flight, so the next mutation is refused. locked is a
+    # separate question from status and code that reads only status cannot
+    # tell this machine from one that will accept a command.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers/42
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        server.status: running
+        server.locked: true
+
+  - name: and the refusal is a 423 about the lock, not about the command
+    # It does not say which action holds it or when it will let go.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    arm: locked
+    request:
+      method: POST
+      path: /v1/servers/42/actions/poweroff
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+      json: {}
+    expect:
+      status: 423
+      body:
+        error.code: locked
+        error.message: "The resource is locked. The caller should contact support."
+
+  - name: the identifier is a number, not a string of digits
+    # Both when a fixture holds it and when it comes out of a path, which
+    # were two different answers until they were not.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers/44
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        server.id: 44
+        server.status: off
+        # location, not datacenter. Hetzner had the latter once and does
+        # not now, so a client written from an older example reads
+        # undefined and places the machine nowhere.
+        server.location.name: hel1
+        server.server_type.cores: 2
+      absent:
+        - server.datacenter
+
+  - name: a server is wrapped under its own name and an action under its own
+    # Two envelopes, one per kind, so the two are never confusable. Reading
+    # response.id gets undefined on both.
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/actions/13906712
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        action.status: success
+        action.command: start_server
+        action.finished: "2026-08-19T10:20:31Z"
+        # A number, like every other identifier here.
+        action.id: 13906712
+      absent:
+        - id
+        - server
+        - status
+
+  - name: the listing is wrapped under the plural
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: Bearer cauldron-hetzner-api-token
+    expect:
+      status: 200
+      body:
+        servers[0].name: web-01
+        servers[1].status: initializing
+        servers[2].status: off
+      absent:
+        - servers[3]
+        - data
+
+  - name: an unauthorised call is nested under error with a string code
+    source: https://docs.hetzner.cloud/
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/servers
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        error.code: unauthorized
+        error.message: "unable to authenticate"
+      absent:
+        - code
+        - message
