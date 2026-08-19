@@ -1516,6 +1516,23 @@ should not exist:
   worse than an invented field, because the name is real and the value looks
   plausible. Closing it means a `pages_field` that divides rather than counts.
 
+**Done.** All four, plus one the rework surfaced: the listing and the
+single-document fetch answer with different shapes. Documenso's list item
+carries the document's own fields and nothing nested, so code that lists
+documents and reads `doc.recipients` gets undefined for every one of them and
+concludes nobody has signed. That is a wrong answer with no error attached,
+and it is now a case.
+
+The five cases that had been written against the two routes Documenso does not
+serve now read the document, which is where the provider puts recipients. The
+recipient resource is gone: it is a list on the document, and the fixture seeds
+it inline.
+
+`totalPages` is **absent** rather than wrong. Documenso always sends it and
+Cauldron cannot yet compute it, and of the two available lies -- a field that
+is missing, or a field carrying a count of the wrong thing -- the missing one
+fails loudly. The `pages_field` that would close it properly is still owed.
+
 ### Remaining
 
 38 Recipes, 96 declarations. The method that works: find the provider's own
