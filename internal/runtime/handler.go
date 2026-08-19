@@ -688,6 +688,20 @@ func (s *Sandbox) present(resource string, record store.Record) store.Record {
 			continue
 		}
 
+		// A declared constant at a dotted name nests, the same way a renamed
+		// identifier and a field's "in" already do. Attio keeps two of a
+		// record's three identifier UUIDs beside the third -- the whole id is
+		// an object -- and writing id.workspace_id as one literal key
+		// produced a shape no provider sends. That is the fifth mechanism in
+		// this file to have made that mistake, and the reason it keeps
+		// happening is that a dotted name is only a path in the places
+		// somebody remembered to make it one.
+		if _, declared := spec.Fields[key]; !declared && recipe.IsPath(key) {
+			setPath(out, key, value)
+
+			continue
+		}
+
 		out[key] = value
 	}
 
@@ -831,6 +845,16 @@ func splitIndex(segment string) (string, []int) {
 func (s *Sandbox) nests(spec recipe.Resource) bool {
 	for _, field := range spec.Fields {
 		if field.In != "" {
+			return true
+		}
+	}
+
+	// A dotted constant nests too, and a resource can have one without any
+	// field declaring an "in" at all -- which is exactly Attio's records,
+	// where the nesting is entirely in the identifier and the constants
+	// beside it.
+	for name := range spec.Constants {
+		if recipe.IsPath(name) {
 			return true
 		}
 	}
