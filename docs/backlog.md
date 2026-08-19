@@ -550,7 +550,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Qdrant~~ | Shipped, and **not** for the reason this row gave. The filter behaviour needs the search itself and Cauldron does not do vector arithmetic, so the header says outright that filters are not applied. What shipped instead is the envelope: `status` is the string `ok` on success and an object `{error}` on failure, so a typed client fails to parse one of the two paths and an untyped one reads `status.error` as undefined, which is falsy, which reads like no error. Plus: `result` nests twice, a collection listing hands back names only, a write answers `acknowledged`, `points_count` and `indexed_vectors_count` disagree on purpose, and `version` is on a query result but not on a point fetched by id |
-| Weaviate | Assess — objects, classes, hybrid search |
+| ~~Weaviate~~ | Shipped, and the thing worth having was the batch. A bulk import that half failed is a **200**: Weaviate's own words for the endpoint are that the request was processed successfully and individual object statuses are in the body, so each element carries `result.status` of SUCCESS or FAILED and the failures sit in the array beside the successes, identical in every other way. Plus: an error is an *array* of messages so `error.message` is undefined everywhere, the same object has two URLs of which one is deprecated, and the API says so in a `deprecations` field on the response body rather than in a header |
 | ~~Typesense~~ | Shipped, and the thing worth having was the relevance score. `text_match` is an int64 up near 578730123365711993, which `JSON.parse` rounds to 578730123365712000 -- and the hit ranked below it, ...994, rounds to the same number, so two differently-ranked results compare equal. This is the worse half of a problem the format already knew: Discord sends snowflakes as strings so it cannot happen, and Typesense sends a number, so no client can avoid it. Plus `search_cutoff` is a documented boolean for "your results are incomplete" at 200, and there are three counts of which one counts the array |
 | Convex | Assess — the query and mutation model is not REST-shaped, so this may belong in the not-done table |
 
@@ -985,6 +985,21 @@ reimplements the thing it is testing is not a test. The second is that one of
 the three branches added really was inert -- `json.Marshal` already renders a
 `json.Number` as its literal digits -- so it was removed rather than kept, on
 the same rule this project applies to Recipes.
+
+## What `check` cannot read
+
+`cauldron check` reads OpenAPI 3 and refuses Swagger 2.0 outright, with a
+sentence saying so rather than a guess. That is the right behaviour and it has
+a cost worth writing down: two providers shipped in this stretch publish
+Swagger 2.0 -- Finnhub and Weaviate -- so neither Recipe could be
+cross-checked against its provider's own description, and both rest on reading
+alone plus a mutation pass.
+
+That is a smaller claim than the ones that say "nothing in this Recipe is
+contradicted by the description", and the difference is not visible from the
+Recipe. Converting a 2.0 document to 3.0 before checking would close it;
+whether that belongs in this tool or in a note telling the author to run a
+converter is undecided.
 
 ## Assessed and deliberately not done
 
