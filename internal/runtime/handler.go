@@ -476,9 +476,27 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		}
 	}
 
-	writeJSON(w, http.StatusOK, body)
+	// A listing's declared status and headers used to be read by nothing.
+	// status and empty_body were once read on creates alone, then extended to
+	// the routes that answer with a record, and listings were left out of
+	// both -- so a Recipe could say its provider answers a page with 206 and
+	// a Next-Range header, and be quietly ignored.
+	//
+	// Heroku is the provider that makes this matter. It pages with the Range
+	// header, answers 206 Partial Content while there is more, and puts the
+	// resume point in Next-Range. A 200 there means you have everything, so
+	// an emulator that always answered 200 taught a client the one thing it
+	// must not believe.
+	s.writeRouteHeaders(w, matched, nil)
 
-	return http.StatusOK
+	status := matched.spec.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+
+	writeJSON(w, status, body)
+
+	return status
 }
 
 // cursorOf reads the identifier a cursor-paged listing resumes after.
@@ -575,6 +593,10 @@ func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok b
 // the record's identifier for {id}.
 func (s *Sandbox) writeRouteHeaders(w http.ResponseWriter, matched route, record store.Record) {
 	for name, value := range matched.spec.Headers {
+		// A listing has no single identifier, so it passes nil and whatever
+		// {id} is in the value stays as written rather than being
+		// substituted with the first record's, which would be a promise
+		// about ordering nobody made.
 		if id, ok := record["id"].(string); ok {
 			value = strings.ReplaceAll(value, "{id}", id)
 		}
