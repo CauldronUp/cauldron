@@ -500,7 +500,7 @@ transfers alone, and say so in the header.
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
 | Lemon Squeezy | Merchant of record, so the tax is theirs and the order total is not what arrives. That is FastSpring's headline, shipped this cycle, and a second Recipe saying it would add a name rather than a shape. Worth doing only for what differs: the licence-key API and the store-scoped identifiers |
 | ~~RevenueCat~~ | Shipped. There is no `is_active` field and RevenueCat's own guidance is to read one -- it is an SDK property, so the moment the question moves to a server somebody writes the comparison by hand and the advice stops applying. Four active entitlements in the fixture, active for four different reasons: cancelled, lifetime (`expires_date: null`, which every naive comparison reads as expired), failing to pay inside a grace period, and somebody else's family purchase on a trial. Entitlements are keyed by your names and subscriptions by the stores', and the endpoint is a GET that creates: 200 found, 201 invented |
-| Recharge | Subscriptions on top of Shopify, so one order has two sources of truth and they drift |
+| Recharge | Still open, and deprioritised for a reason worth writing down: the drift is between Recharge and Shopify, so telling the story needs both systems and a Recipe can only hold one. What a single Recipe could carry is narrower -- a subscription that is ACTIVE while its charges have reached MAX_RETRIES_REACHED, and external ids that are Shopify's numbers held as strings |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
 
 ### Payroll, people and hiring
@@ -562,7 +562,7 @@ transfers alone, and say so in the header.
 | Render | Services, deploys, and the gap between build finished and live |
 | Fly.io | The Machines API and the older platform API are different shapes for the same account |
 | Heroku | The API still wants `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
-| Hetzner Cloud | Every mutation answers with an action to poll rather than with the thing you changed |
+| ~~Hetzner Cloud~~ | Shipped, and the row was exactly right. Powering off a server answers 201 with a job: status running, progress 0, finished null, and the machine still on. Every mutation in the API is that shape, so nothing that changes anything answers with the thing it changed. An action can fail long after its 201, its reason is an object rather than a sentence, progress reaches 100 while still running, a server has nine statuses of which eight are not running, and `locked` is a separate question from `status` whose refusal is a 423 |
 
 ### Observability and flags
 
