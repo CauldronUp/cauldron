@@ -1,0 +1,721 @@
+# Qdrant Recipe for Cauldron
+#
+# status is a string when it works and an object when it does not.
+#
+# Every successful response carries "status": "ok". Every failure carries
+# "status": {"error": "..."}. Same field, same API, two different JSON types,
+# and the type is the thing that tells you which one you got.
+#
+# In a language with types that is not a subtlety, it is a deserialisation
+# failure on one of the two paths, and which one depends on which you wrote
+# first. Declare status as a string and every error fails to parse, so the
+# error message is replaced by a parse error about the error message. Declare
+# it as an object and every success fails instead. In a language without
+# types it is quieter and worse: response.status.error is undefined on
+# success, which is falsy, which reads exactly like no error.
+#
+# Six more the Recipe pins:
+#
+#   1. result is nested twice. A query answers {"result": {"points": [...]}}
+#      and a collection listing answers {"result": {"collections": [...]}},
+#      so the payload is two levels down and the level names differ per
+#      endpoint. Reading result as the array gets an object.
+#   2. A collection listing hands back names and nothing else. Not the
+#      status, not the vector size, not the distance function. Whether any
+#      of them is healthy takes one more request each, and the listing looks
+#      complete enough that nobody makes them.
+#   3. A write answers acknowledged, not completed. wait is false by
+#      default, so the response means the operation reached the write-ahead
+#      log rather than that anything is searchable. Upsert then query is the
+#      first thing anybody writes and it is a race.
+#   4. Two counts disagree on purpose. points_count is how many points exist
+#      and indexed_vectors_count is how many are in the index, both
+#      approximate, and the gap between them is precisely the set of points
+#      you can count and cannot find.
+#   5. Green is not the only healthy status. green, yellow, grey and red,
+#      where yellow means optimisation is running and grey means
+#      optimisation is possible and has not been triggered. Code that waits
+#      for green before querying waits on two collections that were fine.
+#   6. optimizer_status does the same trick as status, one level down. It is
+#      the string "ok" or an object with an error in it, on an object whose
+#      own status field is a different word from a different enum.
+#
+# And the score is a number whose direction is not in the response. Cosine
+# and Dot sort high-is-near; Euclid and Manhattan are distances and sort
+# low-is-near. Which one applies is on the collection's config, fetched
+# separately, so a threshold like score > 0.8 is a similarity floor on one
+# collection and a nonsense filter on the next. The Recipe carries two
+# collections that differ in exactly that.
+#
+# Known fidelity gaps, stated rather than hidden. These are large:
+#
+#   - No vector arithmetic happens. Cauldron does not embed, does not
+#     measure distance and does not rank. A query returns the fixture's
+#     points in the fixture's order with the fixture's scores, whatever
+#     vector was asked for. This reproduces the envelope, the field names,
+#     the types and the ordering a fixture encodes. It does not reproduce
+#     search.
+#   - Filters are not applied. A Qdrant filter is a JSON object in the
+#     request body, and the reason to care about it is that filtering
+#     changes which vectors the index even visits, so a filtered query is
+#     not a subset of an unfiltered one and full_scan_threshold decides
+#     which algorithm ran. None of that is modelled and none of it could be
+#     without doing the search. The header says so because a Recipe that
+#     quietly returned everything would be helpful in exactly the direction
+#     that hides it.
+#   - acknowledged is answered and then the point is immediately readable,
+#     which is the one place this Recipe is more forgiving than Qdrant. The
+#     word is right and the timing is not.
+#   - Point identifiers here are unsigned integers. Qdrant also accepts
+#     UUIDs and accepts nothing else, and that second half is modelled as an
+#     armable failure rather than as behaviour.
+#   - Named vectors, sparse vectors, quantisation, sharding, snapshots,
+#     aliases, payload indexes, scroll, count, grouping and the batch
+#     endpoints are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: qdrant
+capability: search
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.qdrant.tech/api-reference
+
+auth:
+  scheme: header
+  header: api-key
+  keys:
+    - cauldron-qdrant-api-key
+
+responses:
+  # The two constants on every successful response. status is the one that
+  # changes type when something goes wrong.
+  success:
+    fields:
+      status: ok
+      time: 0.002
+  list:
+    style: wrapped
+  resource:
+    style: wrapped
+    key: result
+  # Nested under status, which is a string two lines above this one.
+  error:
+    style: nested
+    key: status
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+    fields:
+      time: 0.002
+      result: null
+
+resources:
+  # A collection, addressed by the name you gave it. There is no id: the
+  # name is the identifier, which means renaming is not a thing that happens.
+  collection:
+    collection: result.collections
+    id:
+      style: opaque
+      length: 12
+      field: name
+    fields:
+      # green, yellow, grey or red. Two of the four are fine.
+      status:
+        type: string
+        default: green
+      # "ok" when it is, and an object with an error in it when it is not.
+      # Same trick as the envelope's status, one level down, on an object
+      # that already has a status meaning something else.
+      optimizer_status:
+        type: string
+      optimizer_error:
+        type: string
+        in: optimizer_status
+        as: error
+      # Approximate. Both of them.
+      points_count:
+        type: integer
+      # The ones that are searchable. The difference between this and the
+      # count above is the set of points you can count and cannot find.
+      indexed_vectors_count:
+        type: integer
+      segments_count:
+        type: integer
+      # Cosine, Euclid, Dot or Manhattan. This decides whether a bigger
+      # score is a better match or a worse one, and it is here rather than
+      # anywhere near a result.
+      distance:
+        type: string
+        in: config.params.vectors
+        as: distance
+      size:
+        type: integer
+        in: config.params.vectors
+        as: size
+
+  # A point. The id is an unsigned integer here; Qdrant also takes a UUID
+  # and takes nothing else.
+  point:
+    collection: result.points
+    id:
+      style: numeric
+      type: number
+    fields:
+      # Which collection this point is in. Points are addressed under a
+      # collection and their identifiers are only unique within one, so 1 in
+      # articles and 1 in images are different points.
+      collection_name:
+        type: string
+      # Bumped by every write to the point, and the thing to compare when
+      # two writers are involved.
+      version:
+        type: integer
+      # Distance to the query vector. Whether bigger is better is on the
+      # collection.
+      score:
+        type: number
+      city:
+        type: string
+        in: payload
+        as: city
+      category:
+        type: string
+        in: payload
+        as: category
+      year:
+        type: integer
+        in: payload
+        as: year
+
+  # What a write answers with. Not the point, and not anything that could be
+  # mistaken for one.
+  update_result:
+    collection: result.updates
+    id:
+      style: numeric
+      type: number
+      field: operation_id
+    fields:
+      # acknowledged, completed or wait_timeout. acknowledged is the
+      # default, and it means the write is in the log rather than in the
+      # index.
+      status:
+        type: string
+        default: acknowledged
+      collection_name:
+        type: string
+
+routes:
+  # Names and nothing else. Whether any of these is healthy, what shape its
+  # vectors are and which distance function decides its scores all take one
+  # more request each.
+  - method: GET
+    path: /collections
+    resource: collection
+    operation: list
+    returns:
+      - id
+
+  - method: GET
+    path: /collections/{id}
+    resource: collection
+    operation: get
+
+  # A query is a POST because the vector goes in the body, and it answers
+  # with a list two levels down.
+  - method: POST
+    path: /collections/{collection_name}/points/query
+    resource: point
+    operation: list
+    scope: [collection_name]
+    # The collection is in the path and is not in the answer. It is here at
+    # all because a point id is only unique within one collection, so the
+    # record has to carry it to be found; Qdrant does not put it on the wire
+    # and neither should this.
+    returns:
+      - id
+      - version
+      - score
+      - city
+      - category
+      - year
+
+  - method: GET
+    path: /collections/{collection_name}/points/{id}
+    resource: point
+    operation: get
+    scope: [collection_name]
+    # A stored point has neither a score nor a version. Score belongs to a
+    # query, and version is on a query result and not on the record this
+    # answers with, which is the odd one: the number you would compare to
+    # detect a concurrent write is on the results you searched for and not
+    # on the point you asked for by name.
+    returns:
+      - id
+      - city
+      - category
+      - year
+
+  # Upsert. Answers acknowledged unless wait=true was asked for, and
+  # acknowledged means the write reached the log.
+  - method: PUT
+    path: /collections/{collection_name}/points
+    resource: update_result
+    operation: create
+    scope: [collection_name]
+    returns:
+      - id
+      - status
+
+errors:
+  # Qdrant's own words. A client keying points by anything it already has --
+  # an email, a slug, an object id from somewhere else -- meets this on the
+  # first write and has to hash its keys to get past it.
+  bad_point_id:
+    status: 400
+    message: "value some-string is not a valid point ID, valid values are either an unsigned integer or a UUID"
+
+  collection_missing:
+    status: 404
+    message: "Not found: Collection `nowhere` doesn't exist!"
+
+  # The vector was the wrong length. The collection knows its size and the
+  # request did not.
+  wrong_vector_size:
+    status: 400
+    message: "Wrong input: Vector dimension error: expected dim: 4, got 3"
+
+  authentication_error:
+    status: 401
+    message: "Must provide an API key or an Authorization bearer token"
+
+fixtures:
+  empty: {}
+
+  two-collections:
+    collection:
+      # Cosine, so a bigger score is a nearer match.
+      - id: articles
+        status: green
+        optimizer_status: ok
+        points_count: 4820
+        indexed_vectors_count: 4820
+        segments_count: 6
+        distance: Cosine
+        size: 4
+
+      # Euclid, so a bigger score is a worse match. Nothing on a result says
+      # so, and the same threshold applied to both collections means
+      # opposite things.
+      - id: images
+        status: yellow
+        optimizer_status: ok
+        # 900 points exist and 512 of them are searchable. The 388 in
+        # between can be counted and cannot be found.
+        points_count: 900
+        indexed_vectors_count: 512
+        segments_count: 2
+        distance: Euclid
+        size: 4
+
+      # Grey: optimisation is possible and has not been triggered. Not a
+      # problem, and not green either, so anything waiting for green waits
+      # forever on a collection that is fine.
+      - id: drafts
+        status: grey
+        optimizer_status: ok
+        points_count: 12
+        indexed_vectors_count: 12
+        segments_count: 1
+        distance: Dot
+        size: 4
+
+      # Red, and the reason is in optimizer_status, which is an object here
+      # rather than the string every other collection has.
+      - id: archive
+        status: red
+        optimizer_error: "Service internal error: No space left on device"
+        points_count: 154000
+        indexed_vectors_count: 0
+        segments_count: 3
+        distance: Manhattan
+        size: 4
+
+    point:
+      - id: "1"
+        collection_name: articles
+        version: 3
+        score: 0.92
+        city: Lagos
+        category: news
+        year: 2026
+
+      - id: "2"
+        collection_name: articles
+        version: 1
+        score: 0.87
+        city: Toronto
+        category: news
+        year: 2025
+
+      # Same score as the one above it. Ties are ordered by whatever the
+      # index felt like, which is stable until a segment is optimised.
+      - id: "7"
+        collection_name: articles
+        version: 9
+        score: 0.87
+        city: Lisbon
+        category: opinion
+        year: 2026
+
+    update_result:
+      - id: "217"
+        collection_name: articles
+        status: acknowledged
+
+# Every case below is derived from the OpenAPI description Qdrant publishes
+# for this API and from its own documentation. None has been run against a
+# real cluster. The verify report says so.
+conformance:
+  - name: status is the string ok when it works
+    source: https://api.qdrant.tech/api-reference/collections/get-collections
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        status: ok
+        result.collections[0].name: articles
+
+  - name: and an object when it does not
+    # Same field, same API, a different JSON type. A struct declaring status
+    # as a string fails to parse this, so the error about the error replaces
+    # the error. A language without types is quieter and worse: reading
+    # status.error on the success above gets undefined, which is falsy,
+    # which reads exactly like no error.
+    source: https://api.qdrant.tech/api-reference/collections/get-collections
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections
+      headers:
+        api-key: wrong
+    expect:
+      status: 401
+      body:
+        status.error: "Must provide an API key or an Authorization bearer token"
+        result: null
+
+  - name: result is nested twice
+    # The array is at result.collections, not at result. Reading result as a
+    # list gets an object with one key in it.
+    source: https://api.qdrant.tech/api-reference/collections/get-collections
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.collections[3].name: archive
+      absent:
+        - result[0]
+        - collections
+        - result.collections[4]
+
+  - name: a collection listing hands back names and nothing else
+    # Not the status, not the vector size, not the distance function. The
+    # listing looks complete enough that nobody makes the four further
+    # requests it takes to know any of that.
+    source: https://api.qdrant.tech/api-reference/collections/get-collections
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.collections[1].name: images
+      absent:
+        - result.collections[1].status
+        - result.collections[1].points_count
+        - result.collections[1].config
+
+  - name: status means two things in one response
+    # The envelope says ok and the collection says yellow, and they are the
+    # same word at two depths from two different enums. Reading status off
+    # the top of this response tells you the request worked and nothing at
+    # all about the collection.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/images
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        status: ok
+        result.status: yellow
+
+  - name: green is not the only healthy status
+    # grey means optimisation is possible and has not been triggered. Code
+    # that waits for green before querying waits on a collection that was
+    # ready the whole time.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/drafts
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.status: grey
+
+  - name: two counts disagree on purpose
+    # 900 points exist and 512 are indexed. The 388 in between are the ones
+    # a count finds and a query does not.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/images
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.points_count: 900
+        result.indexed_vectors_count: 512
+
+  - name: optimizer_status is a string here
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/articles
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.status: green
+        result.optimizer_status: ok
+
+  - name: and an object there, on the same field of the same resource
+    # The envelope's trick again, one level down, on an object that already
+    # has a status field meaning something else from a different enum. Three
+    # fields called status or status-shaped in one response and no two of
+    # them are the same type or the same vocabulary.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/archive
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.status: red
+        result.optimizer_status.error: "Service internal error: No space left on device"
+
+  - name: the distance function is on the collection
+    # Cosine, so a bigger score is a nearer match here.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/articles
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.config.params.vectors.distance: Cosine
+        result.config.params.vectors.size: 4
+
+  - name: and the next collection sorts the other way
+    # Euclid is a distance, so a bigger score is a worse match. Same field,
+    # same type, opposite meaning, and the only thing that says which is a
+    # separate request to a separate endpoint.
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/images
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.config.params.vectors.distance: Euclid
+
+  - name: a score carries no direction with it
+    # There is nothing in a result that says whether 0.92 is close or far.
+    # A threshold like score > 0.8 is a similarity floor on one collection
+    # and a nonsense filter on the next, and both compile.
+    source: https://api.qdrant.tech/api-reference/points/query-points
+    fixture: two-collections
+    request:
+      method: POST
+      path: /collections/articles/points/query
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        limit: 3
+    expect:
+      status: 200
+      body:
+        result.points[0].score: 0.92
+      absent:
+        - result.points[0].distance
+        - result.points[0].metric
+        - result.points[0].collection_name
+
+  - name: ties keep whatever order the index gave them
+    # Two points with the same score, ordered by nothing in the response.
+    # Stable until a segment is optimised, which is not an event a client
+    # hears about.
+    source: https://api.qdrant.tech/api-reference/points/query-points
+    fixture: two-collections
+    request:
+      method: POST
+      path: /collections/articles/points/query
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        limit: 3
+    expect:
+      status: 200
+      body:
+        result.points[1].score: 0.87
+        result.points[1].id: 2
+        result.points[2].score: 0.87
+        result.points[2].id: 7
+
+  - name: a write answers acknowledged
+    # wait is false by default, so this means the operation reached the
+    # write-ahead log. Not that it is searchable. Upsert then query is the
+    # first thing anybody writes and it is a race.
+    source: https://api.qdrant.tech/api-reference/points/upsert-points
+    fixture: two-collections
+    request:
+      method: PUT
+      path: /collections/articles/points
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        points: []
+    expect:
+      status: 200
+      body:
+        status: ok
+        result.status: acknowledged
+      absent:
+        - result.collection_name
+
+  - name: the version is on the result and not on the point
+    # A query result carries version and a point fetched by id does not, so
+    # the number you would compare to detect a concurrent write is on the
+    # records you searched for rather than on the one you asked for by name.
+    # Reading it off a fetched point gets undefined, which compares equal to
+    # undefined, which is every write winning.
+    source: https://api.qdrant.tech/api-reference/points/query-points
+    fixture: two-collections
+    request:
+      method: POST
+      path: /collections/articles/points/query
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        limit: 3
+    expect:
+      status: 200
+      body:
+        result.points[2].version: 9
+
+  - name: a stored point has no score
+    # Score is a property of a query rather than of a point, so fetching one
+    # by id gets a record with nothing to rank.
+    source: https://api.qdrant.tech/api-reference/points/get-point
+    fixture: two-collections
+    request:
+      method: GET
+      path: /collections/articles/points/2
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 200
+      body:
+        result.id: 2
+        result.payload.city: Toronto
+      absent:
+        - result.score
+        - result.version
+        - result.city
+        - result.collection_name
+
+  - name: a point id must be an integer or a UUID
+    # Not an email, not a slug, not an object id from somewhere else. A
+    # client keyed on any of those meets this on its first write and has to
+    # hash its keys to get past it.
+    source: https://api.qdrant.tech/api-reference/points/upsert-points
+    fixture: two-collections
+    arm: bad_point_id
+    request:
+      method: PUT
+      path: /collections/articles/points
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        points: []
+    expect:
+      status: 400
+      body:
+        status.error: "value some-string is not a valid point ID, valid values are either an unsigned integer or a UUID"
+
+  - name: the vector length is the collection's business
+    source: https://api.qdrant.tech/api-reference/points/upsert-points
+    fixture: two-collections
+    arm: wrong_vector_size
+    request:
+      method: PUT
+      path: /collections/articles/points
+      headers:
+        api-key: cauldron-qdrant-api-key
+      json:
+        points: []
+    expect:
+      status: 400
+      body:
+        status.error: "Wrong input: Vector dimension error: expected dim: 4, got 3"
+
+  - name: a missing collection says which one
+    source: https://api.qdrant.tech/api-reference/collections/get-collection
+    fixture: two-collections
+    arm: collection_missing
+    request:
+      method: GET
+      path: /collections/articles
+      headers:
+        api-key: cauldron-qdrant-api-key
+    expect:
+      status: 404
+      body:
+        status.error: "Not found: Collection `nowhere` doesn't exist!"
+        result: null

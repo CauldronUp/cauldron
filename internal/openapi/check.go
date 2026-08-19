@@ -267,6 +267,11 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 		if schema == nil {
 			return nil
 		}
+	} else {
+		schema = resourceSchema(doc, r, schema, route.Resource)
+		if schema == nil {
+			return nil
+		}
 	}
 
 	known := map[string]bool{}
@@ -282,7 +287,31 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 
 	var findings []Finding
 
-	for _, field := range sortedFieldNames(spec.Fields) {
+	// A route that declares returns answers with less than the record holds,
+	// and comparing the whole record against that route's schema reports the
+	// difference the declaration exists to describe. Qdrant's collection
+	// listing sends a name and nothing else, which is the point of the
+	// listing and would otherwise be eight findings.
+	emitted := sortedFieldNames(spec.Fields)
+
+	if len(route.Returns) > 0 {
+		named := map[string]bool{}
+		for _, name := range route.Returns {
+			named[name] = true
+		}
+
+		kept := emitted[:0:0]
+
+		for _, field := range emitted {
+			if named[field] {
+				kept = append(kept, field)
+			}
+		}
+
+		emitted = kept
+	}
+
+	for _, field := range emitted {
 		f := spec.Fields[field]
 
 		// Only the outermost name can be compared without walking the schema
@@ -312,6 +341,9 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 // description declares anywhere.
 func checkErrors(r *recipe.Recipe, doc *Document) []Finding {
 	declared := map[int]bool{}
+	// Ranges, keyed by their hundreds block, for the descriptions that decline
+	// to be specific about failures.
+	ranges := map[int]bool{}
 
 	operations, documented := 0, 0
 
@@ -327,6 +359,19 @@ func checkErrors(r *recipe.Recipe, doc *Document) []Finding {
 			for _, code := range failures {
 				if n, err := strconv.Atoi(code); err == nil {
 					declared[n] = true
+
+					continue
+				}
+
+				// A description may decline to be specific and declare a
+				// range instead: 4XX covers every client error, which is what
+				// Qdrant writes on every operation it has. Reading only the
+				// numeric codes beside it left 503 as the entire set of known
+				// failures, so a 400, a 401 and a 404 were each reported as
+				// undeclared against a description that had already said all
+				// three were expected.
+				if block, ok := statusBlock(code); ok {
+					ranges[block] = true
 				}
 			}
 		}
@@ -341,7 +386,7 @@ func checkErrors(r *recipe.Recipe, doc *Document) []Finding {
 	// Half is a judgement rather than a fact, and it is here so the check
 	// stays silent when it has nothing to say rather than filling a report
 	// nobody will read twice.
-	if len(declared) == 0 || operations == 0 || documented*2 < operations {
+	if (len(declared) == 0 && len(ranges) == 0) || operations == 0 || documented*2 < operations {
 		return nil
 	}
 
@@ -349,7 +394,7 @@ func checkErrors(r *recipe.Recipe, doc *Document) []Finding {
 
 	for _, name := range sortedErrorNames(r.Errors) {
 		status := r.Errors[name].Status
-		if status == 0 || declared[status] {
+		if status == 0 || declared[status] || ranges[status/100] {
 			continue
 		}
 
@@ -374,21 +419,7 @@ func collectionSchema(doc *Document, envelope *Schema, keys ...string) *Schema {
 			continue
 		}
 
-		// A dotted key nests, the same way the runtime nests it.
-		current := envelope
-
-		for _, segment := range strings.Split(key, ".") {
-			current = doc.Resolve(current)
-			if current == nil || current.Properties == nil {
-				current = nil
-
-				break
-			}
-
-			current = current.Properties[segment]
-		}
-
-		if resolved := doc.Resolve(current); resolved != nil {
+		if resolved := descend(doc, envelope, key); resolved != nil {
 			if resolved.Type == "array" && resolved.Items != nil {
 				return doc.Resolve(resolved.Items)
 			}
@@ -407,6 +438,85 @@ func collectionSchema(doc *Document, envelope *Schema, keys ...string) *Schema {
 	}
 
 	return nil
+}
+
+// statusBlock reads a range like 4XX and answers the hundreds it covers.
+//
+// "default" is deliberately not a range. It means every status the operation
+// did not name, which is a description saying it has stopped enumerating
+// rather than one saying a particular failure is expected, and treating it as
+// coverage would silence this check on every description that writes it.
+func statusBlock(code string) (int, bool) {
+	if len(code) != 3 {
+		return 0, false
+	}
+
+	if !strings.EqualFold(code[1:], "XX") {
+		return 0, false
+	}
+
+	n, err := strconv.Atoi(code[:1])
+	if err != nil || n < 1 || n > 5 {
+		return 0, false
+	}
+
+	return n, true
+}
+
+// descend walks a dotted key through a schema's properties, resolving
+// references as it goes, the same way the runtime nests a dotted name.
+func descend(doc *Document, schema *Schema, key string) *Schema {
+	current := schema
+
+	for _, segment := range strings.Split(key, ".") {
+		current = doc.Resolve(current)
+		if current == nil || current.Properties == nil {
+			return nil
+		}
+
+		current = current.Properties[segment]
+	}
+
+	return doc.Resolve(current)
+}
+
+// resourceSchema descends a response envelope to the object one resource
+// actually arrives in.
+//
+// Only listings were unwrapped, so a Recipe whose single-resource responses
+// are wrapped had every field of every resource reported as undeclared: the
+// comparison ran against the envelope, whose properties are things like
+// result, status and time, and no resource has fields called those. Cloudflare
+// wraps under result, Xero wraps under a plural and puts one object inside an
+// array, and Qdrant wraps under result and then again under a name that
+// differs per endpoint.
+//
+// A report that cries wolf is one nobody reads the second time, which is the
+// same reason deletes are skipped.
+func resourceSchema(doc *Document, r *recipe.Recipe, envelope *Schema, name string) *Schema {
+	if r.Responses.Resource.Style != "wrapped" {
+		return envelope
+	}
+
+	key := r.Responses.Resource.Key
+	if key == "" {
+		key = name
+	}
+
+	found := descend(doc, envelope, key)
+	if found == nil {
+		// The description does not nest where the Recipe says it does. That
+		// is worth reporting one day and is not this function's to report,
+		// and comparing against the envelope instead would turn it into one
+		// finding per field.
+		return envelope
+	}
+
+	if found.Type == "array" && found.Items != nil {
+		return doc.Resolve(found.Items)
+	}
+
+	return found
 }
 
 // pathIndex matches a Recipe's paths against a description's templates.
