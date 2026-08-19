@@ -491,6 +491,18 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// PageField and LimitField name properties echoing the page number and
+	// the page size the request asked for.
+	//
+	// A constant cannot do this job, and putting one there is worse than
+	// leaving the field out. Algolia answers every search with the page it
+	// served and the page size it used, and the Recipe declared them as the
+	// constants 0 and 20 -- so a client that asked for page 3 was told it was
+	// looking at page 0, by a field whose entire purpose is to say where you
+	// are. Paging code that trusts the response rather than its own counter
+	// reads that as "still on the first page" forever.
+	PageField  string `yaml:"page_field"`
+	LimitField string `yaml:"limit_field"`
 	// CountAsString sends the counts as strings. Docusign does, and code that
 	// compares totalSetSize to a number never matches, so emitting a number
 	// here would quietly fix a bug the caller has to handle.
@@ -934,6 +946,17 @@ type Pagination struct {
 	// from, for the providers that call it neither cursor nor starting_after.
 	// Google calls it pageToken and Shopify calls it page_info.
 	CursorParam string `yaml:"cursor_param"`
+	// FirstPage is the number the provider gives its first page, for the page
+	// style. Empty means one.
+	//
+	// Providers disagree, and the disagreement is invisible: Algolia,
+	// Elasticsearch and everything shaped like them count from nought, so
+	// page 1 is the second page. Read as though it were the first, a client
+	// asking for page 1 is handed page 0 again -- the same record twice, no
+	// error, and a loop that either never terminates or quietly returns
+	// duplicates. That is the off-by-one-page bug positionOf already warned
+	// about, in the direction nobody had checked.
+	FirstPage *int `yaml:"first_page"`
 	// In is where the parameters travel: "query" (the default) or "body".
 	//
 	// A listing reached by POST usually carries its paging in the JSON body,
@@ -2337,4 +2360,14 @@ func IsPath(name string) bool {
 	}
 
 	return true
+}
+
+// FirstPageNumber is the number this provider gives its first page. One unless
+// the Recipe says otherwise.
+func (p Pagination) FirstPageNumber() int {
+	if p.FirstPage == nil {
+		return 1
+	}
+
+	return *p.FirstPage
 }

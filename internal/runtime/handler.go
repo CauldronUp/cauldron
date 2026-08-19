@@ -446,6 +446,19 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 
 	body := s.listBody(page, matched.spec.Resource, r.URL.Path)
 
+	// What this request actually served, for the providers that report it.
+	// These cannot be constants: a field whose whole purpose is to say where
+	// you are is worse than absent when it always says the same thing.
+	if object, ok := body.(map[string]any); ok {
+		if name := s.recipe.Responses.List.LimitField; name != "" {
+			setPath(object, name, limit)
+		}
+
+		if name := s.recipe.Responses.List.PageField; name != "" {
+			setPath(object, name, servedPage(from, matched.spec.Pagination))
+		}
+	}
+
 	// Other collections travelling in the same body. One endpoint, several
 	// arrays: GoCardless answers a request for transactions with booked and
 	// pending together, and the same purchase is in one and then the other.
@@ -551,14 +564,17 @@ func positionOf(from paging, spec recipe.Pagination, limit int) int {
 		return n
 	}
 
-	// Page one and page nought are both the first page. Providers disagree
-	// about whether nought is an error, and answering with the first page is
-	// the reading that cannot silently skip records.
-	if n <= 1 {
+	first := spec.FirstPageNumber()
+
+	// Anything at or before the provider's own first page is the first page.
+	// Providers disagree about whether a number below it is an error, and
+	// answering with the first page is the reading that cannot silently skip
+	// records.
+	if n <= first {
 		return 0
 	}
 
-	return (n - 1) * limit
+	return (n - first) * limit
 }
 
 // nextPosition renders the position of the page after this one.
@@ -572,7 +588,8 @@ func nextPosition(spec recipe.Pagination, offset, limit int) string {
 			limit = 1
 		}
 
-		return strconv.Itoa(offset/limit + 2)
+		// The page after this one, counted from wherever the provider starts.
+		return strconv.Itoa(offset/limit + spec.FirstPageNumber() + 1)
 	}
 
 	return strconv.Itoa(offset + limit)
@@ -1740,4 +1757,27 @@ func numberOrString(value string) any {
 	}
 
 	return value
+}
+
+// servedPage is the page number this request asked for, counted the way the
+// provider counts.
+func servedPage(from paging, spec recipe.Pagination) int {
+	first := spec.FirstPageNumber()
+
+	name := spec.CursorParam
+	if name == "" {
+		name = spec.Style
+	}
+
+	raw := from.get(name)
+	if raw == "" {
+		return first
+	}
+
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < first {
+		return first
+	}
+
+	return n
 }
