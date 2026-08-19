@@ -1,0 +1,645 @@
+# Heroku Platform API Recipe for Cauldron
+#
+# A successful list is a 206.
+#
+# Heroku pages with the Range header rather than with query parameters, and
+# when there is more to fetch it answers 206 Partial Content with a Next-Range
+# header telling you where to resume. A 200 on a list means you got
+# everything.
+#
+# So the two obvious ways to write a client are both wrong in opposite
+# directions. `if (response.status === 200)` treats every page but the last as
+# a failure. `if (response.ok)` accepts them and never reads Next-Range, so it
+# processes the first two hundred apps and reports that as all of them --
+# quietly, correctly as far as it can tell, and for as long as the account has
+# fewer than two hundred of anything.
+#
+# And a paginator that appends ?page=2 gets page one, forever, with a 206 on
+# every request to say so.
+#
+# Four more the Recipe pins:
+#
+#   1. The Accept header is not optional and not a content negotiation. It
+#      carries the API version, and without it the answer is 406 with a
+#      message quoting the exact header you needed. Every client library
+#      sends it and every hand-rolled curl forgets it once.
+#   2. Errors are keyed by id, not by code. {"id": "not_found", "message":
+#      ...}, so code switching on error.code finds undefined on every failure
+#      Heroku has.
+#   3. url is on an error only when there is one to give. It appears beside
+#      rate_limit and does not appear beside not_found, so a client that
+#      renders it unconditionally renders undefined for most failures.
+#   4. A formation with quantity zero is a process type that exists and is
+#      not running. Scaling to nought does not remove it, so a client
+#      counting formations counts things that consume nothing, and one
+#      checking whether a type exists gets the wrong answer about whether it
+#      is up.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Every list here answers 206, and Heroku answers 200 on a final page.
+#     The transition is not modelled. Answering 200 throughout would be the
+#     more comfortable lie: a client would never meet the status this Recipe
+#     exists to make it handle, and would meet it in production instead.
+#   - Range is not honoured. The header is read by nothing here, so the page
+#     you get is the fixture, and Next-Range is a constant rather than a
+#     cursor that moves.
+#   - The required Accept header is checked for presence and not for its
+#     version. Heroku rejects `version=2` as firmly as it rejects nothing at
+#     all, and this format can say a header is required rather than what it
+#     must contain.
+#   - Nothing is built, released, scaled or billed. Builds, slugs, config
+#     vars, add-ons, domains, collaborators, pipelines and the dyno size
+#     catalogue are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: heroku
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: "3"
+  docs: https://devcenter.heroku.com/articles/platform-api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - HRKU-cauldron00000000000000000000000000
+
+# Not content negotiation: this is where the API version lives, and leaving
+# it off is a 406 rather than a default.
+required_headers:
+  Accept:
+    error: not_acceptable
+
+responses:
+  list:
+    style: bare
+  # Flat, and the machine-readable part is called id. Anything switching on
+  # error.code finds undefined on every failure this API has.
+  error:
+    style: flat
+    code_field: id
+    message_field: message
+    type_field: "-"
+
+resources:
+  app:
+    collection: apps
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+      web_url:
+        type: string
+      # When a release last went out. Not the same as updated_at, which moves
+      # for config changes that never shipped anything.
+      released_at:
+        type: datetime
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      maintenance:
+        type: boolean
+        default: false
+      region:
+        type: string
+        in: region
+        as: name
+      stack:
+        type: string
+        in: stack
+        as: name
+      owner_email:
+        type: string
+        in: owner
+        as: email
+
+  release:
+    collection: releases
+    id:
+      style: uuid
+    fields:
+      # A number that counts up per app, and the thing humans mean by "which
+      # release". Not the identifier, which is a uuid.
+      version:
+        type: integer
+      # pending, succeeded or failed. A pending release exists while the
+      # build runs, so a listing taken mid-deploy contains one that has
+      # shipped nothing.
+      status:
+        type: string
+        default: succeeded
+      # Whether this is what is running now. A failed release is still in
+      # the listing and is not current.
+      current:
+        type: boolean
+        default: false
+      description:
+        type: string
+      created_at:
+        type: datetime
+      app_id:
+        type: string
+        in: app
+        as: id
+      app_name:
+        type: string
+        in: app
+        as: name
+
+  dyno:
+    collection: dynos
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+      type:
+        type: string
+        default: web
+      # starting, up, crashed, down or idle. Two of those are ordinary and
+      # three are not, and "not up" covers a dyno that is booting normally.
+      state:
+        type: string
+        default: up
+      size:
+        type: string
+        default: Standard-1X
+      command:
+        type: string
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      app_id:
+        type: string
+        in: app
+        as: id
+      app_name:
+        type: string
+        in: app
+        as: name
+
+  formation:
+    collection: formations
+    id:
+      style: uuid
+    fields:
+      type:
+        type: string
+      # Zero is a process type that exists and is not running. Scaling to
+      # nought does not remove it.
+      quantity:
+        type: integer
+        default: 1
+      size:
+        type: string
+        default: Standard-1X
+      command:
+        type: string
+      updated_at:
+        type: datetime
+      app_id:
+        type: string
+        in: app
+        as: id
+      app_name:
+        type: string
+        in: app
+        as: name
+
+routes:
+  # 206, with somewhere to resume from. A 200 here would mean there is
+  # nothing more, and a client that only handles 200 never gets this far.
+  - method: GET
+    path: /apps
+    resource: app
+    operation: list
+    status: 206
+    headers:
+      Accept-Ranges: "id, name"
+      Content-Range: "id 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41..3a71f2c9-8d54-4e0b-9f1a-2c7d5e8b4906; max=200"
+      Next-Range: "id 3a71f2c9-8d54-4e0b-9f1a-2c7d5e8b4906..; max=200"
+
+  - method: GET
+    path: /apps/{id}
+    resource: app
+    operation: get
+
+  - method: GET
+    path: /apps/{app_name}/releases
+    resource: release
+    operation: list
+    scope: [app_name]
+    status: 206
+    headers:
+      Accept-Ranges: "version"
+      Next-Range: "version 4..; order=desc,max=200"
+
+  - method: GET
+    path: /apps/{app_name}/dynos
+    resource: dyno
+    operation: list
+    scope: [app_name]
+    status: 206
+    headers:
+      Accept-Ranges: "id, name"
+
+  - method: GET
+    path: /apps/{app_name}/formation
+    resource: formation
+    operation: list
+    scope: [app_name]
+    status: 206
+    headers:
+      Accept-Ranges: "id, type"
+
+errors:
+  # The header is the version. Without it there is no default, and the
+  # message names exactly what was missing, which is more than most APIs do
+  # and still catches everybody once.
+  not_acceptable:
+    status: 406
+    code: not_acceptable
+    message: "request failed, set `Accept: application/vnd.heroku+json; version=3` header and try again"
+
+  # A token bucket rather than a window: 4500 tokens, refilled at about
+  # seventy-five a minute, so "wait a minute" buys you seventy-five requests
+  # rather than a fresh allowance.
+  rate_limit:
+    status: 429
+    code: rate_limit
+    message: "Your account reached the API rate limit\nPlease wait a few minutes before making new requests"
+    headers:
+      RateLimit-Remaining: "0"
+    # Present here and absent on most others, so a client rendering it
+    # unconditionally renders undefined for the majority of failures.
+    fields:
+      url: https://devcenter.heroku.com/articles/platform-api-reference#rate-limits
+
+  not_found:
+    status: 404
+    code: not_found
+    message: "Couldn't find that app."
+
+  unauthorized:
+    status: 401
+    code: unauthorized
+    message: "Invalid credentials provided."
+
+  forbidden:
+    status: 403
+    code: forbidden
+    message: "You do not have access to the app cauldron-api."
+
+fixtures:
+  empty: {}
+
+  one-account:
+    app:
+      - id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        name: cauldron-api
+        web_url: https://cauldron-api-8f21.herokuapp.com/
+        released_at: "2026-08-18T14:22:07Z"
+        created_at: "2025-04-02T09:15:44Z"
+        # Later than released_at: a config change that shipped nothing still
+        # moves this, so treating it as "when did we last deploy" is wrong
+        # in the direction that looks fine.
+        updated_at: "2026-08-19T07:41:12Z"
+        maintenance: false
+        region: eu
+        stack: heroku-24
+        owner_email: ada@example.com
+
+      # In maintenance. Still listed, still billed, and serving a holding
+      # page rather than the application.
+      - id: 3a71f2c9-8d54-4e0b-9f1a-2c7d5e8b4906
+        name: cauldron-worker
+        web_url: https://cauldron-worker-31b7.herokuapp.com/
+        released_at: "2026-07-30T11:03:55Z"
+        created_at: "2025-09-11T16:40:02Z"
+        updated_at: "2026-08-01T08:12:39Z"
+        maintenance: true
+        region: eu
+        stack: heroku-24
+        owner_email: ada@example.com
+
+    release:
+      # Current, and the highest version.
+      - id: 7c1b9e04-5f38-4a26-b0d3-91e2c4a7d5f8
+        version: 41
+        status: succeeded
+        current: true
+        description: "Deploy 8f21a3c"
+        created_at: "2026-08-18T14:22:07Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+      # Failed, and still in the listing with a version number of its own.
+      # A client taking the highest version as what is running takes this
+      # one, which shipped nothing.
+      - id: 2e8f5a13-c60b-4d97-8a24-f3b1d7e69c05
+        version: 42
+        status: failed
+        current: false
+        description: "Deploy 4b7e2f1"
+        created_at: "2026-08-19T07:41:12Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+      # Pending: the build is running and this release has shipped nothing
+      # either. Neither a success nor a failure.
+      - id: 9d4c2b78-1a05-4e63-bf8e-72a6c1d4093b
+        version: 43
+        status: pending
+        current: false
+        description: "Deploy 1c9d0ba"
+        created_at: "2026-08-19T09:02:31Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+    dyno:
+      - id: 5b3e8c21-9d47-4f06-a1b8-3e7c2f9a06d4
+        name: web.1
+        type: web
+        state: up
+        size: Standard-1X
+        command: "npm start"
+        created_at: "2026-08-18T14:22:41Z"
+        updated_at: "2026-08-18T14:22:58Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+      # Starting. Not up, and not a problem, and code that treats anything
+      # other than up as an outage pages somebody every deploy.
+      - id: 8a6d1f39-4b2c-40e7-95af-c1e83b7d02f6
+        name: web.2
+        type: web
+        state: starting
+        size: Standard-1X
+        command: "npm start"
+        created_at: "2026-08-19T09:03:02Z"
+        updated_at: "2026-08-19T09:03:02Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+      - id: c4f70e82-6a19-4d35-b8c0-2f9e1a7d63b5
+        name: worker.1
+        type: worker
+        state: crashed
+        size: Standard-1X
+        command: "npm run worker"
+        created_at: "2026-08-19T06:11:20Z"
+        updated_at: "2026-08-19T08:47:03Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+    formation:
+      - id: e1a95d47-3c82-4b60-9f17-6d0b2e8c4a93
+        type: web
+        quantity: 2
+        size: Standard-1X
+        command: "npm start"
+        updated_at: "2026-08-19T09:03:02Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+      # Scaled to nothing, and still here. The process type exists, consumes
+      # nothing, and answers "yes" to anything asking whether it is
+      # configured.
+      - id: b7d20c65-8e14-4a39-90f2-5c1a7e3b06d8
+        type: scheduler
+        quantity: 0
+        size: Standard-1X
+        command: "npm run scheduled"
+        updated_at: "2026-08-02T10:15:44Z"
+        app_id: 0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+        app_name: cauldron-api
+
+# Every case below is derived from Heroku's published Platform API reference.
+# None has been run against a real account. The verify report says so.
+conformance:
+  - name: a successful list is a 206
+    # Not 200. There is more to fetch, and the status says so, and the two
+    # obvious ways to write a client are wrong in opposite directions:
+    # comparing to 200 rejects every page but the last, and testing ok
+    # accepts them and never looks for the rest.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#ranges
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      body:
+        "[0].name": cauldron-api
+        "[1].name": cauldron-worker
+
+  - name: and where to resume is a header, not a field
+    # Next-Range is in the response headers. Nothing in the body says there
+    # is more, so a client that only parses JSON has everything it needs to
+    # be wrong.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#ranges
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      headers:
+        Next-Range: "id 3a71f2c9-8d54-4e0b-9f1a-2c7d5e8b4906..; max=200"
+        Accept-Ranges: "id, name"
+      absent:
+        - next
+        - "[0].next_range"
+
+  - name: leaving off the Accept header is a 406 that quotes it back
+    # The version lives in that header and there is no default. The message
+    # names exactly what was missing, which is more than most APIs manage,
+    # and it still catches everybody once.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#clients
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+    expect:
+      status: 406
+      body:
+        id: not_acceptable
+        message: "request failed, set `Accept: application/vnd.heroku+json; version=3` header and try again"
+
+  - name: the machine-readable part of an error is called id
+    # Not code. Anything switching on error.code finds undefined on every
+    # failure this API has.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#errors
+    fixture: one-account
+    arm: not_found
+    request:
+      method: GET
+      path: /apps
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 404
+      body:
+        id: not_found
+        message: "Couldn't find that app."
+      absent:
+        - code
+        - error
+        - url
+
+  - name: and url is there only when there is one to give
+    # Beside rate_limit and not beside not_found, so rendering it
+    # unconditionally renders undefined for most failures.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#rate-limits
+    fixture: one-account
+    arm: rate_limit
+    request:
+      method: GET
+      path: /apps
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 429
+      headers:
+        RateLimit-Remaining: "0"
+      body:
+        id: rate_limit
+        url: https://devcenter.heroku.com/articles/platform-api-reference#rate-limits
+
+  - name: a failed release is still in the listing with a version of its own
+    # And it is the highest version, so taking the largest number as what is
+    # running takes the one that shipped nothing.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#release
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/cauldron-api/releases
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      body:
+        "[0].version": 41
+        "[0].current": true
+        "[1].version": 42
+        "[1].status": failed
+        "[1].current": false
+
+  - name: and a pending one has shipped nothing either
+    # Neither a success nor a failure. A listing taken mid-deploy contains
+    # it, with the highest version number of the three.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#release
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/cauldron-api/releases
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      body:
+        "[2].version": 43
+        "[2].status": pending
+        "[2].current": false
+      absent:
+        - "[3]"
+
+  - name: a formation scaled to nothing still exists
+    # quantity 0 is a process type that is configured and is not running, so
+    # a client asking whether the scheduler is set up gets yes and one
+    # asking whether it is running gets the same yes.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#formation
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/cauldron-api/formation
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      body:
+        "[0].type": web
+        "[0].quantity": 2
+        "[1].type": scheduler
+        "[1].quantity": 0
+
+  - name: a starting dyno is not up and is not a problem
+    # Code that treats anything other than up as an outage pages somebody
+    # every deploy.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#dyno
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/cauldron-api/dynos
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 206
+      body:
+        "[0].state": up
+        "[1].state": starting
+        "[2].state": crashed
+        "[2].type": worker
+
+  - name: updated_at moves without anything having been released
+    # A config change that shipped nothing still touches it, so reading it
+    # as "when did we last deploy" is wrong in the direction that looks
+    # right: it is later than released_at rather than earlier.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#app
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/0fd0a1e5-2c2f-4a1d-9c86-6b2e7f9c3a41
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 200
+      body:
+        released_at: "2026-08-18T14:22:07Z"
+        updated_at: "2026-08-19T07:41:12Z"
+        name: cauldron-api
+
+  - name: an app in maintenance is a normal app with a flag on it
+    # Still listed, still billed, and serving a holding page. Nothing in its
+    # status says so, because it does not have one.
+    source: https://devcenter.heroku.com/articles/platform-api-reference#app
+    fixture: one-account
+    request:
+      method: GET
+      path: /apps/3a71f2c9-8d54-4e0b-9f1a-2c7d5e8b4906
+      headers:
+        Authorization: Bearer HRKU-cauldron00000000000000000000000000
+        Accept: application/vnd.heroku+json; version=3
+    expect:
+      status: 200
+      body:
+        maintenance: true
+        name: cauldron-worker
+        region.name: eu
+        stack.name: heroku-24
+      absent:
+        - status
+        - state

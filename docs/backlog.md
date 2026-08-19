@@ -561,7 +561,7 @@ transfers alone, and say so in the header.
 | ~~Netlify~~ | Shipped. A deploy has an id before it has a site, ready is not published, and a missing URL means two different things |
 | Render | Services, deploys, and the gap between build finished and live |
 | Fly.io | The Machines API and the older platform API are different shapes for the same account |
-| Heroku | The API still wants `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
+| ~~Heroku~~ | Shipped, and the header was the smaller half. A successful list is **206**: Heroku pages with the `Range` header and answers `206 Partial Content` while there is more, with the resume point in `Next-Range` rather than in the body -- so comparing against 200 rejects every page but the last, and testing `ok` accepts them and never looks for the rest. The `Accept` version header is a 406 when missing, errors are keyed by `id` rather than `code`, `url` is on an error only sometimes, and a formation with `quantity: 0` is a process type that exists and is not running |
 | ~~Hetzner Cloud~~ | Shipped, and the row was exactly right. Powering off a server answers 201 with a job: status running, progress 0, finished null, and the machine still on. Every mutation in the API is that shape, so nothing that changes anything answers with the thing it changed. An action can fail long after its 201, its reason is an object rather than a sentence, progress reaches 100 while still running, a server has nine statuses of which eight are not running, and `locked` is a separate question from `status` whose refusal is a 423 |
 
 ### Observability and flags
