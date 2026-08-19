@@ -1,0 +1,606 @@
+# Kustomer Recipe for Cauldron
+#
+# Kustomer models support as a customer's timeline rather than as a queue of
+# tickets, and the API shows it. Almost everything here is a consequence of
+# that one decision, and almost every integration written against a
+# ticket-shaped helpdesk gets it wrong in the same way.
+#
+# A conversation belongs to a customer and collects messages across every
+# channel they have ever used. So a customer who emailed in March and chatted
+# in August may be one conversation or two depending on how the workspace is
+# configured, and a client that assumes one conversation is one issue is
+# assuming something the product does not promise.
+#
+# Four more worth modelling exactly:
+#
+#   1. Everything is JSON:API. Attributes are under attributes, links are
+#      under relationships, and the type is beside the id. A client that
+#      reads conversation.subject finds nothing, because it is
+#      conversation.attributes.subject, and this is true on every object.
+#   2. An identifier appears twice with two names. id is Kustomer's, and
+#      externalId is whatever the upstream system called it, and only one of
+#      them works in a path.
+#   3. Assignment is on the conversation, not on any message. There is no
+#      "who replied to this" per message: there is an assignedUsers array on
+#      the conversation and a createdBy on the message, and they answer
+#      different questions.
+#   4. A conversation's status and its queue are unrelated. A conversation
+#      can be snoozed and still assigned, or open and in nobody's queue, and
+#      reading either alone does not say whether anybody will look at it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is sent and no conversation changes status.
+#   - The relationships are described as links rather than resolved. Kustomer
+#     sends a related URL and a type, not the embedded object, which is the
+#     part that surprises people and is reproduced; following the link is
+#     left to the client, as it is in production.
+#   - Klasses, custom attributes, KObjects, workflows and the search API are
+#     not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: kustomer
+capability: support
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.kustomer.com/kustomer-api-docs/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-kustomer-api-key
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: links.next
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: list
+    key: errors
+    message_field: detail
+
+resources:
+  conversation:
+    collection: data
+    id:
+      style: hex
+      length: 24
+    constants:
+      # JSON:API, so the type sits beside the id and outside attributes. A
+      # client that reads it off attributes finds nothing.
+      type: conversation
+    fields:
+      # Everything a client actually wants is nested one level down, so
+      # conversation.subject is undefined and conversation.attributes.subject
+      # is the answer, on every object.
+      subject:
+        type: string
+        in: attributes
+        as: subject
+      # open, snoozed, done. Unrelated to whether anybody is assigned: a
+      # conversation can be snoozed and still assigned, or open and in
+      # nobody's queue.
+      status:
+        type: string
+        default: open
+        in: attributes
+        as: status
+      # Assignment lives here rather than on any message. There is no
+      # "who replied to this" per message, so this and a message's createdBy
+      # answer different questions.
+      assignedUsers:
+        type: list
+        in: attributes
+        as: assignedUsers
+      # Which team's queue it is in, which is not the same as who is
+      # assigned. Empty while assigned is a real state and means the
+      # conversation left the queue with somebody holding it.
+      assignedTeams:
+        type: list
+        in: attributes
+        as: assignedTeams
+      # Every channel this conversation has ever carried. A customer who
+      # emailed and later chatted has both, and the conversation is one
+      # thing.
+      channels:
+        type: list
+        in: attributes
+        as: channels
+      messageCount:
+        type: integer
+        in: attributes
+        as: messageCount
+      # Whatever the upstream system called it. Only the id works in a path.
+      externalId:
+        type: string
+        in: attributes
+        as: externalId
+      createdAt:
+        type: datetime
+        in: attributes
+        as: createdAt
+      # The customer this belongs to, as a link rather than an object.
+      # Kustomer sends a related URL and a type, not the embedded record.
+      customer_href:
+        type: string
+        in: relationships.customer.links
+        as: self
+      customer_type:
+        type: string
+        in: relationships.customer.data
+        as: type
+      customer_id:
+        type: string
+        in: relationships.customer.data
+        as: id
+
+  message:
+    collection: data
+    id:
+      style: hex
+      length: 24
+    constants:
+      type: message
+    fields:
+      conversation_id:
+        type: string
+      # customer or user. The only thing separating the two, and it is a
+      # string rather than a boolean, so there is no truthiness shortcut.
+      direction:
+        type: string
+        in: attributes
+        as: direction
+      channel:
+        type: string
+        in: attributes
+        as: channel
+      preview:
+        type: string
+        in: attributes
+        as: preview
+      # Who wrote it, which answers a different question from who the
+      # conversation is assigned to.
+      createdBy:
+        type: string
+        in: attributes
+        as: createdBy
+      # sent, delivered, failed, and a message that failed is here with the
+      # rest, so counting messages counts ones nobody received.
+      status:
+        type: string
+        default: sent
+        in: attributes
+        as: status
+      createdAt:
+        type: datetime
+        in: attributes
+        as: createdAt
+
+routes:
+  - method: GET
+    path: /v1/conversations
+    resource: conversation
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+      limit_param: pageSize
+      cursor_param: page
+
+  - method: GET
+    path: /v1/conversations/{id}
+    resource: conversation
+    operation: get
+
+  - method: GET
+    path: /v1/conversations/{conversation_id}/messages
+    resource: message
+    operation: list
+    scope:
+      - conversation_id
+    returns:
+      - id
+      - type
+      - direction
+      - channel
+      - preview
+      - createdBy
+      - status
+      - createdAt
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Rate limit exceeded"
+
+  authentication_error:
+    status: 401
+    message: "Unauthorized"
+
+  resource_missing:
+    status: 404
+    message: "Conversation not found"
+
+  parameter_missing:
+    status: 400
+    message: "Invalid request body"
+
+  # The key belongs to a role without this permission. Kustomer's roles are
+  # granular and the message does not say which one is missing.
+  insufficient_role:
+    status: 403
+    message: "Insufficient permissions for this resource"
+
+  # An externalId that matches more than one record. Kustomer does not
+  # enforce uniqueness on it, so a client that treats it as a key finds this
+  # the day two systems assign the same one.
+  ambiguous_external_id:
+    status: 409
+    message: "More than one resource matches the given externalId"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    conversation:
+      # One conversation, two channels, five months apart. The customer
+      # emailed in March and chatted in August and this is one thing, so a
+      # client that assumes one conversation is one issue has one issue
+      # spanning both.
+      - id: 66a1f4c8e2b93d0517c4a801
+        subject: Where is my order
+        status: open
+        assignedUsers:
+          - 66a1f4c8e2b93d0517c4b001
+        assignedTeams: []
+        channels:
+          - email
+          - chat
+        messageCount: 4
+        externalId: ZD-88214
+        createdAt: "2026-03-02T09:02:11Z"
+        customer_href: https://api.kustomerapp.com/v1/customers/66a1f4c8e2b93d0517c4c001
+        customer_type: customer
+        customer_id: 66a1f4c8e2b93d0517c4c001
+
+      # Snoozed and still assigned. Somebody holds it and nobody is looking
+      # at it, and reading either field alone says the wrong thing.
+      - id: 66a1f4c8e2b93d0517c4a802
+        subject: Refund not received
+        status: snoozed
+        assignedUsers:
+          - 66a1f4c8e2b93d0517c4b002
+        assignedTeams: []
+        channels:
+          - email
+        messageCount: 2
+        createdAt: "2026-08-11T14:20:00Z"
+        customer_href: https://api.kustomerapp.com/v1/customers/66a1f4c8e2b93d0517c4c002
+        customer_type: customer
+        customer_id: 66a1f4c8e2b93d0517c4c002
+
+      # Open and in nobody's queue. Not snoozed, not assigned, not in a
+      # team, and nothing about it says it is being ignored.
+      - id: 66a1f4c8e2b93d0517c4a803
+        subject: Feature request
+        status: open
+        assignedUsers: []
+        assignedTeams: []
+        channels:
+          - email
+        messageCount: 1
+        createdAt: "2026-08-15T08:15:33Z"
+        customer_href: https://api.kustomerapp.com/v1/customers/66a1f4c8e2b93d0517c4c003
+        customer_type: customer
+        customer_id: 66a1f4c8e2b93d0517c4c003
+
+    message:
+      - id: 66a1f4c8e2b93d0517c4d001
+        conversation_id: 66a1f4c8e2b93d0517c4a801
+        direction: customer
+        channel: email
+        preview: "It said delivered but nothing arrived."
+        createdBy: 66a1f4c8e2b93d0517c4c001
+        status: delivered
+        createdAt: "2026-03-02T09:02:11Z"
+
+      # An agent replying, and the agent who wrote it is not the one the
+      # conversation is assigned to. The two fields answer different
+      # questions and a client that uses one for the other attributes the
+      # reply to the wrong person.
+      - id: 66a1f4c8e2b93d0517c4d002
+        conversation_id: 66a1f4c8e2b93d0517c4a801
+        direction: user
+        channel: email
+        preview: "Checking with the carrier now."
+        createdBy: 66a1f4c8e2b93d0517c4b009
+        status: delivered
+        createdAt: "2026-03-02T11:44:00Z"
+
+      # A different channel, same conversation, five months later.
+      - id: 66a1f4c8e2b93d0517c4d003
+        conversation_id: 66a1f4c8e2b93d0517c4a801
+        direction: customer
+        channel: chat
+        preview: "Still nothing."
+        createdBy: 66a1f4c8e2b93d0517c4c001
+        status: delivered
+        createdAt: "2026-08-14T10:02:00Z"
+
+      # Failed, and in the list with the rest, so counting messages counts
+      # ones nobody received.
+      - id: 66a1f4c8e2b93d0517c4d004
+        conversation_id: 66a1f4c8e2b93d0517c4a801
+        direction: user
+        channel: email
+        preview: "Sorry for the delay, a replacement is on its way."
+        createdBy: 66a1f4c8e2b93d0517c4b001
+        status: failed
+        createdAt: "2026-08-14T16:30:00Z"
+
+      # On another conversation, so the scope has something to exclude.
+      - id: 66a1f4c8e2b93d0517c4d101
+        conversation_id: 66a1f4c8e2b93d0517c4a802
+        direction: customer
+        channel: email
+        preview: "The refund has not landed."
+        createdBy: 66a1f4c8e2b93d0517c4c002
+        status: delivered
+        createdAt: "2026-08-11T14:20:00Z"
+
+# Every case below is derived from Kustomer's published documentation. None
+# has been run against a real workspace. The verify report says so.
+conformance:
+  - name: everything a client wants is under attributes
+    # conversation.subject is undefined and conversation.attributes.subject
+    # is the answer, on every object, because this is JSON:API.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.attributes.subject: Where is my order
+        data.attributes.status: open
+      absent:
+        - data.subject
+        - subject
+
+  - name: the type sits beside the id, outside attributes
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.id: 66a1f4c8e2b93d0517c4a801
+        data.type: conversation
+      absent:
+        - data.attributes.type
+        - data.attributes.id
+
+  - name: one conversation carries every channel the customer used
+    # Email in March and chat in August, and this is one thing. A client
+    # that assumes one conversation is one issue has one issue spanning five
+    # months and two channels.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.attributes.channels[0]: email
+        data.attributes.channels[1]: chat
+        data.attributes.messageCount: 4
+
+  - name: snoozed and still assigned
+    # Somebody holds it and nobody is looking at it. Reading status alone
+    # says it is handled; reading assignedUsers alone says it is being
+    # worked on.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a802
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.attributes.status: snoozed
+        data.attributes.assignedUsers[0]: 66a1f4c8e2b93d0517c4b002
+
+  - name: and open in nobody's queue
+    # Not snoozed, not assigned, not in a team, and nothing about it says it
+    # is being ignored.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a803
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.attributes.status: open
+      absent:
+        - data.attributes.assignedUsers[0]
+        - data.attributes.assignedTeams[0]
+
+  - name: the customer is a link, not an object
+    # Kustomer sends a related URL and a type, not the embedded record, so a
+    # client that reads the customer's email off a conversation makes a
+    # second request or finds nothing.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.relationships.customer.links.self: https://api.kustomerapp.com/v1/customers/66a1f4c8e2b93d0517c4c001
+        data.relationships.customer.data.type: customer
+        data.relationships.customer.data.id: 66a1f4c8e2b93d0517c4c001
+      absent:
+        - data.relationships.customer.data.attributes
+        - data.attributes.customer
+
+  - name: who wrote a message is not who the conversation is assigned to
+    # The reply came from one agent and the conversation is held by another.
+    # The two fields answer different questions, and a client that uses one
+    # for the other attributes the reply to the wrong person.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801/messages
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data[1].attributes.createdBy: 66a1f4c8e2b93d0517c4b009
+        data[1].attributes.direction: user
+
+  - name: direction is a string, not a boolean
+    # customer or user, so there is no truthiness shortcut and a client that
+    # writes if (message.direction) treats both the same.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801/messages
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data[0].attributes.direction: customer
+        data[1].attributes.direction: user
+      absent:
+        - data[0].attributes.fromAgent
+        - data[0].attributes.inbound
+
+  - name: a failed message is in the list with the rest
+    # So counting messages counts ones nobody received, and the
+    # conversation's messageCount counts it too.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801/messages
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data[3].attributes.status: failed
+        data[0].attributes.status: delivered
+      absent:
+        - data[4]
+
+  - name: messages are scoped to their conversation
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/messages
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a802/messages
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data[0].attributes.preview: "The refund has not landed."
+      absent:
+        - data[1]
+        - data[0].conversation_id
+
+  - name: an externalId is not a key
+    # It is whatever the upstream system called it, only the id works in a
+    # path, and Kustomer does not enforce uniqueness on it.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference/conversations
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations/66a1f4c8e2b93d0517c4a801
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      body:
+        data.attributes.externalId: ZD-88214
+        data.id: 66a1f4c8e2b93d0517c4a801
+
+  - name: an ambiguous externalId is a 409
+    # Which is what a client that treats it as a key finds the day two
+    # systems assign the same one.
+    source: https://developer.kustomer.com/kustomer-api-docs/reference
+    fixture: small-workspace
+    arm: ambiguous_external_id
+    request:
+      method: GET
+      path: /v1/conversations
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 409
+      body:
+        errors[0].detail: "More than one resource matches the given externalId"
+
+  - name: the paging cursor is nested under links
+    source: https://developer.kustomer.com/kustomer-api-docs/reference
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations
+      query:
+        pageSize: "2"
+      headers:
+        Authorization: Bearer cauldron-kustomer-api-key
+    expect:
+      status: 200
+      matches:
+        links.next: '.'
+      absent:
+        - next
+        - cursor
+
+  - name: failures are an array even when there is one
+    source: https://developer.kustomer.com/kustomer-api-docs/reference
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/conversations
+      headers:
+        Authorization: Bearer wrong
+    expect:
+      status: 401
+      body:
+        errors[0].detail: Unauthorized
+      absent:
+        - detail
+        - message

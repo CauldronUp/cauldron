@@ -657,7 +657,7 @@ what normalisation does not fix.
 | ~~Midtrans~~ | Shipped. transaction_status and fraud_status are two fields and a payment is only safe when both agree; capture plus challenge means the card was charged and the funds are held; a bank transfer never passes through capture at all |
 | PayU | The same merchant has different endpoints per country and the response fields differ between them |
 | ~~Gorgias~~ | Shipped. A ticket and its messages are two paginated endpoints read at different moments, so the count on one disagrees with the array on the other; from_agent is true for automated replies; and a reopened ticket keeps its closing time with nothing marking the reopening |
-| Kustomer | A conversation is a customer timeline rather than a thread, so assignment is a state of the conversation and not of any message |
+| ~~Kustomer~~ | Shipped. A conversation is a customer timeline carrying every channel they ever used, assignment is on the conversation rather than any message, status and queue are unrelated, and everything is JSON:API so nothing a client wants is at the top level |
 | Jotform | Form fields are keyed by numeric ids that change when the form is edited, so yesterday's submission maps to today's form incorrectly |
 
 ### AI and inference
