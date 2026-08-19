@@ -1308,9 +1308,48 @@ send the next one, because `cursor_field` is Recipe-wide and search shares it
 -- and search has no cursor at all, so declaring one would put a field on
 every search response that Algolia never sends.
 
+**Adyen**: no pagination at all, checked against its own OpenAPI 3.1. The
+request for `/paymentMethods` takes no limit, offset, page or cursor of any
+kind and the response has nothing to resume from, so the declared page size
+claimed something the provider does not accept. Removed; 95 of the 345 list
+routes here already declare no pagination, which is the idiom for a listing
+that does not page.
+
+**AWS SQS**: `MaxNumberOfMessages` in the body for a receive -- a batch size
+rather than a page size, because there is no cursor and asking again is how
+you get more -- and `MaxResults` with `NextToken` for `ListQueues`.
+
+## The AWS Recipes model paths AWS does not serve
+
+Found while checking SQS's pagination, and larger than the thing it was found
+under.
+
+The AWS JSON protocol is RPC over `POST /`, with the operation named in the
+`X-Amz-Target` header. Cauldron routes on method and path, so all three of the
+AWS JSON-protocol Recipes encode the operation in the path instead:
+
+| Recipe | Paths it serves | What AWS serves |
+|---|---|---|
+| Secrets Manager | `/ListSecrets`, `/GetSecretValue`, `/DescribeSecret`, `/CreateSecret`, `/PutSecretValue` | `POST /` with `X-Amz-Target: secretsmanager.ListSecrets` and friends |
+| DynamoDB | `POST /` for query, plus `/items/{id}` and `/tables` | `POST /` with `X-Amz-Target: DynamoDB_20120810.Query` and friends |
+| SQS | `POST /` for receive, plus `/queues` and `/messages/{id}` | `POST /` with `X-Amz-Target: AmazonSQS.ReceiveMessage` and friends |
+
+SQS's own header comment already says the operation belongs in `X-Amz-Target`,
+so this is a known simplification rather than a mistake -- but it is not
+stated where it matters, and its consequence is that an SDK or a hand-written
+client that works against these Recipes is addressing URLs AWS does not have.
+The convenience routes are worse than the pagination note, because a client
+can be written entirely against them and be entirely wrong.
+
+The fix is the shape `selects:` already took for GraphQL: one path, several
+routes, disambiguated by something other than the path -- there by a word in
+the query body, here by a header value. `dispatch_on: X-Amz-Target` with a
+per-route value would let these three Recipes describe the real protocol, and
+the three of them are enough to justify it.
+
 ### Remaining
 
-54 Recipes, 129 declarations. The method that works: find the provider's own
+52 Recipes, 126 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
