@@ -499,7 +499,7 @@ transfers alone, and say so in the header.
 | Metronome | Usage events are deduplicated inside a window, so sending the same event twice is sometimes one event and sometimes two |
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
 | Lemon Squeezy | Merchant of record, so the tax is theirs and the order total is not what arrives. That is FastSpring's headline, shipped this cycle, and a second Recipe saying it would add a name rather than a shape. Worth doing only for what differs: the licence-key API and the store-scoped identifiers |
-| RevenueCat | The entitlement an app reads and the subscription that renews are different objects and can disagree for a whole billing period |
+| ~~RevenueCat~~ | Shipped. There is no `is_active` field and RevenueCat's own guidance is to read one -- it is an SDK property, so the moment the question moves to a server somebody writes the comparison by hand and the advice stops applying. Four active entitlements in the fixture, active for four different reasons: cancelled, lifetime (`expires_date: null`, which every naive comparison reads as expired), failing to pay inside a grace period, and somebody else's family purchase on a trial. Entitlements are keyed by your names and subscriptions by the stores', and the endpoint is a GET that creates: 200 found, 201 invented |
 | Recharge | Subscriptions on top of Shopify, so one order has two sources of truth and they drift |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
 
