@@ -559,7 +559,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Netlify~~ | Shipped. A deploy has an id before it has a site, ready is not published, and a missing URL means two different things |
-| Render | Services, deploys, and the gap between build finished and live |
+| Render | Blocked on documentation, like Sift and Klarna. The shape looked good -- list endpoints appear to wrap each element beside a cursor, and `suspended` appears to be a string enum rather than a boolean -- and none of that could be confirmed: `api-docs.render.com` 404s on its reference pages and the OpenAPI spec its own docs point to is not at the URL given. Revisit with an account or a spec that resolves |
 | ~~Fly.io~~ | Shipped, and **not** for the reason this row gave: the older platform API is GraphQL at a different host, and this format speaks REST, so the two-shapes half is stated in the header and not modelled. What shipped is better anyway. `state: started` does not mean the application is up, and three fields on the same object independently say so -- `host_status` can be `unreachable`, `cordoned` can be true, and `checks[0].status` can be `critical`. Four answers to one question, disagreeing by design. Plus: `instance_id` is unique per *version*, so anything keyed on it loses its history at every deploy, and `nonce` is returned once, at creation, and only if a lease duration was asked for |
 | ~~Heroku~~ | Shipped, and the header was the smaller half. A successful list is **206**: Heroku pages with the `Range` header and answers `206 Partial Content` while there is more, with the resume point in `Next-Range` rather than in the body -- so comparing against 200 rejects every page but the last, and testing `ok` accepts them and never looks for the rest. The `Accept` version header is a 406 when missing, errors are keyed by `id` rather than `code`, `url` is on an error only sometimes, and a formation with `quantity: 0` is a process type that exists and is not running |
 | ~~Hetzner Cloud~~ | Shipped, and the row was exactly right. Powering off a server answers 201 with a job: status running, progress 0, finished null, and the machine still on. Every mutation in the API is that shape, so nothing that changes anything answers with the thing it changed. An action can fail long after its 201, its reason is an object rather than a sentence, progress reaches 100 while still running, a server has nine statuses of which eight are not running, and `locked` is a separate question from `status` whose refusal is a 423 |
@@ -573,7 +573,7 @@ transfers alone, and say so in the header.
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | ~~PostHog~~ | Shipped. A flag definition is not what a user gets, nought per cent is not inactive, and capture says the same thing whatever you send |
 | Statsig | Assess — gates, experiments, exposure logging |
-| Flagsmith | Assess — flags per environment with identity overrides, so the same flag has many answers |
+| Flagsmith | Assessed and left. "A flag definition is not what a user gets" is point one of the PostHog Recipe, already shipped, so a second Recipe would add a name rather than a shape. What differs is worth a row of its own if anyone wants it: Flagsmith answers per environment *key* rather than per SDK evaluation, so the same flag has a different answer per environment and per identity from the server rather than from the client |
 
 ### Webhook infrastructure
 
@@ -587,7 +587,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Firecrawl~~ | Shipped. A running crawl already has results, total is an estimate completed never reaches, and a 200 can carry a failed fetch |
-| Apify | A run can succeed with zero items, which is not the same as failing and is handled as if it were |
+| ~~Apify~~ | Shipped. A run that SUCCEEDED tells you nothing about whether it produced anything: the status describes the process, and the results are in a dataset under a different id at a different endpoint. That endpoint is also the one thing this API does not wrap in `data`, so the code reading a run and the code reading its results unwrap differently against the same provider. Plus: three of the eight statuses are the `-ING` half of a pair, a TIMED-OUT run has partial data worth keeping, `isStatusMessageTerminal` says whether the prose will change, and the duration is there twice in two units |
 | ScrapingBee | A failed fetch is a successful API call, so the status code says nothing about whether you got the page |
 
 ### Registries

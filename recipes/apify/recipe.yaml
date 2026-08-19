@@ -1,0 +1,529 @@
+# Apify Recipe for Cauldron
+#
+# A run that SUCCEEDED tells you nothing about whether it produced anything.
+#
+# The status describes the process: it started, it did not crash, it exited
+# zero. What it scraped is somewhere else entirely -- in a dataset, under a
+# different id, at a different endpoint -- and a scraper that found no
+# matches, or was blocked, or was pointed at a page that changed its markup
+# last week, exits cleanly and reports SUCCEEDED.
+#
+# So the check everybody writes, `if (run.status === "SUCCEEDED")`, is a
+# check that the machine worked. Whether there is data is a second request,
+# and nothing in the first one hints that it is needed.
+#
+# And the second request is the one thing this API does not wrap. Every
+# other response arrives as {"data": {...}}; dataset items arrive as a bare
+# array. So the code that reads a run and the code that reads its results
+# unwrap differently, in the same client, against the same provider.
+#
+# Five more the Recipe pins:
+#
+#   1. Eight statuses, and three of them are the -ING half of a pair.
+#      TIMING-OUT is not TIMED-OUT and ABORTING is not ABORTED, so a client
+#      matching on a prefix, or on `includes("ABORT")`, treats a run that is
+#      still going as one that has stopped.
+#   2. A timeout is not an empty result. TIMED-OUT means the run was cut
+#      short, and everything it had already written is in the dataset. So
+#      the status a client is most likely to discard is the one most likely
+#      to have partial data in it, and discarding it silently loses work
+#      that was paid for.
+#   3. The results live under an id you have to keep. defaultDatasetId is on
+#      the run and nowhere else useful, so a client that stores the run id
+#      and throws away the rest has to fetch the run again to find its own
+#      output.
+#   4. statusMessage has a flag saying whether it is final.
+#      isStatusMessageTerminal, which is null on a run that has not decided,
+#      so the message can be shown, logged, and then replaced by a different
+#      one for the same run.
+#   5. The duration is there twice in two units. durationMillis and
+#      runTimeSecs, on the same stats object, and they are not the same
+#      number in the same scale, which is a subtraction waiting to happen.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing runs. No actor is started, no page is fetched, no item is
+#     produced: a run has the status its fixture gave it and a dataset has
+#     the items its fixture holds, and the two agree only because they were
+#     written to.
+#   - The runs listing is not modelled. Apify nests it under data.items
+#     while dataset items are a bare array, and this format carries one list
+#     style per Recipe, so the run is fetched one at a time and the bare
+#     array is kept, because the bare array is the trap.
+#   - Actors, tasks, builds, key-value stores, request queues, webhooks,
+#     schedules, proxies and the store are not modelled. Neither is the
+#     usage and billing block, which is where a run's cost lives.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: apify
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.apify.com/api/v2
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - apify_api_cauldron000000000000000000
+
+responses:
+  # Bare, because the endpoint that matters is. Dataset items arrive as an
+  # array with no envelope at all, which is the one place this API stops
+  # wrapping.
+  list:
+    style: bare
+  # Everything else arrives under data.
+  resource:
+    style: wrapped
+    key: data
+  error:
+    style: nested
+    key: error
+    code_field: type
+    message_field: message
+    type_field: "-"
+
+resources:
+  run:
+    collection: runs
+    id:
+      style: opaque
+      length: 17
+    fields:
+      actor_id:
+        type: string
+      actId:
+        type: string
+      userId:
+        type: string
+      # READY, RUNNING, SUCCEEDED, FAILED, TIMING-OUT, TIMED-OUT, ABORTING
+      # or ABORTED. Three of the eight are the -ING half of a pair and mean
+      # the opposite of the half they look like.
+      status:
+        type: string
+        default: SUCCEEDED
+      # Prose about the status, which may not be the last word on it.
+      statusMessage:
+        type: string
+        null_when_unset: true
+      # Whether that prose is final. Null while the run has not decided, so
+      # a message can be shown, logged, and then replaced.
+      isStatusMessageTerminal:
+        type: boolean
+        null_when_unset: true
+      startedAt:
+        type: datetime
+      finishedAt:
+        type: datetime
+        null_when_unset: true
+      # Zero on a clean exit, which a scraper that found nothing also has.
+      exitCode:
+        type: integer
+        null_when_unset: true
+      buildId:
+        type: string
+      # Where the results are. On the run and nowhere else useful, so
+      # throwing the run away loses the pointer to your own output.
+      defaultDatasetId:
+        type: string
+      defaultKeyValueStoreId:
+        type: string
+      defaultRequestQueueId:
+        type: string
+      containerUrl:
+        type: string
+      # Milliseconds.
+      durationMillis:
+        type: integer
+        in: stats
+        as: durationMillis
+      # And seconds, on the same object, for the same run.
+      runTimeSecs:
+        type: number
+        in: stats
+        as: runTimeSecs
+      computeUnits:
+        type: number
+        in: stats
+        as: computeUnits
+      requestsFinished:
+        type: integer
+        in: stats
+        as: requestsFinished
+
+  # Whatever the actor decided to emit. There is no schema here: the shape
+  # is the actor's, so two runs of two actors produce two different objects
+  # and the API is equally happy with both.
+  dataset_item:
+    collection: items
+    id:
+      style: opaque
+      length: 10
+      # Apify does not add an identifier to a scraped item. What is in the
+      # array is exactly what the actor wrote.
+      field: "-"
+    fields:
+      dataset_id:
+        type: string
+      url:
+        type: string
+      title:
+        type: string
+      price:
+        type: number
+      inStock:
+        type: boolean
+
+routes:
+  - method: GET
+    path: /v2/actors/{actor_id}/runs/{id}
+    resource: run
+    operation: get
+    scope: [actor_id]
+    # actor_id partitions the run and Apify does not repeat it in the body;
+    # actId is the field it does send, and they are not the same thing.
+    returns:
+      - id
+      - actId
+      - userId
+      - status
+      - statusMessage
+      - isStatusMessageTerminal
+      - startedAt
+      - finishedAt
+      - exitCode
+      - buildId
+      - defaultDatasetId
+      - defaultKeyValueStoreId
+      - defaultRequestQueueId
+      - containerUrl
+      - durationMillis
+      - runTimeSecs
+      - computeUnits
+      - requestsFinished
+
+  # A bare array. No data, no envelope, no count: the results are the body.
+  - method: GET
+    path: /v2/datasets/{dataset_id}/items
+    resource: dataset_item
+    operation: list
+    scope: [dataset_id]
+    returns:
+      - url
+      - title
+      - price
+      - inStock
+
+errors:
+  record_not_found:
+    status: 404
+    code: record-not-found
+    message: "Actor run was not found"
+
+  # The token is fine and the account cannot afford the run.
+  insufficient_credit:
+    status: 402
+    code: insufficient-credit
+    message: "You have exceeded the usage limit of your plan"
+
+  token_not_provided:
+    status: 401
+    code: token-not-provided
+    message: "Authentication token was not provided"
+
+  rate_limit:
+    status: 429
+    code: rate-limit-exceeded
+    message: "You have exceeded the rate limit of 30 requests per second"
+
+fixtures:
+  empty: {}
+
+  three-runs:
+    run:
+      # SUCCEEDED, exit code zero, and its dataset is empty. The machine
+      # worked and the scrape found nothing, and the run says only the
+      # first of those.
+      - id: HG7ML7M8z78YcAPEB
+        actor_id: apify~web-scraper
+        actId: moJRLRc85AitArpNN
+        userId: 7sT5jcggjjA9fNcxF
+        status: SUCCEEDED
+        statusMessage: "Finished! Total 0 requests: 0 succeeded, 0 failed."
+        isStatusMessageTerminal: true
+        startedAt: "2026-08-19T08:12:04.201Z"
+        finishedAt: "2026-08-19T08:12:41.883Z"
+        exitCode: 0
+        buildId: 7sA6mQ9nRcTvWxYz2
+        defaultDatasetId: 9RcKmT4pQwLvBnXs1
+        defaultKeyValueStoreId: 3FtGhJk8LmNpQrSt5
+        defaultRequestQueueId: 6YuIoP2aSdFgHjKl9
+        containerUrl: https://qcbf0vjhs0h3.runs.apify.net
+        durationMillis: 37682
+        runTimeSecs: 37.682
+        computeUnits: 0.0105
+        requestsFinished: 0
+
+      # TIMED-OUT, and its dataset has items in it. Cut short rather than
+      # failed, and everything written before the clock ran out is still
+      # there, which is the status most likely to be discarded and most
+      # likely to be worth keeping.
+      - id: kL2nB8vC4xZ1mQ9pR
+        actor_id: apify~web-scraper
+        actId: moJRLRc85AitArpNN
+        userId: 7sT5jcggjjA9fNcxF
+        status: TIMED-OUT
+        statusMessage: "Actor run exceeded the timeout of 60 seconds"
+        isStatusMessageTerminal: true
+        startedAt: "2026-08-19T09:30:00.114Z"
+        finishedAt: "2026-08-19T09:31:00.402Z"
+        exitCode: 0
+        buildId: 7sA6mQ9nRcTvWxYz2
+        defaultDatasetId: 2WsXcVbNmKjHgFdS8
+        defaultKeyValueStoreId: 4RtYuIoPaSdFgHjK7
+        defaultRequestQueueId: 8ZxCvBnMlKjHgFdS3
+        containerUrl: https://p4kd8hgc2nq7.runs.apify.net
+        durationMillis: 60288
+        runTimeSecs: 60.288
+        computeUnits: 0.0167
+        requestsFinished: 2
+
+      # ABORTING, which is not ABORTED. Still going, still billing, and a
+      # client matching on the first six letters has already moved on.
+      - id: Xy4Tv7Bn2Mq9Ws5Ez
+        actor_id: apify~web-scraper
+        actId: moJRLRc85AitArpNN
+        userId: 7sT5jcggjjA9fNcxF
+        status: ABORTING
+        statusMessage: "Aborting run, waiting for the container to stop"
+        # Not final: this message will be replaced when the run actually
+        # stops.
+        isStatusMessageTerminal: false
+        startedAt: "2026-08-19T10:02:19.775Z"
+        buildId: 7sA6mQ9nRcTvWxYz2
+        defaultDatasetId: 5TgBnHyUjMkIlOpQ2
+        defaultKeyValueStoreId: 1QaZxSwEdCvFrTgB6
+        defaultRequestQueueId: 9OlPkMnJiUhBvGyC4
+        containerUrl: https://m2vz9qtx7ljw.runs.apify.net
+        durationMillis: 18422
+        runTimeSecs: 18.422
+        computeUnits: 0.0051
+        requestsFinished: 1
+
+    dataset_item:
+      # The two rows the timed-out run managed to write.
+      - id: i1
+        dataset_id: 2WsXcVbNmKjHgFdS8
+        url: https://example.test/products/kettle
+        title: "Stovetop kettle, 1.4L"
+        price: 38.5
+        inStock: true
+
+      - id: i2
+        dataset_id: 2WsXcVbNmKjHgFdS8
+        url: https://example.test/products/press
+        title: "French press, 8 cup"
+        price: 24.0
+        inStock: false
+
+# Every case below is derived from the OpenAPI description Apify publishes.
+# None has been run against a real account. The verify report says so.
+conformance:
+  - name: SUCCEEDED with nothing to show for it
+    # Exit code zero, a terminal status message saying zero requests, and
+    # the dataset it points at is empty. The machine worked. Whether it
+    # scraped anything is a different request.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/HG7ML7M8z78YcAPEB
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: SUCCEEDED
+        data.exitCode: 0
+        data.stats.requestsFinished: 0
+        data.defaultDatasetId: 9RcKmT4pQwLvBnXs1
+
+  - name: and its dataset is empty, which took a second request to learn
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/datasets/9RcKmT4pQwLvBnXs1/items
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      absent:
+        - "[0]"
+        - data
+
+  - name: the results are the only thing not wrapped in data
+    # Every other response is {"data": {...}}. This one is a bare array, so
+    # the code that reads a run and the code that reads its results unwrap
+    # differently against the same provider.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/datasets/2WsXcVbNmKjHgFdS8/items
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].title": "Stovetop kettle, 1.4L"
+        "[1].price": 24.0
+      absent:
+        - data
+        - items
+        - "[2]"
+
+  - name: a timeout is not an empty result
+    # Cut short rather than failed, and everything written before the clock
+    # ran out is still in the dataset. The status most likely to be
+    # discarded is the one most likely to have work in it.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/kL2nB8vC4xZ1mQ9pR
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: TIMED-OUT
+        data.exitCode: 0
+        data.stats.requestsFinished: 2
+        data.defaultDatasetId: 2WsXcVbNmKjHgFdS8
+
+  - name: ABORTING is not ABORTED
+    # Still going, still billing, and a client matching on the first six
+    # letters has already moved on. finishedAt is absent, which is the only
+    # field that says so plainly.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/Xy4Tv7Bn2Mq9Ws5Ez
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.status: ABORTING
+        data.finishedAt: null
+        data.exitCode: null
+
+  - name: and its status message says it is not the last one
+    # isStatusMessageTerminal is false, so this prose will be replaced by
+    # different prose for the same run. Logging it as the outcome logs a
+    # sentence that was never true for long.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/Xy4Tv7Bn2Mq9Ws5Ez
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.statusMessage: "Aborting run, waiting for the container to stop"
+        data.isStatusMessageTerminal: false
+
+  - name: and a finished run says the opposite
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/kL2nB8vC4xZ1mQ9pR
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.isStatusMessageTerminal: true
+        data.statusMessage: "Actor run exceeded the timeout of 60 seconds"
+        data.finishedAt: "2026-08-19T09:31:00.402Z"
+
+  - name: the duration is there twice in two units
+    # durationMillis and runTimeSecs, same object, same run. Not
+    # interchangeable and not obviously different either.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/kL2nB8vC4xZ1mQ9pR
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.stats.durationMillis: 60288
+        data.stats.runTimeSecs: 60.288
+
+  - name: the actor in the path is not the actor in the body
+    # actId is what Apify sends: the actor's own identifier, not the
+    # user-facing name the URL was built from.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/HG7ML7M8z78YcAPEB
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        data.actId: moJRLRc85AitArpNN
+      absent:
+        - data.actor_id
+
+  - name: a scraped item has no identifier of its own
+    # What is in the array is exactly what the actor wrote, so there is
+    # nothing to key on, nothing to deduplicate by, and nothing to fetch a
+    # single one with.
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    request:
+      method: GET
+      path: /v2/datasets/2WsXcVbNmKjHgFdS8/items
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].inStock": true
+        "[1].inStock": false
+      absent:
+        - "[0].id"
+        - "[0].dataset_id"
+
+  - name: a failure is nested under error with a hyphenated type
+    source: https://docs.apify.com/api/openapi.json
+    fixture: three-runs
+    arm: insufficient_credit
+    request:
+      method: GET
+      path: /v2/actors/apify~web-scraper/runs/HG7ML7M8z78YcAPEB
+      headers:
+        Authorization: Bearer apify_api_cauldron000000000000000000
+    expect:
+      status: 402
+      body:
+        error.type: insufficient-credit
+        error.message: "You have exceeded the usage limit of your plan"
+      absent:
+        - data
+        - message
