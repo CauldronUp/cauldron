@@ -1,0 +1,431 @@
+# Polygon.io Recipe for Cauldron
+#
+# t is the start of the window on one endpoint and the end of it on another.
+#
+# Both are one-letter fields called t, on objects that are otherwise
+# identical, on the same API. Polygon's own description of the range
+# endpoint says "the Unix millisecond timestamp for the start of the
+# aggregate window". Its description of the grouped daily endpoint says
+# "the Unix millisecond timestamp for the end of the aggregate window".
+#
+# So code that reads bars from one endpoint and bars from the other, and
+# joins them on t, is off by one window on half its data -- and everything
+# about the join looks right, because the field is there, it is a number,
+# and it is in the correct order.
+#
+# Five more the Recipe pins:
+#
+#   1. A window with no bar is not a window with no trades. Polygon does not
+#      populate an aggregate unless the open, high, low or close changed or
+#      eligible trades occurred, so a missing bar means nothing eligible
+#      happened rather than nothing happened. A chart drawn straight from
+#      results has invisible gaps, and anything indexing bars by position is
+#      silently offset from the day it meant.
+#   2. T is the ticker and t is the timestamp. One letter apart, on the same
+#      object, on the grouped endpoint. A string and a number, and a
+#      case-insensitive language or a sloppy destructure gets whichever one
+#      it gets.
+#   3. otc is left off when false. Polygon's words. So bar.otc is undefined
+#      for every listed stock, `otc === false` is never true anywhere, and
+#      the only way to ask is whether the key exists.
+#   4. limit does not limit results. It "limits the number of base
+#      aggregates queried to create the aggregate results" -- the minute
+#      bars underneath -- so limit=10 on a daily range does not return ten
+#      days, it returns however many days ten minutes of trading can build.
+#   5. There are three counts and they mean three things. queryCount is how
+#      many aggregates were used to build the answer, resultsCount is how
+#      many came back, and count is beside them. Reading the wrong one to
+#      size a loop reads the number of inputs.
+#
+# And prices are adjusted for splits unless you say otherwise. The default
+# is adjusted, so the same historical day has two legitimate prices and the
+# one you get depends on a query parameter you did not set.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - status is OK here and always. A basic plan gets DELAYED, at HTTP 200,
+#     with data a quarter of an hour old, and that is the shape most worth
+#     meeting in a test. This format carries one set of envelope constants
+#     per Recipe, so it is described here rather than served.
+#   - No arithmetic happens. Nothing is aggregated, adjusted, sorted or
+#     limited: the bars are the fixture's, in the fixture's order, whatever
+#     multiplier, timespan, adjusted, sort or limit was asked for.
+#   - The range endpoint also echoes the ticker it was asked about, and the
+#     grouped one does not. Only what the two share is modelled.
+#   - Trades, quotes, snapshots, reference data, corporate actions, options,
+#     forex, crypto, indices and the websocket feeds are not modelled.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: polygon
+capability: brokerage
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://polygon.io/docs/rest/stocks/aggregates/custom-bars
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_polygon_api_key_000000
+
+responses:
+  list:
+    style: wrapped
+    # How many came back. The other two counts are constants below, because
+    # they are answers to different questions and only one of them tracks
+    # the array.
+    count_field: resultsCount
+    fields:
+      status: OK
+      adjusted: true
+      # How many aggregates were used to build the answer. Not how many are
+      # in results, and larger here on purpose.
+      queryCount: 5
+      request_id: 6a7e466379af0a71039d60cc78e72282
+  error:
+    style: flat
+    code_field: "-"
+    message_field: error
+    type_field: "-"
+    fields:
+      status: ERROR
+
+resources:
+  # One aggregate window from the range endpoint. It has no identifier at
+  # all: a bar is addressed by when it is, and the only way to know that is
+  # to read t and trust what this endpoint says t means.
+  bar:
+    collection: results
+    id:
+      style: opaque
+      length: 12
+      field: "-"
+    fields:
+      o:
+        type: number
+      h:
+        type: number
+      l:
+        type: number
+      c:
+        type: number
+      v:
+        type: number
+      # Volume weighted average price. Not the close, and not the mean of
+      # the four prices above it.
+      vw:
+        type: number
+      # The START of the window, on this endpoint.
+      t:
+        type: timestamp_ms
+      n:
+        type: integer
+      # Left off when false, so it is undefined for every listed stock and
+      # the only question you can ask is whether the key is there.
+      otc:
+        type: boolean
+
+  # One aggregate window from the grouped daily endpoint. Same nine fields,
+  # plus a ticker, and t means the other thing.
+  grouped_bar:
+    collection: results
+    id:
+      # The ticker, one letter and one case away from the timestamp beside
+      # it.
+      style: opaque
+      length: 6
+      field: T
+    fields:
+      o:
+        type: number
+      h:
+        type: number
+      l:
+        type: number
+      c:
+        type: number
+      v:
+        type: number
+      vw:
+        type: number
+      # The END of the window, on this endpoint. Polygon's own words, in
+      # its own specification, one endpoint apart from the other meaning.
+      t:
+        type: timestamp_ms
+      n:
+        type: integer
+      otc:
+        type: boolean
+
+routes:
+  - method: GET
+    path: /v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+    resource: bar
+    operation: list
+
+  - method: GET
+    path: /v2/aggs/grouped/locale/us/market/stocks/{date}
+    resource: grouped_bar
+    operation: list
+
+errors:
+  # No code, no type: a Polygon failure is a status and a sentence.
+  not_entitled:
+    status: 403
+    message: "You are not entitled to this data. Please upgrade your plan at https://polygon.io/pricing"
+
+  rate_limit:
+    status: 429
+    message: "You've exceeded the maximum requests per minute, please wait or upgrade your subscription to continue. https://polygon.io/pricing"
+
+  unauthorized:
+    status: 401
+    message: "Unknown API Key"
+
+  bad_request:
+    status: 400
+    message: "invalid timespan 'fortnight'"
+
+fixtures:
+  empty: {}
+
+  four-sessions:
+    bar:
+      # Monday.
+      - id: b1
+        o: 214.32
+        h: 217.85
+        l: 213.90
+        c: 216.44
+        v: 48213700
+        vw: 216.0113
+        t: 1786924800000
+        n: 512044
+
+      # Tuesday.
+      - id: b2
+        o: 216.50
+        h: 219.12
+        l: 215.77
+        c: 218.90
+        v: 51002300
+        vw: 217.8842
+        t: 1787011200000
+        n: 538910
+
+      # Thursday. Wednesday is not here, and its absence is the whole
+      # point: nothing eligible changed that session, so no bar was
+      # populated. A chart drawn from this array shows three consecutive
+      # days and one of them is two days wide.
+      - id: b3
+        o: 218.95
+        h: 221.40
+        l: 218.02
+        c: 220.77
+        v: 46887100
+        vw: 220.1096
+        t: 1787184000000
+        n: 497332
+
+    grouped_bar:
+      # T is the ticker. t is the timestamp. One letter and one case apart,
+      # on the same object, and here t is the end of the window rather than
+      # the start.
+      - id: AAPL
+        o: 218.95
+        h: 221.40
+        l: 218.02
+        c: 220.77
+        v: 46887100
+        vw: 220.1096
+        t: 1787184000000
+        n: 497332
+
+      - id: MSFT
+        o: 502.11
+        h: 507.63
+        l: 500.88
+        c: 506.42
+        v: 19334200
+        vw: 504.7715
+        t: 1787184000000
+        n: 233981
+
+      # Over the counter, so the flag is present. Every bar above it lacks
+      # the key entirely, which is what Polygon means by leaving it off
+      # when false.
+      - id: OTCM
+        o: 43.10
+        h: 43.95
+        l: 42.88
+        c: 43.72
+        v: 51200
+        vw: 43.4021
+        t: 1787184000000
+        n: 811
+        otc: true
+
+# Every case below is derived from the OpenAPI description Polygon publishes
+# and from its own knowledge base. None has been run against a real account.
+# The verify report says so.
+conformance:
+  - name: t is the start of the window here
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/ticker/AAPL/range/1/day/2026-08-17/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[0].t: 1786924800000
+        results[0].o: 214.32
+        results[0].c: 216.44
+
+  - name: and the end of it there
+    # Same one-letter field, same API, opposite definition, quoted from
+    # Polygon's own specification on each endpoint. Joining bars from the
+    # two on t is off by a window on half the data, and every part of the
+    # join looks correct.
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/grouped/locale/us/market/stocks/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[0].t: 1787184000000
+        results[0].T: AAPL
+
+  - name: a missing window is not a quiet window
+    # Wednesday has no bar. Polygon does not populate an aggregate unless
+    # the open, high, low or close changed or eligible trades occurred, so
+    # absence means nothing eligible happened rather than nothing happened.
+    # Three entries, four sessions, and nothing in the response says so.
+    source: https://polygon.io/knowledge-base/article/why-are-there-missing-aggregates-in-polygons-data
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/ticker/AAPL/range/1/day/2026-08-17/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[0].t: 1786924800000
+        results[1].t: 1787011200000
+        results[2].t: 1787184000000
+      absent:
+        - results[3]
+
+  - name: three counts, three meanings
+    # resultsCount tracks the array. queryCount is how many aggregates were
+    # used to build the answer and is larger, on purpose. Sizing a loop
+    # from the wrong one sizes it by the number of inputs.
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/ticker/AAPL/range/1/day/2026-08-17/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        resultsCount: 3
+        queryCount: 5
+        adjusted: true
+        status: OK
+
+  - name: T is the ticker and t is the timestamp
+    # One letter and one case apart, on the same object. A string and a
+    # number, and a case-insensitive lookup gets whichever it gets.
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/grouped/locale/us/market/stocks/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[1].T: MSFT
+        results[1].t: 1787184000000
+        results[1].c: 506.42
+      absent:
+        - results[1].ticker
+        - results[1].symbol
+
+  - name: otc is left off when false
+    # Polygon's words. So it is undefined for every listed stock, `=== false`
+    # is never true anywhere, and the only question you can ask is whether
+    # the key exists.
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/grouped/locale/us/market/stocks/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[2].T: OTCM
+        results[2].otc: true
+      absent:
+        - results[0].otc
+        - results[1].otc
+
+  - name: a bar has no identifier and no name for its fields
+    # o, h, l, c, v, vw, t, n. Nothing here is called open, close or
+    # timestamp, and there is no id to hold on to: a bar is addressed by
+    # when it is, which is the field whose meaning changes per endpoint.
+    source: https://api.polygon.io/openapi
+    fixture: four-sessions
+    request:
+      method: GET
+      path: /v2/aggs/ticker/AAPL/range/1/day/2026-08-17/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 200
+      body:
+        results[1].vw: 217.8842
+        results[1].n: 538910
+      absent:
+        - results[1].id
+        - results[1].open
+        - results[1].close
+        - results[1].timestamp
+
+  - name: a failure is a sentence and a status word
+    # No code and no type: reading error.code finds undefined on every
+    # failure this API has, and the machine-readable part is the HTTP
+    # status.
+    source: https://polygon.io/docs/rest/stocks/aggregates/custom-bars
+    fixture: four-sessions
+    arm: not_entitled
+    request:
+      method: GET
+      path: /v2/aggs/ticker/AAPL/range/1/day/2026-08-17/2026-08-20
+      headers:
+        Authorization: Bearer cauldron_polygon_api_key_000000
+    expect:
+      status: 403
+      body:
+        status: ERROR
+        error: "You are not entitled to this data. Please upgrade your plan at https://polygon.io/pricing"
+      absent:
+        - code
+        - message
+        - results
