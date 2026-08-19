@@ -613,7 +613,7 @@ An order is not a fill, and the gap between them is where the bugs live.
 | ~~Alpaca~~ | Shipped. A partially filled order is a real position that is still open, the listing hides everything that finished, and every number is a string |
 | Tradier | The same order in two accounts is two objects, and the account is a path segment rather than a field |
 | ~~Polygon.io~~ | Shipped, and the row understated it. `t` is documented as the **start** of the window on the range endpoint and the **end** of it on the grouped one -- same one-letter field, same API, Polygon's own words on each. A missing bucket is also not a quiet one: Polygon does not populate an aggregate unless OHLC changed or *eligible* trades occurred, so absence means nothing eligible happened. Plus `T` is the ticker and `t` the timestamp on one object, `otc` is left off when false, `limit` limits base aggregates rather than results, and three counts mean three things |
-| Finnhub | The free tier truncates history rather than refusing, so a backtest runs on less data than it asked for and says nothing |
+| ~~Finnhub~~ | Shipped, though not on the row's claim, which is an account fact rather than a documented one. What is documented and worse: `c` is "List of close prices" on a candle and "Current price" on a quote -- Finnhub's own words -- so five one-letter fields are arrays on one endpoint and scalars on another. A candle response is seven parallel columns with no object for a bar, `no_data` is a 200 whose arrays are *absent* rather than empty, and the response echoes neither the symbol nor the range, which is exactly what makes a shortened range invisible |
 
 ### Open banking and financial aggregation
 
