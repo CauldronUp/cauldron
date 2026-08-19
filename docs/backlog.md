@@ -688,7 +688,7 @@ what normalisation does not fix.
 | Provider | Why |
 |---|---|
 | ~~incident.io~~ | Shipped. Status and severity are configured per workspace so neither is an enum you can hard-code, the category is the only fixed thing, the rank is the orderable thing rather than the name, and the two move independently |
-| Opsgenie | An alert and an incident are separate objects with separate lifecycles, and closing one does not close the other |
+| ~~Opsgenie~~ | Shipped. An alert and an incident have separate ids, lifecycles and close endpoints, so closing one leaves the other open; a create answers 202 with a request id that is not the alert; and a flapping monitor is one alert with a count rather than many alerts |
 | Checkly | A check run has assertions, and a passing run containing a failed assertion is possible |
 | Rev.ai | A job is asynchronous and the transcript is a separate fetch with its own content types, so the job being done is not the transcript being readable |
 | Perplexity | Citations are a separate array whose indices point into the text, so dropping either half makes the other meaningless |
