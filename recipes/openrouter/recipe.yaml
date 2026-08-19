@@ -1,0 +1,607 @@
+# OpenRouter Recipe for Cauldron
+#
+# It answers 200 and puts the failure in the body.
+#
+# OpenRouter's own words: the returned HTTP response status will be 200 OK and
+# any error occurred while the LLM is producing the output will be emitted in
+# the response body. Once a stream has started the status line is spent, so a
+# model that dies halfway reports it in a place a status check cannot see.
+#
+# And you can be charged for it. OpenRouter says the model may not generate
+# any content, and that you may still be charged for the prompt processing
+# cost. So the failure mode is: 200, empty content, a bill, and nothing in
+# your error handling triggered.
+#
+# Five more the Recipe pins:
+#
+#   1. error.code is the HTTP status again, as a number, inside the body.
+#      There is no separate machine-readable code: the thing that looks like
+#      one is the status you already had, so switching on it tells you
+#      nothing the response line did not.
+#   2. 502 is the model's fault and 503 is yours. 502 means the chosen model
+#      is down or answered with nonsense; 503 means no provider met your
+#      routing requirements, which is a sentence about the constraints you
+#      sent. Both read as "OpenRouter is down" and neither is.
+#   3. Prices are decimal strings. "0.0000014", not 0.0000014, because these
+#      are fractions of a cent and floating point is not to be trusted with
+#      them -- and a free model prices at the string "0", which is truthy, so
+#      `if (model.pricing.prompt)` is true for a model that costs nothing.
+#   4. There are two context lengths and the smaller one is the real one.
+#      context_length is the model's and top_provider.context_length is what
+#      the provider actually serving it offers. On the live API today 34 of
+#      414 models disagree, and nvidia/nemotron-3.5-lightning advertises a
+#      million tokens at the top and 262144 from the provider.
+#   5. A parameter a model does not support is ignored rather than refused.
+#      supported_parameters lists what it takes, 87 of the 414 models on the
+#      live API today do not list temperature, and sending it to one of them
+#      is not an error. It is silence.
+#
+# And a model id can be an alias for a different model. Twelve of them today
+# begin with a tilde and carry alias_target pointing somewhere else, so the id
+# you asked for is not the id that served you, and the response says which.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is inferred. A completion answers with the fixture's text
+#     whatever was asked, so this reproduces the envelope, the costs and the
+#     failure shapes rather than the model.
+#   - Streaming is not modelled, and streaming is where the 200-with-an-error
+#     actually happens. This format writes JSON rather than server-sent
+#     events, so that shape is described above and not served.
+#   - A requested model is echoed rather than resolved. Ask this for an
+#     alias and the alias comes back; ask the real OpenRouter and the model
+#     the router picked comes back. The alias table itself is real and is in
+#     the models listing, which was read from the live API.
+#   - The empty-answer-that-was-billed is described above and not served
+#     either. A completion here is minted from its defaults, so it is always
+#     the ordinary one; reproducing the other would mean making the default
+#     answer a failure, and an emulator whose happy path is broken is worse
+#     than one that says which case it does not cover.
+#   - Credits, generation stats, provider preferences and the endpoints
+#     listing are not modelled.
+#
+# The model cases below were checked against the live API on 2026-08-19: the
+# models endpoint is public, so the shapes and the numbers in them were read
+# rather than inferred. The completion cases were not, because calling that
+# endpoint costs money.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: openrouter
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://openrouter.ai/docs/api-reference/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk-or-v1-cauldron00000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    count_field: total_count
+  resource:
+    style: bare
+  # Nested under error, with a numeric code that is the HTTP status over
+  # again.
+  error:
+    style: nested
+    key: error
+    code_field: code
+    message_field: message
+    type_field: "-"
+
+resources:
+  model:
+    collection: data
+    id:
+      style: opaque
+      length: 24
+    fields:
+      canonical_slug:
+        type: string
+      name:
+        type: string
+      created:
+        type: timestamp
+      description:
+        type: string
+      # What the model can hold.
+      context_length:
+        type: integer
+      # Decimal strings, per token, because these are fractions of a cent
+      # and floating point is not to be trusted with them. A free model is
+      # the string "0", which is truthy.
+      pricing_prompt:
+        type: string
+        in: pricing
+        as: prompt
+      pricing_completion:
+        type: string
+        in: pricing
+        as: completion
+      # What the provider actually serving it holds, which is the smaller
+      # number on 34 of the 414 models live today.
+      provider_context_length:
+        type: integer
+        in: top_provider
+        as: context_length
+      provider_max_completion_tokens:
+        type: integer
+        in: top_provider
+        as: max_completion_tokens
+      provider_is_moderated:
+        type: boolean
+        in: top_provider
+        as: is_moderated
+      modality:
+        type: string
+        in: architecture
+        as: modality
+      tokenizer:
+        type: string
+        in: architecture
+        as: tokenizer
+      # What it accepts. Anything not in here is ignored rather than
+      # refused.
+      supported_parameters:
+        type: list
+      # Present and null on most models.
+      per_request_limits:
+        type: string
+        null_when_unset: true
+      hugging_face_id:
+        type: string
+        null_when_unset: true
+      # Set only on the aliases, which point at a different model entirely.
+      alias_slug:
+        type: string
+        in: alias_target
+        as: slug
+      alias_name:
+        type: string
+        in: alias_target
+        as: name
+
+  completion:
+    collection: completions
+    id:
+      style: prefixed
+      prefix: "gen-"
+      length: 16
+    fields:
+      object:
+        type: string
+        default: chat.completion
+      created:
+        type: timestamp
+      # Which model answered, and which provider served it, are declared
+      # with the rest of the answer below.
+      role:
+        type: string
+        in: choices[0].message
+        as: role
+        default: assistant
+      content:
+        type: string
+        in: choices[0].message
+        as: content
+        default: "The capital of France is Paris."
+      # OpenRouter's normalised word.
+      finish_reason:
+        type: string
+        in: choices[0]
+        as: finish_reason
+        default: stop
+      # The provider's own, unnormalised, beside it. They are not the same
+      # word for the same ending.
+      native_finish_reason:
+        type: string
+        in: choices[0]
+        as: native_finish_reason
+        default: end_turn
+      prompt_tokens:
+        type: integer
+        in: usage
+        as: prompt_tokens
+        default: 25
+      completion_tokens:
+        type: integer
+        in: usage
+        as: completion_tokens
+        default: 10
+      total_tokens:
+        type: integer
+        in: usage
+        as: total_tokens
+        default: 35
+      # What it cost, in the response, per request.
+      cost:
+        type: number
+        in: usage
+        as: cost
+        default: 0.000079
+      model:
+        type: string
+        default: z-ai/glm-5.3
+      provider:
+        type: string
+        default: Z.AI
+
+routes:
+  - method: GET
+    path: /api/v1/models
+    resource: model
+    operation: list
+
+  - method: POST
+    path: /api/v1/chat/completions
+    resource: completion
+    operation: create
+    # A completion is not an echo of the request: none of the messages,
+    # temperature or routing preferences comes back.
+    returns:
+      - id
+      - object
+      - created
+      - model
+      - provider
+      - role
+      - content
+      - finish_reason
+      - native_finish_reason
+      - prompt_tokens
+      - completion_tokens
+      - total_tokens
+      - cost
+
+errors:
+  # Not a bad request and not a rate limit: the account is out of credit,
+  # which is a different thing to do about it.
+  insufficient_credits:
+    status: 402
+    code: "402"
+    message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 1183."
+
+  # The model is down or answered with something invalid. Upstream's fault,
+  # and it reads as OpenRouter being down.
+  model_down:
+    status: 502
+    code: "502"
+    message: "Provider returned error"
+
+  # No provider met the routing requirements you sent. Your constraints,
+  # not their availability, and it reads the same as the one above.
+  no_provider:
+    status: 503
+    code: "503"
+    message: "No allowed providers are available for the selected model."
+
+  invalid_key:
+    status: 401
+    code: "401"
+    message: "No auth credentials found"
+
+  rate_limit:
+    status: 429
+    code: "429"
+    message: "Rate limit exceeded: free-models-per-day"
+
+fixtures:
+  empty: {}
+
+  # Four models, read from the live API on 2026-08-19.
+  live-catalogue:
+    model:
+      # Two context lengths that disagree. A million at the top and 262144
+      # from the provider that will actually serve it, so a prompt sized by
+      # the first number is four times too long.
+      - id: nvidia/nemotron-3.5-lightning
+        canonical_slug: nvidia/nemotron-3.5-lightning
+        name: "NVIDIA: Nemotron 3.5 Lightning"
+        created: 1786452751
+        description: "A fast reasoning model."
+        context_length: 1000000
+        pricing_prompt: "0.00000008"
+        pricing_completion: "0.0000002"
+        provider_context_length: 262144
+        provider_max_completion_tokens: 131072
+        provider_is_moderated: false
+        modality: text->text
+        tokenizer: Other
+        supported_parameters: [frequency_penalty, logit_bias, logprobs, max_tokens, min_p, presence_penalty, temperature]
+        hugging_face_id: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+
+      # Does not accept temperature. Sending it is not an error; it is
+      # ignored, and 87 of the 414 models live today are in this position.
+      - id: anthropic/claude-opus-5-fast
+        canonical_slug: anthropic/claude-opus-5-fast
+        name: "Claude Opus 5 (Fast)"
+        created: 1784912546
+        description: "A faster Claude Opus 5."
+        context_length: 1000000
+        pricing_prompt: "0.00001"
+        pricing_completion: "0.00005"
+        provider_context_length: 1000000
+        provider_max_completion_tokens: 128000
+        provider_is_moderated: true
+        modality: text+image+file->text
+        tokenizer: Claude
+        supported_parameters: [max_tokens, reasoning, reasoning_effort, response_format, stop, structured_outputs, tool_choice]
+
+      # An alias. The id begins with a tilde and points somewhere else, so
+      # the model that answers is not the one that was named.
+      - id: ~z-ai/glm-latest
+        canonical_slug: ~z-ai/glm-latest
+        name: "Z.ai: GLM Latest"
+        created: 1787151053
+        description: "This model always redirects to the latest GLM model from Z.ai."
+        context_length: 1048576
+        pricing_prompt: "0.0000014"
+        pricing_completion: "0.0000044"
+        provider_context_length: 1048576
+        provider_max_completion_tokens: 131072
+        provider_is_moderated: false
+        modality: text->text
+        tokenizer: Router
+        supported_parameters: [max_tokens, reasoning, response_format, temperature, tool_choice, tools]
+        alias_slug: z-ai/glm-5.3
+        alias_name: "Z.ai: GLM 5.3"
+
+      # Free, and priced at the string "0", which is truthy.
+      - id: dots-studio/dots-3-note-preview:free
+        canonical_slug: dots-studio/dots-3-note-preview
+        name: "Dots 3 Note Preview (free)"
+        created: 1786000000
+        description: "A free preview model."
+        context_length: 512000
+        pricing_prompt: "0"
+        pricing_completion: "0"
+        provider_context_length: 512000
+        provider_max_completion_tokens: 64000
+        provider_is_moderated: false
+        modality: text->text
+        tokenizer: Other
+        supported_parameters: [max_tokens, temperature]
+
+# The model cases below were read from the live public models endpoint on
+# 2026-08-19 and carry that date. The completion cases were not: that endpoint
+# costs money to call, so they are derived from OpenRouter's documentation and
+# say so by having no date.
+conformance:
+  - name: two context lengths, and the smaller one is the real one
+    # context_length is the model's and top_provider.context_length is what
+    # the provider actually serving it offers. A prompt sized by the first
+    # number is four times too long for the second. 34 of the 414 models on
+    # the live API disagree this way.
+    source: https://openrouter.ai/api/v1/models
+    verified: 2026-08-19
+    fixture: live-catalogue
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].context_length: 1000000
+        data[0].top_provider.context_length: 262144
+        data[0].top_provider.max_completion_tokens: 131072
+
+  - name: prices are decimal strings and free is the string zero
+    # Fractions of a cent, so they are strings rather than floats. And "0"
+    # is truthy, so `if (model.pricing.prompt)` is true for a model that
+    # costs nothing.
+    source: https://openrouter.ai/api/v1/models
+    verified: 2026-08-19
+    fixture: live-catalogue
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].pricing.prompt: "0.00000008"
+        data[0].pricing.completion: "0.0000002"
+        data[3].pricing.prompt: "0"
+        data[3].pricing.completion: "0"
+
+  - name: a model id can be an alias for a different model
+    # The tilde marks it and alias_target says where it goes, so the model
+    # that answers is not the one that was named.
+    source: https://openrouter.ai/api/v1/models
+    verified: 2026-08-19
+    fixture: live-catalogue
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        data[2].id: ~z-ai/glm-latest
+        data[2].alias_target.slug: z-ai/glm-5.3
+        data[2].alias_target.name: "Z.ai: GLM 5.3"
+      absent:
+        - data[0].alias_target
+
+  - name: a parameter a model does not accept is not refused
+    # supported_parameters lists what it takes. temperature is missing from
+    # this one, and sending it anyway is silence rather than an error. 87 of
+    # the 414 models on the live API are in that position.
+    source: https://openrouter.ai/api/v1/models
+    verified: 2026-08-19
+    fixture: live-catalogue
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        data[1].id: anthropic/claude-opus-5-fast
+        data[1].supported_parameters[0]: max_tokens
+        data[3].supported_parameters[1]: temperature
+
+  - name: the catalogue counts itself beside the page
+    source: https://openrouter.ai/api/v1/models
+    verified: 2026-08-19
+    fixture: live-catalogue
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 200
+      body:
+        total_count: 4
+        data[1].architecture.modality: text+image+file->text
+        data[1].architecture.tokenizer: Claude
+
+  - name: a completion is not an echo of what was asked
+    # None of the messages, the temperature or the routing preferences comes
+    # back. What arrives is an answer and a bill.
+    source: https://openrouter.ai/docs/api-reference/chat-completion
+    fixture: live-catalogue
+    request:
+      method: POST
+      path: /api/v1/chat/completions
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+      json:
+        model: ~z-ai/glm-latest
+        temperature: 0.2
+    expect:
+      status: 200
+      body:
+        object: chat.completion
+        choices[0].message.role: assistant
+        choices[0].finish_reason: stop
+      absent:
+        - messages
+        - temperature
+        - model_requested
+
+  - name: the answer names the model that served it
+    # Which is a different question from the model that was asked for: a
+    # slug can be an alias and routing can fall back, so this field is the
+    # only record of what actually ran.
+    source: https://openrouter.ai/docs/api-reference/chat-completion
+    fixture: live-catalogue
+    request:
+      method: POST
+      path: /api/v1/chat/completions
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+      json:
+        messages: []
+    expect:
+      status: 200
+      body:
+        model: z-ai/glm-5.3
+        provider: Z.AI
+
+  - name: the two finish reasons are different words
+    # finish_reason is OpenRouter's normalised vocabulary and
+    # native_finish_reason is what the provider actually said. Branching on
+    # the first loses what the second knew.
+    source: https://openrouter.ai/docs/api-reference/chat-completion
+    fixture: live-catalogue
+    request:
+      method: POST
+      path: /api/v1/chat/completions
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+      json:
+        model: ~z-ai/glm-latest
+    expect:
+      status: 200
+      body:
+        choices[0].finish_reason: stop
+        choices[0].native_finish_reason: end_turn
+
+  - name: the bill is in the answer
+    # Per request, in the response, so what it cost is known at the moment
+    # it is returned rather than at the end of the month.
+    source: https://openrouter.ai/docs/api-reference/chat-completion
+    fixture: live-catalogue
+    request:
+      method: POST
+      path: /api/v1/chat/completions
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+      json:
+        model: ~z-ai/glm-latest
+    expect:
+      status: 200
+      body:
+        usage.prompt_tokens: 25
+        usage.completion_tokens: 10
+        usage.total_tokens: 35
+        usage.cost: 0.000079
+
+  - name: 502 is the model's fault
+    # The chosen model is down or answered with something invalid, and the
+    # code inside the body is the status over again.
+    source: https://openrouter.ai/docs/api-reference/errors
+    fixture: live-catalogue
+    arm: model_down
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 502
+      body:
+        error.code: 502
+        error.message: "Provider returned error"
+      absent:
+        - error.type
+        - message
+
+  - name: and 503 is yours
+    # No provider met the routing requirements you sent. A sentence about
+    # the constraints in your request, arriving in the shape of an outage.
+    source: https://openrouter.ai/docs/api-reference/errors
+    fixture: live-catalogue
+    arm: no_provider
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 503
+      body:
+        error.code: 503
+        error.message: "No allowed providers are available for the selected model."
+
+  - name: running out of credit is its own status
+    # Not a bad request and not a rate limit: 402, with the arithmetic in
+    # the message.
+    source: https://openrouter.ai/docs/api-reference/errors
+    fixture: live-catalogue
+    arm: insufficient_credits
+    request:
+      method: GET
+      path: /api/v1/models
+      headers:
+        Authorization: Bearer sk-or-v1-cauldron00000000000000000000000000
+    expect:
+      status: 402
+      body:
+        error.code: 402
+        error.message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 1183."

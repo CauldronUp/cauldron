@@ -99,7 +99,7 @@ func TestTheREADMECountsMatchTheRecipes(t *testing.T) {
 
 	// The same number appears twice in the README, and the two have to agree
 	// with each other as well as with the Recipes.
-	repeated := regexp.MustCompile(`Recipe: (\d+) cases, none yet run`).FindStringSubmatch(text)
+	repeated := regexp.MustCompile(`Recipe: (\d+) cases, \d+ run against`).FindStringSubmatch(text)
 	if repeated == nil {
 		t.Fatal("the README no longer repeats the case count in the form it did; update this test with it")
 	}
