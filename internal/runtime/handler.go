@@ -211,6 +211,31 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 // the path; RPC-shaped ones like Slack put it in the query string or the body,
 // which the Recipe declares with id_from.
 func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]string) string {
+	return s.resolve(matched, s.rawIdentifier(matched, r, vars))
+}
+
+// resolve turns the value a route addresses a record by into the record's own
+// identifier, for the routes that address it by something else.
+//
+// A value that matches nothing is returned unchanged, so the ordinary
+// not-found path reports it. That is the right answer for the failure this
+// mostly models: a receipt handle from an earlier receive is stale, and SQS
+// answers a delete with it by refusing.
+func (s *Sandbox) resolve(matched route, value string) string {
+	field := matched.spec.LookupBy
+	if field == "" || value == "" {
+		return value
+	}
+
+	page, err := s.store.ListWhere(matched.spec.Resource, map[string]any{field: value}, "", 0)
+	if err != nil || len(page.Records) == 0 {
+		return value
+	}
+
+	return fmt.Sprint(page.Records[0]["id"])
+}
+
+func (s *Sandbox) rawIdentifier(matched route, r *http.Request, vars map[string]string) string {
 	if matched.spec.IDFrom == "" {
 		return vars["id"]
 	}

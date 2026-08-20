@@ -1642,13 +1642,22 @@ meets them:
 - `ListQueues` answers with `QueueUrls` as an array of strings -- the same
   shape `TableNames` needs and Cauldron cannot express.
 
-### A route that looks a record up by something other than its id
+### ~~A route that looks a record up by something other than its id~~ Built
 
-DeleteMessage is the clearest case: SQS addresses a message by a receipt
-handle, which is deliberately not its identifier. Marqeta, Contentful and
-anything keyed by a natural key have the same shape. `id_from` names where the
-value comes from; what is missing is a way to say which field it is matched
-against.
+`lookup_by` names the field the value from `id_from` is matched against.
+`id_from` says where the value comes from; this says what it is compared with.
+
+SQS's DeleteMessage is the case that wanted it. A receipt handle is
+deliberately not a message id -- it is issued per receive, two consumers
+holding two handles for the same message is normal, and a handle from an
+earlier receive is stale. Looked up as though it were an id it found nothing,
+so **every delete failed**, and the only thing that Recipe could show about
+DeleteMessage was the way it fails.
+
+A value matching nothing is left as it is, so a stale handle falls through to
+the ordinary not-found, which is what SQS does with it. Both halves are cases
+now: a live handle deletes the message it names, and a stale one deletes
+nothing.
 
 ### ~~A collection of scalars~~ Built
 
