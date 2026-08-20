@@ -380,6 +380,9 @@ func TestACollectionKeyCanBeOmittedWhenEmpty(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
 		req.Header.Set("Authorization", signed)
+		// The operation is the header. SQS serves every one of them at the
+		// root, and a request without a target reaches no route at all.
+		req.Header.Set("X-Amz-Target", "AmazonSQS.ReceiveMessage")
 
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
@@ -426,7 +429,11 @@ func TestACredentialCanBeCheckedByShape(t *testing.T) {
 	call := func(authorization string) int {
 		t.Helper()
 
-		req := httptest.NewRequest(http.MethodGet, "/queues", nil)
+		// ListQueues, which SQS serves at the root like everything else --
+		// this used to ask for /queues, a URL SQS does not have.
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("X-Amz-Target", "AmazonSQS.ListQueues")
+
 		if authorization != "" {
 			req.Header.Set("Authorization", authorization)
 		}

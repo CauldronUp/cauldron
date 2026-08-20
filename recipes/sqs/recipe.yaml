@@ -46,6 +46,20 @@
 #     redelivered message is a fixture, not a race.
 #   - Long polling, message ordering for FIFO queues, and batch operations are
 #     not modelled.
+#   - There is no fetch-one-message-by-id operation in SQS, and this Recipe
+#     used to serve one at /messages/{id}. Four conformance cases read it.
+#     They read a receive now, which is the only way SQS hands a message over.
+#   - DeleteMessage is keyed by the receipt handle from a receive. Cauldron
+#     finds a record by its identifier and nothing else, so a handle that is
+#     not the identifier finds nothing and every delete answers
+#     NonExistentQueue. The case that covers it asserts exactly that failure,
+#     which is true of an expired handle and not of a live one.
+#   - GetQueueAttributes answers with a flat map of strings under Attributes,
+#     and this answers with the queue object. The fields cannot be nested
+#     under Attributes without breaking ListQueues, which shares the resource.
+#   - ListQueues answers with QueueUrls as an array of strings, and this emits
+#     an array of queue objects under that name -- the same shape Cauldron
+#     cannot express that DynamoDB's TableNames needs.
 #
 # Credentials below are fixtures, not secrets. They belong to no account.
 
@@ -161,9 +175,13 @@ resources:
 
 routes:
   # The JSON protocol is RPC over POST to the root, with the operation in the
-  # X-Amz-Target header rather than the path.
+  # X-Amz-Target header rather than the path. The convenience paths that used
+  # to sit beside this one -- /queues, /queues/{id}, /messages/{id} -- were
+  # URLs SQS does not serve.
   - method: POST
     path: /
+    matches_header:
+      X-Amz-Target: AmazonSQS.ReceiveMessage
     resource: message
     operation: list
     pagination:
@@ -176,36 +194,52 @@ routes:
       limit_param: MaxNumberOfMessages
       in: body
 
-  - method: GET
-    path: /queues
+  - method: POST
+    path: /
+    matches_header:
+      X-Amz-Target: AmazonSQS.ListQueues
     resource: queue
     operation: list
     pagination:
-      # ListQueues takes MaxResults and NextToken in the request body. The
-      # path here is Cauldron's rather than AWS's -- see the note at the top
-      # about the operation belonging in X-Amz-Target -- but the parameter
-      # names are the provider's, so code written against them is right about
-      # the half this can model.
+      # ListQueues takes MaxResults and NextToken in the request body.
       style: cursor
       limit: 10
       limit_param: MaxResults
       cursor_param: NextToken
       in: body
 
-  - method: GET
-    path: /queues/{id}
+  # GetQueueAttributes. SQS keys it by the queue's URL, and Cauldron finds a
+  # record by its identifier and nothing else, so the fixture's queues are
+  # keyed by URL to make the lookup work. The cost is that the identifier is
+  # a URL rather than a name, which is what SQS's own API does anyway.
+  #
+  # Stated gap: the real response is a flat map of strings under Attributes
+  # and this answers with the queue object. Nesting the fields under
+  # Attributes would fix the shape here and break ListQueues, which shares
+  # the resource.
+  - method: POST
+    path: /
+    matches_header:
+      X-Amz-Target: AmazonSQS.GetQueueAttributes
     resource: queue
     operation: get
+    id_from: body:QueueUrl
 
-  - method: GET
-    path: /messages/{id}
-    resource: message
-    operation: get
-
-  - method: DELETE
-    path: /messages/{id}
+  # DeleteMessage is keyed by the receipt handle from a receive, not by the
+  # message id. Deleting with a handle from an earlier receive silently does
+  # nothing, which is the failure the header at the top describes.
+  #
+  # Stated gap: Cauldron finds a record by its identifier and nothing else,
+  # so a handle that is not the identifier finds nothing and this answers
+  # NonExistentQueue for every delete. Modelling it properly needs a way to
+  # say which field a route looks a record up by -- see docs/backlog.md.
+  - method: POST
+    path: /
+    matches_header:
+      X-Amz-Target: AmazonSQS.DeleteMessage
     resource: message
     operation: delete
+    id_from: body:ReceiptHandle
     status: 200
 
 webhooks:
@@ -264,7 +298,7 @@ fixtures:
 
   small-account:
     queue:
-      - id: orders
+      - id: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
         QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
         VisibilityTimeout: "30"
         # Two waiting and one in flight. A queue that looks nearly empty can
@@ -275,7 +309,7 @@ fixtures:
         # A string containing JSON, not an object. Anything reading it as
         # structured data gets a string.
         RedrivePolicy: '{"deadLetterTargetArn":"arn:aws:sqs:eu-west-2:000000000000:orders-dlq","maxReceiveCount":3}'
-      - id: orders-dlq
+      - id: https://sqs.eu-west-2.amazonaws.com/000000000000/orders-dlq
         QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders-dlq
         VisibilityTimeout: "30"
         ApproximateNumberOfMessages: "1"
@@ -330,9 +364,10 @@ conformance:
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
     fixture: small-account
     request:
-      method: GET
-      path: /messages/22222222-2222-4222-8222-222222222222
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     expect:
       status: 200
@@ -340,53 +375,60 @@ conformance:
         # Seen three times. Nothing about the response says "retry" except
         # this, and a consumer with no idempotency has already applied it
         # twice. Approximate is a warning rather than modesty.
-        Attributes:
+        Messages[1].Attributes:
           ApproximateReceiveCount: "3"
-        Body: '{"order_id":1002}'
+        Messages[1].Body: '{"order_id":1002}'
 
   - name: an in-flight message is neither on the queue nor gone
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html
     fixture: small-account
     request:
-      method: GET
-      path: /messages/33333333-3333-4333-8333-333333333333
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     expect:
       status: 200
       body:
         # A consumer is holding it. Receiving did not remove it, and it comes
         # back if that consumer dies before deleting it.
-        visible: false
-        Attributes:
+        Messages[2].visible: false
+        Messages[2].Attributes:
           ApproximateReceiveCount: "1"
 
   - name: a dead-lettered message keeps its body and its count
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html
     fixture: small-account
     request:
-      method: GET
-      path: /messages/44444444-4444-4444-8444-444444444444
+      method: POST
+      path: /
       headers:
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        X-Amz-Target: AmazonSQS.ReceiveMessage
     expect:
       status: 200
       body:
         # Unchanged, in a different queue, with the receive count intact. That
         # count is the only evidence of what happened to it.
-        queue: orders-dlq
-        Body: '{"order_id":900}'
-        Attributes:
-          ApproximateReceiveCount: "4"
+        #
+        # Read from a receive, because there is no fetch-one-message-by-id
+        # operation in this API to read it any other way.
+        Messages[3].queue: orders-dlq
+        Messages[3].Body: '{"order_id":900}'
+        Messages[3].Attributes.ApproximateReceiveCount: "4"
 
   - name: a queue that looks nearly empty can have work in flight
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_GetQueueAttributes.html
     fixture: small-account
     request:
-      method: GET
-      path: /queues/orders
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.GetQueueAttributes
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
     expect:
       status: 200
       body:
@@ -402,10 +444,13 @@ conformance:
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SetQueueAttributes.html
     fixture: small-account
     request:
-      method: GET
-      path: /queues/orders
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.GetQueueAttributes
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
     expect:
       status: 200
       body:
@@ -417,31 +462,36 @@ conformance:
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_DeleteMessage.html
     fixture: small-account
     request:
-      method: GET
-      path: /messages/11111111-1111-4111-8111-111111111111
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     expect:
       status: 200
       body:
-        MessageId: 11111111-1111-4111-8111-111111111111
+        Messages[0].MessageId: 11111111-1111-4111-8111-111111111111
         # Issued per receive, and much longer. Deleting with a stale one from
         # an earlier receive silently does nothing.
-        ReceiptHandle: AQEBcauldron0000000000000000000000000001
+        Messages[0].ReceiptHandle: AQEBcauldron0000000000000000000000000001
       matches:
         # The body's MD5, which SQS expects the consumer to check and almost
         # nobody does. Without it a truncated body is indistinguishable from a
         # short one.
-        MD5OfBody: '^[0-9a-f]{32}$'
+        Messages[0].MD5OfBody: '^[0-9a-f]{32}$'
 
   - name: an expired handle names the queue rather than the consumer
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_DeleteMessage.html
     fixture: small-account
     request:
-      method: DELETE
-      path: /messages/55555555-5555-4555-8555-555555555555
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.DeleteMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        QueueUrl: https://sqs.eu-west-2.amazonaws.com/000000000000/orders
+        ReceiptHandle: AQEBcauldron0000000000000000000000000099
     expect:
       status: 400
       body:
@@ -462,6 +512,7 @@ conformance:
       method: POST
       path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     expect:
       # A success. Nothing to give is not an error, and the response says so
@@ -479,6 +530,7 @@ conformance:
       method: POST
       path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     expect:
       status: 200
@@ -491,9 +543,10 @@ conformance:
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/CommonParameters.html
     fixture: small-account
     request:
-      method: GET
-      path: /queues
+      method: POST
+      path: /
       headers:
+        X-Amz-Target: AmazonSQS.ListQueues
         # Wired up like every other API in this collection, which is the
         # mistake. AWS wants a signature, and Cauldron checks its shape
         # because the value differs on every request.
@@ -509,8 +562,8 @@ conformance:
     source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/CommonParameters.html
     fixture: small-account
     request:
-      method: GET
-      path: /queues
+      method: POST
+      path: /
     expect:
       # The failure that actually happens: credentials not configured. Shape
       # checking catches it even though the signature itself is not verified.
@@ -532,6 +585,7 @@ conformance:
       method: POST
       path: /
       headers:
+        X-Amz-Target: AmazonSQS.ReceiveMessage
         Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/eu-west-2/sqs/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       json:
         MaxNumberOfMessages: 1

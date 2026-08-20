@@ -1623,11 +1623,32 @@ scalars": a listing is a list of records, and returning only the identifier
 still emits `{"TableName": "orders"}` rather than `"orders"`. Stated in the
 Recipe, and costed here.
 
-**Still owed: SQS**, and it is worse than a path rename. Two of its routes
-model operations SQS does not have -- there is no "fetch one message by id" in
-that API at all -- and `DeleteMessage` keys on a receipt handle rather than an
-identifier, which is a distinction the Recipe's own header comment already
-draws. It needs the Documenso treatment rather than a conversion.
+**SQS is converted, and it took the Documenso treatment.** All five operations
+are `POST /` with `X-Amz-Target` and all twelve cases moved. The route serving
+`GET /messages/{id}` is gone: there is no fetch-one-message-by-id operation in
+SQS, and the four cases that used it read a receive now, which is the only way
+SQS hands a message over.
+
+Three things it could not fix, stated in the Recipe's own header where a reader
+meets them:
+
+- `DeleteMessage` is keyed by the receipt handle from a receive, and Cauldron
+  finds a record by its identifier and nothing else. Every delete answers
+  NonExistentQueue. The case covering it asserts exactly that, which is true
+  of an expired handle and not of a live one.
+- `GetQueueAttributes` answers with a flat map of strings under `Attributes`
+  and this answers with the queue object. Nesting the fields would fix the
+  shape and break `ListQueues`, which shares the resource.
+- `ListQueues` answers with `QueueUrls` as an array of strings -- the same
+  shape `TableNames` needs and Cauldron cannot express.
+
+### A route that looks a record up by something other than its id
+
+DeleteMessage is the clearest case: SQS addresses a message by a receipt
+handle, which is deliberately not its identifier. Marqeta, Contentful and
+anything keyed by a natural key have the same shape. `id_from` names where the
+value comes from; what is missing is a way to say which field it is matched
+against.
 
 ### A collection of scalars
 
