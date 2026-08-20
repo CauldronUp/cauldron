@@ -1650,11 +1650,19 @@ anything keyed by a natural key have the same shape. `id_from` names where the
 value comes from; what is missing is a way to say which field it is matched
 against.
 
-### A collection of scalars
+### ~~A collection of scalars~~ Built
 
-DynamoDB's `TableNames` is the first, and it will not be the last: plenty of
-APIs answer a listing with an array of identifiers. A listing here is a list of
-records and every record is an object, so the shape cannot be expressed at all.
+`entry_field` on a route's `list` makes each entry that one field's value
+rather than the whole record. It belongs on the route rather than the Recipe
+because the listing and the fetch disagree by design: DynamoDB's ListTables
+answers with the names and DescribeTable answers with the table, and SQS
+splits ListQueues and GetQueueAttributes the same way.
+
+Both were emitting objects where the provider sends strings, and neither had a
+case saying so -- the only cases on those two routes were about authentication
+failures. A client doing `TableNames.forEach(name => describe(name))` received
+objects and called `describe([object Object])`: a request built from a string
+that is not a name, with nothing to show it went wrong.
 
 
 `pages_field` is also still owed, for Documenso's `totalPages`.

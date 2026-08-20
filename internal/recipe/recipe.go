@@ -500,6 +500,20 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// EntryField makes each entry in the collection that one field's value
+	// rather than the whole record.
+	//
+	// Plenty of APIs answer a listing with an array of identifiers and keep
+	// the object for the fetch beside it. DynamoDB's ListTables sends
+	// TableNames as an array of strings; SQS's ListQueues sends QueueUrls the
+	// same way. Both Recipes emitted arrays of objects under those names, so
+	// a client doing TableNames.forEach(name => describe(name)) received
+	// objects and called describe([object Object]).
+	//
+	// It belongs on the route rather than the Recipe, because the listing and
+	// the fetch disagree by design: DescribeTable answers with the table and
+	// ListTables answers with its name.
+	EntryField string `yaml:"entry_field"`
 	// LinkHeader advertises the next page in an RFC 5988 Link response
 	// header rather than in the body.
 	//
@@ -2482,6 +2496,7 @@ func (r Recipe) ListFor(route Route) ListResponse {
 	override(&spec.LimitField, route.List.LimitField)
 	override(&spec.HasMoreField, route.List.HasMoreField)
 	override(&spec.EntryStyle, route.List.EntryStyle)
+	override(&spec.EntryField, route.List.EntryField)
 
 	if route.List.LinkHeader {
 		spec.LinkHeader = true
