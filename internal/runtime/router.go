@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -119,7 +120,7 @@ func compilePath(path string) []segment {
 // over /v1/customers/{id} regardless of declaration order. Providers routinely
 // have both, and matching on declaration order alone is a subtle trap.
 func (r *router) match(method, path string) (route, map[string]string, bool) {
-	return r.matchSelecting(method, path, "")
+	return r.matchSelecting(method, path, "", nil)
 }
 
 // matchSelecting is match with the request's GraphQL query in hand, so routes
@@ -128,7 +129,7 @@ func (r *router) match(method, path string) (route, map[string]string, bool) {
 // A route declaring selects matches only when the query mentions that word,
 // and beats an equally-scoring route that declares nothing, so a Recipe can
 // have several selecting routes and one fallback for everything else.
-func (r *router) matchSelecting(method, path, query string) (route, map[string]string, bool) {
+func (r *router) matchSelecting(method, path, query string, headers http.Header) (route, map[string]string, bool) {
 	parts := splitPath(path)
 
 	var (
@@ -158,6 +159,16 @@ func (r *router) matchSelecting(method, path, query string) (route, map[string]s
 			score += 1000
 		}
 
+		// The same bargain for the APIs that name the operation in a header
+		// rather than in the path or the body.
+		if len(candidate.spec.MatchesHeader) > 0 {
+			if !carries(headers, candidate.spec.MatchesHeader) {
+				continue
+			}
+
+			score += 1000
+		}
+
 		if score > bestScore {
 			best, bestVars, bestScore, found = candidate, vars, score, true
 		}
@@ -180,7 +191,7 @@ func (r *router) allowedMethods(path string) []string {
 		// methods a path supports. Counting it turned an unmodelled GraphQL
 		// query into 405 with Allow: POST, which tells a client to change
 		// the method it already got right. Not being modelled is a 404.
-		if candidate.spec.Selects != "" {
+		if candidate.spec.Selects != "" || len(candidate.spec.MatchesHeader) > 0 {
 			continue
 		}
 
@@ -257,4 +268,25 @@ func splitPath(path string) []string {
 	}
 
 	return out
+}
+
+// carries reports whether a request's headers hold every value a route asked
+// for.
+//
+// The comparison is exact rather than a substring: X-Amz-Target names one
+// operation, and secretsmanager.ListSecrets is not secretsmanager.ListSecretsX
+// however alike they read. Matching loosely here would route a request to a
+// neighbouring operation and answer it confidently.
+func carries(headers http.Header, want map[string]string) bool {
+	if headers == nil {
+		return false
+	}
+
+	for name, value := range want {
+		if headers.Get(name) != value {
+			return false
+		}
+	}
+
+	return true
 }
