@@ -919,6 +919,21 @@ type Route struct {
 	// applies only to the route's own resource, because that is the one the
 	// cursor refers to.
 	Beside []string `yaml:"beside"`
+	// LookupBy names the field the value from IDFrom is matched against, for
+	// the routes that address a record by something that is not its
+	// identifier.
+	//
+	// SQS deletes a message by the receipt handle from a receive, and a
+	// receipt handle is deliberately not a message id: it is issued per
+	// receive, two consumers holding two handles for the same message is
+	// normal, and a handle from an earlier receive is stale. Anything keyed
+	// by a natural key -- an email address, an external reference, a slug --
+	// has the same shape.
+	//
+	// IDFrom says where the value comes from; this says what it is compared
+	// with. Without it a handle was looked up as though it were an id, found
+	// nothing, and every delete failed.
+	LookupBy string `yaml:"lookup_by"`
 	// MatchesHeader names request headers whose values pick this route, for
 	// the APIs where the path does not say which operation you meant.
 	//
