@@ -902,6 +902,20 @@ type Route struct {
 	// applies only to the route's own resource, because that is the one the
 	// cursor refers to.
 	Beside []string `yaml:"beside"`
+	// List overrides the Recipe-wide list envelope for this route.
+	//
+	// A provider's listings do not always share a shape. Clerk's users and
+	// sessions answer with bare arrays and its organisations with
+	// {data, total_count}; Algolia's browse carries a cursor its search does
+	// not have. A Recipe-wide envelope makes one of those wrong, and the
+	// wrongness is the expensive kind: code written against the emulator
+	// reads response.data.map(...) and receives an array from the provider,
+	// where .data is undefined.
+	//
+	// Only the fields set here are overridden; the rest are inherited. A
+	// string field set to "-" is cleared rather than inherited, which is how
+	// a route says the provider sends nothing there.
+	List *ListResponse `yaml:"list"`
 	// Returns limits the response to the named fields, for the routes that
 	// answer with less than the record they touched.
 	//
@@ -2410,4 +2424,52 @@ func (p Pagination) FirstPageNumber() int {
 	}
 
 	return *p.FirstPage
+}
+
+// ListFor returns the list envelope a route answers with: the Recipe-wide one,
+// with the route's own overrides applied.
+//
+// Empty means inherit and "-" means clear, so a route can both add a field the
+// Recipe does not declare and remove one it does. A boolean can only be turned
+// on, because an unset boolean and a false one are the same value in YAML and
+// guessing which was meant is how a Recipe ends up asserting something nobody
+// wrote.
+func (r Recipe) ListFor(route Route) ListResponse {
+	spec := r.Responses.List
+	if route.List == nil {
+		return spec
+	}
+
+	override := func(into *string, with string) {
+		switch with {
+		case "":
+		case "-":
+			*into = ""
+		default:
+			*into = with
+		}
+	}
+
+	override(&spec.Style, route.List.Style)
+	override(&spec.Key, route.List.Key)
+	override(&spec.CursorField, route.List.CursorField)
+	override(&spec.CountField, route.List.CountField)
+	override(&spec.PageField, route.List.PageField)
+	override(&spec.LimitField, route.List.LimitField)
+	override(&spec.HasMoreField, route.List.HasMoreField)
+	override(&spec.EntryStyle, route.List.EntryStyle)
+
+	if route.List.LinkHeader {
+		spec.LinkHeader = true
+	}
+
+	if route.List.CountAsString {
+		spec.CountAsString = true
+	}
+
+	if route.List.OmitWhenEmpty {
+		spec.OmitWhenEmpty = true
+	}
+
+	return spec
 }
