@@ -1558,9 +1558,51 @@ Recipe rather than hidden, and it is the same missing feature the AWS Recipes
 need from the other direction: **a route that carries its own response shape.**
 Three Recipes want it now.
 
+**Trello**: no pagination on either. Neither a board's lists nor its cards
+takes a limit, an offset or a cursor -- both answer with everything on the
+board. Trello does page elsewhere, on its actions and search endpoints, which
+take `limit` with `before` and `since`. A page size declared on these two was
+one they do not accept.
+
+**Greenhouse**: `per_page` and `page`, read out of its own Harvest
+documentation, which states the same pair on every listing -- `per_page` an
+integer between 1 and 500 defaulting to 100, and `page`, "the n-th chunk of
+`per_page` objects". Stated gap: Greenhouse also sends a `link` response header
+carrying `next` and `last`, and `skip_count` removes `last` from it.
+
+That is the **fourth** provider whose next page lives in a header, after
+GitHub, Ably and WordPress. Four is enough to stop calling it a curiosity.
+
+### Two features three audits keep arriving at
+
+Worth stating plainly, because they are no longer speculative:
+
+**A route that carries its own response shape.** Clerk's listings do not share
+an envelope (two bare arrays, one wrapped). The three AWS Recipes need the
+operation to come from a header rather than the path. Algolia's browse has a
+cursor its search has not. Each was found separately and each wants the same
+thing.
+
+**Paging carried in a response header.** GitHub, Ably, WordPress and Greenhouse
+all advertise the next page in `Link` (WordPress adds `X-WP-Total` and
+`X-WP-TotalPages`). In each the page size works and the next page is
+unreachable, so a client written against the header stops after one page.
+
+### Sources that answer 200 without answering the question
+
+The list is worth keeping because probing them again costs time:
+
+| Provider | What happens |
+|---|---|
+| Segment | `api.segmentapis.com/docs/openapi.yaml` returns an HTML page |
+| Tradier | `api.tradier.com/v1/openapi.json` returns 115KB of HTML |
+| Pipedrive | Publishes OpenAPI that omits its own top-level collections |
+| Snyk | `api.snyk.io/rest/openapi` answers 405 to a HEAD |
+| Ably | Publishes the Control API, not the REST data API its Recipe models |
+
 ### Remaining
 
-36 Recipes, 89 declarations. The method that works: find the provider's own
+34 Recipes, 84 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
