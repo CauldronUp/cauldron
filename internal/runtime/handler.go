@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -549,6 +550,15 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// resume point in Next-Range. A 200 there means you have everything, so
 	// an emulator that always answered 200 taught a client the one thing it
 	// must not believe.
+	// The next page as an RFC 5988 Link header, for the providers that
+	// advertise it there rather than in the body. Set before the route's own
+	// headers so a Recipe naming Link explicitly still wins.
+	if s.recipe.Responses.List.LinkHeader && page.HasMore && page.NextCursor != "" {
+		if next := nextPageURL(r, matched.spec.Pagination, page.NextCursor); next != "" {
+			w.Header().Set("Link", "<"+next+`>; rel="next"`)
+		}
+	}
+
 	s.writeRouteHeaders(w, matched, nil)
 
 	status := matched.spec.Status
@@ -559,6 +569,57 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	writeJSON(w, status, body)
 
 	return status
+}
+
+// nextPageURL renders the request that fetches the page after this one.
+//
+// It is this request with the position parameter moved on, which is what every
+// provider's Link header contains: the same query, one page further in. A
+// listing whose paging travels in the body has no such URL, so it gets no
+// header rather than a misleading one.
+func nextPageURL(r *http.Request, spec recipe.Pagination, cursor string) string {
+	if spec.In == "body" {
+		return ""
+	}
+
+	name := spec.CursorParam
+	if name == "" {
+		switch spec.Style {
+		case "page", "offset":
+			name = spec.Style
+		default:
+			name = "cursor"
+		}
+	}
+
+	if name == "-" {
+		return ""
+	}
+
+	next := *r.URL
+
+	// The path the caller asked for, which is not always the one the sandbox
+	// sees. The multi-provider server mounts each Recipe under its own name
+	// and rewrites URL.Path, leaving RequestURI as it arrived, so a header
+	// built from the rewritten path sends the client to /repos/... when the
+	// server serves /github/repos/... -- a next page that 404s, which is a
+	// worse failure than no next page at all.
+	if r.RequestURI != "" {
+		if asked, err := url.ParseRequestURI(r.RequestURI); err == nil && asked.Path != "" {
+			next.Path = asked.Path
+		}
+	}
+
+	query := next.Query()
+	query.Set(name, cursor)
+	next.RawQuery = query.Encode()
+
+	// A provider's Link header carries an absolute URL, and a client is
+	// expected to request it as it stands rather than to reassemble one.
+	next.Scheme = "http"
+	next.Host = r.Host
+
+	return next.String()
 }
 
 // cursorOf reads the identifier a cursor-paged listing resumes after.

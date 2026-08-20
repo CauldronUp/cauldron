@@ -1583,10 +1583,29 @@ operation to come from a header rather than the path. Algolia's browse has a
 cursor its search has not. Each was found separately and each wants the same
 thing.
 
-**Paging carried in a response header.** GitHub, Ably, WordPress and Greenhouse
-all advertise the next page in `Link` (WordPress adds `X-WP-Total` and
-`X-WP-TotalPages`). In each the page size works and the next page is
-unreachable, so a client written against the header stops after one page.
+~~**Paging carried in a response header.**~~ **Built.** GitHub, Ably,
+WordPress, Greenhouse and Buildkite all advertise the next page in `Link`, and
+for Ably it is the only mechanism there is. `responses.list.link_header: true`
+emits it: the request that was made, with the position parameter moved on, as
+an absolute URL a client can request as it stands.
+
+Two things the building turned up.
+
+The URL has to be built from what the caller asked for, not from what the
+sandbox sees. The multi-provider server mounts each Recipe under its own name
+and rewrites `URL.Path`, so the first working version advertised
+`/repos/octocat/hello-world/issues?page=2` when the server serves
+`/github/repos/...` -- a next page that 404s, which is worse than no next page
+at all. `RequestURI` survives the rewrite and is what it uses now.
+
+And the absence of the header needed to become assertable. No `Link` on the
+last page is the claim that ends the loop, and there was no way to write it
+down, so `absent_headers` exists now. A first attempt at the case passed
+against an emulator that sent `Link` on every page; the mutation that forced
+that is what showed the case was checking nothing.
+
+Only `next` is emitted. Providers also advertise `prev`, `first` and `last`,
+and `last` needs a total this does not have.
 
 ### Sources that answer 200 without answering the question
 

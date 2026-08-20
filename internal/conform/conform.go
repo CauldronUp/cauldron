@@ -365,6 +365,15 @@ func check(expect recipe.Expectation, response *http.Response, body []byte) []st
 		}
 	}
 
+	// A header that must not be there. For paging this is the claim that ends
+	// the loop: no Link on the last page is what stops a client asking for a
+	// page that does not exist.
+	for _, name := range expect.AbsentHeaders {
+		if got := response.Header.Get(name); got != "" {
+			failures = append(failures, fmt.Sprintf("header %s: must not be sent, got %q", name, got))
+		}
+	}
+
 	// Applied to the raw bytes, before anything tries to parse them. A
 	// provider whose failures are plain text has no assertable body
 	// otherwise, so the only claim available was its Content-Type.
