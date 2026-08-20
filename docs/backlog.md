@@ -1577,11 +1577,21 @@ GitHub, Ably and WordPress. Four is enough to stop calling it a curiosity.
 
 Worth stating plainly, because they are no longer speculative:
 
-**A route that carries its own response shape.** Clerk's listings do not share
-an envelope (two bare arrays, one wrapped). The three AWS Recipes need the
-operation to come from a header rather than the path. Algolia's browse has a
-cursor its search has not. Each was found separately and each wants the same
-thing.
+~~**A route that carries its own response shape.**~~ **Built, for the envelope
+half.** A route may now declare `list:` and override the Recipe-wide envelope:
+empty inherits, `"-"` clears, and a boolean can only be turned on -- an unset
+boolean and a false one are the same value in YAML, and guessing which was
+meant is how a Recipe ends up asserting something nobody wrote.
+
+Two Recipes stopped lying because of it. Clerk's organisation listing is
+`{data, total_count}` again while its users and sessions stay bare, so the
+majority-shape compromise is gone. Algolia's browse carries the cursor it
+really has, without putting one on every search response, which is what the
+Recipe-wide field would have done.
+
+**Still owed: the AWS half.** Secrets Manager, DynamoDB and SQS need the
+*operation* to come from the `X-Amz-Target` header rather than the path, which
+is routing rather than shaping and is a separate piece of work.
 
 ~~**Paging carried in a response header.**~~ **Built.** GitHub, Ably,
 WordPress, Greenhouse and Buildkite all advertise the next page in `Link`, and

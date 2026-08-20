@@ -482,17 +482,23 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		page.Records[i] = trim(matched.spec, record)
 	}
 
-	body := s.listBody(page, matched.spec.Resource, r.URL.Path)
+	// The envelope this route answers with. A provider's listings do not
+	// always share one: Clerk's users and sessions are bare arrays and its
+	// organisations are wrapped, and a Recipe-wide shape makes one of them
+	// wrong.
+	list := s.recipe.ListFor(matched.spec)
+
+	body := s.listBody(list, page, matched.spec.Resource, r.URL.Path)
 
 	// What this request actually served, for the providers that report it.
 	// These cannot be constants: a field whose whole purpose is to say where
 	// you are is worse than absent when it always says the same thing.
 	if object, ok := body.(map[string]any); ok {
-		if name := s.recipe.Responses.List.LimitField; name != "" {
+		if name := list.LimitField; name != "" {
 			setPath(object, name, limit)
 		}
 
-		if name := s.recipe.Responses.List.PageField; name != "" {
+		if name := list.PageField; name != "" {
 			setPath(object, name, servedPage(from, matched.spec.Pagination))
 		}
 	}
@@ -553,7 +559,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// The next page as an RFC 5988 Link header, for the providers that
 	// advertise it there rather than in the body. Set before the route's own
 	// headers so a Recipe naming Link explicitly still wins.
-	if s.recipe.Responses.List.LinkHeader && page.HasMore && page.NextCursor != "" {
+	if list.LinkHeader && page.HasMore && page.NextCursor != "" {
 		if next := nextPageURL(r, matched.spec.Pagination, page.NextCursor); next != "" {
 			w.Header().Set("Link", "<"+next+`>; rel="next"`)
 		}
@@ -1184,9 +1190,9 @@ func setPath(body map[string]any, path string, value any) {
 	setPath(child, rest, value)
 }
 
-// listBody shapes a page according to the Recipe's declared list style.
-func (s *Sandbox) listBody(page store.Page, resource, path string) any {
-	spec := s.recipe.Responses.List
+// listBody shapes a page according to the declared list style, which is the
+// Recipe's unless the route overrode it.
+func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, path string) any {
 	page.Records = s.presentAll(resource, page.Records)
 
 	// Chargebee wraps every item under the resource's own name, so a client
