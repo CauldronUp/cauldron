@@ -850,7 +850,10 @@ type Route struct {
 	// recorded as its own judgement call rather than as one missing feature.
 	Selects string `yaml:"selects"`
 	// IDFrom says where the identifier comes from when it is not a path
-	// parameter: "query:channel" or "body:channel". Slack and every other
+	// parameter: "query:channel" or "body:channel". A body name may be
+	// dotted, because a provider that puts the identifier in the body does
+	// not always put it at the top of one -- DynamoDB's GetItem takes
+	// {"Key": {"id": {"S": "..."}}}, which is body:Key.id.S. Slack and every other
 	// RPC-shaped API put it in the query string or the body, and without this
 	// the format could only describe APIs that happen to be RESTful.
 	//

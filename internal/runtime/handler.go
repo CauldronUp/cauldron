@@ -243,12 +243,36 @@ func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]str
 			return ""
 		}
 
-		if value, ok := body[name]; ok {
+		// A dotted name nests, because a provider that puts the identifier in
+		// the body does not always put it at the top of one. DynamoDB's
+		// GetItem takes {"Key": {"id": {"S": "..."}}}: the identifier is
+		// three levels down, in attribute-value form, and reading only the
+		// top level finds nothing at all.
+		if value, ok := nestedValue(body, name); ok {
 			return fmt.Sprint(value)
 		}
 	}
 
 	return ""
+}
+
+// nestedValue walks a dotted path to a leaf in a decoded body.
+func nestedValue(body store.Record, path string) (any, bool) {
+	var current any = map[string]any(body)
+
+	for _, segment := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+
+	return current, true
 }
 
 // trim reduces a record to the fields a route answers with. The trim happens
