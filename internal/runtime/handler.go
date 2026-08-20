@@ -92,7 +92,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r))
+	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), r.Header)
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
 			w.Header().Set("Allow", strings.Join(allowed, ", "))

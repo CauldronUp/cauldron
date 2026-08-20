@@ -1589,9 +1589,30 @@ majority-shape compromise is gone. Algolia's browse carries the cursor it
 really has, without putting one on every search response, which is what the
 Recipe-wide field would have done.
 
-**Still owed: the AWS half.** Secrets Manager, DynamoDB and SQS need the
-*operation* to come from the `X-Amz-Target` header rather than the path, which
-is routing rather than shaping and is a separate piece of work.
+**The AWS half is built too.** `matches_header` on a route picks it by a
+request header's value, which is the same bargain `selects` already makes for
+GraphQL: one path, several routes, told apart by something that is not the
+path. A route declaring it beats an equally-scoring route that declares
+nothing, and an unmatched target is a 404 rather than a 405 -- a 405 would tell
+a client to change the method, which was never the problem.
+
+**Secrets Manager is converted.** Its five operations are `POST /` with
+`X-Amz-Target`, and all eleven of its conformance cases moved with them. The
+paths it used to serve -- `/ListSecrets`, `/GetSecretValue` and the rest --
+now 404, which is what AWS does with them.
+
+The comparison is exact, and that needed a case of its own. A mutation making
+it a substring comparison passed every other case in the Recipe: nothing sent
+a target that *contained* a modelled one. `secretsmanager.ListSecretsAndMore`
+is not an AWS operation and is in the suite as a near miss, because a loose
+comparison would route it to `ListSecrets` and answer it with somebody else's
+secrets.
+
+**Still owed:** DynamoDB and SQS. Both keep convenience paths beside their real
+`POST /` -- `/tables`, `/items/{id}`, `/queues`, `/messages/{id}` -- and each
+needs the same conversion.
+
+`pages_field` is also still owed, for Documenso's `totalPages`.
 
 ~~**Paging carried in a response header.**~~ **Built.** GitHub, Ably,
 WordPress, Greenhouse and Buildkite all advertise the next page in `Link`, and

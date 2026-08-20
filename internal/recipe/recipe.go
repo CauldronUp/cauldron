@@ -902,6 +902,22 @@ type Route struct {
 	// applies only to the route's own resource, because that is the one the
 	// cursor refers to.
 	Beside []string `yaml:"beside"`
+	// MatchesHeader names request headers whose values pick this route, for
+	// the APIs where the path does not say which operation you meant.
+	//
+	// The AWS JSON protocol is the reason it exists: every operation is a
+	// POST to the root and the operation is named in X-Amz-Target. Without a
+	// way to route on that, the three AWS Recipes here encoded the operation
+	// in the path instead -- /ListSecrets, /tables, /queues -- and served
+	// URLs AWS does not have. A client can be written entirely against those
+	// paths, pass every test, and be entirely wrong.
+	//
+	// It is the same shape as selects, which tells GraphQL routes apart by a
+	// word in the query body: one path, several routes, distinguished by
+	// something that is not the path. A route declaring it beats an
+	// equally-scoring route that declares nothing, so a Recipe can have a
+	// fallback for the operations it does not model.
+	MatchesHeader map[string]string `yaml:"matches_header"`
 	// List overrides the Recipe-wide list envelope for this route.
 	//
 	// A provider's listings do not always share a shape. Clerk's users and
@@ -1407,8 +1423,13 @@ func (r *Recipe) Validate() error {
 		// Selects is part of the identity: a GraphQL Recipe is several routes
 		// on one path, told apart by what the query asks for, and two of them
 		// selecting the same field would still be the duplicate this rule
-		// exists to catch.
+		// exists to catch. The headers a route matches on are part of it for
+		// the same reason -- an AWS Recipe is every operation on POST /,
+		// told apart by X-Amz-Target.
 		key := route.Method + " " + route.Path + " " + route.Selects
+		for _, name := range sortedKeys(route.MatchesHeader) {
+			key += " " + name + "=" + route.MatchesHeader[name]
+		}
 		if seen[key] {
 			add("%s: duplicate route", where)
 		}
