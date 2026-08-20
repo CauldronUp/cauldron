@@ -228,6 +228,15 @@ type Expectation struct {
 	// substrings, which cannot assert that a header is merely present and
 	// well-formed.
 	HeaderMatches map[string]string `yaml:"header_matches"`
+	// AbsentHeaders lists response headers that must not appear.
+	//
+	// The absence of a header is a claim as real as its presence, and for
+	// paging it is the one that terminates the loop: a provider advertises
+	// the next page in Link and sends no Link on the last page, so a client
+	// that keeps following one until it is gone stops exactly there. An
+	// emulator that sent Link on every page would loop forever, and there
+	// was no way to write that down.
+	AbsentHeaders []string `yaml:"absent_headers"`
 	// Absent lists fields that must not appear. Providers are as specific about
 	// what they omit as what they send.
 	Absent []string `yaml:"absent"`
@@ -491,6 +500,25 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// LinkHeader advertises the next page in an RFC 5988 Link response
+	// header rather than in the body.
+	//
+	// Five providers modelled here page that way and it is the mechanism
+	// their own documentation leads with: GitHub, Ably, WordPress, Greenhouse
+	// and Buildkite. Buildkite's says it plainly -- "the pagination
+	// information can be found in the Link HTTP response header" -- and Ably
+	// pages by nothing else at all.
+	//
+	// Without it the page size works and the next page is unreachable, which
+	// is the quietest way for a listing to be wrong: one page comes back, it
+	// is a correct page, and the loop that should have asked for the second
+	// one has nothing to follow.
+	//
+	// Only next is emitted. Providers also advertise prev, first and last,
+	// and last needs a total this does not have -- so a client that follows
+	// next walks the whole collection here, and one that reads last finds
+	// nothing. That is stated rather than guessed at.
+	LinkHeader bool `yaml:"link_header"`
 	// PageField and LimitField name properties echoing the page number and
 	// the page size the request asked for.
 	//
@@ -2016,7 +2044,8 @@ func (r *Recipe) Validate() error {
 		// which is evidence of exactly the kind this rule exists to demand.
 		if c.Expect.Status < 400 && !c.Expect.NoBody && c.Expect.BodyMatches == "" && c.Expect.Webhook == nil &&
 			len(c.Expect.Body) == 0 && len(c.Expect.Matches) == 0 &&
-			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 {
+			len(c.Expect.Headers) == 0 && len(c.Expect.HeaderMatches) == 0 && len(c.Expect.Absent) == 0 &&
+			len(c.Expect.AbsentHeaders) == 0 {
 			add("%s: a case that asserts nothing about the response is not evidence of anything", where)
 		}
 	}
