@@ -19,6 +19,9 @@ type Exchange struct {
 	Fault    string
 	Resource string
 	Op       string
+	// Network describes any degraded network conditions this request met, so
+	// a baffling timing in the log has a visible cause.
+	Network string
 }
 
 // requestLog is a bounded ring of recent exchanges.

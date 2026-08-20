@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/store"
@@ -32,9 +33,41 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.log.record(exchange)
 	}()
 
-	// Faults are evaluated before anything else, including auth. A rate limit
-	// that only fires on well-formed authenticated requests would not be a
-	// faithful rate limit.
+	// The network is consulted before the provider is, because that is the
+	// order reality uses: a connection that never completes never reaches an
+	// application that could have rate limited it.
+	if conditions, ok := s.network.next(r.URL.Path); ok {
+		exchange.Network = describeConditions(conditions)
+
+		if conditions.Fatal() {
+			// No response is coming, so do not build one. hangUp reports false
+			// only when the server does not support hijacking, in which case
+			// falling through to a normal response is better than pretending.
+			if hangUp(w, conditions.Timeout) {
+				exchange.Status = 0
+
+				return
+			}
+		}
+
+		if delay := s.network.delay(conditions); delay > 0 {
+			time.Sleep(delay)
+		}
+
+		if degraded := newDegradedWriter(w, conditions); conditions.Bandwidth > 0 || conditions.Limit > 0 || conditions.Slice > 0 {
+			defer func() {
+				if degraded.truncated() {
+					exchange.Network += " (truncated)"
+				}
+			}()
+
+			w = degraded
+		}
+	}
+
+	// Faults are evaluated before anything else the provider does, including
+	// auth. A rate limit that only fires on well-formed authenticated requests
+	// would not be a faithful rate limit.
 	if name, ok := s.faults.next(r.URL.Path); ok {
 		exchange.Fault = name
 		exchange.Status = s.writeRecipeError(w, name)

@@ -60,7 +60,8 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Recipe runtime (routing, state, auth, pagination) | Working |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe; Recipes that declare none fall back to Stripe's shape, which is a default rather than a claim about that provider |
 | Fault injection, clock control, request log | Working |
-| `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `emit`, `clock` | Working |
+| Network conditions (latency, throttling, timeouts, resets) | Working. Toxiproxy's vocabulary, applied to the emulated providers |
+| `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `network`, `emit`, `clock` | Working |
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
@@ -194,6 +195,7 @@ Or drive it from the CLI:
 cauldron status                                   # what is running
 cauldron seed stripe --fixture small-shop         # load seed data
 cauldron fault stripe --error rate_limit --count 2 # break the next two calls
+cauldron network stripe --latency 800ms           # make the link slow
 cauldron clock advance 30d                        # age everything a month
 cauldron emit stripe payment_intent.payment_failed # fire a webhook
 cauldron requests stripe                          # what your code actually sent
@@ -208,6 +210,46 @@ cauldron reset                                    # back to a clean sandbox
 ```
 
 Point the CLI at a different server with `--url` or `$CAULDRON_URL`.
+
+### Breaking the network, not just the provider
+
+`cauldron fault` covers what a provider does *deliberately* when something is
+wrong: rate limits, validation errors, 5xx. `cauldron network` covers what the
+network does to you regardless of what the provider intended.
+
+```bash
+cauldron network stripe --latency 800ms --jitter 200ms   # a slow link
+cauldron network stripe --bandwidth 50                   # a thin one
+cauldron network stripe --timeout 30s                    # accept, answer nothing, hang up
+cauldron network stripe --reset --probability 0.1        # one call in ten dies mid-flight
+cauldron network stripe --clear
+```
+
+The difference is the whole point. A rate limit arrives as a well-formed 429
+your client library already understands and probably already retries. A
+connection that hangs for ninety seconds and then dies arrives as nothing at
+all: no status, no body, no error type your code has a branch for. That is the
+one that pages someone, and it is the one no provider's sandbox will ever hand
+you.
+
+The vocabulary is [Toxiproxy's](https://github.com/Shopify/toxiproxy) on
+purpose — latency, jitter, bandwidth, timeout, reset, slice, limit. If you have
+used Toxiproxy to break the link to your database, you already know what these
+flags do, and learning a second set of words for the same idea would buy
+nothing. Cauldron applies them to the third-party APIs Toxiproxy cannot help
+with, because those do not exist locally for it to sit in front of.
+
+The two compose. Point Toxiproxy at Postgres and Cauldron at Stripe, and every
+dependency your application has can be made to misbehave from a single test. In
+PHP, [`mpge/toxiproxy-php`](https://github.com/mpge/toxiproxy-php) is the other
+half: it manages the Toxiproxy server for you the way Cauldron manages the
+provider fakes.
+
+Conditions are applied before the provider's own behaviour, are reproducible
+from the sandbox seed even below a probability of 1, and show up in `status` and
+`requests` so an odd timing has a visible cause rather than looking like a
+flake. `docs/network.md` has the full reference, including the two places an
+HTTP emulator honestly cannot be a TCP proxy.
 
 ### When something is wrong
 
