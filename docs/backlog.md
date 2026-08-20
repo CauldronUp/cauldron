@@ -1533,9 +1533,34 @@ Cauldron cannot yet compute it, and of the two available lies -- a field that
 is missing, or a field carrying a count of the wrong thing -- the missing one
 fails loudly. The `pages_field` that would close it properly is still owed.
 
+**WordPress**: `page` and `per_page`, from one, read out of a live WordPress
+REST route index -- the API describes its own arguments, which is as
+authoritative as a spec gets. Stated gap: WordPress reports `X-WP-Total` and
+`X-WP-TotalPages` in response headers and sends `Link` headers for the next
+and previous pages, and Cauldron sends none of them. That is the third
+provider whose paging metadata lives in headers, after GitHub and Ably.
+
+**Clerk**: `limit` and `offset` in the query. `limit` was already the name the
+runtime guessed, so the page size looked like it worked while `offset` did
+nothing.
+
+Clerk also had the envelope wrong, and it is the eighth thing found beside the
+paging rather than in it. **Its listings do not share a shape.** `/v1/users`
+and `/v1/sessions` answer with bare arrays; only `/v1/organizations` is
+`{data, total_count}`. The Recipe wrapped all three, and two conformance cases
+asserted that shape -- one of them named for it -- so code written here reads
+`response.data.map(...)` and receives an array from the real API, where
+`.data` is undefined.
+
+Two of the three are bare, the envelope is Recipe-wide, so the majority shape
+wins and the organisation listing is now the wrong one. That is stated in the
+Recipe rather than hidden, and it is the same missing feature the AWS Recipes
+need from the other direction: **a route that carries its own response shape.**
+Three Recipes want it now.
+
 ### Remaining
 
-38 Recipes, 96 declarations. The method that works: find the provider's own
+36 Recipes, 89 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
