@@ -1224,6 +1224,23 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, 
 	// finds nothing at all.
 	var items any = page.Records
 
+	// A collection of identifiers rather than of records. DynamoDB's
+	// ListTables sends TableNames as an array of strings and keeps the table
+	// object for DescribeTable beside it; SQS's ListQueues does the same with
+	// QueueUrls. Emitting objects there hands a client something it will
+	// interpolate into a URL, and [object Object] is what it builds.
+	if spec.EntryField != "" {
+		values := make([]any, 0, len(page.Records))
+
+		for _, record := range page.Records {
+			if value, ok := nestedValue(record, spec.EntryField); ok {
+				values = append(values, value)
+			}
+		}
+
+		items = values
+	}
+
 	if spec.EntryStyle == "wrapped" {
 		wrapped := make([]any, 0, len(page.Records))
 
