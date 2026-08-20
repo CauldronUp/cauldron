@@ -1608,9 +1608,33 @@ is not an AWS operation and is in the suite as a near miss, because a loose
 comparison would route it to `ListSecrets` and answer it with somebody else's
 secrets.
 
-**Still owed:** DynamoDB and SQS. Both keep convenience paths beside their real
-`POST /` -- `/tables`, `/items/{id}`, `/queues`, `/messages/{id}` -- and each
-needs the same conversion.
+**DynamoDB is converted too.** Query, GetItem, ListTables and DescribeTable
+are `POST /` with `X-Amz-Target`, and all ten of its cases moved. GetItem
+needed one thing the format did not have: its key is
+`{"Key": {"id": {"S": "ORDER#1001"}}}`, three levels down and in
+attribute-value form, so `id_from: body:` now accepts a dotted name.
+
+It also turned up an invented shape that nothing was asserting. **ListTables
+answers with `TableNames` as an array of strings** -- just the names -- and
+this Recipe emits an array of table objects under that name. A client doing
+`TableNames.forEach(name => describe(name))` gets objects and calls
+`describe([object Object])`. Cauldron has no way to say "a collection of
+scalars": a listing is a list of records, and returning only the identifier
+still emits `{"TableName": "orders"}` rather than `"orders"`. Stated in the
+Recipe, and costed here.
+
+**Still owed: SQS**, and it is worse than a path rename. Two of its routes
+model operations SQS does not have -- there is no "fetch one message by id" in
+that API at all -- and `DeleteMessage` keys on a receipt handle rather than an
+identifier, which is a distinction the Recipe's own header comment already
+draws. It needs the Documenso treatment rather than a conversion.
+
+### A collection of scalars
+
+DynamoDB's `TableNames` is the first, and it will not be the last: plenty of
+APIs answer a listing with an array of identifiers. A listing here is a list of
+records and every record is an object, so the shape cannot be expressed at all.
+
 
 `pages_field` is also still owed, for Documenso's `totalPages`.
 
