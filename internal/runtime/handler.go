@@ -550,6 +550,16 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		if name := list.PageField; name != "" {
 			setPath(object, name, servedPage(from, matched.spec.Pagination))
 		}
+
+		// How many pages the whole set makes, which is a different quantity
+		// from how many records there are. A count of records under a name
+		// that says pages is worse than an invented field: the name is real
+		// and the number is plausible, so a client looping while
+		// page <= totalPages asks for pages that do not exist and reads them
+		// as empty results rather than as a mistake.
+		if name := list.PagesField; name != "" {
+			setPath(object, name, s.countValue(list, pageCount(page.Total, limit)))
+		}
 	}
 
 	// Other collections travelling in the same body. One endpoint, several
@@ -1950,4 +1960,17 @@ func servedPage(from paging, spec recipe.Pagination) int {
 	}
 
 	return n
+}
+
+// pageCount is how many pages a total makes at this page size.
+//
+// An empty set is nought pages. Providers differ about whether it is nought or
+// one, and nought is the reading that stops a loop rather than sending it
+// after a page with nothing in it.
+func pageCount(total, limit int) int {
+	if total <= 0 || limit <= 0 {
+		return 0
+	}
+
+	return (total + limit - 1) / limit
 }

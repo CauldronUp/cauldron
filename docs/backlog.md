@@ -1528,10 +1528,14 @@ serve now read the document, which is where the provider puts recipients. The
 recipient resource is gone: it is a list on the document, and the fixture seeds
 it inline.
 
-`totalPages` is **absent** rather than wrong. Documenso always sends it and
-Cauldron cannot yet compute it, and of the two available lies -- a field that
-is missing, or a field carrying a count of the wrong thing -- the missing one
-fails loudly. The `pages_field` that would close it properly is still owed.
+`totalPages` is back, with the quantity it claims. `pages_field` divides the
+total by the page size and rounds up, so three documents at ten per page is one
+page and at two per page is two. It had been removed rather than left wrong,
+which was the right call for one tick and not a fix.
+
+An empty set is nought pages. Providers differ about whether it is nought or
+one, and nought is the reading that stops a loop rather than sending it after
+a page with nothing in it.
 
 **WordPress**: `page` and `per_page`, from one, read out of a live WordPress
 REST route index -- the API describes its own arguments, which is as

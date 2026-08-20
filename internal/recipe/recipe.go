@@ -500,6 +500,20 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// PagesField names a property carrying how many pages the whole set makes
+	// at this page size, which is a different quantity from CountField.
+	//
+	// Documenso's list envelope is {documents, totalPages} and nothing else,
+	// and totalPages was declared as the count field -- so three documents at
+	// ten per page reported three rather than one. That is worse than an
+	// invented field: the name is real and the number is plausible, so a
+	// client looping while page <= totalPages asks for two pages that do not
+	// exist and reads them as empty results rather than as a mistake.
+	//
+	// An empty set is nought pages here. Providers differ about whether it is
+	// nought or one, and nought is the reading that stops a loop rather than
+	// sending it after a page with nothing in it.
+	PagesField string `yaml:"pages_field"`
 	// EntryField makes each entry in the collection that one field's value
 	// rather than the whole record.
 	//
@@ -2512,6 +2526,7 @@ func (r Recipe) ListFor(route Route) ListResponse {
 	override(&spec.HasMoreField, route.List.HasMoreField)
 	override(&spec.EntryStyle, route.List.EntryStyle)
 	override(&spec.EntryField, route.List.EntryField)
+	override(&spec.PagesField, route.List.PagesField)
 
 	if route.List.LinkHeader {
 		spec.LinkHeader = true
