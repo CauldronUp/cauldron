@@ -1600,9 +1600,25 @@ The list is worth keeping because probing them again costs time:
 | Snyk | `api.snyk.io/rest/openapi` answers 405 to a HEAD |
 | Ably | Publishes the Control API, not the REST data API its Recipe models |
 
+**WooCommerce**: `page` and `per_page`, from one, defaulting to one and ten.
+
+**Buildkite**: the same two, defaulting to one and thirty with a hundred as the
+cap -- but its documentation leads with the header, not the parameters: "the
+pagination information can be found in the `Link` HTTP response header
+containing zero or more of `next`, `prev`, `first` and `last`". The query
+parameters work here and the header does not exist, which makes Buildkite the
+**fifth**.
+
+**Mailchimp is stuck on sources rather than on effort.** Its published JSON
+schemas at `api.mailchimp.com/schema/3.0/` describe responses only -- the
+collection response is `{_links, constraints, lists, total_items}` -- and
+nothing there states the request parameters. The paging is documented in prose
+on an HTML page. It stays undeclared until that is read properly rather than
+recalled.
+
 ### Remaining
 
-34 Recipes, 84 declarations. The method that works: find the provider's own
+32 Recipes, 78 declarations. The method that works: find the provider's own
 machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
