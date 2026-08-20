@@ -1725,12 +1725,32 @@ containing zero or more of `next`, `prev`, `first` and `last`". The query
 parameters work here and the header does not exist, which makes Buildkite the
 **fifth**.
 
-**Mailchimp is stuck on sources rather than on effort.** Its published JSON
-schemas at `api.mailchimp.com/schema/3.0/` describe responses only -- the
-collection response is `{_links, constraints, lists, total_items}` -- and
-nothing there states the request parameters. The paging is documented in prose
-on an HTML page. It stays undeclared until that is read properly rather than
-recalled.
+**Mailchimp cannot be sourced, and that is now a finding rather than a
+deferral.** Its published JSON schemas describe responses only. Its
+documentation page renders through JavaScript: fetched and stripped of markup,
+the words "count" and "offset" appear in it **zero times**, because the
+parameter table is not in the served HTML at all. It joins Klarna on the list
+of portals that cannot be read without a browser. Recalling its parameters
+would be exactly the guess this audit exists to remove.
+
+**Postmark**: `count` and `offset` in the query, from its own published
+Swagger at `postmarkapp.com/swagger/server.yml` -- count is "number of messages
+to return per request, max 500" and offset is "number of messages to skip".
+Stated gap: **both are required**. Postmark refuses the listing without them
+and this answers with everything, so code that forgets them works here and
+fails in production -- the same shape of lie as reading the wrong parameter
+name, approached from the other side.
+
+### The fixture that cannot tell two parameters apart
+
+Four times now a mutation has survived its first case because the fixture was
+too small to distinguish the page size from the position: with two records,
+skipping one returns a single record whether or not the limit was read.
+Datadog, Resend, Documenso and Postmark each needed a third record before the
+case checked what it claimed to.
+
+It is worth stating as a rule. **A paging case needs at least three records:
+one to skip, one to return, and one to prove the page size stopped it.**
 
 ### Remaining
 
