@@ -1781,6 +1781,26 @@ case checked what it claimed to.
 It is worth stating as a rule. **A paging case needs at least three records:
 one to skip, one to return, and one to prove the page size stopped it.**
 
+### The count is in the tool now
+
+`verify` reports it beside the evidence:
+
+```
+1636 of 1636 cases passed across 163 recipe(s).
+5 checked against the real API, 1631 from documentation only
+73 route(s) across 30 recipe(s) page by a parameter nobody named.
+```
+
+A route counts when it declares a page size and names neither a style nor a
+parameter, because that is the state where the runtime reads `limit` -- right
+for some providers, wrong for plenty, and invisible either way. A Recipe can be
+entirely green and still be guessing: a case that never sends a page size
+cannot notice the wrong name being read.
+
+The number it produces is exactly the number this file had been tracking by
+hand, which is the useful part -- it is the same debt, counted by the tool
+rather than by a person, and it falls on its own as Recipes are checked.
+
 ### Remaining
 
 32 Recipes, 78 declarations. The method that works: find the provider's own
