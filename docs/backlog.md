@@ -1715,6 +1715,15 @@ The list is worth keeping because probing them again costs time:
 | Pipedrive | Publishes OpenAPI that omits its own top-level collections |
 | Snyk | `api.snyk.io/rest/openapi` answers 405 to a HEAD |
 | Ably | Publishes the Control API, not the REST data API its Recipe models |
+| ClickUp | `jsapi.apiary.io/apis/clickup20.source` answers 200 with Apiary's **Polls starter template** -- "a simple API allowing consumers to view polls and vote in them" -- 2KB describing a different API entirely |
+| Snyk | `snyk.docs.apiary.io/api-description-document` answers 200 with a 435-byte sunset notice |
+| Mailchimp | Documentation renders through JavaScript: stripped of markup, "count" and "offset" appear **zero** times |
+
+The ClickUp entry is the one worth remembering. It is not an HTML shell and it
+is not a 404 -- it is a valid API Blueprint document that parses cleanly and
+describes somebody else's API. **A spec that parses is not a spec that
+describes your provider**, and a tool that reads one without looking at it
+would produce a confident Recipe for a polls service.
 
 **WooCommerce**: `page` and `per_page`, from one, defaulting to one and ten.
 
@@ -1740,6 +1749,26 @@ Stated gap: **both are required**. Postmark refuses the listing without them
 and this answers with everything, so code that forgets them works here and
 fails in production -- the same shape of lie as reading the wrong parameter
 name, approached from the other side.
+
+**Basecamp** was the best-documented of the night and needed the most of what
+was built for it. `page` in the query and **no page-size parameter at all** --
+the size is Basecamp's to choose -- so `limit_param: "-"` says so. Its own
+words on the rest: "follow this convention to retrieve the next page of data,
+please don't build the pagination URLs yourself", and "if the Link header is
+blank, that's the last page".
+
+Stated gap: Basecamp uses **geared pagination** -- fifteen results on page one,
+thirty on page two, fifty on three, a hundred on four and above. The page size
+changes as you go, which is exactly why building the URLs yourself is the thing
+their documentation warns against: a client computing offsets from page numbers
+is wrong from page two onwards. Cauldron serves one size, so it cannot make
+that mistake and cannot teach it either. Page one's fifteen is the honest number
+to declare.
+
+Its fixture needed sixteen to-dos before a second page existed. Without one,
+neither the page parameter nor the Link header was checked by anything -- the
+mutation renaming `cursor_param` passed cleanly until the fixture was big
+enough to have a page two.
 
 ### The fixture that cannot tell two parameters apart
 
