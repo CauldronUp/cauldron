@@ -38,6 +38,7 @@ func runVerify(ctx *context, args []string) int {
 
 	var (
 		cases, passed, observed, documented int
+		guessed, guessedRecipes             int
 		failedRecipes                       []string
 	)
 
@@ -80,6 +81,17 @@ func runVerify(ctx *context, args []string) int {
 
 		writeReport(ctx, report, verbose)
 
+		// Paging nobody checked, counted the same way the evidence is. A
+		// Recipe can be entirely green and still be guessing at how its
+		// provider pages, because a case that never sends a page size
+		// cannot notice the wrong name being read.
+		if n := sandbox.Recipe().GuessedPagination(); n > 0 {
+			guessed += n
+			guessedRecipes++
+
+			fmt.Fprintf(ctx.stdout, "  %s\n", guessedLine(n))
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -99,6 +111,11 @@ func runVerify(ctx *context, args []string) int {
 
 	fmt.Fprintf(ctx.stdout, "\n%d of %d cases passed across %d recipe(s).\n", passed, cases, len(names))
 	fmt.Fprintf(ctx.stdout, "%s\n", provenanceLine(observed, documented))
+
+	if guessed > 0 {
+		fmt.Fprintf(ctx.stdout, "%d route(s) across %d recipe(s) page by a parameter nobody named.\n",
+			guessed, guessedRecipes)
+	}
 
 	if len(failedRecipes) > 0 {
 		fmt.Fprintf(ctx.stderr, "\nFailing: %s\n", strings.Join(failedRecipes, ", "))
@@ -163,4 +180,19 @@ func provenanceLine(observed, documented int) string {
 	default:
 		return fmt.Sprintf("%d checked against the real API, %d from documentation only", observed, documented)
 	}
+}
+
+// guessedLine reports paging the runtime has to guess at.
+//
+// A declared page size with no style and no parameter name means the runtime
+// reads "limit", which is right for some providers and wrong for plenty. The
+// wrongness is invisible from the cases: the page size is ignored, one full
+// page comes back, and a paging loop written against it runs once and passes.
+// Saying so beside the evidence is the same bargain the provenance line makes.
+func guessedLine(n int) string {
+	if n == 1 {
+		return "1 route pages by a parameter nobody named"
+	}
+
+	return fmt.Sprintf("%d routes page by a parameter nobody named", n)
 }

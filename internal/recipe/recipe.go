@@ -2542,3 +2542,31 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	return spec
 }
+
+// GuessedPagination counts the routes whose paging the runtime has to guess
+// at: a declared page size with neither a style nor a parameter name beside
+// it.
+//
+// The runtime then reads "limit", which is right for some providers and wrong
+// for plenty, and the wrongness is invisible -- the page size is ignored, one
+// full page comes back, and the caller's paging loop runs once and passes. A
+// Recipe in that state is making a claim nobody checked, and the point of
+// counting them is that the number should be visible rather than buried.
+//
+// Naming either the style or the parameter is what marks a route as checked,
+// because neither is a name anybody writes down by accident.
+func (r Recipe) GuessedPagination() int {
+	guessed := 0
+
+	for _, route := range r.Routes {
+		if route.Pagination.Limit == 0 {
+			continue
+		}
+
+		if route.Pagination.Style == "" && route.Pagination.LimitParam == "" {
+			guessed++
+		}
+	}
+
+	return guessed
+}
