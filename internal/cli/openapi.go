@@ -164,7 +164,18 @@ func runCheck(ctx *context, args []string) int {
 		}
 	}
 
-	fmt.Fprintf(ctx.stdout, "%s %s against %s\n\n", r.Name, r.Version, set.Arg(1))
+	fmt.Fprintf(ctx.stdout, "%s %s against %s\n", r.Name, r.Version, set.Arg(1))
+
+	// How much of an API this description covers, which decides what a
+	// missing path means. Notion's declares eight paths and has
+	// /v1/pages/{id} without /v1/pages, so the two routes it does not have
+	// are a fragment rather than a Recipe that invented them. PostHog's has
+	// enough for fourteen hundred findings the other way.
+	//
+	// A reader cannot tell those apart from the findings alone, and the
+	// number is free.
+	fmt.Fprintf(ctx.stdout, "  The description declares %d path(s); this Recipe has %d route(s).\n\n",
+		len(doc.Paths), len(r.Routes))
 
 	if len(disagreements) == 0 {
 		fmt.Fprintln(ctx.stdout, "  Nothing in this Recipe is contradicted by the description.")

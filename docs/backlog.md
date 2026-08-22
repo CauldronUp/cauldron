@@ -1257,6 +1257,34 @@ Five descriptions in the cache cannot be read at all and are not in those
 counts: Bitbucket's is Swagger 2.0, Linear's is not a description, and
 Cal.com, GitLab and Gorgias answered with HTML pages rather than a file.
 
+## One provider, two hosts
+
+The format gives a Recipe one upstream and hangs every route off it. Three
+providers in the queue do not work that way, and the third is already shipped:
+
+- **PostHog.** `/capture/` is ingestion and lives on a different origin from
+  the management API. Its own OpenAPI describes the management API and does
+  not mention capture at all, which is why `check` reports that route as a
+  path the description does not have. The route is right; the description is
+  about the other host.
+- **Customer.io.** Already in the queue with the same note: the Track and App
+  APIs are separate hosts with separate credentials, "which is the sort of
+  thing that only fails in one environment".
+- **Braze.** Its REST endpoint is per-cluster -- `rest.iad-01.braze.com` and
+  the rest -- which is a configurable host rather than two of them, so it is
+  a different problem wearing similar clothes.
+
+What a single-host emulator gets wrong is narrow and real: an application
+integrating PostHog configures an ingestion host and, separately, an API host.
+Code written against a fake that serves both from one origin runs green with
+only one of them configured, and the missing one is not discovered until
+something is deployed.
+
+This is not built and is not obviously worth building. It is written down
+because it has now been noticed three times from three directions, and a gap
+found three times and recorded none of them is a gap that will be noticed a
+fourth.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
