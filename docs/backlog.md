@@ -1808,3 +1808,40 @@ machine-readable description, read the parameter names out of it, then write a
 case that *sends* them. Asserting only the response is not enough -- Pub/Sub's
 `cursor_param` could be renamed to `cursor` with every case still passing,
 because nothing sent a token back until a second-page case did.
+
+## Neon, and a create that answers with unfinished work
+
+Neon is serverless Postgres with branching, and almost nothing is finished when
+the response arrives. Creating a branch answers **201 with the branch in state
+`init`**, which Neon's own description defines as "being created but is not
+available for querying". Code that creates a branch and connects to it on the
+next line connects to nothing, and the status code gave it no reason to wait.
+
+The response carries the operations it started, and they are the only thing in
+that body that says when the branch becomes usable -- sitting beside the branch
+a caller came for. That needed one change: route `fields` applied to listings
+only, so a create could answer with the record and nothing else. A response
+carrying just the record would be the helpful kind of wrong, because it looks
+finished.
+
+Four more things worth catching, all from Neon's published description:
+
+- `current_state` and `pending_state` answer different questions and disagree
+  exactly while something is happening. Neither says "is it ready" alone; the
+  settled branch is the one with no `pending_state` at all.
+- An operation's status has **eight** values and `finished` is the only
+  success. `failed`, `error`, `cancelled` and `skipped` are all "stopped, and
+  not because it worked", and `scheduling` has not started -- so a poll written
+  as `while status === 'running'` exits immediately and calls it done.
+- `default` and `primary` are both on a branch, `primary` is deprecated, and
+  they can point at different branches. Code reading the deprecated one gets a
+  branch rather than an error.
+- The create response carries the connection string **with the password in
+  it**, in a body that gets logged.
+
+### Owed: a request envelope
+
+Neon takes a create body as `{"branch": {...}}` and Cauldron reads it flat, so
+a client sending Neon's real shape is told the name is missing. The Recipe's
+cases send the flat form, which is the one thing in it that does not match the
+provider. Plenty of APIs wrap a create body this way.

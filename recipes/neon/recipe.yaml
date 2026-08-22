@@ -1,0 +1,528 @@
+# Neon, serverless Postgres with branching.
+#
+# The thing to get right here is that almost nothing is finished when the
+# response arrives.
+#
+#   1. Creating a branch answers 201 with the branch in state "init", which
+#      Neon's own description defines as "being created but is not available
+#      for querying". Code that creates a branch and connects to it on the
+#      next line connects to nothing. The 201 is not a promise that the
+#      branch works, it is a receipt for having asked.
+#
+#   2. A branch carries current_state and pending_state, and they disagree
+#      exactly while something is happening. Reading current_state alone and
+#      finding "init" tells you it is not ready; reading pending_state alone
+#      tells you what it is becoming. Neither answers "is it ready" by itself.
+#
+#   3. The create response carries the operations it started. They are the
+#      only way to know when the branch is usable, and they are in the same
+#      body a caller is likely to skim for the branch id.
+#
+#   4. An operation's status has eight values, not two. finished is the only
+#      success; failed, error, cancelled and skipped are all "stopped, and
+#      not because it worked". A poll written as `while status === 'running'`
+#      exits on `scheduling` and calls it done.
+#
+#   5. default and primary are both on a branch, and primary is deprecated in
+#      favour of default. A Recipe that only sent one would let code read the
+#      wrong one and never find out.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: neon
+capability: database
+version: 0.1.0
+upstream:
+  api: v2
+  docs: https://neon.tech/api_spec/release/v2.json
+
+auth:
+  scheme: bearer
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: wrapped
+  error:
+    # Flat, with a request_id beside the code and message. That id is what
+    # Neon's support asks for, and code that only keeps the message throws it
+    # away.
+    style: flat
+    code_field: code
+    code_type: string
+    message_field: message
+
+resources:
+  project:
+    collection: projects
+    id:
+      style: opaque
+      length: 16
+    fields:
+      name:
+        type: string
+        required: true
+      region_id:
+        type: string
+        default: aws-eu-west-2
+      pg_version:
+        type: integer
+        default: 17
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  branch:
+    collection: branches
+    id:
+      style: opaque
+      # br-cool-darkness-123456, which is a shape code matches on and a
+      # shape nobody generates by accident.
+      prefix: br-
+      length: 18
+    fields:
+      project_id:
+        type: string
+      name:
+        type: string
+        required: true
+      # init, resetting, ready or archived. Neon's own words for init: "the
+      # branch is being created but is not available for querying".
+      current_state:
+        type: string
+        default: init
+      # What it is becoming. Present while something is happening and absent
+      # once it has, so its absence is the closest thing to "settled".
+      pending_state:
+        type: string
+        null_when_unset: true
+      # The project's default branch. This is the field to read.
+      default:
+        type: boolean
+        default: false
+      # Deprecated in favour of default, and still sent. Code that reads it
+      # is reading the field Neon has stopped maintaining.
+      primary:
+        type: boolean
+        default: false
+      parent_id:
+        type: string
+        null_when_unset: true
+      protected:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  operation:
+    collection: operations
+    id:
+      style: uuid
+    fields:
+      project_id:
+        type: string
+      branch_id:
+        type: string
+      # create_branch, start_compute, apply_config and friends.
+      action:
+        type: string
+        required: true
+      # scheduling, running, finished, failed, error, cancelling, cancelled
+      # or skipped. Eight, of which one is success.
+      status:
+        type: string
+        default: scheduling
+      failures_count:
+        type: integer
+        default: 0
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /projects
+    resource: project
+    operation: list
+    pagination:
+      # Checked against Neon's own OpenAPI: cursor and limit in the query,
+      # with limit defaulting to ten on this endpoint.
+      style: cursor
+      limit: 10
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /projects/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /projects/{project_id}/branches
+    resource: branch
+    operation: list
+    scope: [project_id]
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /projects/{project_id}/branches/{id}
+    resource: branch
+    operation: get
+    scope: [project_id]
+
+  # Creating a branch answers 201 with the branch not yet usable, and with
+  # the operations that will make it so. Both halves matter: the branch is
+  # what a caller reads, and the operations are the only thing that says
+  # when it can be used.
+  - method: POST
+    path: /projects/{project_id}/branches
+    resource: branch
+    operation: create
+    scope: [project_id]
+    status: 201
+    fields:
+      # The work Neon started. Still running, because the response is a
+      # receipt for having asked rather than a report of having finished.
+      operations:
+        - id: 6b7e0b2c-1f4a-4a7e-9f3e-2c9d1a5b7e00
+          action: create_branch
+          status: running
+          failures_count: 0
+        - id: 7c8f1c3d-2a5b-4b8f-8a4f-3d0e2b6c8f11
+          action: start_compute
+          status: scheduling
+          failures_count: 0
+      # The connection string, password and all, in the create response. It
+      # is a credential in a body that gets logged, and it is here because
+      # Neon puts it here.
+      connection_uris:
+        - connection_uri: postgresql://neondb_owner:npg_cauldron0000@ep-cauldron-000000.eu-west-2.aws.neon.tech/neondb?sslmode=require
+          connection_parameters:
+            database: neondb
+            role: neondb_owner
+            host: ep-cauldron-000000.eu-west-2.aws.neon.tech
+            password: npg_cauldron0000
+
+  - method: GET
+    path: /projects/{project_id}/operations
+    resource: operation
+    operation: list
+    scope: [project_id]
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /projects/{project_id}/operations/{id}
+    resource: operation
+    operation: get
+    scope: [project_id]
+
+errors:
+  resource_missing:
+    status: 404
+    code: branches_not_found
+    message: "Branch not found: {detail}"
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Authorization failed
+
+  parameter_missing:
+    status: 400
+    code: bad_request
+    message: "The request is missing {detail}."
+
+fixtures:
+  empty: {}
+
+  small-project:
+    project:
+      - id: cool-darkness-12345678
+        name: cauldron
+        region_id: aws-eu-west-2
+        pg_version: 17
+        created_at: "2026-01-10T09:00:00Z"
+        updated_at: "2026-01-10T09:00:00Z"
+
+    branch:
+      # The default branch, settled. pending_state is absent, which is the
+      # closest thing Neon gives you to "nothing is happening".
+      - id: br-cool-darkness-000001
+        project_id: cool-darkness-12345678
+        name: main
+        current_state: ready
+        pending_state: null
+        default: true
+        primary: true
+        protected: true
+        created_at: "2026-01-10T09:00:00Z"
+        updated_at: "2026-01-10T09:00:00Z"
+      # Still coming up. current_state says it cannot be queried yet and
+      # pending_state says what it will be, and a caller reading either one
+      # alone has half the answer.
+      - id: br-cool-darkness-000002
+        project_id: cool-darkness-12345678
+        name: feature/reports
+        current_state: init
+        pending_state: ready
+        default: false
+        primary: false
+        parent_id: br-cool-darkness-000001
+        protected: false
+        created_at: "2026-01-14T11:30:00Z"
+        updated_at: "2026-01-14T11:30:00Z"
+      # Default and primary disagree. Neon deprecated primary in favour of
+      # default, so a project whose default branch moved leaves the old field
+      # pointing at the old branch -- and code reading primary follows it.
+      - id: br-cool-darkness-000003
+        project_id: cool-darkness-12345678
+        name: staging
+        current_state: ready
+        pending_state: null
+        default: false
+        primary: true
+        parent_id: br-cool-darkness-000001
+        protected: false
+        created_at: "2026-01-12T08:00:00Z"
+        updated_at: "2026-01-15T16:00:00Z"
+
+    operation:
+      - id: 11111111-1111-4111-8111-111111111111
+        project_id: cool-darkness-12345678
+        branch_id: br-cool-darkness-000002
+        action: create_branch
+        status: finished
+        failures_count: 0
+        created_at: "2026-01-14T11:30:00Z"
+        updated_at: "2026-01-14T11:30:04Z"
+      # Stopped, and not because it worked. A poll written as
+      # `while status === 'running'` treats this as done and moves on.
+      - id: 22222222-2222-4222-8222-222222222222
+        project_id: cool-darkness-12345678
+        branch_id: br-cool-darkness-000002
+        action: start_compute
+        status: failed
+        failures_count: 3
+        created_at: "2026-01-14T11:30:05Z"
+        updated_at: "2026-01-14T11:31:00Z"
+      # Neither started nor finished. Also not running.
+      - id: 33333333-3333-4333-8333-333333333333
+        project_id: cool-darkness-12345678
+        branch_id: br-cool-darkness-000003
+        action: apply_config
+        status: skipped
+        failures_count: 0
+        created_at: "2026-01-15T16:00:00Z"
+        updated_at: "2026-01-15T16:00:00Z"
+
+# Conformance cases, read from Neon's published OpenAPI description rather
+# than observed against a live account. The verify report says so.
+conformance:
+  - name: a created branch is not a usable branch
+    # 201, and the branch is in init -- Neon's own words for that state are
+    # "the branch is being created but is not available for querying". Code
+    # that creates a branch and connects on the next line connects to
+    # nothing, and the status code gave it no reason to wait.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: POST
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+      json:
+        name: feature/reports-v2
+    expect:
+      status: 201
+      body:
+        branch.current_state: init
+        branch.name: feature/reports-v2
+
+  - name: the create response carries the work it started
+    # The operations are the only thing in this body that says when the
+    # branch can be used, and they are beside the branch a caller came for.
+    # Neither is finished: one is running and one has not begun.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: POST
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+      json:
+        name: feature/reports-v3
+    expect:
+      status: 201
+      body:
+        operations[0].action: create_branch
+        operations[0].status: running
+        operations[1].action: start_compute
+        operations[1].status: scheduling
+
+  - name: the create response carries a password
+    # The connection string comes back with the credential in it, in a body
+    # that gets logged. Neon puts it there; an emulator that omitted it would
+    # hide the one thing worth noticing about this response.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: POST
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+      json:
+        name: feature/reports-v4
+    expect:
+      status: 201
+      body:
+        connection_uris[0].connection_parameters.role: neondb_owner
+      matches:
+        connection_uris[0].connection_uri: '^postgresql://neondb_owner:[^@]+@'
+
+  - name: current_state and pending_state answer different questions
+    # A branch coming up says init and ready at once: what it is, and what it
+    # is becoming. Reading current_state alone tells you it cannot be
+    # queried; reading pending_state alone tells you it will be fine. Neither
+    # answers "is it ready now" on its own, and the settled branch beside it
+    # is the one with no pending_state at all.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches/br-cool-darkness-000002
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+    expect:
+      status: 200
+      body:
+        branch.current_state: init
+        branch.pending_state: ready
+
+  - name: a settled branch has no pending state
+    # The absence is the signal. Nothing is happening, so there is nothing
+    # it is becoming -- which is the closest thing this API gives you to
+    # "finished".
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches/br-cool-darkness-000001
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+    expect:
+      status: 200
+      body:
+        branch.current_state: ready
+        branch.pending_state: null
+
+  - name: default and primary can point at different branches
+    # primary is deprecated in favour of default and is still sent. A project
+    # whose default branch moved leaves the old field behind, so code reading
+    # primary follows it to the wrong branch -- and gets a branch, not an
+    # error.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+    expect:
+      status: 200
+      body:
+        # main is the default and says so on both fields.
+        branches[0].name: main
+        branches[0].default: true
+        branches[0].primary: true
+        # staging is not the default and claims to be primary anyway.
+        branches[2].name: staging
+        branches[2].default: false
+        branches[2].primary: true
+
+  - name: an operation that stopped is not an operation that worked
+    # Eight statuses, of which finished is the only success. failed and
+    # skipped are both "stopped", and a poll written as
+    # `while status === 'running'` leaves on either -- as it does on
+    # scheduling, which has not started.
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/operations
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+    expect:
+      status: 200
+      body:
+        operations[0].status: finished
+        operations[1].status: failed
+        operations[1].failures_count: 3
+        operations[2].status: skipped
+
+  - name: branches page by cursor and limit
+    # Checked against Neon's own OpenAPI: cursor and limit in the query, on
+    # every listing here. Not "page" and not "per_page".
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        branches[0].name: main
+      absent:
+        - branches[1]
+
+  - name: the cursor resumes after the branch it names
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+      query:
+        limit: "1"
+        cursor: br-cool-darkness-000001
+    expect:
+      status: 200
+      body:
+        # The second branch, not the first one over again.
+        branches[0].name: feature/reports
+      absent:
+        - branches[1]
+
+  - name: a failure names a code beside the message
+    source: https://neon.tech/api_spec/release/v2.json
+    fixture: small-project
+    request:
+      method: GET
+      path: /projects/cool-darkness-12345678/branches/br-cool-darkness-999999
+      headers:
+        Authorization: Bearer neon_api_key_cauldron
+    expect:
+      status: 404
+      body:
+        code: branches_not_found
+      absent:
+        # Flat, with no envelope to unwrap.
+        - error
+        - errors
