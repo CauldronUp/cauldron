@@ -314,6 +314,16 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 	for _, field := range emitted {
 		f := spec.Fields[field]
 
+		// A field the wire never carries cannot contradict a description of
+		// what the wire carries. "in: -" is the Recipe saying the record
+		// holds it and the response does not -- a partition that lives in
+		// the path, like Attio's object slug or Fly's app name. Reporting it
+		// put a finding against precisely the Recipes that took the trouble
+		// to say so.
+		if f.In == "-" {
+			continue
+		}
+
 		// Only the outermost name can be compared without walking the schema
 		// the same way the runtime walks the record, which is more machinery
 		// than the value justifies. A nested field is checked by its parent.
@@ -470,11 +480,30 @@ func descend(doc *Document, schema *Schema, key string) *Schema {
 
 	for _, segment := range strings.Split(key, ".") {
 		current = doc.Resolve(current)
-		if current == nil || current.Properties == nil {
+		if current == nil {
 			return nil
 		}
 
-		current = current.Properties[segment]
+		// Properties rather than the map, because a description may compose
+		// a response out of allOf members and declare nothing on the object
+		// itself. Neon describes a branch that way -- the 200 has two
+		// members, one carrying the branch and one carrying an annotation --
+		// and reading the map walked into an object that looked empty, gave
+		// up, and left every field compared against the envelope instead.
+		var next *Schema
+
+		for _, property := range doc.Properties(current) {
+			if property.Name == segment {
+				next = property.Schema
+				break
+			}
+		}
+
+		if next == nil {
+			return nil
+		}
+
+		current = next
 	}
 
 	return doc.Resolve(current)
