@@ -639,6 +639,81 @@ func providers() []provider {
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
+		{
+			recipe: "xendit",
+			npm:    []string{"xendit-node"},
+			gomod:  []string{"github.com/xendit/xendit-go"},
+		},
+		{
+			recipe: "dwolla",
+			npm:    []string{"dwolla-v2"},
+		},
+		{
+			recipe: "razorpay",
+			npm:    []string{"razorpay"},
+		},
+		{
+			recipe: "snowflake",
+			npm:    []string{"snowflake-sdk"},
+			gomod:  []string{"github.com/snowflakedb/gosnowflake"},
+		},
+		{
+			recipe: "truelayer",
+			npm:    []string{"truelayer-client"},
+		},
+		{
+			recipe: "midtrans",
+			npm:    []string{"midtrans-client"},
+		},
+		{
+			recipe: "shortcut",
+			npm:    []string{"@shortcut/client"},
+		},
+		{
+			recipe: "onfido",
+			npm:    []string{"@onfido/api"},
+		},
+		{
+			recipe: "courier",
+			npm:    []string{"@trycourier/courier"},
+		},
+		{
+			recipe: "kratos",
+			npm:    []string{"@ory/kratos-client"},
+			gomod:  []string{"github.com/ory/kratos-client-go"},
+		},
+		{
+			recipe: "hydra",
+			npm:    []string{"@ory/hydra-client"},
+			gomod:  []string{"github.com/ory/hydra-client-go"},
+		},
+		{
+			recipe: "braze",
+			npm:    []string{"braze-api"},
+		},
+		{
+			recipe: "bandwidth",
+			npm:    []string{"@bandwidth/messaging"},
+			gomod:  []string{"github.com/Bandwidth/go-sdk"},
+		},
+		{
+			recipe: "finnhub",
+			npm:    []string{"finnhub"},
+			gomod:  []string{"github.com/Finnhub-Stock-API/finnhub-go"},
+		},
+		{
+			recipe: "buildkite",
+			npm:    []string{"buildkite"},
+			gomod:  []string{"github.com/buildkite/go-buildkite"},
+		},
+		{
+			recipe: "discourse",
+			npm:    []string{"node-discourse-api"},
+		},
+		{
+			recipe: "airwallex",
+			npm:    []string{"@airwallex/node-sdk"},
+		},
 	}
 }
 
