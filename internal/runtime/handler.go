@@ -202,7 +202,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 
 	record = trim(matched.spec, record)
 
-	body := s.resourceBody(matched.spec.Resource, record)
+	body := s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.Resource, record)
 
 	// Constants this route adds beside the record, which a create needs as
 	// much as a listing does. Neon answers a branch create with the branch,
@@ -389,7 +389,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 			matched.spec.Resource+": "+id)
 	}
 
-	writeJSON(w, http.StatusOK, s.resourceBody(matched.spec.Resource, trim(matched.spec, record)))
+	writeJSON(w, http.StatusOK, s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.Resource, trim(matched.spec, record)))
 
 	return http.StatusOK
 }
@@ -1208,12 +1208,15 @@ func (s *Sandbox) countValue(spec recipe.ListResponse, total int) any {
 // resourceBody shapes a single object according to the Recipe's declared style.
 // Shopify nests it under the singular resource name; most providers return the
 // object itself, and a client written for one shape breaks on the other.
-func (s *Sandbox) resourceBody(resource string, record store.Record) any {
+// The envelope is the route's, which is the Recipe's unless the route says
+// otherwise: Datadog wraps a created event and not a created monitor, and
+// Vercel wraps a domain and neither a project nor a deployment.
+func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, resource string, record store.Record) any {
 	record = s.present(resource, record)
 
 	success := s.recipe.Responses.Success.Fields
 
-	if s.recipe.Responses.Resource.Style != "wrapped" {
+	if spec.Style != "wrapped" {
 		if len(success) == 0 {
 			return record
 		}
@@ -1228,8 +1231,6 @@ func (s *Sandbox) resourceBody(resource string, record store.Record) any {
 
 		return withFields(out, success)
 	}
-
-	spec := s.recipe.Responses.Resource
 
 	// The default is the resource's own singular name, which is what Shopify,
 	// Slack, Square and Zendesk all use. When the object is wrapped in a list

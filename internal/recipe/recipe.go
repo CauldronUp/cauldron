@@ -979,6 +979,19 @@ type Route struct {
 	// string field set to "-" is cleared rather than inherited, which is how
 	// a route says the provider sends nothing there.
 	List *ListResponse `yaml:"list"`
+	// Envelope overrides how this route wraps a single object, for the
+	// providers that do not wrap every resource the same way.
+	//
+	// responses.resource is one setting for a whole Recipe, and two providers
+	// have already needed it to be two. Datadog wraps a created event under
+	// "event" with a status beside it and wraps nothing around a created
+	// monitor. Vercel wraps a single domain under "domain" and wraps neither a
+	// project nor a deployment. Both were written down as gaps rather than
+	// modelled, because saying it for one resource said it for all of them.
+	//
+	// Empty inherits the Recipe's, and "-" clears it, the same way a route's
+	// list override works.
+	Envelope *ResourceResponse `yaml:"envelope"`
 	// Returns limits the response to the named fields, for the routes that
 	// answer with less than the record they touched.
 	//
@@ -2561,6 +2574,44 @@ func (p Pagination) FirstPageNumber() int {
 // on, because an unset boolean and a false one are the same value in YAML and
 // guessing which was meant is how a Recipe ends up asserting something nobody
 // wrote.
+// EnvelopeFor is how this route wraps a single object.
+//
+// The Recipe's own setting unless the route overrides it. Empty inherits and
+// "-" clears, so a Recipe that wraps everything can say that one route does
+// not -- which is the shape Datadog and Vercel both have, wrapping some of
+// their resources and not others.
+func (r Recipe) EnvelopeFor(route Route) ResourceResponse {
+	spec := r.Responses.Resource
+	if route.Envelope == nil {
+		return spec
+	}
+
+	switch route.Envelope.Style {
+	case "":
+	case "-":
+		spec.Style = ""
+	default:
+		spec.Style = route.Envelope.Style
+	}
+
+	switch route.Envelope.Key {
+	case "":
+	case "-":
+		spec.Key = ""
+	default:
+		spec.Key = route.Envelope.Key
+	}
+
+	// A boolean can only be turned on, the same as everywhere else a route
+	// narrows a Recipe-wide setting: there is no false to distinguish from
+	// unset, and clearing the style is how a route says it wraps nothing.
+	if route.Envelope.Array {
+		spec.Array = true
+	}
+
+	return spec
+}
+
 func (r Recipe) ListFor(route Route) ListResponse {
 	spec := r.Responses.List
 	if route.List == nil {
