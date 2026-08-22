@@ -286,6 +286,14 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 		return nil
 	}
 
+	// A route that says it sends no body sends no fields, so none of them can
+	// contradict anything. Ably's publish acknowledges with 204 and nothing
+	// else, and every field of its message was reported as undeclared on a
+	// route that emits none of them.
+	if route.EmptyBody {
+		return nil
+	}
+
 	schema, _ := doc.Success(op)
 	if schema == nil {
 		return nil
