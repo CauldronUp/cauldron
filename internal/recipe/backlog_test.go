@@ -3,6 +3,7 @@ package recipe_test
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -119,4 +120,43 @@ var words = map[string]int{
 	"Twenty-four": 24, "Twenty-five": 25, "Twenty-six": 26, "Twenty-seven": 27,
 	"Twenty-eight": 28, "Twenty-nine": 29, "Thirty": 30, "Thirty-one": 31,
 	"Thirty-two": 32, "Thirty-three": 33, "Thirty-four": 34, "Thirty-five": 35,
+}
+
+// The backlog states how many routes still page by a parameter nobody named.
+// It is the figure that moves every time one is settled, which makes it the
+// most likely of the lot to be left behind -- and the paging section already
+// carries three figures from the sweep that closed it, all of them historical
+// and none of them what is true now.
+func TestTheBacklogCountsUnnamedPaging(t *testing.T) {
+	backlog, err := os.ReadFile(backlogPath)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+
+	routes, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.GuessedPagination(); n > 0 {
+			routes += n
+			recipes++
+		}
+	}
+
+	stated := regexp.MustCompile(`\*\*(\d+) routes across (\d+) Recipes\*\* still page by a parameter nobody named`).FindStringSubmatch(string(backlog))
+	if stated == nil {
+		t.Fatal("the backlog no longer states the unnamed-paging figure in the form it did; update this test with it")
+	}
+
+	if n, _ := strconv.Atoi(stated[1]); n != routes {
+		t.Errorf("the backlog says %d routes page by a parameter nobody named and %d do", n, routes)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog says those routes are spread across %d Recipes and they are across %d", n, recipes)
+	}
 }
