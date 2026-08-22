@@ -852,6 +852,19 @@ routes:
       - param: status
         field: status
         default: open
+conformance:
+  # Sending the parameter is what pins its name. Without this the filter could
+  # be called anything and every case here would still pass.
+  - name: asking for paid invoices finds the one the default hides
+    source: https://example.invalid/docs
+    fixture: small
+    request:
+      method: GET
+      path: /v1/invoices?status=paid
+    expect:
+      status: 200
+      body:
+        data[0].status: paid
 `
 
 func TestADefaultedFilterNeedsSomethingToHide(t *testing.T) {
@@ -932,6 +945,17 @@ routes:
         all: every
         values:
           unpaid: [open, past_due]
+conformance:
+  - name: asking for everything finds the invoice the bucket hides
+    source: https://example.invalid/docs
+    fixture: small
+    request:
+      method: GET
+      path: /v1/invoices?status=every
+    expect:
+      status: 200
+      body:
+        data[1].status: paid
 `
 
 func TestABucketDefaultIsCheckedAgainstItsMembers(t *testing.T) {
