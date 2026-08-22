@@ -132,16 +132,35 @@ func TestReportDetectionCoverage(t *testing.T) {
 		t.Fatalf("read README: %v", err)
 	}
 
-	stated := regexp.MustCompile(`(\d+) of (\d+) Recipes are reachable from a dependency`).FindStringSubmatch(string(readme))
-	if stated == nil {
+	// Every place the README states it, not the first. The figure appears
+	// twice and correcting one of them left the other saying 91 of 117 for
+	// as long as it took to notice, which is the same drift again in a
+	// smaller way: a check that looks at one occurrence of a repeated claim
+	// makes the other one safe to forget.
+	pattern := regexp.MustCompile(`(\d+) of (?:the )?(\d+) Recipes`)
+
+	found := pattern.FindAllStringSubmatch(string(readme), -1)
+	if len(found) == 0 {
 		t.Fatal("the README no longer states detection coverage in the form it did; update this test with it")
 	}
 
-	if got, _ := strconv.Atoi(stated[1]); got != reachable {
-		t.Errorf("the README says %d Recipes are reachable and %d are", got, reachable)
+	for _, stated := range found {
+		if got, _ := strconv.Atoi(stated[1]); got != reachable {
+			t.Errorf("the README says %d Recipes are reachable and %d are", got, reachable)
+		}
+
+		if got, _ := strconv.Atoi(stated[2]); got != shipped {
+			t.Errorf("the README says coverage is out of %d Recipes and %d ship", got, shipped)
+		}
 	}
 
-	if got, _ := strconv.Atoi(stated[2]); got != shipped {
-		t.Errorf("the README says coverage is out of %d Recipes and %d ship", got, shipped)
+	// And the remainder it quotes beside them.
+	remainder := regexp.MustCompile(`The other (\d+) ship`).FindStringSubmatch(string(readme))
+	if remainder == nil {
+		t.Fatal("the README no longer states how many Recipes nothing maps to; update this test with it")
+	}
+
+	if got, _ := strconv.Atoi(remainder[1]); got != len(missing) {
+		t.Errorf("the README says nothing maps to %d Recipes and nothing maps to %d", got, len(missing))
 	}
 }
