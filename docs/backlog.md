@@ -1224,8 +1224,31 @@ not have, which reads exactly like a Recipe full of invented paths and is one
 error made by whoever fetched the file. `check` now says so before the list,
 because the list is what somebody would otherwise start working through.
 
-That leaves **ten** that disagree somewhere, and the ones looked at are a
-mixed bag worth knowing before anybody treats the number as a defect count:
+That leaves **eight**, and all eight have now been read. Every one is either
+fixed or carries a note in its own Recipe saying why it is not, so the next
+person to run `check` does not repeat the work.
+
+What the sweep produced, counted honestly:
+
+| | |
+|---|---|
+| Recipe defects found and fixed | 4 |
+| `check` bugs found and fixed | 3 |
+| descriptions wrong or partial, Recipe correct | 5 |
+| behaviour nobody had defended, now pinned by a case | 3 |
+| the wrong document entirely | 3 |
+
+The four defects were worth the whole exercise. Increase modelled a collection
+that does not exist and put a transfer's return on the wrong object. Adyen's
+refund used the payment's name for its reference. OneSignal's create answered
+with delivery counts on a delivery that had not happened. Xero explained the
+Microsoft-date trap in a comment and then fell into it on the next field.
+
+The five where the description was wrong are worth as much in a quieter way,
+and each now says so in its Recipe -- because the obvious way to silence a
+report is to change the Recipe, and that would have been wrong five times.
+
+The mixed bag, for anybody reading a future report:
 
 - **The Recipe is right and the description is stale.** Meilisearch's document
   add answers 202 because the work is enqueued, and its description says 200.
