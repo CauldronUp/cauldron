@@ -1042,6 +1042,14 @@ type Route struct {
 	// than id, so code reading response.deleted_monitor_id finds nothing
 	// unless the key can be said.
 	DeletedKey string `yaml:"deleted_key"`
+	// IDAs renames the identifier on this route alone, for the providers that
+	// call it one thing here and another everywhere else.
+	//
+	// Documenso answers a document create with documentId and sends id on
+	// every other route. Modelling that as an ordinary create answered with a
+	// document, which taught a one-step flow that does not exist -- so the
+	// route was removed and the gap written down until this existed.
+	IDAs string `yaml:"id_as"`
 	// Error names a failure from the Recipe's own table that this route always
 	// answers with, whatever the request. It is how a retired endpoint is
 	// described.
