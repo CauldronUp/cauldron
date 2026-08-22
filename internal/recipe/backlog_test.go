@@ -160,3 +160,41 @@ func TestTheBacklogCountsUnnamedPaging(t *testing.T) {
 		t.Errorf("the backlog says those routes are spread across %d Recipes and they are across %d", n, recipes)
 	}
 }
+
+// The larger of the two paging figures, and the one that was missing entirely
+// until the counter behind it was written. Same reason as its neighbour: it
+// moves whenever a listing gains a paging block, which is every time somebody
+// settles one.
+func TestTheBacklogCountsUnstatedPaging(t *testing.T) {
+	backlog, err := os.ReadFile(backlogPath)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+
+	routes, recipes := 0, 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		if n := r.UnstatedPagination(); n > 0 {
+			routes += n
+			recipes++
+		}
+	}
+
+	stated := regexp.MustCompile(`([0-9]+) more listings across ([0-9]+) Recipes`).FindStringSubmatch(string(backlog))
+	if stated == nil {
+		t.Fatal("the backlog no longer states the unstated-paging figure in the form it did; update this test with it")
+	}
+
+	if n, _ := strconv.Atoi(stated[1]); n != routes {
+		t.Errorf("the backlog says %d listings declare no paging at all and %d do", n, routes)
+	}
+
+	if n, _ := strconv.Atoi(stated[2]); n != recipes {
+		t.Errorf("the backlog says those listings are spread across %d Recipes and they are across %d", n, recipes)
+	}
+}
