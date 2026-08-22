@@ -194,6 +194,38 @@ type Schema struct {
 	AnyOf []*Schema `yaml:"anyOf"`
 }
 
+// UnmarshalYAML accepts a boolean where a schema is expected.
+//
+// JSON Schema says a schema may be true or false: true validates anything,
+// false validates nothing. Descriptions use it constantly for
+// additionalProperties, and for items when a tuple is closed. Meilisearch's
+// has fourteen, and the whole file was unreadable with "cannot unmarshal
+// !!bool `false` into openapi.Schema" -- a line number and no hint that a
+// perfectly ordinary construct was the cause.
+//
+// Neither value describes an object with properties, so both read as a schema
+// that declares nothing, which is what the rest of this package already treats
+// as "the description declining to say".
+func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+		*s = Schema{}
+
+		return nil
+	}
+
+	type plain Schema
+
+	var raw plain
+
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+
+	*s = Schema(raw)
+
+	return nil
+}
+
 // Load reads a description from a file.
 //
 // JSON is accepted without a separate parser because JSON is a subset of YAML,
@@ -211,6 +243,15 @@ func Load(path string) (*Document, error) {
 
 // Parse reads a description from bytes.
 func Parse(raw []byte) (*Document, error) {
+	// The URL a provider's docs give for its description often serves the
+	// documentation page instead. Segment, Tradier, ClickUp, Mailchimp and
+	// Cal.com all did, and the YAML error for an HTML file -- "mapping values
+	// are not allowed in this context" -- sends the reader looking for a
+	// syntax error in a file that is not a description at all.
+	if looksHTML(raw) {
+		return nil, fmt.Errorf("this is an HTML page, not an OpenAPI description; the URL probably serves documentation rather than the description itself")
+	}
+
 	var doc Document
 
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -492,4 +533,19 @@ func viaJSON(raw []byte) ([]byte, error) {
 	}
 
 	return yaml.Marshal(any)
+}
+
+// looksHTML reports whether these bytes open like a web page.
+func looksHTML(raw []byte) bool {
+	head := raw
+	if len(head) > 512 {
+		head = head[:512]
+	}
+
+	trimmed := strings.TrimSpace(string(head))
+	lower := strings.ToLower(trimmed)
+
+	return strings.HasPrefix(lower, "<!doctype html") ||
+		strings.HasPrefix(lower, "<html") ||
+		strings.HasPrefix(lower, "<?xml") && strings.Contains(lower, "<html")
 }
