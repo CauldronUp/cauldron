@@ -813,10 +813,10 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Sixteen Recipes are fixed and each carries a case asserting an unquoted
-identifier, so removing the declaration fails something. Three of them already
-had cases asserting the quoted form, which is to say three cases were pinning
-the bug in place.
+Twenty-six Recipes send at least one identifier as a number now, and each
+carries a case asserting an unquoted one, so removing the declaration fails
+something. Three of them already had cases asserting the quoted form, which is
+to say three cases were pinning the bug in place.
 
 The rest of the `numeric` resources are below. Which of the two a provider
 sends has to be read from its documentation rather than assumed: sending a
@@ -827,15 +827,28 @@ number where the provider sends a string is as wrong as the thing this fixes.
 | RingCentral | needs checking | Message and extension ids may be numbers or numeric strings |
 | Postmark | needs checking | Bounce ID is a number; the casing of the field needs confirming too |
 | SendGrid | needs checking | Suppression ids are numbers on some endpoints |
-| Documenso | needs checking | Document and recipient ids are numbers |
-| Intercom | needs checking | Conversation ids are quoted, but the older API differed |
+| ~~Documenso~~ | **number** | Settled against its description, which declares the document id and the documentId a create answers with as numbers. Both were strings and are not now |
+| ~~Intercom~~ | **string** | Settled against its description, which declares `conversation.id` as a string and gives `"1295"` as the example -- a quoted number, which is the case this table exists to keep people from "fixing" |
 | HubSpot | **string** | Contact, deal and company ids are quoted, which is why the default stays string |
 | Jira | **string** | Issue id is a quoted number; the key is the readable identifier |
 | QuickBooks | **string** | Id is quoted everywhere in the JSON API |
 | DocuSign | **string** | recipientId is quoted |
 
-The five marked **string** are correct as they stand and are listed so nobody
+The ones marked **string** are correct as they stand and are listed so nobody
 "fixes" them.
+
+Three are still unchecked: RingCentral, Postmark and SendGrid. None of the
+three publishes a description this repository has a copy of, so settling them
+means reading the provider's documentation rather than running check.
+
+A second question turned out to sit behind this one. A provider can send two
+identifiers and accept only one of them in a path, which no amount of getting
+the type right will fix: GitHub numbers an issue per repository and gives it a
+global id as well, GitLab does the same with `iid`, and Buildkite addresses a
+pipeline by slug and a build by number while sending a UUID for both. All
+three are modelled on what the URL takes now, with the other identifier beside
+it. Code that stored the wrong one and asked for it back got a 404 from the
+provider and a record from the fake.
 
 ## Rules considered and rejected
 

@@ -67,3 +67,53 @@ func TestTheBacklogDoesNotQueueShippedProviders(t *testing.T) {
 		}
 	}
 }
+
+// The backlog counts the Recipes that send an identifier as a number. That
+// count is the answer to "how much of this is done", and it was written when
+// sixteen were and stayed there while ten more landed.
+//
+// Every number in these documents that nobody checks has drifted -- the
+// README's case total, its detection coverage, its count of cases nobody has
+// watched a provider perform, and this. The pattern is consistent enough to
+// stop treating each one as a surprise.
+func TestTheBacklogCountsNumericIdentifiers(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/backlog.md")
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+
+	counted := 0
+
+	for _, name := range recipe.Bundled() {
+		r, err := recipe.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+
+		for _, resource := range r.Resources {
+			if resource.ID.Type == "number" {
+				counted++
+				break
+			}
+		}
+	}
+
+	stated := regexp.MustCompile(`([A-Za-z-]+) Recipes send at least one identifier as a number`).FindStringSubmatch(string(raw))
+	if stated == nil {
+		t.Fatal("the backlog no longer states how many Recipes send a numeric identifier; update this test with it")
+	}
+
+	if words[stated[1]] != counted {
+		t.Errorf("the backlog says %s Recipes send a numeric identifier and %d do", stated[1], counted)
+	}
+}
+
+// words are the numbers this document spells out, which is how it is written
+// and not worth changing for a test's convenience.
+var words = map[string]int{
+	"Sixteen": 16, "Seventeen": 17, "Eighteen": 18, "Nineteen": 19,
+	"Twenty": 20, "Twenty-one": 21, "Twenty-two": 22, "Twenty-three": 23,
+	"Twenty-four": 24, "Twenty-five": 25, "Twenty-six": 26, "Twenty-seven": 27,
+	"Twenty-eight": 28, "Twenty-nine": 29, "Thirty": 30, "Thirty-one": 31,
+	"Thirty-two": 32, "Thirty-three": 33, "Thirty-four": 34, "Thirty-five": 35,
+}
