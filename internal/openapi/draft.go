@@ -194,7 +194,12 @@ func writeDraftResponses(b *strings.Builder) {
     style: bare
   error:
     style: flat
-    message_field: message
+    # message_field is deliberately not set here, and it is one of the things
+    # to decide before this ships. A Recipe naming where a failure's prose
+    # lives has to have a case asserting that name, or it could be called
+    # anything -- so a draft that guessed "message" would arrive already
+    # refused by the validator, and setting it means writing the case beside
+    # it.
 
 `)
 }
