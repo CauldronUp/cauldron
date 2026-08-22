@@ -1285,6 +1285,41 @@ because it has now been noticed three times from three directions, and a gap
 found three times and recorded none of them is a gap that will be noticed a
 fourth.
 
+## A create echoes whatever you send it
+
+Found while trying to mutation-test a field rename, and it is the reason that
+rename had gone unnoticed.
+
+A create stores the decoded request body as the record, without dropping the
+fields the resource does not declare. So this:
+
+    POST /v71/payments/{id}/refunds
+    {"merchantAccount": "...", "totallyMadeUpField": "xyzzy", "amount": {...}}
+
+answers with `totallyMadeUpField` in the body. No provider does that.
+
+**The consequence worth naming: a conformance case asserting a value it sent
+on a create cannot fail.** The validator already refuses a case whose *every*
+claim is an echo, but a case with one real claim and several echoes still
+contains claims that hold whatever the Recipe says. Adyen's refund carried
+`merchantReference` where Adyen sends `reference`, and a case asserting the
+name would have passed either way.
+
+Filtering to declared fields was tried and the blast radius is almost nothing:
+all 1697 conformance cases still pass. One runtime test does not, and it is
+the reason this is not simply a bug.
+
+`TestCreateAcceptsFormEncoding` sends `metadata[order_id]=42` to Stripe and
+expects it back. Stripe really does accept arbitrary metadata and really does
+echo it, and `metadata` is declared nowhere in that Recipe -- the echo is how
+it works today.
+
+So the echo is doing two jobs: supporting a genuine free-form container, and
+silently accepting nonsense. Separating them means a Recipe being able to say
+"this resource has a free-form map called metadata", which is a format
+addition rather than a filter. Half-fixing it would break Stripe metadata,
+which is correct behaviour, to remove an echo nothing currently relies on.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
