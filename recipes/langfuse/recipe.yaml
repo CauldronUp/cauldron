@@ -1,0 +1,402 @@
+# Langfuse, LLM observability: traces, the observations under them, and the
+# scores attached to either.
+#
+# The thing worth modelling here is how it tells you an endpoint is going away.
+#
+#   1. A deprecated endpoint answers 200 with everything you asked for, and a
+#      _deprecation object beside it: a message, the replacement endpoint, a
+#      link to the migration guide, and sunsetAt -- "the date after which the
+#      endpoint may stop working". Nothing about the status code, the shape,
+#      or the data says anything is wrong. A client reads the payload, works
+#      perfectly, and stops working on a date nobody read.
+#
+#   2. Three of the endpoints here are already in that state. GET /traces,
+#      GET /observations and GET /v2/scores are deprecated; the replacements
+#      are /v2/observations and /v3/scores, and they carry no _deprecation at
+#      all. The same resource lives at several versioned paths at once, and
+#      only the body tells them apart.
+#
+#   3. A trace's observations are ids, not objects. trace.observations is an
+#      array of strings, so code that iterates it looking for names, models
+#      or costs iterates strings.
+#
+#   4. The paging envelope reports four numbers under meta: limit, page,
+#      totalItems and totalPages. The last two are different quantities, and
+#      a loop written against the wrong one asks for pages that do not exist
+#      or stops before the end.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: langfuse
+capability: observability
+version: 0.1.0
+upstream:
+  api: "1"
+  docs: https://cloud.langfuse.com/generated/api/openapi.yml
+
+auth:
+  # The public key is the username and the secret key is the password, which
+  # is why a Langfuse key pair does not fit anywhere a single token goes.
+  scheme: basic
+
+responses:
+  list:
+    style: wrapped
+    count_field: meta.totalItems
+    pages_field: meta.totalPages
+    page_field: meta.page
+    limit_field: meta.limit
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  trace:
+    collection: data
+    id:
+      style: opaque
+      length: 32
+    fields:
+      name:
+        type: string
+      userId:
+        type: string
+        null_when_unset: true
+      sessionId:
+        type: string
+        null_when_unset: true
+      timestamp:
+        type: datetime
+      # Ids, not objects. Iterating this looking for a model name iterates
+      # strings.
+      observations:
+        type: list
+      scores:
+        type: list
+      # Seconds, and a float. The observations underneath carry their own.
+      latency:
+        type: number
+        default: 0
+      totalCost:
+        type: number
+        default: 0
+      environment:
+        type: string
+        default: default
+
+  observation:
+    collection: data
+    id:
+      style: opaque
+      length: 32
+    fields:
+      traceId:
+        type: string
+      # SPAN, GENERATION or EVENT. Only a GENERATION has a model or a cost,
+      # so code that reads model off every observation reads null for two
+      # kinds out of three.
+      type:
+        type: string
+        default: SPAN
+      name:
+        type: string
+      # The tree. Null on the observations that hang directly off the trace.
+      parentObservationId:
+        type: string
+        null_when_unset: true
+      model:
+        type: string
+        null_when_unset: true
+      startTime:
+        type: datetime
+      endTime:
+        type: datetime
+        null_when_unset: true
+      # Three names for the money. calculatedTotalCost is the one Langfuse
+      # computes; totalPrice is what the model list said it would be.
+      calculatedTotalCost:
+        type: number
+        null_when_unset: true
+      totalPrice:
+        type: number
+        null_when_unset: true
+      level:
+        type: string
+        default: DEFAULT
+
+routes:
+  # Deprecated, and it answers 200 with the data you asked for. The only
+  # sign is the object beside it.
+  - method: GET
+    path: /api/public/traces
+    resource: trace
+    operation: list
+    pagination:
+      # page and limit, which is the mechanism the replacement drops.
+      style: page
+      limit: 50
+      limit_param: limit
+      cursor_param: page
+    fields:
+      _deprecation:
+        message: "GET /api/public/traces is deprecated. Use the replacement endpoint."
+        replacement: GET /api/public/v2/observations
+        docsUrl: https://langfuse.com/docs/api
+        # The date after which this may stop working. It is in the body of a
+        # response that otherwise looks entirely healthy.
+        sunsetAt: "2026-12-31"
+
+  - method: GET
+    path: /api/public/traces/{id}
+    resource: trace
+    operation: get
+
+  # Also deprecated. Its replacement is below and carries nothing.
+  - method: GET
+    path: /api/public/observations
+    resource: observation
+    operation: list
+    pagination:
+      # page and limit, which is the mechanism the replacement drops.
+      style: page
+      limit: 50
+      limit_param: limit
+      cursor_param: page
+    fields:
+      _deprecation:
+        message: "GET /api/public/observations is deprecated. Use the replacement endpoint."
+        replacement: GET /api/public/v2/observations
+        docsUrl: https://langfuse.com/docs/api
+        sunsetAt: "2026-12-31"
+
+  # The replacement, and migrating to it is not a change of URL. Its meta is
+  # a cursor and nothing else: no page, no limit, no totalItems, no
+  # totalPages. Code that showed "page 3 of 12" has nothing left to show it
+  # with, and code that keeps sending page gets the first page every time.
+  - method: GET
+    path: /api/public/v2/observations
+    resource: observation
+    operation: list
+    list:
+      # Everything the deprecated envelope reported, cleared.
+      count_field: "-"
+      pages_field: "-"
+      page_field: "-"
+      limit_field: "-"
+      cursor_field: meta.cursor
+    pagination:
+      style: cursor
+      limit: 50
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/public/observations/{id}
+    resource: observation
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: "Not found: {detail}"
+
+fixtures:
+  empty: {}
+
+  small-project:
+    trace:
+      - id: 1a2b3c4d5e6f708192a3b4c5d6e7f809
+        name: answer-question
+        userId: user-42
+        sessionId: session-7
+        timestamp: "2026-02-01T10:00:00Z"
+        # Ids. A client looking for models here finds strings.
+        observations:
+          - obs00000000000000000000000000001
+          - obs00000000000000000000000000002
+        scores: []
+        latency: 2.41
+        totalCost: 0.00184
+      - id: 2b3c4d5e6f708192a3b4c5d6e7f8091a
+        name: summarise
+        userId: user-42
+        sessionId: null
+        timestamp: "2026-02-01T10:05:00Z"
+        observations:
+          - obs00000000000000000000000000003
+        scores: []
+        latency: 0.88
+        totalCost: 0.0004
+
+    observation:
+      # A GENERATION: the only kind with a model and a cost.
+      - id: obs00000000000000000000000000001
+        traceId: 1a2b3c4d5e6f708192a3b4c5d6e7f809
+        type: GENERATION
+        name: chat-completion
+        parentObservationId: null
+        model: claude-sonnet-5
+        startTime: "2026-02-01T10:00:00Z"
+        endTime: "2026-02-01T10:00:02Z"
+        calculatedTotalCost: 0.00184
+        totalPrice: 0.0018
+        level: DEFAULT
+      # A SPAN: no model, no cost, and a parent.
+      - id: obs00000000000000000000000000002
+        traceId: 1a2b3c4d5e6f708192a3b4c5d6e7f809
+        type: SPAN
+        name: retrieve-context
+        parentObservationId: obs00000000000000000000000000001
+        model: null
+        startTime: "2026-02-01T10:00:00Z"
+        endTime: "2026-02-01T10:00:01Z"
+        calculatedTotalCost: null
+        totalPrice: null
+        level: DEFAULT
+      - id: obs00000000000000000000000000003
+        traceId: 2b3c4d5e6f708192a3b4c5d6e7f8091a
+        type: GENERATION
+        name: summarise-call
+        parentObservationId: null
+        model: claude-haiku-4-5
+        startTime: "2026-02-01T10:05:00Z"
+        endTime: "2026-02-01T10:05:01Z"
+        calculatedTotalCost: 0.0004
+        totalPrice: 0.0004
+        level: DEFAULT
+
+# Conformance cases, read from Langfuse's published OpenAPI description rather
+# than observed against a live project. The verify report says so.
+conformance:
+  - name: a deprecated endpoint answers 200 and says so in the body
+    # Everything you asked for, and a migration signal beside it: the
+    # replacement, the docs, and a date after which this may stop working.
+    # Nothing about the status code or the data says anything is wrong, so a
+    # client works perfectly until sunsetAt.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/traces
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+    expect:
+      status: 200
+      body:
+        data[0].name: answer-question
+        _deprecation.replacement: GET /api/public/v2/observations
+        _deprecation.sunsetAt: "2026-12-31"
+
+  - name: the replacement carries no such signal
+    # The only difference a client can see between the two endpoints. Without
+    # this case the one above would hold against an emulator that stamped a
+    # deprecation on everything, which is a different and louder lie.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/v2/observations
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+    expect:
+      status: 200
+      body:
+        data[0].name: chat-completion
+      absent:
+        - _deprecation
+
+  - name: a trace's observations are ids, not observations
+    # Strings. Code that iterates them looking for a model, a cost or a name
+    # iterates characters of an id.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/traces/1a2b3c4d5e6f708192a3b4c5d6e7f809
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+    expect:
+      status: 200
+      body:
+        observations[0]: obs00000000000000000000000000001
+      absent:
+        # Not objects, so there is no name to read off one.
+        - observations[0].name
+        - observations[0].model
+
+  - name: only a GENERATION has a model and a cost
+    # Three kinds of observation share one shape. A SPAN carries null where a
+    # GENERATION carries a model, so reading model off every observation
+    # gets null for two kinds out of three -- and summing costs over all of
+    # them adds nulls.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/v2/observations
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+    expect:
+      status: 200
+      body:
+        data[0].type: GENERATION
+        data[0].model: claude-sonnet-5
+        data[1].type: SPAN
+        data[1].model: null
+        data[1].calculatedTotalCost: null
+
+  - name: totalItems and totalPages are different numbers
+    # Three observations at two per page is two pages. A loop written against
+    # totalItems asks for pages three, four and five and reads three empty
+    # results as three empty pages.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/observations
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+      query:
+        limit: "2"
+    expect:
+      status: 200
+      body:
+        meta.totalItems: 3
+        meta.totalPages: 2
+        meta.limit: 2
+        meta.page: 1
+      absent:
+        - data[2]
+
+  - name: the replacement reports a cursor and nothing else
+    # Migrating is not a change of URL. The deprecated endpoint's meta has
+    # limit, page, totalItems and totalPages; this one has a cursor. Code
+    # that showed "page 3 of 12" has nothing left to show it with, and there
+    # is no total to count towards.
+    source: https://cloud.langfuse.com/generated/api/openapi.yml
+    fixture: small-project
+    request:
+      method: GET
+      path: /api/public/v2/observations
+      headers:
+        Authorization: Basic cGstbGYtY2F1bGRyb246c2stbGYtY2F1bGRyb24=
+      query:
+        limit: "2"
+    expect:
+      status: 200
+      body:
+        data[0].name: chat-completion
+      matches:
+        meta.cursor: '.'
+      absent:
+        - data[2]
+        - meta.totalItems
+        - meta.totalPages
+        - meta.page
+        - meta.limit
