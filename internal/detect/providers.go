@@ -714,6 +714,44 @@ func providers() []provider {
 			recipe: "airwallex",
 			npm:    []string{"@airwallex/node-sdk"},
 		},
+		{
+			recipe: "documenso",
+			npm:    []string{"@documenso/sdk-typescript"},
+		},
+		{
+			// Nordigen is the same API under its former name, and plenty of
+			// manifests still carry it.
+			recipe: "gocardlessbank",
+			npm:    []string{"nordigen-node", "gocardless-nodejs"},
+		},
+		{
+			recipe: "googleaddress",
+			npm:    []string{"@googlemaps/addressvalidation"},
+		},
+		{
+			recipe: "moderntreasury",
+			npm:    []string{"modern-treasury"},
+			gomod:  []string{"github.com/Modern-Treasury/modern-treasury-go"},
+		},
+		{
+			recipe: "opsgenie",
+			npm:    []string{"opsgenie-sdk"},
+		},
+		{
+			recipe: "wordpress",
+			npm:    []string{"wpapi", "@wordpress/api-fetch"},
+		},
+		{
+			// Segment's client rather than Help Scout's own, and still
+			// unambiguously a Help Scout client, which is the question
+			// detection asks.
+			recipe: "helpscout",
+			npm:    []string{"helpscout"},
+		},
+		{
+			recipe: "calcom",
+			npm:    []string{"@calcom/atoms"},
+		},
 	}
 }
 
