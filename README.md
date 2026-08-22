@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1693 cases, 48 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1693 cases, 51 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1693 cases, 48 run against
-a live account and 1645 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1693 cases, 51 run against
+a live account and 1642 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The forty-eight are the cases whose provider can be asked without a key. Five are
+The fifty-one are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -331,11 +331,25 @@ than throwing. Plain text would be the wrong way to model it, because a client
 calling `.json()` on text throws and on this it succeeds and hands back a
 string, so the case asserts the raw bytes: the quotes are the distinction.
 
-Four are Docker Hub's, which answers for a public repository without a token:
+Seven are Docker Hub's, which answers for a public repository without a token:
 a repository nobody can see is a 404 carrying `{"message": "object not
 found"}` and no code, `count` is of everything rather than of the page, and
 one image wears several tags -- on one page of `library/nginx`, seventeen
-digests were shared. Fourteen are GitHub's, which answers for a public repository
+digests were shared.
+
+Three more of its cases were settled the same day. `latest` is an ordinary tag
+and is routinely the older one: `library/mongo` last updated `latest` on
+2026-07-23 under digest `sha256:e0ce8c35124d...`, while its `8.3.8` tag was
+updated on 2026-08-18 under a different digest. Sixty-one of the hundred tags
+on that page are newer than `latest`, and the same holds on `library/python`,
+`library/nginx` and `library/redis`, so it is the ordinary condition rather
+than a repository somebody forgot. And a tag can be marked `inactive` and
+still be answered like any other: `library/registry` returns its `2.5.2` with
+`tag_status: inactive`, one of fifteen in that state out of seventy, `2.5` and
+`2.7.0` among them. Plain version tags, which is what makes it worth having --
+somebody pinned to `registry:2.5.2` is pinned to something the registry has
+already decided is a candidate for removal, and it says so in a field nobody
+reads while answering 200. Fourteen are GitHub's, which answers for a public repository
 without a token: its errors repeat the HTTP status in the body as a string,
 an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
