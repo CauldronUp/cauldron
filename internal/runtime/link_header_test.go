@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -65,10 +66,31 @@ func TestALinkHeaderAdvertisesTheNextPage(t *testing.T) {
 }
 
 func TestTheLastPageAdvertisesNoNext(t *testing.T) {
-	// How the loop ends. A Link header here would send a client after a page
-	// that does not exist, which is the failure the header exists to prevent.
-	if got := issuesResponse(t, "/repos/octocat/hello-world/issues?state=all&per_page=1&page=2").Header.Get("Link"); got != "" {
+	// How the loop ends, and this test had the same thing backwards that the
+	// Recipe did: it asked for no Link header, and GitHub's last page carries
+	// one. Checked against api.github.com on 2026-08-22, golang/example with
+	// 74 issues: ?per_page=50&page=2 answers rel="prev" and nothing else.
+	//
+	// What has to be absent is the next, not the header. A client stopping on
+	// a missing header never stops against GitHub.
+	got := issuesResponse(t, "/repos/octocat/hello-world/issues?state=all&per_page=1&page=2").Header.Get("Link")
+
+	if strings.Contains(got, `rel="next"`) {
 		t.Errorf("the last page advertised a next page: %q", got)
+	}
+
+	if !strings.Contains(got, `rel="prev"`) {
+		t.Errorf("the last page should still point back: %q", got)
+	}
+}
+
+// A page reached from another page points back; a listing that never paged has
+// nowhere to point. The two are different states and the header says so.
+func TestAMiddlePageAdvertisesBoth(t *testing.T) {
+	got := issuesResponse(t, "/repos/octocat/hello-world/issues?state=all&per_page=1&page=2").Header.Get("Link")
+
+	if strings.Contains(got, `rel="next"`) && !strings.Contains(got, `rel="prev"`) {
+		t.Errorf("a next without a prev on a page reached from another: %q", got)
 	}
 }
 

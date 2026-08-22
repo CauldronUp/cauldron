@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 34 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1691 cases, 35 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 34 run against
-a live account and 1657 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1691 cases, 35 run against
+a live account and 1656 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The thirty-four are the cases whose provider can be asked without a key. Five are
+The thirty-five are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -316,11 +316,26 @@ Four are Docker Hub's, which answers for a public repository without a token:
 a repository nobody can see is a 404 carrying `{"message": "object not
 found"}` and no code, `count` is of everything rather than of the page, and
 one image wears several tags -- on one page of `library/nginx`, seventeen
-digests were shared. Three are GitHub's, which answers for a public repository
+digests were shared. Four are GitHub's, which answers for a public repository
 without a token: its errors repeat the HTTP status in the body as a string,
 an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
-and only one of those two works in a path.
+and only one of those two works in a path. And the fourth corrected this
+Recipe: it claimed the last page of a listing carries no `Link` header, and
+GitHub sends one holding `rel="prev"`. A single page carries none, which is
+where the wrong claim came from -- the first page and the last page are the
+same page, and a single page is not a last page.
+
+The difference is the whole reason a client reads that header. One that stops
+when the header is missing never stops against GitHub, because the header is
+there; it is `rel="next"` that is not. The case was teaching exactly the loop
+its own comment said the header exists to prevent.
+
+A `rel="prev"` is opt in rather than implied, because providers disagree:
+Basecamp's own README describes `rel="next"` alone, so its last page really
+does carry no header. Only offset and page numbering can have one at all, a
+cursor being a position the caller was handed rather than a number to count
+backwards from.
 
 Four are GitLab's, which answers for a public project. A merge request is
 addressed by its per-project iid and not by its global id, and putting one

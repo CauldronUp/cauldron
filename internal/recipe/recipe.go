@@ -620,6 +620,19 @@ type ListResponse struct {
 	// next walks the whole collection here, and one that reads last finds
 	// nothing. That is stated rather than guessed at.
 	LinkHeader bool `yaml:"link_header"`
+	// PrevLink adds a rel="prev" beside the next link, for the providers that
+	// send one.
+	//
+	// Not implied by LinkHeader, because providers disagree and the
+	// disagreement is the whole point of asking. GitHub's last page carries a
+	// Link header holding rel="prev" and no next; Basecamp's own README
+	// describes rel="next" alone, so its last page carries no header at all.
+	// A client that stops when the header is missing works against Basecamp
+	// and never terminates against GitHub.
+	//
+	// Only offset and page numbering can have one. A cursor names a position
+	// the caller was handed and cannot be arithmetic'd backwards.
+	PrevLink bool `yaml:"prev_link"`
 	// PageField and LimitField name properties echoing the page number and
 	// the page size the request asked for.
 	//
@@ -2768,6 +2781,10 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	if route.List.LinkHeader {
 		spec.LinkHeader = true
+	}
+
+	if route.List.PrevLink {
+		spec.PrevLink = true
 	}
 
 	if route.List.CountAsString {
