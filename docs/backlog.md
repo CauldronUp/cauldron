@@ -1880,7 +1880,7 @@ rather than reproduced, which is the weaker half of what it could do. Neon has
 the same shape with `default` and `primary`, and could model both only because
 neither of them is the identifier.
 
-### Owed: lookup_by should not fall through to an id
+### ~~Owed: lookup_by should not fall through to an id~~ Fixed
 
 Found while modelling the above. `lookup_by` returns the value unchanged when
 it matches nothing, so the ordinary not-found path can report it -- which is
@@ -1889,5 +1889,15 @@ wrong when the value *is* a valid identifier: a route that says "look this up
 by ref" then answers 200 for a project addressed by its deprecated `id`, which
 is the exact failure the route was declared to prevent.
 
-Making it strict would keep SQS's behaviour, since a handle is never an id. It
-needs its own change and its own cases rather than being folded into a Recipe.
+Made strict, and SQS's behaviour is unchanged because a handle is never an id.
+What did change is the direction nobody had tried: **a message id in the
+ReceiptHandle field used to answer 200 and delete the message**, because a
+value matching no handle fell back to an identifier lookup and a message id is
+one.
+
+So the emulator was teaching precisely what SQS's own Recipe header warns
+against -- that a handle and an id are interchangeable. Measured before the
+fix: four messages, delete by id, 200, three messages left.
+
+The value still comes back from the lookup so the failure names what the
+caller asked about; only its usability changes.

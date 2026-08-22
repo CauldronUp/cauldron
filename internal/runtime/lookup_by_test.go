@@ -137,3 +137,26 @@ func TestTheRightMessageIsTheOneDeleted(t *testing.T) {
 		t.Errorf("expected the other three to survive, got %d", len(out.Messages))
 	}
 }
+
+func TestAnIdentifierIsNotAHandle(t *testing.T) {
+	// The direction that was wrong. A message id in the ReceiptHandle field
+	// used to answer 200 and delete the message, because a value matching no
+	// handle fell back to an identifier lookup -- and a message id is one.
+	//
+	// The emulator was teaching what the Recipe's own header warns against:
+	// that a handle and an id are interchangeable.
+	s := sqsSandbox(t)
+
+	before := messageCount(t, s)
+
+	rec := sqsCall(t, s, "AmazonSQS.DeleteMessage",
+		`{"QueueUrl":"https://sqs.eu-west-2.amazonaws.com/000000000000/orders",`+
+			`"ReceiptHandle":"11111111-1111-4111-8111-111111111111"}`)
+	if rec.Code == http.StatusOK {
+		t.Error("a message id was accepted as a receipt handle")
+	}
+
+	if after := messageCount(t, s); after != before {
+		t.Errorf("a message id deleted %d messages", before-after)
+	}
+}
