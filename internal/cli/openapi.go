@@ -151,6 +151,16 @@ func runCheck(ctx *context, args []string) int {
 		fmt.Fprintln(ctx.stdout, "  Nothing in this Recipe is contradicted by the description.")
 	}
 
+	// Counted apart from the omissions, because they are not omissions. A
+	// path declared in another file has not been compared against anything,
+	// and folding it into "things the description has and this Recipe does
+	// not" would let a Recipe whose every path went unread report that
+	// nothing contradicts it. Lob splits all fifty-eight of its paths out
+	// that way.
+	if unread := countUnread(omissions); unread > 0 {
+		fmt.Fprintf(ctx.stdout, "\n  %d of this Recipe's routes are declared in files this did not read, and were not compared.\n", unread)
+	}
+
 	for _, finding := range disagreements {
 		fmt.Fprintf(ctx.stdout, "  %s\n    %s\n", finding.Where, finding.What)
 	}
@@ -202,4 +212,17 @@ func slug(title string) string {
 	}
 
 	return strings.Trim(b.String(), "-")
+}
+
+// countUnread counts routes whose path the description keeps in another file.
+func countUnread(findings []openapi.Finding) int {
+	n := 0
+
+	for _, finding := range findings {
+		if strings.Contains(finding.What, "in another file") {
+			n++
+		}
+	}
+
+	return n
 }

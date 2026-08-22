@@ -66,6 +66,11 @@ type ExternalDocs struct {
 
 // PathItem is the set of operations available on one path.
 type PathItem struct {
+	// Ref is a path declared in another file. A description may split itself
+	// up, and Lob's does: all fifty-eight of its paths are one-line
+	// references to resources/<thing>/<thing>.yml. Those files are not
+	// fetched, so the path is known to exist and nothing else about it is.
+	Ref        string      `yaml:"$ref"`
 	Get        *Operation  `yaml:"get"`
 	Put        *Operation  `yaml:"put"`
 	Post       *Operation  `yaml:"post"`
