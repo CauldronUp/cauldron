@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1685 cases, 5 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1685 cases, 10 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,15 +296,24 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1685 cases, 5 run against
-a live account and 1680 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1685 cases, 10 run against
+a live account and 1675 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The five are OpenRouter's model-catalogue cases, whose endpoint is public and
-needs no key, so the numbers in them were read from the provider rather than
-inferred. Its completion cases carry no date, because calling that endpoint
-costs money.
+The ten are the cases whose provider can be asked without a key. Five are
+OpenRouter's model-catalogue cases, whose numbers were read from the provider
+rather than inferred; its completion cases carry no date, because calling that
+endpoint costs money. Five are the npm registry's, where what was checked is
+the shape each case turns on rather than the values: that a per-version
+document carries no time, no versions and no dist-tags, that `deprecated` is a
+string and is absent rather than false when it does not apply, that
+`integrity` sits inside `dist`, and that a missing package answers 404 with
+`{"error":"Not found"}`. The Recipe records which real packages those were
+observed on, so the dates can be audited rather than taken on trust.
+
+Every other provider needs an account, and a date nobody can reproduce is
+worth less than an empty field that says so.
 
 Cases run in process and need no credentials, so CI runs them on every push and
 a Recipe edit that drifts from the provider fails there rather than in an
