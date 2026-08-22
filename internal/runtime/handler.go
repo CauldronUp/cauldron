@@ -136,6 +136,7 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 	}
 
 	record = s.flatten(matched.spec.Resource, record)
+	record = s.declaredOnly(matched.spec.Resource, record)
 
 	for field, value := range s.scopeVars(matched, vars) {
 		record[field] = value
@@ -258,6 +259,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 	}
 
 	changes = s.flatten(matched.spec.Resource, changes)
+	changes = s.declaredOnly(matched.spec.Resource, changes)
 
 	existing, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {

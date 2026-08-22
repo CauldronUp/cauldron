@@ -121,6 +121,12 @@ type Filter struct {
 }
 
 // Field is a single attribute on a resource.
+//
+// A field of type map is free-form: it accepts whatever keys the caller sends
+// and answers with them. Stripe's metadata is the reason it exists -- arbitrary
+// key-value pairs the provider stores and echoes without knowing what they
+// mean -- and it has to be declared rather than assumed, because a create that
+// echoes any field it is sent cannot tell a Recipe's model from a typo.
 type Field struct {
 	// Type is string, integer, boolean, timestamp (a Unix integer in seconds,
 	// which is what Stripe and Twilio send), timestamp_ms (milliseconds, which
