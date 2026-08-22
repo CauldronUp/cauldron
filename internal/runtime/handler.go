@@ -224,7 +224,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 // identifier resolves the record id for a request. Most providers put it in
 // the path; RPC-shaped ones like Slack put it in the query string or the body,
 // which the Recipe declares with id_from.
-func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]string) string {
+func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]string) (string, bool) {
 	return s.resolve(matched, s.rawIdentifier(matched, r, vars))
 }
 
@@ -235,18 +235,29 @@ func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]str
 // not-found path reports it. That is the right answer for the failure this
 // mostly models: a receipt handle from an earlier receive is stale, and SQS
 // answers a delete with it by refusing.
-func (s *Sandbox) resolve(matched route, value string) string {
+func (s *Sandbox) resolve(matched route, value string) (string, bool) {
 	field := matched.spec.LookupBy
 	if field == "" || value == "" {
-		return value
+		return value, true
 	}
 
 	page, err := s.store.ListWhere(matched.spec.Resource, map[string]any{field: value}, "", 0)
-	if err != nil || len(page.Records) == 0 {
-		return value
+	if err == nil && len(page.Records) > 0 {
+		return fmt.Sprint(page.Records[0]["id"]), true
 	}
 
-	return fmt.Sprint(page.Records[0]["id"])
+	// Nothing carries that value in the field this route addresses records
+	// by, so there is nothing here -- and falling back to an identifier
+	// lookup would be worse than useless. Supabase found that: a project has
+	// a deprecated id beside the ref every path takes, and a route declared
+	// to look one up by ref answered 200 for a project addressed by the
+	// identifier it is not supposed to accept. The route said which field it
+	// reads; a value that is not in that field is not a match, however
+	// familiar it looks.
+	//
+	// The value comes back regardless, because the caller asked about it and
+	// the failure should name it.
+	return value, false
 }
 
 func (s *Sandbox) rawIdentifier(matched route, r *http.Request, vars map[string]string) string {
@@ -349,7 +360,10 @@ func trim(spec recipe.Route, record store.Record) store.Record {
 }
 
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := s.identifier(matched, r, vars)
+	id, addressable := s.identifier(matched, r, vars)
+	if !addressable {
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+	}
 
 	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
@@ -371,7 +385,10 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 }
 
 func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := s.identifier(matched, r, vars)
+	id, addressable := s.identifier(matched, r, vars)
+	if !addressable {
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+	}
 
 	changes, err := decodeBody(r)
 	if err != nil {
@@ -402,7 +419,10 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 }
 
 func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
-	id := s.identifier(matched, r, vars)
+	id, addressable := s.identifier(matched, r, vars)
+	if !addressable {
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+	}
 
 	record, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
