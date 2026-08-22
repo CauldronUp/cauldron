@@ -1,0 +1,311 @@
+# Supabase's management API — the one that creates and administers projects,
+# not the per-project PostgREST endpoint.
+#
+# Four things here break code that reads them the obvious way:
+#
+#   1. A project has two identifiers and only one of them works. `ref` is what
+#      every path takes; `id` is marked "Deprecated: Use `ref` instead" in
+#      Supabase's own description and is still sent beside it. Code that
+#      stores `id` and interpolates it into /v1/projects/{ref} addresses
+#      nothing, and gets a 404 rather than a hint.
+#
+#      Stated gap: only `ref` is sent here. A resource keys on one identifier
+#      and emits it under one name, so a second one cannot sit beside it --
+#      and of the two, the one that works is the one worth having. The trap
+#      is described here rather than reproduced, which is the weaker half of
+#      what this Recipe could do. See docs/backlog.md.
+#
+#   2. Status has fifteen values and none of them is "ACTIVE". A project that
+#      is working says ACTIVE_HEALTHY, so `status === 'ACTIVE'` is never true
+#      — and `status.startsWith('ACTIVE')` is true for ACTIVE_UNHEALTHY,
+#      which is a project that is not working.
+#
+#   3. Creating a project answers with no database at all. The listing
+#      carries a database object with the host in it; the create response
+#      does not, because there is nothing to connect to yet. Code that
+#      creates a project and reads project.database.host reads undefined.
+#
+#   4. Secrets come back with their values. GET on the secrets endpoint is a
+#      plaintext dump, in a body that gets logged.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: supabase
+capability: database
+version: 0.1.0
+upstream:
+  api: v1
+  docs: https://api.supabase.com/api/v1-json
+
+auth:
+  scheme: bearer
+
+responses:
+  list:
+    # A bare array. There is no envelope to unwrap and no count beside it.
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  project:
+    collection: projects
+    id:
+      # The ref, which is the identifier every path takes and the one
+      # Supabase generates. Twenty lower-case letters.
+      style: opaque
+      length: 20
+      field: ref
+    fields:
+      name:
+        type: string
+        required: true
+      organization_id:
+        type: string
+      region:
+        type: string
+        default: eu-west-2
+      # One of fifteen. ACTIVE_HEALTHY is the working one; "ACTIVE" on its
+      # own is not a value this API ever sends.
+      status:
+        type: string
+        default: COMING_UP
+      created_at:
+        type: datetime
+      # Present on a listing and absent from a create, because a project
+      # still coming up has nothing to connect to.
+      database_host:
+        type: string
+        in: database
+        as: host
+      database_version:
+        type: string
+        in: database
+        as: version
+
+  secret:
+    collection: secrets
+    id:
+      style: opaque
+      length: 12
+      field: "-"
+      carried_by: name
+    fields:
+      project_ref:
+        type: string
+        in: "-"
+      name:
+        type: string
+        required: true
+      # In the clear. Supabase sends it, so this sends it.
+      value:
+        type: string
+        required: true
+      updated_at:
+        type: datetime
+
+routes:
+  # The listing carries the database object; the create below does not.
+  - method: GET
+    path: /v1/projects
+    resource: project
+    operation: list
+
+  - method: GET
+    path: /v1/projects/{id}
+    resource: project
+    operation: get
+
+  # A created project has no database. Supabase omits the object entirely
+  # rather than sending an empty one, so project.database.host is a read on
+  # undefined rather than an empty string.
+  #
+  # No returns is needed to say so: a project that has just been asked for
+  # has no host yet, so the fields are unset and nothing is emitted. Naming
+  # them in a returns list would look like the reason and would not be one --
+  # renaming the entry broke no case, which is how that was noticed.
+  - method: POST
+    path: /v1/projects
+    resource: project
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v1/projects/{project_ref}/secrets
+    resource: secret
+    operation: list
+    scope: [project_ref]
+
+errors:
+  resource_missing:
+    status: 404
+    message: "Project not found: {detail}"
+
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  parameter_missing:
+    status: 400
+    message: "The request is missing {detail}."
+
+fixtures:
+  empty: {}
+
+  small-org:
+    project:
+      # Working, and the only status value that means so.
+      - id: abcdefghijklmnopqrst
+        name: cauldron-production
+        organization_id: org_cauldron
+        region: eu-west-2
+        status: ACTIVE_HEALTHY
+        created_at: "2026-01-10T09:00:00Z"
+        database_host: db.abcdefghijklmnopqrst.supabase.co
+        database_version: "15.8"
+      # Contains the word ACTIVE and does not work. A prefix test on the
+      # status says this project is fine.
+      - id: bcdefghijklmnopqrstu
+        name: cauldron-staging
+        organization_id: org_cauldron
+        region: eu-west-2
+        status: ACTIVE_UNHEALTHY
+        created_at: "2026-01-11T09:00:00Z"
+        database_host: db.bcdefghijklmnopqrstu.supabase.co
+        database_version: "15.8"
+      # Still coming up, which is where every project starts.
+      - id: cdefghijklmnopqrstuv
+        name: cauldron-preview
+        organization_id: org_cauldron
+        region: eu-west-2
+        status: COMING_UP
+        created_at: "2026-01-15T14:00:00Z"
+
+    secret:
+      - id: SERVICE_KEY
+        project_ref: abcdefghijklmnopqrst
+        name: SERVICE_KEY
+        value: sb_secret_cauldron_0000000000
+        updated_at: "2026-01-10T09:05:00Z"
+      - id: STRIPE_KEY
+        project_ref: abcdefghijklmnopqrst
+        name: STRIPE_KEY
+        value: sk_test_cauldron_0000000000
+        updated_at: "2026-01-12T11:00:00Z"
+
+# Conformance cases, read from Supabase's published OpenAPI description rather
+# than observed against a live account. The verify report says so.
+conformance:
+  - name: a working project says ACTIVE_HEALTHY, never ACTIVE
+    # Fifteen status values and none of them is "ACTIVE", so
+    # `status === 'ACTIVE'` is never true and the code guarding on it never
+    # runs.
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/projects
+      headers:
+        Authorization: Bearer sbp_cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          name: cauldron-production
+          status: ACTIVE_HEALTHY
+
+  - name: a broken project also begins with ACTIVE
+    # ACTIVE_UNHEALTHY. A prefix test says this project is fine and it is
+    # not, which is worse than a value that fails the test outright: the
+    # check passes and the project does not work.
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/projects
+      headers:
+        Authorization: Bearer sbp_cauldron
+    expect:
+      status: 200
+      body:
+        '[1]':
+          name: cauldron-staging
+          status: ACTIVE_UNHEALTHY
+
+  - name: a created project has no database to connect to
+    # The listing carries a database object with the host in it and the
+    # create response does not, because there is nothing to connect to yet.
+    # Code that creates a project and reads project.database.host reads a
+    # property of undefined.
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: POST
+      path: /v1/projects
+      headers:
+        Authorization: Bearer sbp_cauldron
+      json:
+        name: cauldron-new
+        organization_id: org_cauldron
+    expect:
+      status: 201
+      body:
+        name: cauldron-new
+        status: COMING_UP
+      absent:
+        - database
+        - database.host
+
+  - name: a listed project does have one
+    # The other half. Without it the case above would hold against an
+    # emulator that never sends a database at all, which is a different and
+    # simpler lie.
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/projects
+      headers:
+        Authorization: Bearer sbp_cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          database:
+            host: db.abcdefghijklmnopqrst.supabase.co
+            version: "15.8"
+
+  - name: a project is addressed by ref
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/projects/abcdefghijklmnopqrst
+      headers:
+        Authorization: Bearer sbp_cauldron
+    expect:
+      status: 200
+      body:
+        ref: abcdefghijklmnopqrst
+        name: cauldron-production
+
+  - name: secrets come back with their values
+    # A plaintext dump, in a body that gets logged. Supabase sends them, so
+    # this sends them -- an emulator that redacted the values would hide the
+    # only thing worth noticing about this endpoint.
+    source: https://api.supabase.com/api/v1-json
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/projects/abcdefghijklmnopqrst/secrets
+      headers:
+        Authorization: Bearer sbp_cauldron
+    expect:
+      status: 200
+      body:
+        '[0]':
+          name: SERVICE_KEY
+          value: sb_secret_cauldron_0000000000

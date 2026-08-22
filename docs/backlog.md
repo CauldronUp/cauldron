@@ -1845,3 +1845,49 @@ Neon takes a create body as `{"branch": {...}}` and Cauldron reads it flat, so
 a client sending Neon's real shape is told the name is missing. The Recipe's
 cases send the flat form, which is the one thing in it that does not match the
 provider. Plenty of APIs wrap a create body this way.
+
+## Supabase, and two things it could not say
+
+Supabase's management API has four traps worth reproducing, and the Recipe
+reproduces three of them.
+
+**Status has fifteen values and none of them is `ACTIVE`.** A working project
+says `ACTIVE_HEALTHY`, so `status === 'ACTIVE'` is never true and the branch
+guarding on it never runs. Worse in the other direction:
+`status.startsWith('ACTIVE')` is true for `ACTIVE_UNHEALTHY`, which is a
+project that does not work -- a check that passes about a thing that is broken.
+
+**A created project has no database.** The listing carries a database object
+with the host in it; the create response omits it entirely, because there is
+nothing to connect to yet. Code that creates a project and reads
+`project.database.host` reads a property of undefined. Both halves are cases,
+because the absence alone would hold against an emulator that never sends a
+database at all.
+
+**Secrets come back with their values**, in a body that gets logged.
+
+### Owed: a second identifier
+
+A project has two, and only one works. `ref` is what every path takes; `id` is
+marked "Deprecated: Use `ref` instead" in Supabase's own description and is
+still sent beside it, so code that stores `id` and interpolates it addresses
+nothing.
+
+Only `ref` is modelled. A resource keys on one identifier and emits it under
+one name, so a second cannot sit beside it -- and of the two, the one that
+works is the one worth having. The trap is described in the Recipe's header
+rather than reproduced, which is the weaker half of what it could do. Neon has
+the same shape with `default` and `primary`, and could model both only because
+neither of them is the identifier.
+
+### Owed: lookup_by should not fall through to an id
+
+Found while modelling the above. `lookup_by` returns the value unchanged when
+it matches nothing, so the ordinary not-found path can report it -- which is
+right for SQS, where a stale receipt handle matches no identifier either. It is
+wrong when the value *is* a valid identifier: a route that says "look this up
+by ref" then answers 200 for a project addressed by its deprecated `id`, which
+is the exact failure the route was declared to prevent.
+
+Making it strict would keep SQS's behaviour, since a handle is never an id. It
+needs its own change and its own cases rather than being folded into a Recipe.
