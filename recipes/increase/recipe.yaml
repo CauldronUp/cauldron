@@ -104,6 +104,42 @@ resources:
       status:
         type: string
         default: pending_submission
+      # The return, and it is here rather than anywhere else.
+      #
+      # This Recipe had /ach_transfer_returns as a collection of its own, and
+      # Increase has no such path: its description declares ninety-one and
+      # none of them is that. What it does declare is a return object on the
+      # transfer itself, carrying exactly created_at, return_reason_code,
+      # transaction_id and transfer_id.
+      #
+      # Two comments here said the opposite -- that the transfer carries no
+      # pointer to its return, and that anything reading transfers alone
+      # never sees it. Reading the transfer is the only way to see it. A
+      # client written against the old shape called an endpoint that answers
+      # 404 and looked for a link that was always there.
+      #
+      # Absent on a transfer that has not been returned, which is what makes
+      # status: returned worth checking first.
+      # return.return_reason_code, which repeats the parent and is what
+      # Increase sends. Declared explicitly because the validator refuses the
+      # shape otherwise, and it is right to: the usual cause of a name like
+      # this is somebody flattening a nested object by prefixing it.
+      return_reason_code:
+        type: string
+        in: return
+        as: return_reason_code
+      returned_at:
+        type: string
+        in: return
+        as: created_at
+      return_transaction_id:
+        type: string
+        in: return
+        as: transaction_id
+      return_transfer_id:
+        type: string
+        in: return
+        as: transfer_id
       # The name the receiving bank shows, truncated to what the network
       # allows rather than to what was sent.
       statement_descriptor:
@@ -131,29 +167,6 @@ resources:
         type: string
         in: submission
         as: submitted_at
-
-  ach_return:
-    collection: data
-    id:
-      style: prefixed
-      prefix: ach_transfer_return_
-      length: 24
-    fields:
-      # The transfer this came back from. The transfer itself carries no
-      # pointer in the other direction, so this is the only link.
-      transfer_id:
-        type: string
-      # insufficient_funds may be retried. no_account may not.
-      # authorization_revoked must never be, and doing so is a regulatory
-      # problem rather than a failed request. All three arrive identically.
-      return_reason_code:
-        type: string
-      # Days after the transfer settled. This is the field that proves the
-      # delay, and the reason a synchronous fake teaches nothing.
-      created_at:
-        type: string
-      transaction_id:
-        type: string
 
   account:
     collection: data
@@ -203,21 +216,10 @@ routes:
     resource: ach_transfer
     operation: get
 
-  - method: GET
-    path: /ach_transfer_returns
-    resource: ach_return
-    operation: list
-
-  - method: GET
-    path: /ach_transfer_returns/{id}
-    resource: ach_return
-    operation: get
-
 webhooks:
   events:
     - ach_transfer.created
     - ach_transfer.updated
-    - ach_return.created
   signing:
     scheme: hmac-sha256
     header: Increase-Webhook-Signature
@@ -287,6 +289,13 @@ fixtures:
         company_name: Cauldron Supplies
         created_at: "2026-06-03T14:02:11Z"
         submitted_at: "2026-06-04T09:00:00Z"
+        # Nearly a month later, on a transfer whose status is still
+        # submitted. A reason that must never be retried, and nothing in the
+        # object's shape distinguishes it from one that may be.
+        return_reason_code: authorization_revoked
+        returned_at: "2026-07-02T08:41:19Z"
+        return_transaction_id: transaction_cauldron0000002
+        return_transfer_id: ach_transfer_cauldron00000001
       # Returned, and it still says returned rather than saying why or when.
       # The reason and the date are on the return object, not here.
       - id: ach_transfer_cauldron00000002
@@ -300,6 +309,12 @@ fixtures:
         company_name: Cauldron Supplies
         created_at: "2026-06-03T14:05:44Z"
         submitted_at: "2026-06-04T09:00:00Z"
+        # A week after it was submitted. Everything downstream had treated it
+        # as final for seven days, and the only record of that is here.
+        return_reason_code: insufficient_funds
+        returned_at: "2026-06-11T11:20:03Z"
+        return_transaction_id: transaction_cauldron0000001
+        return_transfer_id: ach_transfer_cauldron00000002
       # Money coming in, so the amount is positive on the same field. Summing
       # without reading the sign gives a number that is neither the money in
       # nor the money out.
@@ -314,23 +329,6 @@ fixtures:
         company_name: Cauldron Supplies
         created_at: "2026-06-05T10:15:00Z"
         submitted_at: "2026-06-05T16:00:00Z"
-
-    ach_return:
-      # A week after the transfer was submitted. Everything downstream had
-      # treated it as final for seven days.
-      - id: ach_transfer_return_cauldron01
-        transfer_id: ach_transfer_cauldron00000002
-        return_reason_code: insufficient_funds
-        created_at: "2026-06-11T11:20:03Z"
-        transaction_id: transaction_cauldron0000001
-      # The same shape carrying a reason that must never be retried. Retrying
-      # this one is a regulatory problem rather than a failed request, and
-      # nothing in the object's shape distinguishes it from the one above.
-      - id: ach_transfer_return_cauldron02
-        transfer_id: ach_transfer_cauldron00000001
-        return_reason_code: authorization_revoked
-        created_at: "2026-07-02T08:41:19Z"
-        transaction_id: transaction_cauldron0000002
 
 # Conformance cases, read from the Increase API reference rather than observed
 # against a live account. The verify report says so, and observing the
@@ -347,9 +345,14 @@ conformance:
     expect:
       status: 200
       body:
-        # The status changed and nothing else did. The amount that left is
-        # still here, the submission time is still here, and there is no
-        # pointer to the return.
+        # The status changed and the rest of the transfer did not. The amount
+        # that left is still here and the submission time is still here.
+        #
+        # This comment used to say there was no pointer to the return. There
+        # is: it is the return object, one level down, and the absent list
+        # below is now about the shape it is not -- flattened onto the
+        # transfer under prefixed names, which is what somebody writes when
+        # they have only seen the field list.
         status: returned
         amount: -18000
         # The whole account number, not four digits of it. Increase is the
@@ -365,41 +368,31 @@ conformance:
         - returned_at
         - return_id
 
-  - name: the return is a separate object with its own date
-    source: https://increase.com/documentation/api#ach-returns
+  - name: the return is on the transfer, with its own date
+    # This case used to fetch /ach_transfer_returns/{id}, an endpoint Increase
+    # does not have: its description declares ninety-one paths and none of
+    # them is that. The return is an object on the transfer.
+    source: https://increase.com/documentation/api#ach-transfers
     fixture: small-business
     request:
       method: GET
-      path: /ach_transfer_returns/ach_transfer_return_cauldron01
+      path: /ach_transfers/ach_transfer_cauldron00000002
       headers:
         Authorization: Bearer cauldron_increase_api_key
+      query:
+        api_version: "1"
     expect:
       status: 200
       body:
-        # Seven days after the transfer was handed to the network. Anything
-        # reconciling by reading transfers alone never sees this at all.
-        transfer_id: ach_transfer_cauldron00000002
-        created_at: "2026-06-11T11:20:03Z"
-        return_reason_code: insufficient_funds
+        # Seven days after the transfer was handed to the network. The status
+        # says returned and says nothing about when or why; both of those are
+        # one level down.
+        status: returned
+        return:
+          created_at: "2026-06-11T11:20:03Z"
+          return_reason_code: insufficient_funds
 
   - name: a return can arrive against a transfer that still reads as submitted
-    source: https://increase.com/documentation/api#ach-returns
-    fixture: small-business
-    request:
-      method: GET
-      path: /ach_transfer_returns/ach_transfer_return_cauldron02
-      headers:
-        Authorization: Bearer cauldron_increase_api_key
-    expect:
-      status: 200
-      body:
-        # Nearly a month later, against the transfer whose status is still
-        # submitted. Reading the transfer says the money left and stayed
-        # gone.
-        transfer_id: ach_transfer_cauldron00000001
-        created_at: "2026-07-02T08:41:19Z"
-
-  - name: and that transfer is still submitted
     source: https://increase.com/documentation/api#ach-transfers
     fixture: small-business
     request:
@@ -410,27 +403,55 @@ conformance:
     expect:
       status: 200
       body:
-        # Unmarked. Nothing on this object says a return exists, so a
-        # reconciliation that reads transfers and not returns is wrong and
-        # has no way to know.
+        # Nearly a month after submission, and the status still says
+        # submitted. Reading status alone says the money left and stayed
+        # gone, and the object carrying the contradiction is right beside it.
         status: submitted
+        return:
+          created_at: "2026-07-02T08:41:19Z"
+          return_reason_code: authorization_revoked
 
-  - name: the reason decides whether retrying is legal
-    source: https://increase.com/documentation/api#ach-returns
+  - name: a transfer that was not returned carries no return at all
+    # Absence, not an empty object and not a null. A check for the key is the
+    # only reliable test, and this is the case that keeps one honest.
+    source: https://increase.com/documentation/api#ach-transfers
     fixture: small-business
     request:
       method: GET
-      path: /ach_transfer_returns
+      path: /ach_transfers/ach_transfer_cauldron00000003
       headers:
         Authorization: Bearer cauldron_increase_api_key
     expect:
       status: 200
       body:
-        # Two returns, identical in shape, and one of them must never be
-        # retried. Only the reason code separates them, and it is a string
-        # among dozens.
-        data[0].return_reason_code: insufficient_funds
-        data[1].return_reason_code: authorization_revoked
+        status: submitted
+      absent:
+        - return
+
+  - name: the reason decides whether retrying is legal
+    # Two returns, identical in shape, and one of them must never be retried.
+    # insufficient_funds may be; authorization_revoked may not, and doing so
+    # is a regulatory problem rather than a failed request. Only the reason
+    # code separates them, and it is a string among dozens.
+    #
+    # This case used to read them from a listing of returns, which Increase
+    # does not have. Reading them means reading two transfers.
+    source: https://increase.com/documentation/api#ach-transfers
+    fixture: small-business
+    request:
+      method: GET
+      path: /ach_transfers
+      headers:
+        Authorization: Bearer cauldron_increase_api_key
+    expect:
+      status: 200
+      body:
+        data[0].return.return_reason_code: authorization_revoked
+        data[1].return.return_reason_code: insufficient_funds
+      absent:
+        # And the third has none, in the same listing, so a loop over these
+        # has to test for the key rather than read it.
+        - data[2].return
 
   - name: the sign carries the direction on one field
     source: https://increase.com/documentation/api#ach-transfers
