@@ -292,12 +292,12 @@ cauldron verify stripe -v  # one Recipe, listing each case
 
 ```
 stripe 0.1.0
-  8 of 8 cases passed
-  8 from documentation only, none checked against the real API
+  9 of 9 cases passed
+  9 from documentation only, none checked against the real API
 ```
 
 That second line is the honest one. Of every Recipe: 1685 cases, 5 run against
-a live account and 1548 not. Documentation-derived cases are worth having,
+a live account and 1680 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
