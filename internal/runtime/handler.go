@@ -372,21 +372,19 @@ func trim(spec recipe.Route, record store.Record) store.Record {
 func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id, addressable := s.identifier(matched, r, vars)
 	if !addressable {
-		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, id)
+		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	// A record that exists but belongs to another scope must look absent, not
 	// forbidden. Leaking existence across tenants is a real provider bug we do
 	// not want to teach an application to rely on.
 	if !store.Matches(record, s.scopeVars(matched, vars)) {
-		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+id+".",
-			matched.spec.Resource+": "+id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	writeJSON(w, http.StatusOK, s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.IDAs, matched.spec.Resource, trim(matched.spec, record)))
@@ -397,7 +395,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id, addressable := s.identifier(matched, r, vars)
 	if !addressable {
-		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	changes, err := decodeBody(r)
@@ -409,18 +407,16 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 
 	existing, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, id)
+		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	if !store.Matches(existing, s.scopeVars(matched, vars)) {
-		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+id+".",
-			matched.spec.Resource+": "+id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	updated, err := s.store.Update(matched.spec.Resource, id, changes)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, id)
+		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	s.emitFor(matched.spec.Resource, "updated", updated)
@@ -431,22 +427,20 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {
 	id, addressable := s.identifier(matched, r, vars)
 	if !addressable {
-		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	record, err := s.store.Get(matched.spec.Resource, id)
 	if err != nil {
-		return s.notFound(w, err, matched.spec.Resource, id)
+		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	if !store.Matches(record, s.scopeVars(matched, vars)) {
-		return s.writeRecipeError(w, "resource_missing", 404, "resource_missing",
-			"No such "+matched.spec.Resource+": "+id+".",
-			matched.spec.Resource+": "+id)
+		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	if err := s.store.Delete(matched.spec.Resource, id); err != nil {
-		return s.notFound(w, err, matched.spec.Resource, id)
+		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
 	s.emitFor(matched.spec.Resource, "deleted", record)
@@ -1675,14 +1669,32 @@ func (s *Sandbox) collectionName(resource, override string) string {
 	return resource
 }
 
-func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id string) int {
+// notFound answers for a record that is not there.
+//
+// The route may name the error rather than take resource_missing, because a
+// provider can answer a missing thing more than one way depending on what was
+// asked for. An unrecognised path is not that: it is not this route's absence
+// to describe, so the override does not reach it.
+func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id, override string) int {
 	if errors.Is(err, store.ErrUnknownResource) {
 		return s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.", resource)
 	}
 
+	if override == "" {
+		return s.writeRecipeError(
+			w, "resource_missing", 404, "resource_missing",
+			"No such "+resource+": "+id+".", resource+": "+id,
+		)
+	}
+
+	// The identifier alone, rather than "resource: id". A route names its own
+	// error because this provider describes this absence in its own words, and
+	// the composite is the default message's convention rather than something
+	// the provider would say. npm's is "version not found: 99.99.99", and
+	// "version not found: release: 99.99.99" is not a sentence anybody sends.
 	return s.writeRecipeError(
-		w, "resource_missing", 404, "resource_missing",
-		"No such "+resource+": "+id+".", resource+": "+id,
+		w, override, 404, override,
+		"No such "+resource+": "+id+".", id,
 	)
 }
 

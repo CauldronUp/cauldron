@@ -1183,16 +1183,16 @@ Same registry, same status, one object and one bare JSON string. Code reading
 reporting `body.error` as the reason reports "undefined" -- quieter and worse
 than a thrown error.
 
-Half of what this needs is now built: an error may carry its own `style:`, and
-`string` is a style. What is missing is a way for one route to raise a
-different not-found error from another's. `resource_missing` is hardcoded at
-every site that answers for a record that is not there, so both of the npm
-routes raise it and both get one shape.
+Closed. An error may carry its own `style:`, `string` is a style, and a route
+may name the error its absences raise with `not_found:`. The npm Recipe
+declares both shapes and a case asserts the raw bytes of the second, because
+the quotes are what separates a JSON string from plain text.
 
-A `not_found:` on a route naming the error to raise would do it. The three
-call sites have the matched route in scope; the fourth path goes through
-`notFound`, which does not, so that one needs threading. Small, and not small
-enough to bolt onto the end of the change that found it.
+One decision worth recording: a route naming its own not-found error gets the
+identifier alone as `{detail}`, rather than the default's `resource: id`. The
+composite belongs to the default message's phrasing. npm says "version not
+found: 99.99.99", and "version not found: release: 99.99.99" is not a sentence
+anybody sends.
 
 ## Assessed and deliberately not done
 
