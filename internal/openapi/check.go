@@ -307,7 +307,7 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 			return nil
 		}
 	} else {
-		schema = resourceSchema(doc, r, schema, route.Resource)
+		schema = resourceSchema(doc, r, r.EnvelopeFor(route), schema, route.Resource)
 		if schema == nil {
 			return nil
 		}
@@ -568,12 +568,17 @@ func descend(doc *Document, schema *Schema, key string) *Schema {
 //
 // A report that cries wolf is one nobody reads the second time, which is the
 // same reason deletes are skipped.
-func resourceSchema(doc *Document, r *recipe.Recipe, envelope *Schema, name string) *Schema {
-	if r.Responses.Resource.Style != "wrapped" {
+// spec is the route's envelope, which is the Recipe's unless the route says
+// otherwise. Reading the Recipe's here reported every field of a resource
+// whose route wraps differently: Vercel wraps a single domain and wraps
+// neither a project nor a deployment, so the domain fetch declares its own,
+// and comparing it against the Recipe's found no wrapper and gave up.
+func resourceSchema(doc *Document, r *recipe.Recipe, spec recipe.ResourceResponse, envelope *Schema, name string) *Schema {
+	if spec.Style != "wrapped" {
 		return envelope
 	}
 
-	key := r.Responses.Resource.Key
+	key := spec.Key
 	if key == "" {
 		key = name
 
@@ -583,7 +588,7 @@ func resourceSchema(doc *Document, r *recipe.Recipe, envelope *Schema, name stri
 		// invoice. Reading the resource name here found no such key, fell
 		// through to the envelope, and reported 61 disagreements against a
 		// Recipe that was right about all of them.
-		if r.Responses.Resource.Array {
+		if spec.Array {
 			if spec, ok := r.Resources[name]; ok && spec.Collection != "" {
 				key = spec.Collection
 			}
