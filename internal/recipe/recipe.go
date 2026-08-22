@@ -1413,8 +1413,18 @@ func (r *Recipe) Validate() error {
 		for _, field := range sortedKeys(resource.Fields) {
 			spec := resource.Fields[field]
 
-			if spec.As != "" && spec.In == "" {
-				add("resource %q field %q sets as without in, and a top-level field is already named by its key", name, field)
+			// A top-level field is named by its key, so an "as" that repeats
+			// the key says nothing. One that differs is the only way to put a
+			// name on the wire the record cannot use for itself, and there is
+			// a real case: GitHub gives an issue a number and an id, the
+			// number is what a path addresses it by, and the record therefore
+			// has to key on the number -- which leaves "id" unavailable for
+			// the field that carries GitHub's id.
+			//
+			// The rule was refusing every "as" here to catch the redundant
+			// kind. It catches the redundant kind now.
+			if spec.As != "" && spec.In == "" && spec.As == field {
+				add("resource %q field %q sets as to its own name, which is what a top-level field is called anyway", name, field)
 			}
 
 			// A field that never reaches the wire cannot be renamed on the

@@ -962,6 +962,17 @@ func (s *Sandbox) present(resource string, record store.Record, idAs string) sto
 			continue
 		}
 
+		// A top-level field can name itself something else on the wire, for
+		// the one thing it cannot otherwise say: that the name it wants is
+		// already the record's own. GitHub gives an issue a number and an id,
+		// a path addresses it by the number, so the record keys on the number
+		// and "id" is left for the field carrying GitHub's id.
+		if field, declared := spec.Fields[key]; declared && field.As != "" {
+			out[field.As] = value
+
+			continue
+		}
+
 		out[key] = value
 	}
 
@@ -1104,7 +1115,10 @@ func splitIndex(segment string) (string, []int) {
 // the thing this project keeps telling Recipes not to write.
 func (s *Sandbox) nests(spec recipe.Resource) bool {
 	for _, field := range spec.Fields {
-		if field.In != "" {
+		// A field that only renames itself still needs present to run, or the
+		// rename is declared and never applied -- which is the quiet kind of
+		// wrong this whole file keeps finding.
+		if field.In != "" || field.As != "" {
 			return true
 		}
 	}

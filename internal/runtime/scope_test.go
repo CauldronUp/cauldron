@@ -49,7 +49,10 @@ func TestScopedListOnlySeesItsOwnScope(t *testing.T) {
 	// test that reads them is asserting against a field the provider has
 	// never had, and passes only because the fake invented it.
 	for _, issue := range octocat {
-		if id := fmt.Sprint(issue["id"]); id != "1" && id != "2" {
+		// By number, which is what identifies an issue within a repository.
+		// Its id is global and says nothing about which repo it belongs to,
+		// which is the distinction the Recipe now models.
+		if id := fmt.Sprint(issue["number"]); id != "1" && id != "2" {
 			t.Errorf("a foreign record leaked into the scope: %v", issue)
 		}
 

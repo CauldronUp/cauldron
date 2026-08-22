@@ -97,19 +97,23 @@ func TestNumericIdentifiersAreSequential(t *testing.T) {
 	_ = json.Unmarshal(first.Body.Bytes(), &a)
 	_ = json.Unmarshal(second.Body.Bytes(), &b)
 
-	// Numbers, not strings. GitHub sends an issue id as 1, and this test used
-	// to assert "1", which is to say it was pinning the bug in place. Every
-	// JSON number decodes into any as a float64, so the assertion is on the
-	// value and the type together.
-	if a["id"] != float64(1) || b["id"] != float64(2) {
+	// Numbers, not strings. GitHub sends an issue number as 1, and this test
+	// used to assert "1", which is to say it was pinning the bug in place.
+	// Every JSON number decodes into any as a float64, so the assertion is on
+	// the value and the type together.
+	//
+	// number rather than id, because GitHub gives an issue both and only the
+	// number is sequential per repository -- id is global, large, and not
+	// what the sandbox mints.
+	if a["number"] != float64(1) || b["number"] != float64(2) {
 		t.Errorf("numeric ids should be sequential numbers; got %v (%T) then %v (%T)",
-			a["id"], a["id"], b["id"], b["id"])
+			a["number"], a["number"], b["number"], b["number"])
 	}
 
 	// And no prefix, which for a number can only mean it did not arrive as a
 	// string at all.
-	if _, quoted := a["id"].(string); quoted {
-		t.Errorf("a numeric id must not be a string; got %v", a["id"])
+	if _, quoted := a["number"].(string); quoted {
+		t.Errorf("a numeric id must not be a string; got %v", a["number"])
 	}
 }
 
@@ -164,9 +168,12 @@ func TestPatchIsRoutedForProvidersThatUseIt(t *testing.T) {
 	// A number on the wire and a path segment in the URL. A client holding
 	// this response has to render it back to text to build the next request,
 	// which is the round trip the type change has to survive.
-	id, ok := issue["id"].(float64)
+	// The number, which is what a GitHub path takes. Its id is global and
+	// large and answers 404 in a path, which is the whole reason the two are
+	// modelled apart.
+	id, ok := issue["number"].(float64)
 	if !ok {
-		t.Fatalf("id should be a JSON number, got %T (%v)", issue["id"], issue["id"])
+		t.Fatalf("number should be a JSON number, got %T (%v)", issue["number"], issue["number"])
 	}
 
 	path := "/repos/octocat/hello-world/issues/" + strconv.FormatInt(int64(id), 10)
