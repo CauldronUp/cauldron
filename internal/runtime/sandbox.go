@@ -299,6 +299,13 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 			// APIs send a string here, and a client parsing one does not
 			// silently cope with the other.
 			record[name] = s.clock.Now().UTC().Format(time.RFC3339)
+		case "msdate":
+			// Microsoft's date format, which looks like /Date(1552262400000+0000)/
+			// and is not a date any ordinary parser accepts. Xero sends every
+			// date this way and an ISO string beside it under a second name,
+			// so new Date(invoice.Date) is Invalid Date and the value that
+			// works is the one nobody reaches for first.
+			record[name] = msdate(s.clock.Unix())
 		}
 	}
 }
@@ -376,4 +383,14 @@ func mustQuote(s string) string {
 	}
 
 	return string(encoded)
+}
+
+// msdate renders Microsoft's date format, as Xero and other .NET-era APIs send
+// it: the milliseconds since the epoch, wrapped, with an offset.
+//
+// Worth emulating exactly because it is not a date to anything that reads it.
+// A client that passes it to a date parser gets Invalid Date, and one that
+// stores it gets a string that looks like a timestamp and is not.
+func msdate(seconds int64) string {
+	return fmt.Sprintf("/Date(%d+0000)/", seconds*1000)
 }
