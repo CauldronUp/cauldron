@@ -54,6 +54,58 @@ type Recipe struct {
 	Conformance []Case `yaml:"conformance"`
 }
 
+// omitsHeader reports whether any case reaches a route without the header and
+// is refused for it.
+//
+// A case that omits the header and still succeeds proves the opposite, so the
+// status has to be a failure for it to count.
+func omitsHeader(cases []Case, header string) bool {
+	for _, c := range cases {
+		if c.Expect.Status < 400 {
+			continue
+		}
+
+		sent := false
+
+		for h := range c.Request.Headers {
+			if strings.EqualFold(h, header) {
+				sent = true
+				break
+			}
+		}
+
+		if !sent {
+			return true
+		}
+	}
+
+	return false
+}
+
+// sendsParam reports whether any case sends a query parameter by name.
+//
+// A case may carry its query in the map or written into the path, and both are
+// used: Alpaca's filter cases request "/v2/orders?status=closed" directly. A
+// check reading only the map would report every one of those as unexercised,
+// which is how this was first got wrong.
+func sendsParam(cases []Case, param string) bool {
+	for _, c := range cases {
+		if _, ok := c.Request.Query[param]; ok {
+			return true
+		}
+
+		if _, query, found := strings.Cut(c.Request.Path, "?"); found {
+			for _, pair := range strings.Split(query, "&") {
+				if name, _, _ := strings.Cut(pair, "="); name == param {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // assertsName reports whether any case claims something about a field by name.
 //
 // The comparison is on the last segment of a dotted path, and it is deliberately
@@ -1956,6 +2008,38 @@ func (r *Recipe) Validate() error {
 	// which page you are looking at, which is worse than either field alone.
 	if f := r.Responses.List.FinalField; f != "" && f == r.Responses.List.CursorField {
 		add("responses.list declares cursor_field and final_field as the same name %q, so one key would mean a page token on one page and a sync token on the next", f)
+	}
+
+	// A required header is an enforcement claim, and the only thing that
+	// proves it is a case that leaves the header off and is refused.
+	//
+	// Enforcing Notion-Version is one of the reasons this project exists:
+	// forgetting it is the classic Notion integration bug, and a fake that
+	// waves it through lets code ship that fails on its first real call. A
+	// Recipe could declare the header, never enforce it, and every case would
+	// still be green -- they all send it.
+	//
+	// This is the same shape as the rule above about a field name no case
+	// asserts. A name nothing exercises is a name that could be anything.
+	for header := range r.RequiredHeaders {
+		if omitsHeader(r.Conformance, header) {
+			continue
+		}
+
+		add("required_headers declares %s and no conformance case omits it and is refused, so nothing here shows it is enforced rather than merely listed", header)
+	}
+
+	// A filter is a claim that a listing narrows itself when asked, and the
+	// parameter's name is half of it. Every case listing without the parameter
+	// exercises the default; only a case sending it pins what it is called.
+	for _, route := range r.Routes {
+		for _, f := range route.Filters {
+			if f.Param == "" || sendsParam(r.Conformance, f.Param) {
+				continue
+			}
+
+			add("%s %s declares a filter on %q and no conformance case sends it, so the parameter could be named anything and every case would still pass", route.Method, route.Path, f.Param)
+		}
 	}
 
 	if r.Responses.Error.Key == "-" && r.Responses.Error.Style != "list" {
