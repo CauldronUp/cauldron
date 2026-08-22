@@ -24,6 +24,7 @@
 package openapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -213,7 +214,27 @@ func Parse(raw []byte) (*Document, error) {
 	var doc Document
 
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("not a readable OpenAPI description: %w", err)
+		// YAML 1.2 is a superset of JSON; yaml.v3 implements 1.1, which is
+		// not. The difference that matters in practice is the surrogate pair
+		// JSON uses for anything outside the basic plane: one thumbs-up in
+		// one example of Twilio's description made all hundred and twenty-one
+		// of its paths unreadable, and the error said "invalid Unicode
+		// character escape code" at a line number in the middle of 1.8MB,
+		// which reads like a corrupt download.
+		//
+		// So a description that really is JSON gets decoded as JSON and
+		// handed back through YAML, whose tags the Document is written
+		// against. Only on the failing path, so nothing that already parses
+		// pays for it, and a file that is neither still reports the YAML
+		// error rather than a confusing JSON one.
+		converted, jsonErr := viaJSON(raw)
+		if jsonErr != nil {
+			return nil, fmt.Errorf("not a readable OpenAPI description: %w", err)
+		}
+
+		if err := yaml.Unmarshal(converted, &doc); err != nil {
+			return nil, fmt.Errorf("not a readable OpenAPI description: %w", err)
+		}
 	}
 
 	if doc.OpenAPI == "" && doc.Swagger == "" {
@@ -456,4 +477,19 @@ func (d *Document) ResolveResponse(r Response) Response {
 	}
 
 	return r
+}
+
+// viaJSON re-encodes a JSON description as YAML.
+//
+// The Document is written against yaml tags, so the round trip is what makes
+// the JSON readable without a second set of struct tags to keep in step with
+// the first.
+func viaJSON(raw []byte) ([]byte, error) {
+	var any any
+
+	if err := json.Unmarshal(raw, &any); err != nil {
+		return nil, err
+	}
+
+	return yaml.Marshal(any)
 }

@@ -63,7 +63,7 @@ func Check(r *recipe.Recipe, doc *Document, basePath string) []Finding {
 	for i, route := range r.Routes {
 		where := fmt.Sprintf("route %d (%s %s)", i+1, route.Method, route.Path)
 
-		match, ok := declared.find(route.Path)
+		match, ok := declared.find(route.Path, route.Method, doc)
 		if !ok {
 			findings = append(findings, Finding{
 				Where:    where,
@@ -139,7 +139,7 @@ func Paging(r *recipe.Recipe, doc *Document, basePath string) []PagingReport {
 			continue
 		}
 
-		match, ok := declared.find(route.Path)
+		match, ok := declared.find(route.Path, route.Method, doc)
 		if !ok {
 			out = append(out, PagingReport{Path: route.Path, Found: false})
 
@@ -652,13 +652,43 @@ func splitTemplate(segment string) []string {
 	return out
 }
 
-func (p pathIndex) find(path string) (pathMatch, bool) {
+// find locates the template a Recipe's path is declared under, preferring one
+// that declares the method being asked about.
+//
+// Two templates can differ only in what the parameter is called, and a
+// description is free to split one path across both. Vercel does: the get on a
+// deployment is declared under {idOrUrl} and the delete on the same path under
+// {id}. Both match, and taking the first reported the delete as a method
+// Vercel does not declare -- on a path where it is declared, one entry further
+// down.
+//
+// The method is a preference rather than a requirement, so a path declared
+// with none of the methods a Recipe uses still matches and still reports the
+// method as undeclared, which is the finding that should survive.
+func (p pathIndex) find(path, method string, doc *Document) (pathMatch, bool) {
 	normalised := "/" + strings.Trim(path, "/")
 
+	var first *pathMatch
+
 	for _, candidate := range p.templates {
-		if candidate.pattern.MatchString(normalised) {
-			return pathMatch{template: candidate.template}, true
+		if !candidate.pattern.MatchString(normalised) {
+			continue
 		}
+
+		match := pathMatch{template: candidate.template}
+
+		if operationFor(doc.Paths[candidate.template], method) != nil {
+			return match, true
+		}
+
+		if first == nil {
+			found := match
+			first = &found
+		}
+	}
+
+	if first != nil {
+		return *first, true
 	}
 
 	return pathMatch{}, false
