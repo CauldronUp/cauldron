@@ -39,6 +39,7 @@ func runVerify(ctx *context, args []string) int {
 	var (
 		cases, passed, observed, documented int
 		guessed, guessedRecipes             int
+		unstated, unstatedRecipes           int
 		failedRecipes                       []string
 	)
 
@@ -92,6 +93,15 @@ func runVerify(ctx *context, args []string) int {
 			fmt.Fprintf(ctx.stdout, "  %s\n", guessedLine(n))
 		}
 
+		// The other half of the same omission, and the larger one. A listing
+		// that declares no paging is still paged: the runtime gives it ten and
+		// reads "limit". The count above cannot see these, because it starts
+		// from a declared page size.
+		if n := sandbox.Recipe().UnstatedPagination(); n > 0 {
+			unstated += n
+			unstatedRecipes++
+		}
+
 		recipeObserved, recipeDocumented, _ := report.Provenance()
 
 		cases += len(report.Results)
@@ -115,6 +125,11 @@ func runVerify(ctx *context, args []string) int {
 	if guessed > 0 {
 		fmt.Fprintf(ctx.stdout, "%d route(s) across %d recipe(s) page by a parameter nobody named.\n",
 			guessed, guessedRecipes)
+	}
+
+	if unstated > 0 {
+		fmt.Fprintf(ctx.stdout, "%d more across %d recipe(s) declare no paging at all, and are paged at ten reading \"limit\".\n",
+			unstated, unstatedRecipes)
 	}
 
 	if len(failedRecipes) > 0 {

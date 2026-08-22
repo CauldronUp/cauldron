@@ -2724,3 +2724,39 @@ func (r Recipe) GuessedPagination() int {
 
 	return guessed
 }
+
+// UnstatedPagination counts the listings that say nothing about paging at all.
+//
+// The runtime pages every listing: a route with no page size declared is given
+// ten and reads "limit", exactly as a route declaring a size with no name is.
+// GuessedPagination cannot see these, because it starts from a declared page
+// size -- so the figure it reports has always been the smaller half of its own
+// justification. Sixty routes page by a parameter nobody named; another
+// hundred and eight page by a parameter and a page size nobody named.
+//
+// Nothing is truncated by it today, because no fixture behind one of these
+// holds more than ten records. That is the reason it stayed invisible and not
+// a reason it is fine: the claim is about the provider, and the fixture is not
+// the provider. A listing the Recipe describes as unpaged answers at most ten
+// and offers a cursor, and the first collection large enough to notice is not
+// going to be one of ours.
+//
+// Counted apart rather than folded in, because they are not the same
+// omission. One Recipe looked at paging and did not finish; the other has not
+// looked.
+func (r Recipe) UnstatedPagination() int {
+	unstated := 0
+
+	for _, route := range r.Routes {
+		if route.Operation != "list" {
+			continue
+		}
+
+		p := route.Pagination
+		if p.Limit == 0 && p.Style == "" && p.LimitParam == "" {
+			unstated++
+		}
+	}
+
+	return unstated
+}

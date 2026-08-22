@@ -476,6 +476,24 @@ So the remaining 60 are not waiting on effort. Each one is waiting on somebody
 finding where that provider publishes its description, or on watching the
 provider page a real collection.
 
+### And the count was the smaller half of itself
+
+**108 more listings across 60 Recipes declare no paging at all**, and the
+runtime pages them anyway: a route with no page size is given ten and reads
+`limit`, exactly as a route declaring a size with no name is. The report could
+not see them, because the count starts from a declared page size. So the
+figure read as the whole answer and was a third of it -- 60 of 168.
+
+Nothing is truncated by it today: no fixture behind one of these holds more
+than ten records, which is why it stayed invisible. That is not a reason it is
+fine. The claim is about the provider and the fixture is not the provider. A
+listing a Recipe describes as unpaged answers at most ten and offers a cursor,
+and the first collection large enough to notice will not be one of ours.
+
+They are counted apart rather than folded in, because they are not the same
+omission: one Recipe looked at paging and did not finish, the other has not
+looked.
+
 ## What a delete answers with, mostly closed
 
 A delete used to fabricate Stripe's receipt for every provider, using keys no
