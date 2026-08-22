@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1686 cases, 17 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1687 cases, 18 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1686 cases, 17 run against
+That second line is the honest one. Of every Recipe: 1687 cases, 18 run against
 a live account and 1669 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The seventeen are the cases whose provider can be asked without a key. Five are
+The eighteen are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -321,6 +321,11 @@ without a token: its errors repeat the HTTP status in the body as a string,
 an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
 and only one of those two works in a path.
+
+One is GitLab's, which answers for a public project: a merge request is
+addressed by its per-project iid and not by its global id, and putting one
+where the other belongs finds nothing -- or, on a busy instance, finds a
+different merge request.
 
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
