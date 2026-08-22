@@ -40,8 +40,8 @@ func TestScopedListOnlySeesItsOwnScope(t *testing.T) {
 	// state=all: the listing narrows itself to open issues, and this test is
 	// about the scope rather than the filter.
 	octocat := issues(t, s, "/repos/octocat/hello-world/issues?state=all")
-	if len(octocat) != 2 {
-		t.Fatalf("octocat/hello-world has %d issues, want 2", len(octocat))
+	if len(octocat) != 3 {
+		t.Fatalf("octocat/hello-world has %d records, want 3", len(octocat))
 	}
 
 	// By identity rather than by reading owner off the record. GitHub does
@@ -52,7 +52,9 @@ func TestScopedListOnlySeesItsOwnScope(t *testing.T) {
 		// By number, which is what identifies an issue within a repository.
 		// Its id is global and says nothing about which repo it belongs to,
 		// which is the distinction the Recipe now models.
-		if id := fmt.Sprint(issue["number"]); id != "1" && id != "2" {
+		// 4 is the pull request, which belongs to this repository and is
+		// returned by this endpoint like any other record.
+		if id := fmt.Sprint(issue["number"]); id != "1" && id != "2" && id != "4" {
 			t.Errorf("a foreign record leaked into the scope: %v", issue)
 		}
 

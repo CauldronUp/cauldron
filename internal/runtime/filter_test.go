@@ -76,9 +76,12 @@ func statesOf(t *testing.T, records []any) []string {
 func TestAListingAppliesItsDefaultFilter(t *testing.T) {
 	states := statesOf(t, githubList(t, "/repos/octocat/hello-world/issues"))
 
-	// The fixture holds one open and one closed issue in this repository.
-	if len(states) != 1 || states[0] != "open" {
-		t.Errorf("default listing should be the open issue alone, got %v", states)
+	// The fixture holds one open issue, one closed issue and one open pull
+	// request in this repository -- GitHub's listing returns pull requests
+	// too, and the fixture models that. The default filter is about state,
+	// so both open records belong here.
+	if len(states) != 2 || states[0] != "open" || states[1] != "open" {
+		t.Errorf("default listing should be the open records, got %v", states)
 	}
 }
 
@@ -93,8 +96,8 @@ func TestASuppliedFilterOverridesTheDefault(t *testing.T) {
 func TestTheEscapeValueTurnsTheFilterOff(t *testing.T) {
 	states := statesOf(t, githubList(t, "/repos/octocat/hello-world/issues?state=all"))
 
-	if len(states) != 2 {
-		t.Errorf("state=all should be both issues, got %v", states)
+	if len(states) != 3 {
+		t.Errorf("state=all should be every record in the repository, got %v", states)
 	}
 }
 
@@ -104,7 +107,9 @@ func TestAFilterDoesNotWidenTheScope(t *testing.T) {
 	// would leak one repository's issues into another's listing.
 	states := statesOf(t, githubList(t, "/repos/octocat/hello-world/issues?state=all"))
 
-	if len(states) != 2 {
+	// Three records belong here: two issues and a pull request. The fourth,
+	// which belongs to another repository, does not.
+	if len(states) != 3 {
 		t.Errorf("another repository's issue must stay out of this listing, got %v", states)
 	}
 }

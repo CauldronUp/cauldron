@@ -77,8 +77,10 @@ func TestBareListStyleReturnsAnArray(t *testing.T) {
 		t.Fatalf("a bare list must unmarshal into a slice: %v\n%s", err, rec.Body)
 	}
 
-	if len(issues) != 2 {
-		t.Fatalf("got %d issues, want 2", len(issues))
+	// Two issues and a pull request, which this endpoint returns beside them.
+	// What this test is about is the array, not the count.
+	if len(issues) != 3 {
+		t.Fatalf("got %d records, want 3", len(issues))
 	}
 
 	if issues[0]["title"] == nil {
