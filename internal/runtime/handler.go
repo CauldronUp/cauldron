@@ -202,7 +202,21 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 
 	record = trim(matched.spec, record)
 
-	writeJSON(w, status, s.resourceBody(matched.spec.Resource, record))
+	body := s.resourceBody(matched.spec.Resource, record)
+
+	// Constants this route adds beside the record, which a create needs as
+	// much as a listing does. Neon answers a branch create with the branch,
+	// the operations it started, and the connection strings -- and the
+	// operations are the only thing in that body that says when the branch
+	// can actually be used. A response carrying just the record would be the
+	// helpful kind of wrong: it looks finished.
+	if len(matched.spec.Fields) > 0 {
+		if object, ok := body.(map[string]any); ok {
+			body = withFields(object, matched.spec.Fields)
+		}
+	}
+
+	writeJSON(w, status, body)
 
 	return status
 }
