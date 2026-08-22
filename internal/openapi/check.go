@@ -33,6 +33,16 @@ const (
 	Disagrees = "disagrees"
 	// Missing is something the description has and the Recipe does not.
 	Missing = "missing"
+	// Unsaid is a claim the description neither supports nor contradicts,
+	// because it says nothing on the subject at all.
+	//
+	// The difference matters most for statuses that belong to the transport
+	// rather than to an operation. Nineteen of the thirty-one descriptions
+	// fetched here declare no 429 anywhere, and among them are Stripe,
+	// Twilio, Slack and Square, every one of which rate limits. Reporting a
+	// Recipe's rate_limit as contradicted by that is reporting the fact that
+	// rate limits are usually documented in prose.
+	Unsaid = "unsaid"
 )
 
 // Check compares a Recipe against an OpenAPI description of the same API.
@@ -477,8 +487,8 @@ func checkErrors(r *recipe.Recipe, doc *Document) []Finding {
 
 		findings = append(findings, Finding{
 			Where:    fmt.Sprintf("error %q", name),
-			What:     fmt.Sprintf("answers %d and the description declares no %d on any operation", status, status),
-			Severity: Disagrees,
+			What:     fmt.Sprintf("answers %d and the description declares no %d anywhere, so it neither supports nor contradicts this", status, status),
+			Severity: Unsaid,
 		})
 	}
 

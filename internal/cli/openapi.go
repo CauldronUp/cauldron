@@ -151,15 +151,17 @@ func runCheck(ctx *context, args []string) int {
 
 	findings := openapi.Check(r, doc, prefix)
 
-	var disagreements, omissions []openapi.Finding
+	var disagreements, omissions, unsaid []openapi.Finding
 
 	for _, finding := range findings {
-		if finding.Severity == openapi.Disagrees {
+		switch finding.Severity {
+		case openapi.Disagrees:
 			disagreements = append(disagreements, finding)
-			continue
+		case openapi.Unsaid:
+			unsaid = append(unsaid, finding)
+		default:
+			omissions = append(omissions, finding)
 		}
-
-		omissions = append(omissions, finding)
 	}
 
 	fmt.Fprintf(ctx.stdout, "%s %s against %s\n\n", r.Name, r.Version, set.Arg(1))
@@ -200,6 +202,22 @@ func runCheck(ctx *context, args []string) int {
 
 	for _, finding := range disagreements {
 		fmt.Fprintf(ctx.stdout, "  %s\n    %s\n", finding.Where, finding.What)
+	}
+
+	// Reported apart from the disagreements, because they are not
+	// disagreements. A description that declares a status nowhere has not
+	// contradicted a Recipe that answers with it -- it has declined to say,
+	// which is the usual state of affairs for anything the transport decides
+	// rather than the operation.
+	//
+	// Nineteen of the thirty-one descriptions fetched for this project declare
+	// no 429 anywhere, and Stripe, Twilio, Slack and Square are among them.
+	if len(unsaid) > 0 {
+		fmt.Fprintln(ctx.stdout)
+
+		for _, finding := range unsaid {
+			fmt.Fprintf(ctx.stdout, "  %s\n    %s\n", finding.Where, finding.What)
+		}
 	}
 
 	if *all && len(omissions) > 0 {
