@@ -385,10 +385,16 @@ merge request that is closed rather than merged. A CircleCI workflow waiting on
 approval, which is neither a pass nor a failure. A Paddle subscription with a
 cancellation scheduled but not yet applied. Each fixture carries one.
 
-Twenty-four of the last thirty-five needed no format change at all. Writing a
-Recipe is now mostly research rather than engineering: the work is reading the
-provider closely enough to know which state nobody branches on, not teaching
-the format a new trick.
+Of the thirty-five Recipes from Fivetran to Langfuse, twenty-five needed no
+change to the format or the runtime. Writing a Recipe is now mostly research
+rather than engineering: the work is reading the provider closely enough to
+know which state nobody branches on, not teaching the format a new trick.
+
+That window is named rather than described as "the last thirty-five", because
+a sliding window is a number that goes stale without anybody editing it. It is
+also the one figure here no test can hold: it is a claim about commits, and CI
+clones without history. `git log --diff-filter=A` over `recipes/` and
+`internal/` settles it for anyone who wants to check.
 
 The suite has started finding faults in itself as well. Vonage reports a
 successful send with the string `"0"` and Docusign counts with strings, and the
@@ -398,13 +404,19 @@ Scalars now compare kind as well as value, which immediately turned up a real
 inconsistency: the nested error style was sending PagerDuty's numeric codes as
 text.
 
-Not every provider fits, and two are left out deliberately rather than faked.
-Linear is GraphQL: a single endpoint where the request body decides the
-response shape, so a Recipe that ignored the query and returned fixed data
-would let you ship a query with wrong field names and still pass. Attio stores
-every attribute as an array of historical values, and a client reads
-`record.values.name[0].value`; modelling those as scalars would teach a shape
-that does not exist. In both cases no Recipe is better than a misleading one.
+Not every provider fits, and one is left out deliberately rather than faked.
+Temporal Cloud is gRPC rather than HTTP: this format describes HTTP surfaces,
+and nothing built on it would be a Temporal client. No Recipe is better than a
+misleading one.
+
+That sentence used to name two others, and both of them ship now. Linear was
+out for being GraphQL -- a single endpoint where the request body decides the
+response shape -- until a route learned to match on the field a query names,
+and Linear, Monday and ShipHero all shipped on it. Attio was out for the same
+reason, recorded from an assessment that was simply wrong: Attio is REST and
+publishes an OpenAPI description. Both entries sat unchallenged because
+nothing rereads a list of things that cannot be done, and a reason that has
+quietly expired reads exactly like one that still holds.
 
 The earlier round found real bugs rather than confirming what the code did:
 routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
@@ -505,7 +517,7 @@ value it sent, and one non-echoed claim clears it.
 **Nothing is held back to make a paid tier viable.** Everything that runs on your machine is Apache-2.0 and stays that way.
 
 **More providers are queued.** [docs/backlog.md](docs/backlog.md) lists them,
-roughly in order, along with the two that were assessed and deliberately left
+roughly in order, along with the one that was assessed and deliberately left
 out. A Recipe has to earn its place: the test is whether the provider has
 behaviour worth reproducing, not whether adding it raises the count.
 
