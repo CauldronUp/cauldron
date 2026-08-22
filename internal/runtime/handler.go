@@ -479,6 +479,14 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 	case "id":
 		// The identifier and nothing else, which is what Cloudflare answers
 		// a delete with -- {"result": {"id": ...}} once the envelope is on.
+		//
+		// Under its own name when the route says so. Datadog answers a
+		// monitor delete with deleted_monitor_id, and a client reading that
+		// finds nothing if the key is the resource's ordinary one.
+		if key := matched.spec.DeletedKey; key != "" {
+			return s.writeRaw(w, matched, map[string]any{key: id})
+		}
+
 		return s.writeRecord(w, matched, store.Record{"id": id})
 	case "empty":
 		// An object with nothing in it. Asana answers {"data": {}}, which is
@@ -2038,4 +2046,34 @@ func pageCount(total, limit int) int {
 	}
 
 	return (total + limit - 1) / limit
+}
+
+// writeRaw answers with a body exactly as given, past the identifier renaming
+// and the resource envelope that writeRecord applies.
+//
+// A delete receipt keyed on its own name is not the resource, so presenting it
+// as one would rename the very key the route just named.
+func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string]any) int {
+	status := matched.spec.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+
+	// The identifier is retyped the same way present would have retyped it.
+	// A provider whose ids are JSON numbers sends a number here too, and a
+	// receipt that disagrees with every other route about the type is its
+	// own small lie.
+	if spec, ok := s.recipe.Resources[matched.spec.Resource]; ok && spec.ID.Type == "number" {
+		for key, value := range body {
+			body[key] = numeric(value)
+		}
+	}
+
+	if len(matched.spec.Fields) > 0 {
+		body = withFields(body, matched.spec.Fields)
+	}
+
+	writeJSON(w, status, body)
+
+	return status
 }
