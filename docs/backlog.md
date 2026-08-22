@@ -1168,6 +1168,32 @@ in its own repository, or at a URL that answers with the spec rather than
 with a page about the spec -- is a provider that can be modelled honestly.
 That is now the first thing checked, not the last.
 
+## One provider, two shapes for the same status
+
+The npm registry answers a 404 two ways, checked against registry.npmjs.org on
+2026-08-22:
+
+| Request | Answer |
+|---|---|
+| `GET /cauldron-no-such-package-xyz` | `{"error":"Not found"}` |
+| `GET /left-pad/99.99.99` | `"version not found: 99.99.99"` |
+
+Same registry, same status, one object and one bare JSON string. Code reading
+`body.error` off the second finds `undefined` rather than failing, so a client
+reporting `body.error` as the reason reports "undefined" -- quieter and worse
+than a thrown error.
+
+Half of what this needs is now built: an error may carry its own `style:`, and
+`string` is a style. What is missing is a way for one route to raise a
+different not-found error from another's. `resource_missing` is hardcoded at
+every site that answers for a record that is not there, so both of the npm
+routes raise it and both get one shape.
+
+A `not_found:` on a route naming the error to raise would do it. The three
+call sites have the matched route in scope; the fourth path goes through
+`notFound`, which does not, so that one needs threading. Small, and not small
+enough to bolt onto the end of the change that found it.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |

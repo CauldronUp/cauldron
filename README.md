@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1692 cases, 45 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1692 cases, 47 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,21 +296,31 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1692 cases, 45 run against
-a live account and 1647 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1692 cases, 47 run against
+a live account and 1645 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The forty-five are the cases whose provider can be asked without a key. Five are
+The forty-seven are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
-endpoint costs money. Five are the npm registry's, where what was checked is
+endpoint costs money. Seven are the npm registry's, where what was checked is
 the shape each case turns on rather than the values: that a per-version
 document carries no time, no versions and no dist-tags, that `deprecated` is a
 string and is absent rather than false when it does not apply, that
 `integrity` sits inside `dist`, and that a missing package answers 404 with
 `{"error":"Not found"}`. The Recipe records which real packages those were
 observed on, so the dates can be audited rather than taken on trust.
+
+Two of those seven were settled by the packages nobody wants to be famous.
+`time` carries an entry for a version that `versions` does not, left behind by
+an unpublish -- and the versions with one are `event-stream` 3.3.6, `rc`
+1.2.9, 1.3.9 and 2.3.9, `flatmap-stream` 11.1.1 and `eslint-scope` 3.7.2,
+every one pulled after a compromise. `eslint-scope` has thirty versions and
+thirty-three `time` entries: thirty, `created`, `modified`, and the tombstone.
+Fetching that version answers 404. So a release history rebuilt from `time` is
+not merely wrong, it is disproportionately wrong about the releases somebody
+removed on purpose.
 
 Four are Docker Hub's, which answers for a public repository without a token:
 a repository nobody can see is a 404 carrying `{"message": "object not
