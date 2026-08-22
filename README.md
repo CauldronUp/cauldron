@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1692 cases, 47 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1693 cases, 48 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,15 +296,15 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1692 cases, 47 run against
+That second line is the honest one. Of every Recipe: 1693 cases, 48 run against
 a live account and 1645 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The forty-seven are the cases whose provider can be asked without a key. Five are
+The forty-eight are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
-endpoint costs money. Seven are the npm registry's, where what was checked is
+endpoint costs money. Eight are the npm registry's, where what was checked is
 the shape each case turns on rather than the values: that a per-version
 document carries no time, no versions and no dist-tags, that `deprecated` is a
 string and is absent rather than false when it does not apply, that
@@ -321,6 +321,15 @@ thirty-three `time` entries: thirty, `created`, `modified`, and the tombstone.
 Fetching that version answers 404. So a release history rebuilt from `time` is
 not merely wrong, it is disproportionately wrong about the releases somebody
 removed on purpose.
+
+The eighth is two shapes for one status. A package that does not exist answers
+`{"error":"Not found"}`; a version that does not exist on a package that does
+answers the bare JSON string `"version not found: 99.99.99"`. Code reading
+`body.error` off the second finds `undefined` rather than failing, so a client
+reporting `body.error` as the reason reports "undefined" -- quieter and worse
+than throwing. Plain text would be the wrong way to model it, because a client
+calling `.json()` on text throws and on this it succeeds and hands back a
+string, so the case asserts the raw bytes: the quotes are the distinction.
 
 Four are Docker Hub's, which answers for a public repository without a token:
 a repository nobody can see is a 404 carrying `{"message": "object not

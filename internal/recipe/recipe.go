@@ -921,6 +921,15 @@ type Route struct {
 	Method   string `yaml:"method"`
 	Path     string `yaml:"path"`
 	Resource string `yaml:"resource"`
+	// NotFound names the error to raise when this route is asked for a record
+	// that is not there, instead of resource_missing.
+	//
+	// One provider can answer a missing thing two ways, and the npm registry
+	// does. A package that does not exist answers {"error":"Not found"}; a
+	// version that does not exist on a package that does answers the bare JSON
+	// string "version not found: 99.99.99". Same status, same registry, and
+	// nothing but the route to tell the emulator which is which.
+	NotFound string `yaml:"not_found"`
 	// Operation is one of: create, get, list, update, delete.
 	Operation string `yaml:"operation"`
 	// Scope names the path parameters that partition this resource, e.g.
@@ -2050,6 +2059,19 @@ func (r *Recipe) Validate() error {
 		}
 
 		add("required_headers declares %s and no conformance case omits it and is refused, so nothing here shows it is enforced rather than merely listed", header)
+	}
+
+	// A route naming an error to raise has to name one that exists, or the
+	// only sign of the typo is a 404 in the shape it was overriding.
+	for _, route := range r.Routes {
+		if route.NotFound == "" {
+			continue
+		}
+
+		if _, ok := r.Errors[route.NotFound]; !ok {
+			add("%s %s declares not_found: %q and no error by that name is defined, so it would answer in the shape it was written to replace",
+				route.Method, route.Path, route.NotFound)
+		}
 	}
 
 	// A filter is a claim that a listing narrows itself when asked, and the
