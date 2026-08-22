@@ -245,8 +245,12 @@ conformance:
 
 	var said []string
 
+	// Unsaid as well as Disagrees. A status the description declares nowhere
+	// is still reported -- it is reported as something the description has no
+	// opinion about rather than as a contradiction, and this test is about
+	// what gets said rather than under which heading.
 	for _, finding := range Check(r, doc, "") {
-		if finding.Severity == Disagrees {
+		if finding.Severity == Disagrees || finding.Severity == Unsaid {
 			said = append(said, finding.Where+": "+finding.What)
 		}
 	}
@@ -262,7 +266,8 @@ conformance:
 		"answers 200 and the description declares 201",
 		// A field no schema declares.
 		`"colour"`,
-		// A failure status nothing declares.
+		// A failure status nothing declares, which is reported as unsaid
+		// rather than as a contradiction.
 		"418",
 	} {
 		if !strings.Contains(joined, want) {

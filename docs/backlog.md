@@ -1204,9 +1204,17 @@ None of it was a disagreement. The prefix is written down in the description
 and is now read from there, with `--base` still overriding and the inferred
 value printed so a wrong guess is visible rather than silent.
 
-Swept across the thirty-four descriptions already fetched: **nineteen are
+Swept across the thirty-four descriptions already fetched: **twenty-one are
 contradicted by nothing at all**, up from thirteen, and no description in that
 set now fails to read.
+
+Two of that rise came from a status nobody declares. A description that names
+a status nowhere has not contradicted a Recipe answering with it -- it has
+declined to say. Nineteen of the thirty-one descriptions here declare no 429
+anywhere, and Stripe, Twilio, Slack and Square are among them, so treating
+that silence as a contradiction was reporting the fact that rate limits get
+documented in prose. Those findings are still printed, under their own heading
+and in their own words.
 
 Three of the thirty-four were not disagreements at all: the description and
 the Recipe were about different APIs. CircleCI's cached description declares
@@ -1216,7 +1224,7 @@ not have, which reads exactly like a Recipe full of invented paths and is one
 error made by whoever fetched the file. `check` now says so before the list,
 because the list is what somebody would otherwise start working through.
 
-That leaves **twelve** that disagree somewhere, and the ones looked at are a
+That leaves **ten** that disagree somewhere, and the ones looked at are a
 mixed bag worth knowing before anybody treats the number as a defect count:
 
 - **The Recipe is right and the description is stale.** Meilisearch's document
