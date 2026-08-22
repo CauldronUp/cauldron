@@ -446,6 +446,36 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Restoring them, one description at a time
+
+**60 routes across 25 Recipes** still page by a parameter nobody named. Four
+providers have been settled since, each read from that provider's own
+description and none of them guessable:
+
+| Provider | What the description said |
+|---|---|
+| SendGrid | Two listings paging two different ways. Templates declares `generations`, `page_size` and `page_token` and no `limit` at all; bounces declares `limit` and `offset` |
+| Chargebee | `limit` and `offset`, and `offset` is typed **string** with the description saying to set it to the `next_offset` the last response returned. A cursor wearing an offset's name |
+| OneSignal | `limit` and `offset` on both listings |
+| Webflow | Eleven query parameters on the items listing including `limit` and `offset`, and none whatsoever on the two site-level listings, which are now `limit_param: "-"` |
+
+Chargebee is the one to remember. Filling that in from the parameter's name --
+which is exactly what filling it in from memory would do -- declares a numeric
+offset against an opaque token, and it fails in the quiet direction: page two
+starts from the beginning again.
+
+**The blocker is reaching the description, not the work.** Of the 29 Recipes
+that needed names, 2 had a description already fetched. Guessing repository
+URLs from the provider's name failed 6 times out of 6. Searching GitHub for an
+org's own OpenAPI repository found 3 of 12 tried. Third-party copies of a
+provider's description are on GitHub for several of the rest, and they are not
+the provider's own description -- using one is a guess with more steps, and the
+Chargebee row above is what that costs.
+
+So the remaining 60 are not waiting on effort. Each one is waiting on somebody
+finding where that provider publishes its description, or on watching the
+provider page a real collection.
+
 ## What a delete answers with, mostly closed
 
 A delete used to fabricate Stripe's receipt for every provider, using keys no
