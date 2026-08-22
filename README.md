@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 18 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1691 cases, 23 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 18 run against
-a live account and 1673 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1691 cases, 23 run against
+a live account and 1668 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The eighteen are the cases whose provider can be asked without a key. Five are
+The twenty-three are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -326,6 +326,22 @@ One is GitLab's, which answers for a public project: a merge request is
 addressed by its per-project iid and not by its global id, and putting one
 where the other belongs finds nothing -- or, on a busy instance, finds a
 different merge request.
+
+Five are Discourse's, which is the first provider added to this list since the
+list was written. Any Discourse forum answers `/latest.json` and `/t/{id}.json`
+without a key, so meta.discourse.org settles all five: the topics are two
+levels down and there is no `topics` or `per_page` at the top level at all;
+`topic_list.per_page` is thirty, the number this Recipe declares; a topic
+carries `last_poster_username` as a string and neither a `last_poster` nor a
+`user` object, while the names and avatars sit in a `users` array beside the
+topics; `title` and `fancy_title` are the same words with the apostrophe as
+`&rsquo;`, on a topic nobody wrote for the purpose; and `/t/{id}.json` answers
+sixty-four keys of which `bumped_at` and `last_poster_username` are not two.
+
+That last one is the case a description could not have settled. A description
+lists what a response may carry. It does not say what a response leaves out,
+and the whole point of that case is a field the listing has and the topic does
+not.
 
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
