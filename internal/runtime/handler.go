@@ -1886,6 +1886,9 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// category this replaced.
 	borrowed := resolved != name
 
+	// The envelope this failure travels in, which a single error may override.
+	var style string
+
 	if defined, ok := s.recipe.Errors[resolved]; ok {
 		if !borrowed {
 			status = defined.Status
@@ -1917,16 +1920,35 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		}
 
 		extra = defined.Fields
+		style = defined.Style
+	}
+
+	if style == "" {
+		style = s.recipe.Responses.Error.Style
 	}
 
 	// Trello answers with plain text, so a client calling .json() on the
 	// response throws rather than reporting the failure. Writing JSON here
 	// would hide that.
-	if s.recipe.Responses.Error.Style == "text" {
+	if style == "text" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(status)
 
 		fmt.Fprint(w, message)
+
+		return status
+	}
+
+	// A bare JSON string, which is valid JSON and is not an object. The npm
+	// registry answers one for a version that does not exist on a package
+	// that does, while answering an object for a package that does not exist.
+	//
+	// Text would be the wrong shape for it: a client calling .json() on text
+	// throws, and on this it succeeds and hands back a string. Code reading
+	// body.error then finds undefined rather than failing, which is the
+	// quieter and worse of the two.
+	if style == "string" {
+		writeJSON(w, status, message)
 
 		return status
 	}
