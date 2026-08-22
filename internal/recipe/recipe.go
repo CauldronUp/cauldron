@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1544,6 +1545,30 @@ func (r *Recipe) Validate() error {
 			}
 
 			if resource, ok := r.Resources[route.Resource]; ok {
+				// A listing whose entries carry no identifier is a listing
+				// nothing can be fetched from, and a create that does not say
+				// what it made leaves the caller with no way to ask again.
+				// Both are easy to write by accident: returns names the
+				// fields to keep, and the identifier is not one of them
+				// unless it is asked for.
+				//
+				// Three Recipes shipped that way before this existed. Asana's
+				// task listing handed back nothing but a name, Supabase's
+				// create stopped telling anyone the project's ref, and every
+				// case still passed, because no case asserted an identifier
+				// on a trimmed route.
+				//
+				// A get may leave it out. Braze does: its details endpoint
+				// answers without the identifier the caller just used to ask.
+				// A resource that never puts its identifier on the wire says
+				// so with field "-", and is not held to this.
+				if route.Operation == "list" || route.Operation == "create" {
+					if resource.ID.Field != "-" && !slices.Contains(route.Returns, "id") {
+						add("%s: returns does not name id, so this %s answers with records nothing can address; add \"id\", or say field: \"-\" if this provider really does not send one",
+							where, route.Operation)
+					}
+				}
+
 				for _, field := range route.Returns {
 					// Constants count. They are stamped onto the record and
 					// trimmed with everything else, so a route that answers
