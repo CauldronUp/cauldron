@@ -1327,6 +1327,31 @@ The cost of leaving it open was not the stray key. It was that a conformance
 case asserting a value it sent on a create could not fail, which is how
 Adyen's refund kept the payment's name for its reference.
 
+### What the sweep after it found
+
+Both of Stripe's created resources now declare `metadata`, because declaring
+it on the customer and not the payment intent would have been the worst of the
+three options -- and the payment intent is where it matters most, since the
+webhook that arrives later carries the intent and nothing else.
+
+**No other Recipe models free-form data at all.** Not one of the twenty that
+mention metadata declares a field for it, and no conformance case anywhere
+sends metadata in a request. So the echo was the only thing making those
+Recipes appear to accept it, and appearing to accept it is what a fake should
+not do: a provider whose Recipe never modelled metadata now drops it, which is
+the truthful answer to "does this Recipe describe that behaviour".
+
+Declaring `type: map` across the providers that really do support metadata --
+Adyen, Chargebee, Orb, Paddle, Shippo and the rest -- would mean modelling
+from memory, which is the guessing this project refuses everywhere else. It
+wants the same treatment every other field gets: read the provider, then
+declare it.
+
+**Nothing tells a Recipe author they need it.** A provider with free-form
+metadata and a Recipe that does not declare it produces no warning, because
+absence of a field is indistinguishable from a provider that has none. That is
+the gap this closing leaves open.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
