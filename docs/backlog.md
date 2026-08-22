@@ -272,6 +272,7 @@ the header says so.
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | Heap | Assess — events and user properties |
 | LogRocket | Assess — sessions and issues |
+| New Relic | Assess. It was in "assessed and deliberately not done" for being GraphQL-only, which stopped being a reason the day ShipHero brought GraphQL support and Linear shipped on it. NerdGraph is one endpoint whose body decides the shape, which is what `selects` is for |
 
 ## Hosting, deployment and package registries
 
@@ -289,6 +290,7 @@ the header says so.
 | PyPI | Assess — the JSON API is read-only and upload is a separate protocol entirely |
 | Codecov | Assess — coverage reports and the commit they attach to |
 | SonarCloud | Assess — issues, quality gates, the gate status arriving after analysis finishes |
+| Railway | Assess. Here for the same lapsed reason as New Relic: GraphQL-only was an exclusion before anything here spoke GraphQL, and three Recipes do now |
 
 ## Secrets and configuration
 
@@ -1124,9 +1126,16 @@ That is now the first thing checked, not the last.
 |---|---|
 | ~~Linear~~ | Shipped, on the GraphQL support ShipHero brought. Priority counts down and zero is not the top -- Linear's own words are 0 = No priority, 1 = Urgent, 4 = Low -- so sorting ascending puts untriaged issues above the ones on fire and descending puts Low above Urgent. Plus: a state's `name` belongs to the team and its `type` does not, three of the seven types close an issue and `duplicate` is the forgotten one, a connection carries the same list twice as `edges` and `nodes`, and `number` is team-scoped so two issues are both 123 |
 | ~~Attio~~ | Shipped. It was recorded here as GraphQL-only, which was simply wrong -- it is REST and publishes OpenAPI 3.1 at `https://api.attio.com/openapi/api`. Its records are queried by POST with the paging in the body, which is what found that bug in four other Recipes |
-| New Relic | NerdGraph is GraphQL-only. Same reason again |
-| Railway | GraphQL-only. Same reason |
 | Temporal Cloud | gRPC rather than HTTP. The format describes HTTP surfaces and nothing here would be a Temporal client |
+
+~~New Relic and Railway were here too~~ -- both for being GraphQL-only, which
+was a reason until ShipHero brought GraphQL support and Linear and Monday
+shipped on it. Neither has been assessed on anything else, so they are back
+in the queues above rather than sitting under a reason that has been
+withdrawn. This table held five rows and four of them were wrong: two
+providers that shipped, and two more kept out by a reason that lapsed
+without anybody going back to the list that rested on it. Only Temporal
+Cloud is still out for the reason written beside it.
 
 ~~Monday.com belongs here too~~ -- shipped, and it was the one that found the
 next two bugs.
