@@ -497,6 +497,19 @@ type ListResponse struct {
 	// A dotted name nests, so Slack's response_metadata.next_cursor is
 	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
+	// CursorURL says the cursor field carries a whole URL rather than a token.
+	//
+	// Eight Recipes describe their paging pointer as a full URL and emitted an
+	// opaque cursor, so the fake taught the mistake the Recipe warned about.
+	// Merge's own comment put it exactly: "both full URLs rather than opaque
+	// cursors ... a client concatenating a base URL to next builds a URL that
+	// does not exist" -- and a client written against a token does precisely
+	// that concatenation.
+	//
+	// The URL is this request with its position moved on, which is what the
+	// Link header already renders, so a Recipe saying so gets the same value
+	// in its body.
+	CursorURL bool `yaml:"cursor_url"`
 	// CountField names a property carrying how many records matched in total,
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.

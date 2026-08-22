@@ -610,7 +610,8 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// wrong.
 	list := s.recipe.ListFor(matched.spec)
 
-	body := s.listBody(list, page, matched.spec.Resource, r.URL.Path)
+	body := s.listBody(list, page, matched.spec.Resource, r.URL.Path,
+		nextPageURL(r, matched.spec.Pagination, page.NextCursor))
 
 	// What this request actually served, for the providers that report it.
 	// These cannot be constants: a field whose whole purpose is to say where
@@ -1346,7 +1347,7 @@ func setPath(body map[string]any, path string, value any) {
 
 // listBody shapes a page according to the declared list style, which is the
 // Recipe's unless the route overrode it.
-func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, path string) any {
+func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, path, nextURL string) any {
 	page.Records = s.presentAll(resource, page.Records)
 
 	// Chargebee wraps every item under the resource's own name, so a client
@@ -1449,7 +1450,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, 
 		}
 
 		if spec.CursorField != "" && page.NextCursor != "" {
-			setPath(body, spec.CursorField, page.NextCursor)
+			setPath(body, spec.CursorField, cursorValue(spec, page.NextCursor, nextURL))
 		}
 
 		// Salesforce's done is has_more with the sense reversed, and false is
@@ -1495,7 +1496,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, 
 		// locally and fails in production, which is the exact failure this
 		// project exists to prevent.
 		if spec.CursorField != "" && page.NextCursor != "" {
-			setPath(body, spec.CursorField, page.NextCursor)
+			setPath(body, spec.CursorField, cursorValue(spec, page.NextCursor, nextURL))
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)
@@ -2098,4 +2099,21 @@ func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string
 	writeJSON(w, status, body)
 
 	return status
+}
+
+// cursorValue renders the cursor as the Recipe says the provider sends it.
+//
+// A token by default, and the whole next-page URL for the providers whose
+// pointer is one. Getting this wrong is not cosmetic: a client written against
+// a token concatenates it onto a base URL, which is the exact mistake several
+// of these Recipes describe in a comment and then taught anyway.
+//
+// The URL is empty when paging travels in the body, because there is no such
+// URL to render; the token is the honest answer then.
+func cursorValue(spec recipe.ListResponse, cursor, nextURL string) string {
+	if spec.CursorURL && nextURL != "" {
+		return nextURL
+	}
+
+	return cursor
 }
