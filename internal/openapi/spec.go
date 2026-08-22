@@ -218,6 +218,27 @@ func (s *Schema) UnmarshalYAML(node *yaml.Node) error {
 		return nil
 	}
 
+	// A sequence where a schema belongs is tuple validation: draft-4 JSON
+	// Schema lets items hold a list, one schema per position. OpenAPI 3.0
+	// dropped it and descriptions carry it anyway. Webflow's has thirty-two,
+	// and all 4.4MB of it was refused with "cannot unmarshal !!seq into
+	// openapi.plain" repeated down the screen -- over a construct nothing here
+	// reads a description for.
+	//
+	// The first position is taken and the rest dropped. What this package asks
+	// of an array is what shape one element has, and a tuple whose positions
+	// disagree has no single answer; reading the first is closer than refusing
+	// the file.
+	if node.Kind == yaml.SequenceNode {
+		if len(node.Content) == 0 {
+			*s = Schema{}
+
+			return nil
+		}
+
+		return node.Content[0].Decode(s)
+	}
+
 	type plain Schema
 
 	var raw plain
