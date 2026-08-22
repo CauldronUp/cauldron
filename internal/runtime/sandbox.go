@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,6 +300,13 @@ func (s *Sandbox) applyDefaults(resource string, record store.Record) {
 			// APIs send a string here, and a client parsing one does not
 			// silently cope with the other.
 			record[name] = s.clock.Now().UTC().Format(time.RFC3339)
+		case "timestamp_ms_string":
+			// Milliseconds as text, which is what ClickUp and Gmail send. It
+			// looks like a number and is not one, so arithmetic on it
+			// concatenates and new Date() of it is Invalid Date -- and a fake
+			// sending the number makes both of those work, which is the wrong
+			// direction for a difference to run in.
+			record[name] = strconv.FormatInt(s.clock.Unix()*1000, 10)
 		case "msdate":
 			// Microsoft's date format, which looks like /Date(1552262400000+0000)/
 			// and is not a date any ordinary parser accepts. Xero sends every
