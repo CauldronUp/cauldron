@@ -1314,11 +1314,18 @@ expects it back. Stripe really does accept arbitrary metadata and really does
 echo it, and `metadata` is declared nowhere in that Recipe -- the echo is how
 it works today.
 
-So the echo is doing two jobs: supporting a genuine free-form container, and
-silently accepting nonsense. Separating them means a Recipe being able to say
-"this resource has a free-form map called metadata", which is a format
-addition rather than a filter. Half-fixing it would break Stripe metadata,
-which is correct behaviour, to remove an echo nothing currently relies on.
+So the echo was doing two jobs: supporting a genuine free-form container, and
+silently accepting nonsense.
+
+**Closed.** A field may now be declared `type: map`, which keeps whatever keys
+it was sent, and creates and updates drop everything the resource does not
+declare. Stripe's customer declares `metadata: {type: map}` and the form
+encoding that fed this finding still works; nothing else in 167 Recipes needed
+a change, because nothing else was relying on the echo.
+
+The cost of leaving it open was not the stray key. It was that a conformance
+case asserting a value it sent on a create could not fail, which is how
+Adyen's refund kept the payment's name for its reference.
 
 ## Assessed and deliberately not done
 

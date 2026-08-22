@@ -749,3 +749,39 @@ func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string
 
 	return status
 }
+
+// declaredOnly drops request fields the resource does not declare.
+//
+// A create used to store the decoded body as the record, so anything sent
+// came back: posting {"totallyMadeUpField": "xyzzy"} to a refund answered with
+// totallyMadeUpField in it. No provider does that, and the cost is not the
+// stray key. It is that a conformance case asserting a value it sent on a
+// create cannot fail, because the value comes back whether or not the Recipe
+// declares the field. Adyen's refund carried the payment's name for its
+// reference for exactly that long.
+//
+// A field declared type: map is free-form and keeps whatever it was sent,
+// because some providers really do accept arbitrary keys. That is a Recipe
+// saying so rather than the runtime assuming it.
+func (s *Sandbox) declaredOnly(resource string, record store.Record) store.Record {
+	spec, ok := s.recipe.Resources[resource]
+	if !ok {
+		return record
+	}
+
+	kept := store.Record{}
+
+	for name, value := range record {
+		if name == spec.ID.Field || name == "id" {
+			kept[name] = value
+
+			continue
+		}
+
+		if _, declared := spec.Fields[name]; declared {
+			kept[name] = value
+		}
+	}
+
+	return kept
+}
