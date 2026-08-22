@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 31 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1691 cases, 34 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 31 run against
-a live account and 1660 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1691 cases, 34 run against
+a live account and 1657 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The thirty-one are the cases whose provider can be asked without a key. Five are
+The thirty-four are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -322,10 +322,20 @@ an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
 and only one of those two works in a path.
 
-One is GitLab's, which answers for a public project: a merge request is
+Four are GitLab's, which answers for a public project. A merge request is
 addressed by its per-project iid and not by its global id, and putting one
 where the other belongs finds nothing -- or, on a busy instance, finds a
-different merge request.
+different merge request. A missing project answers one key and one only,
+`{"message":"404 Project Not Found"}`, with the status repeated inside the
+sentence and nothing called `error` or `errors`.
+
+The other two corrected this Recipe rather than confirming it. It had a closed
+merge request answering with no `merged_at` and a merged one with no
+`closed_at`. GitLab sends both dates on every merge request and nulls the one
+that did not happen, so the key is there and its value is not. That is the
+difference between `"merged_at" in mr` being false and being true: code asking
+whether the key exists got one answer here and the other from GitLab, passed
+locally, and read every merge request as merged.
 
 Five are Discourse's, which is the first provider added to this list since the
 list was written. Any Discourse forum answers `/latest.json` and `/t/{id}.json`
