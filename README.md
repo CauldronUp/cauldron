@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 27 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1691 cases, 31 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 27 run against
-a live account and 1664 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1691 cases, 31 run against
+a live account and 1660 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The twenty-seven are the cases whose provider can be asked without a key. Five are
+The thirty-one are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -360,6 +360,29 @@ has a parent. And `date` and `date_gmt` are both there with no zone marker on
 either, which is the shape -- but they are identical, because that site runs
 UTC, so nothing was seen of the two diverging, which is the entire trap. Half
 a case watched is not a case watched.
+
+Four are Bitbucket's, whose public workspaces answer without a token. Its
+listing envelope is exactly `values`, `size`, `pagelen`, `page` and `next`,
+with no `data` and no `items` -- the two names a client reaches for first,
+both finding undefined rather than an error -- and `size` was 407 against a
+`pagelen` of 2, so it counts everything rather than what arrived. A repository
+carries `is_private` as a boolean and no `visibility` key at all. A missing
+repository answers two keys, `type` and `error`, and `error` holds nothing but
+`message`.
+
+The fourth is the one worth reading twice. `?pagelen=1` answers one value.
+`?limit=1` answers ten, with `pagelen: 10` in the body: the wrong name is not
+refused, it is ignored, and a full page comes back looking like a successful
+request for one. That is the failure this README keeps describing, watched
+happening.
+
+Checking Bitbucket also corrected a message this project had invented. Its 404
+had a generic "Resource not found", and Bitbucket's own words are that the
+repository may not exist *or* may not be visible to you, and it declines to
+say which. Code treating a 404 as a deletion -- dropping a row, ending a sync,
+marking a connection dead -- is acting on a message that explicitly refuses to
+support it, and the case it gets wrong is a repository somebody made private
+this morning.
 
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
