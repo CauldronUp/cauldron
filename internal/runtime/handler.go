@@ -166,7 +166,7 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.writeRecipeError(w, "invalid_request", 400, "invalid_request", err.Error())
 	}
 
-	s.emitFor(matched.spec.Resource, "created", created)
+	s.emitFor(matched.spec.Resource, "created", matched.spec.Emits, created)
 
 	s.writeRouteHeaders(w, matched, created)
 
@@ -275,7 +275,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
-	s.emitFor(matched.spec.Resource, "updated", updated)
+	s.emitFor(matched.spec.Resource, "updated", matched.spec.Emits, updated)
 
 	return s.writeRecord(w, matched, updated)
 }
@@ -299,7 +299,7 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
-	s.emitFor(matched.spec.Resource, "deleted", record)
+	s.emitFor(matched.spec.Resource, "deleted", matched.spec.Emits, record)
 
 	// Nothing, unless the Recipe says its provider answers with something.
 	// This used to fabricate Stripe's receipt for every provider, using keys

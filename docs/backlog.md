@@ -1376,6 +1376,39 @@ metadata and a Recipe that does not declare it produces no warning, because
 absence of a field is indistinguishable from a provider that has none. That is
 the gap this closing leaves open.
 
+## Declared events nothing could fire
+
+The runtime emits `resource.action` -- `customer.created`, `invoice.updated`
+-- and nothing else. **438 of the 482 events declared across these Recipes are
+not named that way**, and every one of those names is the provider's own:
+Freshdesk's `ticket_create`, Bitbucket's `repo:push`, Zoom's `meeting.started`,
+Recurly's `new_subscription_notification`, Webflow's `collection_item_created`.
+
+So for 97 Recipes a create fired nothing. Not a wrong event, not an error --
+silence, which is indistinguishable from a provider that does not send one,
+and a handler waiting for it waits for ever.
+
+A route may now name what it fires with `emits:`, and the validator refuses a
+name the Recipe does not declare. Freshdesk's ticket create and update are
+wired as the demonstration.
+
+**The other 95 are not**, and that is the work this leaves. Each needs the
+provider read closely enough to know which change produces which event, which
+is not the same question as what the events are called -- Freshdesk has
+`ticket_status_change` and `ticket_priority_change` beside `ticket_update`,
+and deciding which of the three an update fires is a matter of reading
+Freshdesk rather than pattern-matching on names.
+
+### And 97 of 99 assert no webhook at all
+
+Separately from the naming: 99 Recipes declare events, and 97 have no
+conformance case asserting that one arrives. 73 of those declare a signing
+scheme nothing exercises either.
+
+Mass-adding cases would produce 97 weak ones, which is the opposite of what a
+case is for. They want writing where the payload shape is worth pinning, a few
+at a time.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |

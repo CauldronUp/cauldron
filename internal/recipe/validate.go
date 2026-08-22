@@ -234,6 +234,21 @@ func (r *Recipe) Validate() error {
 		add("required_headers declares %s and no conformance case omits it and is refused, so nothing here shows it is enforced rather than merely listed", header)
 	}
 
+	// A route naming an event to emit has to name one the Recipe declares, or
+	// the change fires nothing and the only sign is a webhook that never
+	// arrives -- which is indistinguishable from a provider that does not
+	// send one.
+	for _, route := range r.Routes {
+		if route.Emits == "" {
+			continue
+		}
+
+		if !contains(r.Webhooks.Events, route.Emits) {
+			add("%s %s declares emits: %q and webhooks.events does not list it, so the change would fire nothing",
+				route.Method, route.Path, route.Emits)
+		}
+	}
+
 	// A route naming an error to raise has to name one that exists, or the
 	// only sign of the typo is a 404 in the shape it was overriding.
 	for _, route := range r.Routes {
