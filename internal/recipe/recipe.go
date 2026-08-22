@@ -1248,10 +1248,10 @@ var (
 	validCodeTypes   = []string{"", "string", "number"}
 	validIDTypes     = []string{"", "string", "number"}
 	validIDStyles    = []string{"", "prefixed", "numeric", "timestamp", "opaque", "uuid", "hex", "digits"}
-	validFieldTypes  = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "datetime", "msdate", "list"}
+	validFieldTypes  = []string{"", "string", "integer", "number", "boolean", "timestamp", "timestamp_ms", "timestamp_ms_string", "datetime", "msdate", "list"}
 	// The types Cauldron fills in from the sandbox clock, and therefore the
 	// only ones a stamped declaration can affect.
-	timeFieldTypes = []string{"timestamp", "timestamp_ms", "datetime", "msdate"}
+	timeFieldTypes = []string{"timestamp", "timestamp_ms", "timestamp_ms_string", "datetime", "msdate"}
 
 	knownMethods = map[string]bool{
 		"GET": true, "POST": true, "PUT": true, "PATCH": true,
