@@ -2111,9 +2111,20 @@ func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string
 // The URL is empty when paging travels in the body, because there is no such
 // URL to render; the token is the honest answer then.
 func cursorValue(spec recipe.ListResponse, cursor, nextURL string) string {
-	if spec.CursorURL && nextURL != "" {
-		return nextURL
+	if spec.CursorURL == "" || nextURL == "" {
+		return cursor
 	}
 
-	return cursor
+	if spec.CursorURL == "path" {
+		// Salesforce joins its nextRecordsUrl to the instance URL it
+		// authenticated against, so the path is the whole of what it sends
+		// and an absolute address would be joined to that.
+		if at := strings.Index(nextURL, "://"); at >= 0 {
+			if slash := strings.IndexByte(nextURL[at+3:], '/'); slash >= 0 {
+				return nextURL[at+3+slash:]
+			}
+		}
+	}
+
+	return nextURL
 }

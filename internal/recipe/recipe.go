@@ -497,7 +497,14 @@ type ListResponse struct {
 	// A dotted name nests, so Slack's response_metadata.next_cursor is
 	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
-	// CursorURL says the cursor field carries a whole URL rather than a token.
+	// CursorURL says the cursor field carries an address rather than a token,
+	// and which kind: "absolute" for a whole URL, "path" for the path and
+	// query alone.
+	//
+	// The difference is not cosmetic. Salesforce sends a path because its
+	// clients join it to the instance URL they authenticated against, so an
+	// absolute address would be joined to that and produce nonsense -- the
+	// same concatenation bug as a token, arrived at from the other side.
 	//
 	// Eight Recipes describe their paging pointer as a full URL and emitted an
 	// opaque cursor, so the fake taught the mistake the Recipe warned about.
@@ -509,7 +516,7 @@ type ListResponse struct {
 	// The URL is this request with its position moved on, which is what the
 	// Link header already renders, so a Recipe saying so gets the same value
 	// in its body.
-	CursorURL bool `yaml:"cursor_url"`
+	CursorURL string `yaml:"cursor_url"`
 	// CountField names a property carrying how many records matched in total,
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
@@ -1234,6 +1241,7 @@ var (
 		"scheduling", "hr", "forms", "cms", "infrastructure",
 	}
 	validDeletedBody = []string{"", "receipt", "record", "flagged", "id", "empty"}
+	validCursorURL   = []string{"", "absolute", "path"}
 	validSigning     = []string{"", "none", "hmac-sha256"}
 	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
 	validErrStyles   = []string{"", "nested", "flat", "list", "string_list", "text"}
@@ -1978,6 +1986,10 @@ func (r *Recipe) Validate() error {
 
 	if r.Responses.List.EntryStyle != "" && r.Responses.List.EntryStyle != "wrapped" {
 		add("responses.list.entry_style %q must be wrapped", r.Responses.List.EntryStyle)
+	}
+
+	if !contains(validCursorURL, r.Responses.List.CursorURL) {
+		add("responses.list.cursor_url %q must be one of %s", r.Responses.List.CursorURL, strings.Join(validCursorURL[1:], ", "))
 	}
 
 	if !contains(validListStyles, r.Responses.List.Style) {
