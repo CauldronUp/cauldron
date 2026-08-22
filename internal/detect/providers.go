@@ -497,6 +497,148 @@ func providers() []provider {
 			recipe: "zoom",
 			npm:    []string{"@zoom/appssdk"},
 		},
+		{
+			recipe: "linear",
+			npm:    []string{"@linear/sdk"},
+		},
+		{
+			recipe: "supabase",
+			npm:    []string{"@supabase/supabase-js"},
+		},
+		{
+			recipe: "neon",
+			npm:    []string{"@neondatabase/serverless", "@neondatabase/api-client"},
+		},
+		{
+			recipe: "svix",
+			npm:    []string{"svix"},
+			gomod:  []string{"github.com/svix/svix-webhooks"},
+		},
+		{
+			recipe: "typesense",
+			npm:    []string{"typesense"},
+			gomod:  []string{"github.com/typesense/typesense-go"},
+		},
+		{
+			recipe:   "meilisearch",
+			composer: []string{"meilisearch/meilisearch-php"},
+			npm:      []string{"meilisearch"},
+			gomod:    []string{"github.com/meilisearch/meilisearch-go"},
+		},
+		{
+			recipe: "qdrant",
+			npm:    []string{"@qdrant/js-client-rest"},
+			gomod:  []string{"github.com/qdrant/go-client"},
+		},
+		{
+			recipe: "weaviate",
+			npm:    []string{"weaviate-client", "weaviate-ts-client"},
+			gomod:  []string{"github.com/weaviate/weaviate-go-client"},
+		},
+		{
+			recipe: "openrouter",
+			npm:    []string{"@openrouter/ai-sdk-provider"},
+		},
+		{
+			recipe: "replicate",
+			npm:    []string{"replicate"},
+			gomod:  []string{"github.com/replicate/replicate-go"},
+		},
+		{
+			recipe: "cohere",
+			npm:    []string{"cohere-ai"},
+			gomod:  []string{"github.com/cohere-ai/cohere-go"},
+		},
+		{
+			recipe: "langfuse",
+			npm:    []string{"langfuse", "langfuse-langchain"},
+		},
+		{
+			recipe: "monday",
+			npm:    []string{"@mondaydotcomorg/api", "monday-sdk-js"},
+		},
+		{
+			recipe: "hetzner",
+			gomod:  []string{"github.com/hetznercloud/hcloud-go"},
+		},
+		{
+			recipe: "heroku",
+			npm:    []string{"heroku-client"},
+			gomod:  []string{"github.com/heroku/heroku-go"},
+		},
+		{
+			recipe:   "woocommerce",
+			composer: []string{"automattic/woocommerce"},
+			npm:      []string{"@woocommerce/woocommerce-rest-api"},
+		},
+		{
+			recipe: "dockerhub",
+			gomod:  []string{"github.com/docker/docker"},
+		},
+		{
+			recipe: "npmregistry",
+			npm:    []string{"pacote", "libnpmsearch"},
+		},
+		{
+			recipe: "increase",
+			npm:    []string{"increase"},
+			gomod:  []string{"github.com/Increase/increase-go"},
+		},
+		{
+			recipe: "orb",
+			npm:    []string{"orb-billing"},
+			gomod:  []string{"github.com/orbcorp/orb-go"},
+		},
+		{
+			recipe: "knock",
+			npm:    []string{"@knocklabs/node"},
+			gomod:  []string{"github.com/knocklabs/knock-go"},
+		},
+		{
+			recipe: "novu",
+			npm:    []string{"@novu/node", "@novu/api"},
+			gomod:  []string{"github.com/novuhq/novu-go"},
+		},
+		{
+			recipe: "merge",
+			npm:    []string{"@mergeapi/merge-node-client"},
+		},
+		{
+			recipe: "finch",
+			npm:    []string{"@tryfinch/finch-api"},
+			gomod:  []string{"github.com/Finch-API/finch-api-go"},
+		},
+		{
+			recipe: "gusto",
+			npm:    []string{"@gusto/embedded-api"},
+		},
+		{
+			recipe: "alpaca",
+			npm:    []string{"@alpacahq/alpaca-trade-api"},
+			gomod:  []string{"github.com/alpacahq/alpaca-trade-api-go"},
+		},
+		{
+			recipe: "polygon",
+			npm:    []string{"@polygon.io/client-js"},
+			gomod:  []string{"github.com/polygon-io/client-go"},
+		},
+		{
+			recipe: "apify",
+			npm:    []string{"apify-client", "apify"},
+		},
+		{
+			recipe: "uploadcare",
+			npm:    []string{"@uploadcare/upload-client", "@uploadcare/rest-client"},
+		},
+		{
+			recipe: "backblaze",
+			npm:    []string{"backblaze-b2"},
+			gomod:  []string{"github.com/Backblaze/blazer"},
+		},
+		{
+			recipe: "fly",
+			gomod:  []string{"github.com/superfly/fly-go"},
+		},
 	}
 }
 

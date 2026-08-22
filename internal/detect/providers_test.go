@@ -1,7 +1,10 @@
 package detect
 
 import (
+	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -88,9 +91,16 @@ func TestEveryMappingCarriesAtLeastOnePackage(t *testing.T) {
 	}
 }
 
-// Not a failure. Detection coverage is the difference between the claim on the
-// front of the README and what actually happens in somebody's repository, so
-// the number is worth having in front of whoever runs the suite.
+// Detection coverage is the difference between the claim on the front of the
+// README and what actually happens in somebody's repository, so the number is
+// worth having in front of whoever runs the suite -- and worth checking,
+// which it was not.
+//
+// The README said 91 of 117 while the truth was 91 of 167. The numerator had
+// been maintained and the denominator was the Recipe count from whenever the
+// line was written, so the claim drifted in the flattering direction: 78 per
+// cent coverage stated, 54 per cent real. A capability table that improves on
+// its own while nobody is looking is worse than one that says nothing.
 func TestReportDetectionCoverage(t *testing.T) {
 	mapped := map[string]bool{}
 	for _, p := range providers() {
@@ -109,9 +119,29 @@ func TestReportDetectionCoverage(t *testing.T) {
 
 	shipped := len(recipe.Bundled())
 
-	t.Logf("%d of %d Recipes are reachable from a dependency", shipped-len(missing), shipped)
+	reachable := shipped - len(missing)
+
+	t.Logf("%d of %d Recipes are reachable from a dependency", reachable, shipped)
 
 	if len(missing) > 0 {
 		t.Logf("no dependency maps to: %s", strings.Join(missing, " "))
+	}
+
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	stated := regexp.MustCompile(`(\d+) of (\d+) Recipes are reachable from a dependency`).FindStringSubmatch(string(readme))
+	if stated == nil {
+		t.Fatal("the README no longer states detection coverage in the form it did; update this test with it")
+	}
+
+	if got, _ := strconv.Atoi(stated[1]); got != reachable {
+		t.Errorf("the README says %d Recipes are reachable and %d are", got, reachable)
+	}
+
+	if got, _ := strconv.Atoi(stated[2]); got != shipped {
+		t.Errorf("the README says coverage is out of %d Recipes and %d ship", got, shipped)
 	}
 }
