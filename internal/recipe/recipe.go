@@ -1024,6 +1024,11 @@ type Route struct {
 	// succeeds against one and throws on the other, which is exactly the kind
 	// of difference this format exists to record.
 	DeletedBody string `yaml:"deleted_body"`
+	// DeletedKey names the key the identifier arrives under, for the "id"
+	// body. Datadog answers a monitor delete with deleted_monitor_id rather
+	// than id, so code reading response.deleted_monitor_id finds nothing
+	// unless the key can be said.
+	DeletedKey string `yaml:"deleted_key"`
 	// Error names a failure from the Recipe's own table that this route always
 	// answers with, whatever the request. It is how a retired endpoint is
 	// described.
@@ -1223,6 +1228,11 @@ func Load(path string) (*Recipe, error) {
 }
 
 // Parse decodes and validates a Recipe from YAML bytes.
+// safeDigits is how many figures a double holds exactly. 2^53 has sixteen, so
+// fifteen is safe with one to spare, and an identifier longer than that has to
+// stay a string.
+const safeDigits = 15
+
 func Parse(contents []byte) (*Recipe, error) {
 	var r Recipe
 
@@ -1345,11 +1355,20 @@ func (r *Recipe) Validate() error {
 
 		// digits exists for identifiers that are numeric and must not be
 		// parsed as numbers, because they exceed what a JavaScript number can
-		// hold. Declaring one a number is asking for the rounding bug the
-		// style was added to prevent.
-		if resource.ID.Type == "number" && resource.ID.Style == "digits" {
-			add("resource %q mints a long numeric string and declares it a number, which is the rounding bug the digits style exists to avoid",
-				name)
+		// hold. Declaring one of those a number is asking for the rounding bug
+		// the style was added to prevent.
+		//
+		// The length is what decides that, not the style. A double holds every
+		// integer up to 2^53, which is sixteen figures, so fifteen is safe
+		// with room to spare. Datadog's monitor ids are eight and really are
+		// numbers -- its own description gives an integer for the id and for
+		// the deleted_monitor_id a delete answers with -- and refusing that
+		// forced the Recipe to send strings where Datadog sends numbers,
+		// which is the disagreement this rule exists to catch, pointed the
+		// other way.
+		if resource.ID.Type == "number" && resource.ID.Style == "digits" && resource.ID.Length > safeDigits {
+			add("resource %q mints a %d-digit numeric string and declares it a number, which is the rounding bug the digits style exists to avoid: a double holds %d figures",
+				name, resource.ID.Length, safeDigits)
 		}
 
 		// A prefix is required for the prefixed style precisely because
