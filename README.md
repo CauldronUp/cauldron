@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 23 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1691 cases, 27 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 23 run against
-a live account and 1668 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1691 cases, 27 run against
+a live account and 1664 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The twenty-three are the cases whose provider can be asked without a key. Five are
+The twenty-seven are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -342,6 +342,24 @@ That last one is the case a description could not have settled. A description
 lists what a response may carry. It does not say what a response leaves out,
 and the whole point of that case is a field the listing has and the topic does
 not.
+
+Four are WordPress's, which serves any public site's posts to anybody:
+`title` is an object whose only key is `rendered` and `id` beside it is a JSON
+number; `categories` and `tags` are arrays of term ids with no names anywhere
+in the post; a missing post answers exactly three keys -- `code`, `message`,
+`data` -- with the status nested at `data.status` and nothing called `status`,
+`error` or `errors` at the top; and asking for `page=0` is refused with "page
+must be greater than or equal to 1", which settles the counting-from-one half
+outright rather than by inference.
+
+Three more of that Recipe's cases were looked at and left without a date, and
+the reasons are written where the date would be. Eight of twenty posts carry
+`featured_media: 0`, so the zero is real, but none of the twenty was sticky
+and the case claims both on one post. The site publishes two pages and neither
+has a parent. And `date` and `date_gmt` are both there with no zone marker on
+either, which is the shape -- but they are identical, because that site runs
+UTC, so nothing was seen of the two diverging, which is the entire trap. Half
+a case watched is not a case watched.
 
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
