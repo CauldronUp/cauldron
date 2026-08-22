@@ -168,6 +168,26 @@ func runCheck(ctx *context, args []string) int {
 		fmt.Fprintln(ctx.stdout, "  Nothing in this Recipe is contradicted by the description.")
 	}
 
+	// Every route missing is not a Recipe full of invented paths. It is the
+	// signature of the wrong document: a description of another version, or
+	// another product, or a fragment covering none of what this Recipe
+	// models.
+	//
+	// CircleCI is the one that showed it. The cached description declares
+	// /api/v1 and the Recipe models v2, so all five of its routes came back
+	// as paths the description does not have -- five findings that look like
+	// five defects and are one mistake, made by whoever fetched the file.
+	//
+	// Said before the list rather than after it, because the list is what
+	// somebody would otherwise start working through.
+	if missing := countMissingPaths(disagreements); missing > 0 && missing == len(r.Routes) {
+		fmt.Fprintln(ctx.stdout)
+		fmt.Fprintf(ctx.stdout, "  All %d of this Recipe's routes are missing from the description, which\n", missing)
+		fmt.Fprintln(ctx.stdout, "  usually means the two are not about the same API: a different version, a")
+		fmt.Fprintln(ctx.stdout, "  different product, or a fragment that covers none of this. Worth checking")
+		fmt.Fprintln(ctx.stdout, "  before reading the list below.")
+		fmt.Fprintln(ctx.stdout)
+	}
 	// Counted apart from the omissions, because they are not omissions. A
 	// path declared in another file has not been compared against anything,
 	// and folding it into "things the description has and this Recipe does
@@ -237,6 +257,19 @@ func countUnread(findings []openapi.Finding) int {
 
 	for _, finding := range findings {
 		if strings.Contains(finding.What, "in another file") {
+			n++
+		}
+	}
+
+	return n
+}
+
+// countMissingPaths counts routes the description has no path for.
+func countMissingPaths(findings []openapi.Finding) int {
+	n := 0
+
+	for _, finding := range findings {
+		if strings.Contains(finding.What, "declares no such path") {
 			n++
 		}
 	}

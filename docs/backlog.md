@@ -1208,8 +1208,16 @@ Swept across the thirty-four descriptions already fetched: **nineteen are
 contradicted by nothing at all**, up from thirteen, and no description in that
 set now fails to read.
 
-Fifteen still disagree somewhere, and the ones looked at are a mixed bag worth
-knowing before anybody treats the number as a defect count:
+Three of the thirty-four were not disagreements at all: the description and
+the Recipe were about different APIs. CircleCI's cached description declares
+`/api/v1` while the Recipe models v2, and Pipedrive's and Snyk's are the same
+mistake. Every route in those Recipes came back as a path the description does
+not have, which reads exactly like a Recipe full of invented paths and is one
+error made by whoever fetched the file. `check` now says so before the list,
+because the list is what somebody would otherwise start working through.
+
+That leaves **twelve** that disagree somewhere, and the ones looked at are a
+mixed bag worth knowing before anybody treats the number as a defect count:
 
 - **The Recipe is right and the description is stale.** Meilisearch's document
   add answers 202 because the work is enqueued, and its description says 200.
@@ -1218,8 +1226,14 @@ knowing before anybody treats the number as a defect count:
 - **A field a create should not echo.** OneSignal's notification carries
   `completed_at`, `converted`, `failed` and `queued_at`, none of them declared
   on the create, and none of them things that exist before a send.
+- **A field a create should not have echoed at all**, which is what OneSignal's
+  turned out to be: it answered with delivery counts on a notification that had
+  delivered nothing, and its own description and this Recipe's own comment both
+  said so already.
 - **A path the description does not have**, which may be the description's gap
-  or the Recipe's invention, and needs reading either way.
+  or the Recipe's invention, and needs reading either way. Braze's export
+  endpoint and PostHog's capture are both of these, and PostHog's is on a
+  different host from the API the description covers.
 
 Five descriptions in the cache cannot be read at all and are not in those
 counts: Bitbucket's is Swagger 2.0, Linear's is not a description, and
