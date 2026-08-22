@@ -306,6 +306,27 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 		if schema == nil {
 			return nil
 		}
+
+		// Each entry wrapped under the resource's own name, which is a second
+		// envelope inside the first. Chargebee's listing answers
+		// {"list": [{"subscription": {...}}], "next_offset": "..."}, so the
+		// collection's items are objects holding the key rather than the
+		// subscription itself.
+		//
+		// Reading an item as the resource reported every field the Recipe
+		// declares as one the description does not: eleven findings with the
+		// shape of a Recipe that invented its whole model, against a Recipe
+		// that had the nesting exactly right and said so with entry_style.
+		if r.Responses.List.EntryStyle == "wrapped" {
+			key := r.Responses.List.EntryField
+			if key == "" {
+				key = route.Resource
+			}
+
+			if entry := descend(doc, schema, key); entry != nil {
+				schema = doc.Resolve(entry)
+			}
+		}
 	} else {
 		schema = resourceSchema(doc, r, r.EnvelopeFor(route), schema, route.Resource)
 		if schema == nil {

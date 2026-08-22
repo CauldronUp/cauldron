@@ -1226,6 +1226,16 @@ mixed bag worth knowing before anybody treats the number as a defect count:
 - **A field a create should not echo.** OneSignal's notification carries
   `completed_at`, `converted`, `failed` and `queued_at`, none of them declared
   on the create, and none of them things that exist before a send.
+- **A tool bug rather than either.** Chargebee wraps each entry in its listing
+  under the resource's own name, which `check` did not descend through, so all
+  eleven of its subscription fields read as fields the description does not
+  declare. Fixed; two findings remain and they are the next item.
+- **Two catalogs behind one API version.** Chargebee's v2 has two incompatible
+  subscription shapes and ships two descriptions for them. This Recipe models
+  Product Catalog 1.0 -- `plan_id`, `plan_quantity` -- and PC 2.0 has neither,
+  carrying `subscription_items[].item_price_id` instead. Now written down in
+  the Recipe, because it was a decision nobody had recorded. A 2.0 Recipe
+  would be a second Recipe.
 - **A field a create should not have echoed at all**, which is what OneSignal's
   turned out to be: it answered with delivery counts on a notification that had
   delivered nothing, and its own description and this Recipe's own comment both
