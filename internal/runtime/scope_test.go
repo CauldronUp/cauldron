@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -43,9 +44,17 @@ func TestScopedListOnlySeesItsOwnScope(t *testing.T) {
 		t.Fatalf("octocat/hello-world has %d issues, want 2", len(octocat))
 	}
 
+	// By identity rather than by reading owner off the record. GitHub does
+	// not send owner or repo on an issue -- it sends repository_url -- so a
+	// test that reads them is asserting against a field the provider has
+	// never had, and passes only because the fake invented it.
 	for _, issue := range octocat {
-		if issue["owner"] != "octocat" {
+		if id := fmt.Sprint(issue["id"]); id != "1" && id != "2" {
 			t.Errorf("a foreign record leaked into the scope: %v", issue)
+		}
+
+		if _, ok := issue["owner"]; ok {
+			t.Errorf("the scope went onto the wire, and GitHub does not send it: %v", issue)
 		}
 	}
 
@@ -73,8 +82,15 @@ func TestCreateStampsTheScopeFromThePath(t *testing.T) {
 	var created map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 
-	if created["owner"] != "acme" || created["repo"] != "widgets" {
-		t.Errorf("scope was not stamped from the path: %v", created)
+	// The stamp is proved by where the record can be seen, not by reading it
+	// back off the response: GitHub answers a create with repository_url and
+	// no owner or repo at all.
+	if _, ok := created["owner"]; ok {
+		t.Errorf("the scope was echoed, and GitHub does not echo it: %v", created)
+	}
+
+	if got := issues(t, s, "/repos/acme/widgets/issues"); len(got) != 1 {
+		t.Errorf("record created under acme/widgets is not there: %v", got)
 	}
 
 	// And it must be invisible from a different repository.
@@ -144,8 +160,11 @@ func TestScopedPagingCountsOnlyTheScope(t *testing.T) {
 		t.Fatalf("got %d records, want 3", len(page))
 	}
 
+	// The other repository's issues are titled "theirs", so the title says
+	// which scope a record came from without reading a field GitHub does not
+	// send.
 	for _, issue := range page {
-		if issue["owner"] != "acme" {
+		if issue["title"] != "mine" {
 			t.Errorf("paging crossed a scope boundary: %v", issue)
 		}
 	}
