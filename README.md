@@ -55,7 +55,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 | Area | State |
 |---|---|
-| Detection engine (Composer, npm, Go modules) | Working. 122 of 167 Recipes are reachable from a dependency |
+| Detection engine (Composer, npm, Go modules) | Working. 139 of 167 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe; Recipes that declare none fall back to Stripe's shape, which is a default rather than a claim about that provider |
@@ -473,7 +473,7 @@ These are the decisions the project intends to be held to.
 
 A project can also say so itself. `cauldron add mercury` writes a `cauldron.yaml` listing the providers it talks to, which is how a project reaches a Recipe no dependency maps to, or one it talks to over raw HTTP with no library at all. The first `add` copies whatever detection already found into the file, so starting one loses nothing, and from then on the file is the answer rather than the guess.
 
-The table reaches 122 of the 167 Recipes. The other 45 ship and can be named directly; nothing maps to them yet because their published client libraries have not been checked, and writing a package name from memory is the guess the paragraph above rules out.
+The table reaches 139 of the 167 Recipes. The other 28 ship and can be named directly; nothing maps to them yet because their published client libraries have not been checked, and writing a package name from memory is the guess the paragraph above rules out.
 
 It also holds one entry with no Recipe behind it. A dependency Cauldron recognises and cannot emulate is reported by name, which tells you more than "this looks like an API client" does. `go test ./internal/detect/` prints the current figure and names what is missing.
 
