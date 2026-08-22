@@ -16,6 +16,19 @@ type Route struct {
 	// string "version not found: 99.99.99". Same status, same registry, and
 	// nothing but the route to tell the emulator which is which.
 	NotFound string `yaml:"not_found"`
+	// Emits names the webhook event this route fires, for the providers whose
+	// event names are not resource.created.
+	//
+	// The runtime emits resource.action and nothing else, so a Recipe declaring
+	// Freshdesk's ticket_create, Bitbucket's repo:push or Zoom's meeting
+	// .started -- all of them the provider's real names -- had those events
+	// declared and never fired. Creating a record produced no webhook at all,
+	// silently, and the only way to see one was to ask for it by hand.
+	//
+	// 438 of the 482 events declared across this collection are in that state.
+	// Naming the event here is what connects a change to the notification a
+	// provider would actually send.
+	Emits string `yaml:"emits"`
 	// Operation is one of: create, get, list, update, delete.
 	Operation string `yaml:"operation"`
 	// Scope names the path parameters that partition this resource, e.g.

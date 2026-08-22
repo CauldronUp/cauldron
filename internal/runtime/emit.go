@@ -9,8 +9,11 @@ import (
 // emitFor sends the conventional lifecycle event for a resource, when the
 // Recipe declares it. Providers emit customer.created after a customer is
 // created; a fake that stays silent teaches an application the wrong lesson.
-func (s *Sandbox) emitFor(resource, action string, record store.Record) {
-	event := resource + "." + action
+func (s *Sandbox) emitFor(resource, action, named string, record store.Record) {
+	event := named
+	if event == "" {
+		event = resource + "." + action
+	}
 
 	if !s.webhooks.Known(event) {
 		return
