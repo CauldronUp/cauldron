@@ -88,7 +88,7 @@ func runCheck(ctx *context, args []string) int {
 	set := flag.NewFlagSet("check", flag.ContinueOnError)
 	set.SetOutput(ctx.stderr)
 
-	base := set.String("base", "", "a path prefix the description omits, e.g. /v1")
+	base := set.String("base", "", "a path prefix the description omits, e.g. /v1; read from the description's servers when not given")
 	paging := set.Bool("paging", false, "report the query parameters each listing declares, for filling in paging names")
 	all := set.Bool("a", false, "report what the description has and the Recipe does not, as well as disagreements")
 
@@ -116,8 +116,25 @@ func runCheck(ctx *context, args []string) int {
 		return 1
 	}
 
+	// A description declares its paths relative to its own server, and a
+	// Recipe carries the whole path a client requests. Compared literally
+	// those never match: Box's description says /files/{id} beside a server
+	// of https://api.box.com/2.0, while the Recipe says /2.0/files/{id}, and
+	// every route in it reads as a path the description does not have.
+	//
+	// It is written down in the description, so it is read from there rather
+	// than left for the caller to notice. Saying so, because a prefix quietly
+	// added to every path is exactly the kind of help that is worse than none
+	// when it is wrong.
+	prefix := *base
+	if prefix == "" {
+		if prefix = openapi.BasePath(doc); prefix != "" {
+			fmt.Fprintf(ctx.stdout, "Using base %s, from the description's own servers. Pass --base to override.\n\n", prefix)
+		}
+	}
+
 	if *paging {
-		for _, report := range openapi.Paging(r, doc, *base) {
+		for _, report := range openapi.Paging(r, doc, prefix) {
 			if !report.Found {
 				fmt.Fprintf(ctx.stdout, "  %s: not in the description\n", report.Path)
 
@@ -132,7 +149,7 @@ func runCheck(ctx *context, args []string) int {
 		return 0
 	}
 
-	findings := openapi.Check(r, doc, *base)
+	findings := openapi.Check(r, doc, prefix)
 
 	var disagreements, omissions []openapi.Finding
 
