@@ -10,8 +10,10 @@ Two rules apply to everything here:
    behaviour worth reproducing — a third state nobody branches on, a shape that
    breaks a client, an asynchronous outcome, a failure that only exists in
    production. Linear and Attio were assessed and left out rather than
-   approximated, and that stays the standard. A thin Recipe that raises the
-   count is worse than an honest gap.
+   approximated, and both were built later when the case for them was made
+   rather than assumed -- which is the rule working in both directions, and
+   why this paragraph names them still. A thin Recipe that raises the count is
+   worse than an honest gap.
 2. **Every modelling limit gets stated in the Recipe header**, not discovered
    later. Cauldron does not execute SOQL, GROQ or Algolia's search, and each of
    those Recipes says so.
@@ -129,11 +131,11 @@ as a gap, needs deciding before the first of these ships rather than after.
 
 | Provider | Why |
 |---|---|
-| Supabase | Auth, storage, database REST and realtime |
+| ~~Supabase~~ | Shipped. Auth, storage, database REST and realtime |
 | Redis Cloud | Keys, TTLs, streams, pub/sub |
 | Upstash | Redis REST, queues, rate limits |
 | MongoDB Atlas | Clusters, users, projects, the data API |
-| Neon | Branches, databases, endpoints |
+| ~~Neon~~ | Shipped. Branches, databases, endpoints |
 | PlanetScale | Databases, branches, deploy requests |
 | CockroachDB Cloud | Clusters, SQL users, operations |
 | Turso | Databases, replicas, tokens |
@@ -243,7 +245,7 @@ the header says so.
 | Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
 | Klarna | Assess — order lifecycle across authorise, capture and refund, with a session that expires |
 | Affirm | Assess — checkout, capture, partial refunds |
-| RevenueCat | Assess — mobile subscriptions and entitlements, where the entitlement is the thing an app reads and the subscription is the thing that renews, and they can disagree for a whole billing period |
+| ~~RevenueCat~~ | Shipped. Assess — mobile subscriptions and entitlements, where the entitlement is the thing an app reads and the subscription is the thing that renews, and they can disagree for a whole billing period |
 | Firebase Auth | Assess — identity, and the emulator Google already ships for it is the question: a Recipe has to be better than the official one to earn its place |
 | Coinbase Commerce | Assess — charges that expire, underpayment and overpayment as distinct outcomes |
 | Circle | Assess — USDC transfers and their settlement states |
@@ -278,7 +280,7 @@ the header says so.
 | ~~Netlify~~ | Shipped. A deploy id exists long before the site is live |
 | Render | Assess — services, deploys, the build-then-live gap |
 | Fly.io | Assess — machines, apps, the Machines API against the older platform API |
-| Heroku | Assess — the API still uses `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
+| ~~Heroku~~ | Shipped. Assess — the API still uses `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
 | Linode | Assess — instances and the async provisioning lifecycle, beside Vultr and DigitalOcean |
 | Hetzner Cloud | Assess — servers, actions. Every mutation returns an action object you have to poll, rather than the thing you changed |
 | Scaleway | Assess — instances and object storage |
@@ -382,7 +384,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Firecrawl~~ | Shipped. Partial results are readable before the crawl finishes |
-| Apify | Assess — actor runs, datasets, the run that succeeds with zero items |
+| ~~Apify~~ | Shipped. Assess — actor runs, datasets, the run that succeeds with zero items |
 | ScrapingBee | Assess — a failed fetch is a successful API call |
 | Browserless | Assess — sessions and timeouts |
 
@@ -670,7 +672,7 @@ what normalisation does not fix.
 | Groq | Rate limits are on tokens per minute as well as requests, and the headers report both |
 | ~~Meilisearch~~ | Shipped. A write answers 202 with a number and the word enqueued, the document is in neither the document listing nor the index until the task runs, and the task can fail after the 202 that accepted it |
 | Hugging Face Inference | A cold model answers 503 with an estimated_time, and the correct behaviour is to wait rather than retry |
-| Langfuse | Traces are ingested asynchronously and are not readable immediately after being written |
+| ~~Langfuse~~ | Shipped. Traces are ingested asynchronously and are not readable immediately after being written |
 
 ### Data movement and warehousing
 
