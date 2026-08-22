@@ -313,10 +313,17 @@ func checkFields(r *recipe.Recipe, doc *Document, route recipe.Route, op *Operat
 		}
 	}
 
-	known := map[string]bool{}
-	for _, property := range doc.Properties(schema) {
-		known[property.Name] = true
-	}
+	// Every name any variant declares, not only the ones allOf merges.
+	//
+	// Properties merges allOf and deliberately leaves oneOf alone, because
+	// merging alternatives into one object describes something that does not
+	// exist. The question here is narrower -- whether any schema declares
+	// this name at all -- and for that the union is the right answer. A DNS
+	// record is an A record or a CNAME or an MX; Cloudflare nests that three
+	// deep, an allOf of an anyOf of two oneOfs with twenty-one variants
+	// between them, and every field of its record was reported as undeclared
+	// while all twenty-one declared it.
+	known := declaredNames(doc, schema, map[*Schema]bool{})
 
 	// A schema with no properties at all is a description declining to say,
 	// not a description saying the object is empty.
@@ -784,4 +791,35 @@ func sortedErrorNames(errors map[string]recipe.Error) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// declaredNames collects every property name a schema or any of its
+// alternatives declares.
+//
+// Lenient on purpose: this decides whether to report a field as undeclared,
+// and a report that is wrong costs more than one that is missing. A name in
+// one branch of a union is a name the description declares.
+func declaredNames(doc *Document, schema *Schema, seen map[*Schema]bool) map[string]bool {
+	names := map[string]bool{}
+
+	schema = doc.Resolve(schema)
+	if schema == nil || seen[schema] {
+		return names
+	}
+
+	seen[schema] = true
+
+	for name := range schema.Properties {
+		names[name] = true
+	}
+
+	for _, group := range [][]*Schema{schema.AllOf, schema.OneOf, schema.AnyOf} {
+		for _, member := range group {
+			for name := range declaredNames(doc, member, seen) {
+				names[name] = true
+			}
+		}
+	}
+
+	return names
 }
