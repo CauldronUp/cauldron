@@ -1007,6 +1007,22 @@ type Route struct {
 	// "receipt" is that Stripe shape, for the providers it is actually true
 	// of. "record" answers with the deleted object, for the providers that
 	// hand it back.
+	//
+	// Three more, each written because a Recipe was left wrong without them
+	// and the note saying so is still in its file:
+	//
+	// "flagged" is the receipt without Stripe's discriminator, so a provider
+	// that calls it something else can supply the name as a constant.
+	// Intercom sends {type: contact, id, deleted: true}, and only the object
+	// key was ever Stripe's.
+	//
+	// "id" is the identifier alone. Cloudflare answers {"result": {"id": ...}}
+	// once its envelope is on.
+	//
+	// "empty" is an object with nothing in it. Asana answers {"data": {}},
+	// which is not the same as no body at all: a client calling .json()
+	// succeeds against one and throws on the other, which is exactly the kind
+	// of difference this format exists to record.
 	DeletedBody string `yaml:"deleted_body"`
 	// Error names a failure from the Recipe's own table that this route always
 	// answers with, whatever the request. It is how a retired endpoint is
@@ -1178,7 +1194,7 @@ var (
 		"calendar", "files", "media", "ai", "signing",
 		"scheduling", "hr", "forms", "cms", "infrastructure",
 	}
-	validDeletedBody = []string{"", "receipt", "record"}
+	validDeletedBody = []string{"", "receipt", "record", "flagged", "id", "empty"}
 	validSigning     = []string{"", "none", "hmac-sha256"}
 	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
 	validErrStyles   = []string{"", "nested", "flat", "list", "string_list", "text"}

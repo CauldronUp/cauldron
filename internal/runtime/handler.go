@@ -210,8 +210,18 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 	// operations are the only thing in that body that says when the branch
 	// can actually be used. A response carrying just the record would be the
 	// helpful kind of wrong: it looks finished.
+	//
+	// Both spellings of the same map are handled, because store.Record is a
+	// named map[string]any and a type assertion to the unnamed one does not
+	// match it. A route's constants were dropped in silence on every response
+	// that is not wrapped: the wrapped path builds a plain map and worked,
+	// which is why Neon's create was fine and it was Intercom's delete
+	// receipt -- the only other route declaring any -- that found this.
 	if len(matched.spec.Fields) > 0 {
-		if object, ok := body.(map[string]any); ok {
+		switch object := body.(type) {
+		case map[string]any:
+			body = withFields(object, matched.spec.Fields)
+		case store.Record:
 			body = withFields(object, matched.spec.Fields)
 		}
 	}
@@ -455,6 +465,27 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 		})
 	case "record":
 		return s.writeRecord(w, matched, record)
+	case "flagged":
+		// The receipt without Stripe's discriminator. Only the object key was
+		// ever Stripe's, and a provider that names it something else says so
+		// with the route's own fields -- Intercom answers {type: contact, id,
+		// deleted: true} and declares that type on the route.
+		//
+		// The resource's constants are deliberately not copied here. Intercom
+		// stamps workspace_id on every contact and sends none of it on a
+		// delete, so copying them all would put a field on the wire that the
+		// provider does not, which is the thing this format exists to avoid.
+		return s.writeRecord(w, matched, store.Record{"id": id, "deleted": true})
+	case "id":
+		// The identifier and nothing else, which is what Cloudflare answers
+		// a delete with -- {"result": {"id": ...}} once the envelope is on.
+		return s.writeRecord(w, matched, store.Record{"id": id})
+	case "empty":
+		// An object with nothing in it. Asana answers {"data": {}}, which is
+		// not the same as no body: a client calling .json() succeeds here and
+		// throws on a 204, and that difference is the whole point of saying
+		// which one a provider does.
+		return s.writeRecord(w, matched, store.Record{})
 	default:
 		status := matched.spec.Status
 		if status == 0 {
