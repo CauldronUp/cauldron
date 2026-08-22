@@ -745,39 +745,47 @@ A Recipe that ships and that no dependency maps to still works: `cauldron up
 own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
-The table went from 12 Recipes to 91 in one pass. These twenty-six are left,
-and each needs its published client libraries checked rather than remembered,
-because a package name written from memory is exactly the guess the detection
-rule forbids.
+The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
+another. These twenty are left, and every one of them has now been looked for
+rather than remembered -- which is the whole rule: a package name written from
+memory is exactly the guess detection forbids.
+
+**Three names collided with something else entirely**, which is the reason the
+rule exists and is worth recording so nobody maps them later on the strength
+of the name:
+
+| Name on npm | What it actually is |
+|---|---|
+| `basecamp` | A collection of Astro components for somebody's scout group |
+| `mercury` | A modular frontend framework, not the bank |
+| `persona-api` | A personalised RAG and LLM chatbot, not the identity provider |
+
+Two more resolve and cannot be verified: `marqeta` carries no description and
+no repository, and `gorgias` is a grunt plugin published by the company rather
+than a client for its API.
 
 | Recipe | Note |
 |---|---|
-| Alpaca | alpaca-trade-api and alpaca-py exist; the Node and Go names need checking |
-| Bandwidth | Official SDKs exist for several languages under names that have changed at least once |
-| Basecamp | No official SDK. Community clients only, so a mapping may not be justifiable |
+| Attio | The npm package is a CLI for building apps on the platform rather than a client that calls the API |
+| Basecamp | No official SDK, and the name is taken by something unrelated |
 | Bill.com | No widely used client |
-| Braze | Server-side use is usually raw HTTP; the SDKs are mobile |
-| Buildkite | go-buildkite is the obvious one |
 | Column | No official SDK |
-| Deel | No official SDK |
-| Docker Hub | No SDK; usually the docker CLI or raw HTTP |
-| Documenso | Has a TypeScript SDK |
+| Deel | No official SDK found under any obvious name |
+| FastSpring | No official SDK |
+| Fivetran | No official Node or Go client found |
+| Gorgias | The package of that name is a grunt plugin, not an API client |
 | Greenhouse | Community clients only |
-| Gusto | Has an official Node SDK |
-| Help Scout | Community clients |
-| Increase | Official SDKs in several languages |
-| Marqeta | Official SDKs exist and are generated |
-| Mercury | No official SDK |
-| Modern Treasury | Official SDKs in several languages |
-| npm registry | Usually npm itself or raw HTTP |
-| Onfido | Official SDKs in several languages |
-| Orb | Official SDKs in several languages |
-| Persona | Community clients |
-| Ramp | No official SDK |
-| Shortcut | Community clients |
-| Svix | Official SDKs in several languages |
-| WooCommerce | Official REST clients in PHP and JS |
-| WordPress | Usually raw HTTP or wp-cli |
+| Hightouch | No official client found |
+| incident.io | No official Node or Go client found |
+| Kustomer | Community clients |
+| Marqeta | A package of that name exists with no description and no repository, so it cannot be verified |
+| Mercury | No official SDK, and the name is taken by a frontend framework |
+| Persona | The name is taken by a chatbot library |
+| Ramp | A package of that name exists with no repository and no description beyond its own name |
+| RevenueCat | The published packages are the mobile and hybrid SDKs rather than a server client |
+| ShipHero | No official client; the API is GraphQL over raw HTTP |
+| Tradier | A third-party SDK exists and is one person's; worth a look rather than a mapping on sight |
+| Twilio Verify | Part of the main Twilio SDK, which maps to the twilio Recipe rather than this one |
 
 **OpenAI is mapped on purpose without a Recipe.** A dependency Cauldron
 recognises and cannot emulate is reported by name, so a developer is told
