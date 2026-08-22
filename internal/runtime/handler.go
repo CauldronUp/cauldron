@@ -202,7 +202,7 @@ func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store
 
 	record = trim(matched.spec, record)
 
-	body := s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.Resource, record)
+	body := s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.IDAs, matched.spec.Resource, record)
 
 	// Constants this route adds beside the record, which a create needs as
 	// much as a listing does. Neon answers a branch create with the branch,
@@ -389,7 +389,7 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 			matched.spec.Resource+": "+id)
 	}
 
-	writeJSON(w, http.StatusOK, s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.Resource, trim(matched.spec, record)))
+	writeJSON(w, http.StatusOK, s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.IDAs, matched.spec.Resource, trim(matched.spec, record)))
 
 	return http.StatusOK
 }
@@ -873,10 +873,17 @@ func (s *Sandbox) writeRouteHeaders(w http.ResponseWriter, matched route, record
 // present renames the identifier to the property the provider actually uses.
 // The store keeps every record keyed by "id" so fixtures and internal lookups
 // stay uniform; only the wire shape changes, which is where it matters.
-func (s *Sandbox) present(resource string, record store.Record) store.Record {
+// idAs renames the identifier on one route alone, for the providers that call
+// it one thing there and another everywhere else. Empty means the resource's
+// own name, which is the ordinary case.
+func (s *Sandbox) present(resource string, record store.Record, idAs string) store.Record {
 	spec, ok := s.recipe.Resources[resource]
 	if !ok {
 		return record
+	}
+
+	if idAs != "" {
+		spec.ID.Field = idAs
 	}
 
 	// "-" is not a rename but a suppression: the identifier is how Cauldron
@@ -1188,7 +1195,7 @@ func (s *Sandbox) presentAll(resource string, records []store.Record) []store.Re
 	out := make([]store.Record, 0, len(records))
 
 	for _, record := range records {
-		out = append(out, s.present(resource, record))
+		out = append(out, s.present(resource, record, ""))
 	}
 
 	return out
@@ -1211,8 +1218,8 @@ func (s *Sandbox) countValue(spec recipe.ListResponse, total int) any {
 // The envelope is the route's, which is the Recipe's unless the route says
 // otherwise: Datadog wraps a created event and not a created monitor, and
 // Vercel wraps a domain and neither a project nor a deployment.
-func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, resource string, record store.Record) any {
-	record = s.present(resource, record)
+func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, idAs, resource string, record store.Record) any {
+	record = s.present(resource, record, idAs)
 
 	success := s.recipe.Responses.Success.Fields
 
@@ -1601,7 +1608,7 @@ func (s *Sandbox) emitFor(resource, action string, record store.Record) {
 	// present rather than resourceBody, because the response envelope belongs
 	// to the response. A webhook has its own envelope and the record sits
 	// inside it unwrapped.
-	_, _ = s.webhooks.Emit(event, s.present(resource, record))
+	_, _ = s.webhooks.Emit(event, s.present(resource, record, ""))
 }
 
 // authorised checks the credential according to the Recipe's auth scheme.
