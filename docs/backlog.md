@@ -1931,3 +1931,34 @@ it rather than a URL, which is a real trap and one the published description
 does not evidence -- it carries `type: string` and no example. The fixture
 holds a realistic value and no case asserts the substitution, because there is
 nothing to cite for it.
+
+## Langfuse, and a deprecation you can only see in the body
+
+Langfuse announces a dying endpoint in the response, not the status code. A
+deprecated endpoint answers **200 with everything you asked for**, and a
+`_deprecation` object beside it: a message, the replacement endpoint, a link to
+the migration guide, and **`sunsetAt`** -- the date after which it may stop
+working. Nothing about the status, the shape or the data says anything is
+wrong. A client reads the payload, works perfectly, and stops working on a date
+nobody read.
+
+Three of its endpoints are already there: `GET /traces`, `GET /observations`
+and `GET /v2/scores`, replaced by `/v2/observations` and `/v3/scores`. Both
+halves are cases, because "the deprecated one carries a signal" holds just as
+well against an emulator that stamps one on everything.
+
+**Migrating is not a change of URL.** The deprecated observation listing pages
+by `page` and `limit` and reports `meta.limit`, `meta.page`, `meta.totalItems`
+and `meta.totalPages`. The replacement pages by a **cursor** and its `meta` is
+`{cursor}` and nothing else. Code that showed "page 3 of 12" has nothing left
+to show it with, and code that keeps sending `page` gets the first page every
+time.
+
+That is the first Recipe to need a per-route envelope for a reason other than
+inconsistency: the two endpoints disagree **on purpose**, because one replaces
+the other.
+
+Also modelled: a trace's `observations` is an array of ids rather than objects,
+and only a `GENERATION` observation carries a model or a cost -- a `SPAN`
+carries null for both, so reading `model` off every observation gets null for
+two kinds out of three.
