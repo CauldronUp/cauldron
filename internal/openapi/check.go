@@ -76,11 +76,42 @@ func Check(r *recipe.Recipe, doc *Document, basePath string) []Finding {
 
 		seen[match.template] = true
 
-		op := operationFor(doc.Paths[match.template], route.Method)
+		item := doc.Paths[match.template]
+
+		op := operationFor(item, route.Method)
 		if op == nil {
+			declared := methodsOf(item)
+
+			// A description may put a path in another file. Lob does it for
+			// every one of its fifty-eight paths, and those files are not
+			// fetched, so the path item is empty and every route was reported
+			// as a method the description does not declare -- beside an empty
+			// list of the ones it supposedly does: "declares  but not GET on
+			// it". That reads like a broken description rather than one only
+			// half read, and it is missing evidence, not a disagreement.
+			if len(declared) == 0 && item.Ref != "" {
+				findings = append(findings, Finding{
+					Where:    where,
+					What:     fmt.Sprintf("the description puts this path in another file (%s), which is not read", item.Ref),
+					Severity: Missing,
+				})
+
+				continue
+			}
+
+			if len(declared) == 0 {
+				findings = append(findings, Finding{
+					Where:    where,
+					What:     "the description declares this path with no methods at all",
+					Severity: Disagrees,
+				})
+
+				continue
+			}
+
 			findings = append(findings, Finding{
 				Where:    where,
-				What:     fmt.Sprintf("the description declares %s but not %s on it", strings.Join(methodsOf(doc.Paths[match.template]), ", "), route.Method),
+				What:     fmt.Sprintf("the description declares %s but not %s on it", strings.Join(declared, ", "), route.Method),
 				Severity: Disagrees,
 			})
 
