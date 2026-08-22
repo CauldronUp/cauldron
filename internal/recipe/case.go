@@ -71,6 +71,18 @@ func assertsName(cases []Case, field string) bool {
 	segments := strings.Split(field, ".")
 	leaf := segments[len(segments)-1]
 
+	// A declared name may say the value is wrapped in an array: Jira's prose
+	// arrives as errorMessages[] and Mux's as messages[]. A case asserting it
+	// has to index, so it writes errorMessages[0], and the paths are trimmed
+	// of their index before comparison while the declared name kept its
+	// marker -- so the two never matched and both Recipes read as though
+	// nothing asserted the field.
+	//
+	// Both were already asserting it. The first attempt at fixing them added
+	// a second assertion at the same key, and YAML refused the duplicate,
+	// which is the only reason this was noticed.
+	leaf = strings.TrimSuffix(leaf, "[]")
+
 	for _, c := range cases {
 		for path := range c.Expect.Matches {
 			if mentions(path, leaf) {

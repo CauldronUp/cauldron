@@ -179,6 +179,31 @@ func (r *Recipe) Validate() error {
 			declared.what, declared.name)
 	}
 
+	// The same rule for the names a failure travels under. A Recipe saying
+	// prose lives at error_message and codes at error_code has described the
+	// shape a client unwraps, and if no case asserts either then both could be
+	// called anything.
+	//
+	// Sixteen Recipes named a message field nothing asserted, Plaid's
+	// error_message and Jira's errorMessages[] among them -- exactly the
+	// provider-specific names somebody has to get right, and exactly the ones
+	// a common name like "message" would not have made obvious.
+	//
+	// "-" is excluded because it is not a name. It says the provider sends no
+	// such field, which is a claim about absence and is asserted by asserting
+	// absence.
+	for _, declared := range []struct{ what, name string }{
+		{"message_field", r.Responses.Error.MessageField},
+		{"code_field", r.Responses.Error.CodeField},
+	} {
+		if declared.name == "" || declared.name == "-" || assertsName(r.Conformance, declared.name) {
+			continue
+		}
+
+		add("responses.error.%s is %q and no conformance case asserts that name where the value exists, so renaming it would break nothing",
+			declared.what, declared.name)
+	}
+
 	if r.Responses.List.HasMoreField != "" && r.Responses.List.CompleteField != "" {
 		add("responses.list declares both has_more_field and complete_field, which are the same flag with opposite senses")
 	}
