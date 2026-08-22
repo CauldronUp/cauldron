@@ -1392,7 +1392,23 @@ A route may now name what it fires with `emits:`, and the validator refuses a
 name the Recipe does not declare. Freshdesk's ticket create and update are
 wired as the demonstration.
 
-**The other 95 are not**, and that is the work this leaves. Each needs the
+Twenty-one more providers are wired now, forty-two routes in total, and the
+count of events nothing can fire is **396** rather than 438. Every one was
+reviewed rather than pattern-matched, and three suggestions were rejected on
+reading:
+
+- **Miro.** A substring match proposed `update:board` fires `board_item.updated`.
+  It does not: `board_item.*` belongs to the item resource, and updating a
+  board is not updating an item on it. Only `create:item` was wired, and
+  `board.created` already fired by convention.
+- **Salesforce.** `AccountChangeEvent` fires for any change to an account
+  rather than for an update specifically, so mapping it to the update route
+  would be a guess about Salesforce's change-data-capture semantics.
+- **Google Calendar.** `calendar#event.created` carries Google's `kind`
+  prefix, and whether that string is the webhook's event name or a marker on
+  the resource is exactly the sort of thing to read rather than assume.
+
+**The rest are not wired**, and that is the work this leaves. Each needs the
 provider read closely enough to know which change produces which event, which
 is not the same question as what the events are called -- Freshdesk has
 `ticket_status_change` and `ticket_priority_change` beside `ticket_update`,
