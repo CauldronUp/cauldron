@@ -73,7 +73,8 @@ func TestTheLastPageAdvertisesNoNext(t *testing.T) {
 	//
 	// What has to be absent is the next, not the header. A client stopping on
 	// a missing header never stops against GitHub.
-	got := issuesResponse(t, "/repos/octocat/hello-world/issues?state=all&per_page=1&page=2").Header.Get("Link")
+	// Three records at one a page, so page three is the last one.
+	got := issuesResponse(t, "/repos/octocat/hello-world/issues?state=all&per_page=1&page=3").Header.Get("Link")
 
 	if strings.Contains(got, `rel="next"`) {
 		t.Errorf("the last page advertised a next page: %q", got)

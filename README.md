@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1691 cases, 35 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1692 cases, 45 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -296,12 +296,12 @@ stripe 0.1.0
   9 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1691 cases, 35 run against
-a live account and 1656 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1692 cases, 45 run against
+a live account and 1647 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The thirty-five are the cases whose provider can be asked without a key. Five are
+The forty-five are the cases whose provider can be asked without a key. Five are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Five are the npm registry's, where what was checked is
@@ -316,7 +316,7 @@ Four are Docker Hub's, which answers for a public repository without a token:
 a repository nobody can see is a 404 carrying `{"message": "object not
 found"}` and no code, `count` is of everything rather than of the page, and
 one image wears several tags -- on one page of `library/nginx`, seventeen
-digests were shared. Four are GitHub's, which answers for a public repository
+digests were shared. Fourteen are GitHub's, which answers for a public repository
 without a token: its errors repeat the HTTP status in the body as a string,
 an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
@@ -336,6 +336,24 @@ Basecamp's own README describes `rel="next"` alone, so its last page really
 does carry no header. Only offset and page numbering can have one at all, a
 cursor being a position the caller was handed rather than a number to count
 backwards from.
+
+Asking GitHub for the rest of that Recipe's claims found one more thing it had
+never modelled: `GET /issues` returns pull requests as well as issues, because
+every pull request is an issue in GitHub's data model, and the only thing
+telling them apart is whether a `pull_request` key is present. Not null --
+absent. Twelve of the hundred open "issues" on one page of `golang/go` are
+pull requests, so an open-issue count taken from that endpoint is wrong by
+that much, a sync mirroring issues into a tracker imports pull requests, and
+neither errors. The Recipe returned issues only, which meant code filtering
+pull requests out had nothing to filter and code forgetting to filter them
+looked right.
+
+Two of that Recipe's sixteen cases still carry no date, and both are refusals
+rather than oversights. Checking that a bad credential is rejected means
+sending a credential-shaped header to somebody else's authentication endpoint
+to watch it fail. Checking the rate-limit response means exhausting a rate
+limit on purpose, which spends capacity belonging to everyone sharing this
+address. The other fourteen needed nothing but a GET anybody can make.
 
 Four are GitLab's, which answers for a public project. A merge request is
 addressed by its per-project iid and not by its global id, and putting one
