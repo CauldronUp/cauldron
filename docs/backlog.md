@@ -448,7 +448,7 @@ and both spellings were being ignored.
 
 ### Restoring them, one description at a time
 
-**60 routes across 25 Recipes** still page by a parameter nobody named. Four
+**57 routes across 24 Recipes** still page by a parameter nobody named. Five
 providers have been settled since, each read from that provider's own
 description and none of them guessable:
 
@@ -458,6 +458,7 @@ description and none of them guessable:
 | Chargebee | `limit` and `offset`, and `offset` is typed **string** with the description saying to set it to the `next_offset` the last response returned. A cursor wearing an offset's name |
 | OneSignal | `limit` and `offset` on both listings |
 | Webflow | Eleven query parameters on the items listing including `limit` and `offset`, and none whatsoever on the two site-level listings, which are now `limit_param: "-"` |
+| Pipedrive | `start` and `limit` in v1. Not `cursor` and `limit`, which is v2 -- and v2's `/deals`, `/persons` and `/organizations` live under `/api/v2` while v1's description no longer declares them at all. A Recipe modelling v1 paths pages the v1 way |
 
 Chargebee is the one to remember. Filling that in from the parameter's name --
 which is exactly what filling it in from memory would do -- declares a numeric
