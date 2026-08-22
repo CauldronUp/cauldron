@@ -1194,6 +1194,37 @@ composite belongs to the default message's phrasing. npm says "version not
 found: 99.99.99", and "version not found: release: 99.99.99" is not a sentence
 anybody sends.
 
+## What check says once it stops needing to be told the prefix
+
+`check` compared a Recipe's whole path against a description's relative one and
+reported the difference as a missing path, so a provider whose description
+declares `/files/{id}` beside a server of `https://api.box.com/2.0` had all
+fifty-eight of its routes reported as paths the description does not have.
+None of it was a disagreement. The prefix is written down in the description
+and is now read from there, with `--base` still overriding and the inferred
+value printed so a wrong guess is visible rather than silent.
+
+Swept across the thirty-four descriptions already fetched: **nineteen are
+contradicted by nothing at all**, up from thirteen, and no description in that
+set now fails to read.
+
+Fifteen still disagree somewhere, and the ones looked at are a mixed bag worth
+knowing before anybody treats the number as a defect count:
+
+- **The Recipe is right and the description is stale.** Meilisearch's document
+  add answers 202 because the work is enqueued, and its description says 200.
+  That one already carries a comment saying so, because the obvious way to
+  silence `check` is to make the Recipe wrong.
+- **A field a create should not echo.** OneSignal's notification carries
+  `completed_at`, `converted`, `failed` and `queued_at`, none of them declared
+  on the create, and none of them things that exist before a send.
+- **A path the description does not have**, which may be the description's gap
+  or the Recipe's invention, and needs reading either way.
+
+Five descriptions in the cache cannot be read at all and are not in those
+counts: Bitbucket's is Swagger 2.0, Linear's is not a description, and
+Cal.com, GitLab and Gorgias answered with HTML pages rather than a file.
+
 ## Assessed and deliberately not done
 
 | Provider | Why not |
