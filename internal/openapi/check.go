@@ -530,6 +530,18 @@ func resourceSchema(doc *Document, r *recipe.Recipe, envelope *Schema, name stri
 	key := r.Responses.Resource.Key
 	if key == "" {
 		key = name
+
+		// A list of one is still a collection, so the runtime defaults an
+		// array-wrapped resource to the collection name rather than the
+		// resource name: Xero answers a single invoice with Invoices, not
+		// invoice. Reading the resource name here found no such key, fell
+		// through to the envelope, and reported 61 disagreements against a
+		// Recipe that was right about all of them.
+		if r.Responses.Resource.Array {
+			if spec, ok := r.Resources[name]; ok && spec.Collection != "" {
+				key = spec.Collection
+			}
+		}
 	}
 
 	found := descend(doc, envelope, key)
