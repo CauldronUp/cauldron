@@ -692,9 +692,32 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// The next page as an RFC 5988 Link header, for the providers that
 	// advertise it there rather than in the body. Set before the route's own
 	// headers so a Recipe naming Link explicitly still wins.
-	if list.LinkHeader && page.HasMore && page.NextCursor != "" {
-		if next := nextPageURL(r, matched.spec.Pagination, page.NextCursor); next != "" {
-			w.Header().Set("Link", "<"+next+`>; rel="next"`)
+	if list.LinkHeader {
+		var links []string
+
+		if page.HasMore && page.NextCursor != "" {
+			if next := nextPageURL(r, matched.spec.Pagination, page.NextCursor); next != "" {
+				links = append(links, "<"+next+`>; rel="next"`)
+			}
+		}
+
+		// The last page still carries a Link header, and this emulator sent
+		// none. Checked against api.github.com on 2026-08-22: page two of two
+		// answers `rel="prev"` and no next.
+		//
+		// The difference is the whole reason a client reads this header. One
+		// that stops when the header is missing never stops against GitHub,
+		// because the header is there -- it is rel="next" that is not. The
+		// Recipe asserting the header's absence was teaching exactly the loop
+		// its own comment said the header exists to prevent.
+		if list.PrevLink {
+			if prev := prevPageURL(r, matched.spec.Pagination, limit); prev != "" {
+				links = append(links, "<"+prev+`>; rel="prev"`)
+			}
+		}
+
+		if len(links) > 0 {
+			w.Header().Set("Link", strings.Join(links, ", "))
 		}
 	}
 
@@ -759,6 +782,67 @@ func nextPageURL(r *http.Request, spec recipe.Pagination, cursor string) string 
 	next.Host = r.Host
 
 	return next.String()
+}
+
+// prevPageURL builds the previous page's URL, for the styles that have one.
+//
+// Only offset and page numbering do. A cursor names a position the caller was
+// handed and cannot be arithmetic'd backwards, so a cursor-paged listing gets
+// no prev link rather than a guessed one -- which is what the providers
+// themselves do.
+func prevPageURL(r *http.Request, spec recipe.Pagination, limit int) string {
+	switch spec.Style {
+	case "offset", "page":
+	default:
+		return ""
+	}
+
+	if spec.In == "body" {
+		return ""
+	}
+
+	name := spec.CursorParam
+	if name == "" {
+		name = spec.Style
+	}
+
+	if name == "-" {
+		return ""
+	}
+
+	from := pagingFrom(r, spec)
+
+	position := positionOf(from, spec, limit)
+	if position <= 0 {
+		return ""
+	}
+
+	previous := position - limit
+	if previous < 0 {
+		previous = 0
+	}
+
+	value := strconv.Itoa(previous)
+	if spec.Style == "page" {
+		value = strconv.Itoa(previous/max(limit, 1) + spec.FirstPageNumber())
+	}
+
+	prev := *r.URL
+
+	if r.RequestURI != "" {
+		if asked, err := url.ParseRequestURI(r.RequestURI); err == nil && asked.Path != "" {
+			prev.Path = asked.Path
+		}
+	}
+
+	query := prev.Query()
+	query.Set(name, value)
+	prev.RawQuery = query.Encode()
+
+	prev.Scheme = "http"
+	prev.Host = r.Host
+
+	return prev.String()
 }
 
 // cursorOf reads the identifier a cursor-paged listing resumes after.
