@@ -1901,3 +1901,33 @@ fix: four messages, delete by id, 200, three messages left.
 
 The value still comes back from the lookup so the failure names what the
 caller asked about; only its usability changes.
+
+## Discourse
+
+Its shapes are the whole reason to model it.
+
+**The topics are two levels down.** `/latest.json` answers with
+`topic_list.topics`, and `per_page` is inside that object rather than beside
+it, so a client reading `response.topics` or `response.per_page` finds nothing
+and no error.
+
+**The users arrive beside the topics, not inside them.** A topic carries
+`last_poster_username`, a string; the object with the name and the avatar is in
+a separate array in the same body. Rendering one row means joining two arrays
+that arrived together.
+
+**Authentication is two headers.** `Api-Key` and `Api-Username` are both
+marked required in Discourse's own description, and a key alone is refused with
+a 403 rather than a 401. Every other API here takes one credential, which is
+why this is the failure a Discourse integration hits first.
+
+**`title` and `fancy_title` are different strings** -- the same words, rendered,
+so comparing `fancy_title` to anything a human typed does not match. And
+`bumped_at` moves when anything happens while `last_posted_at` moves only for a
+post, so ordering by one is not ordering by the other.
+
+Not claimed: `avatar_template` is a template with a pixel size substituted into
+it rather than a URL, which is a real trap and one the published description
+does not evidence -- it carries `type: string` and no example. The fixture
+holds a realistic value and no case asserts the substitution, because there is
+nothing to cite for it.
