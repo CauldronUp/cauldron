@@ -330,6 +330,20 @@ func expandKey(key string, with substitutions) string {
 // timestamp sends a number and a client parsing it as a string would be
 // exercising a shape nobody serves.
 func expandString(value string, with substitutions) any {
+	// A single field of the record, kept at whatever type it already has.
+	//
+	// Splicing the whole record is the common case and was the only one, which
+	// left a provider that renames or prefixes the fields it sends
+	// undescribable: Freshdesk wraps its payload in freshdesk_webhook and
+	// prefixes every key with ticket_, so the record's own names appear
+	// nowhere in it. A template that could only merge had to either send the
+	// wrong key names or send Stripe's envelope instead.
+	if name, found := strings.CutPrefix(value, "{record."); found {
+		if path, closed := strings.CutSuffix(name, "}"); closed && !strings.Contains(path, "{") {
+			return lookupIn(with.record, path)
+		}
+	}
+
 	switch value {
 	case objectKey:
 		return with.record
@@ -531,4 +545,30 @@ func (q *webhookQueue) resourceFor(event string) string {
 	}
 
 	return ""
+}
+
+// lookupIn reads a dotted path out of a record, returning nil when any step of
+// it is missing.
+//
+// nil rather than the empty string, because a field a provider sends as null
+// and a field it does not send are different things, and a template naming a
+// field the resource does not declare should look like the second.
+func lookupIn(record map[string]any, path string) any {
+	var current any = record
+
+	for _, step := range strings.Split(path, ".") {
+		object, isObject := current.(map[string]any)
+		if !isObject {
+			return nil
+		}
+
+		value, present := object[step]
+		if !present {
+			return nil
+		}
+
+		current = value
+	}
+
+	return current
 }

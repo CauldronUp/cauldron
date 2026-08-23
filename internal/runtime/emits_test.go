@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,18 +25,17 @@ import (
 func TestARouteEmitsTheEventItNames(t *testing.T) {
 	delivered := make(chan string, 4)
 
+	// The body only says which event this is when the envelope happens to
+	// carry one, and plenty do not: Freshdesk's payload is the ticket's
+	// fields under freshdesk_webhook and names no event anywhere. Reading
+	// payload["type"] was reading the default envelope, so this test broke
+	// the moment Freshdesk described its own -- while the thing it exists to
+	// check, that the route emits the name it declares, was still true.
+	//
+	// The sink proves a delivery arrived. Which event it was comes off the
+	// delivery record, where it does not depend on the envelope.
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err == nil {
-			if name, ok := payload["type"].(string); ok {
-				delivered <- name
-
-				return
-			}
-		}
-
 		delivered <- string(body)
 	}))
 	defer sink.Close()
@@ -69,11 +67,17 @@ func TestARouteEmitsTheEventItNames(t *testing.T) {
 	}
 
 	select {
-	case name := <-delivered:
-		if name != "ticket_create" {
-			t.Errorf("emitted %q, want ticket_create", name)
-		}
+	case <-delivered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("nothing was delivered, which is what the convention did on its own")
+	}
+
+	deliveries := s.Webhooks().Deliveries()
+	if len(deliveries) == 0 {
+		t.Fatal("nothing was recorded, so there is no event to check")
+	}
+
+	if name := deliveries[len(deliveries)-1].Event; name != "ticket_create" {
+		t.Errorf("emitted %q, want ticket_create", name)
 	}
 }
