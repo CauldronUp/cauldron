@@ -446,6 +446,32 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Five where the answer is that there is no parameter
+
+Salesforce, Sanity, DynamoDB, ClickUp and Rollbar. Twelve routes, and in
+every one the interesting part is what the provider does *not* take:
+
+- **Salesforce** and **Sanity** put paging inside the query language.
+  Salesforce's LIMIT and OFFSET are part of the SOQL a caller writes;
+  Sanity's is a GROQ slice, `[0...10]`. Neither accepts a parameter beside
+  the query, so a client sending one is sending nothing.
+- **ClickUp** and **Rollbar** page by number and accept no size at all. The
+  page is theirs, not the caller's, and a client asking for ten gets a
+  hundred or twenty.
+- **DynamoDB** takes `Limit` and `ExclusiveStartKey`, capitalised, **in the
+  body**. Read from the query string they are not there at all.
+
+`limit_param: "-"` says this, and it is a claim worth a case rather than a
+comment: Rollbar's asks for one project, receives both, and fails the moment
+the parameter is made live again. An emulator that honoured `limit` would
+hand back exactly the page that was asked for, with a next link a real
+Rollbar would never send.
+
+Salesforce took one correction on the way in. Setting `cursor_param: "-"`
+alongside refused the next page as well as the size, and Salesforce does
+send a position -- `nextRecordsUrl`, a whole URL to follow rather than a
+parameter to compose. Only the size is absent.
+
 ### Eight more, and two cases that were paging by a word nobody accepts
 
 Auth0, Contentful, Freshdesk, Ghost, Help Scout, Mailchimp, Mux and
@@ -471,8 +497,8 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**34 routes across 16 Recipes** still page by a parameter nobody named.
-Thirteen providers have been settled. Five were read from that provider's own
+**23 routes across 11 Recipes** still page by a parameter nobody named.
+Eighteen providers have been settled. Five were read from that provider's own
 description, none of them guessable:
 
 | Provider | What the description said |
