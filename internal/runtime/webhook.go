@@ -533,7 +533,7 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	switch signing.Format {
 	case "v0-hex":
 		signed = fmt.Sprintf("v0:%d:%s", timestamp, body)
-	case "prefixed-hex", "base64":
+	case "prefixed-hex", "base64", "hex":
 	default:
 		signed = fmt.Sprintf("%d.%s", timestamp, body)
 	}
@@ -543,6 +543,8 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	sum := mac.Sum(nil)
 
 	switch signing.Format {
+	case "hex":
+		return hex.EncodeToString(sum)
 	case "prefixed-hex":
 		return "sha256=" + hex.EncodeToString(sum)
 	case "base64":

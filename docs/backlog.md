@@ -1534,6 +1534,39 @@ after the first provider to want it is the same mistake as giving everyone
 Stripe's, in miniature. `stripe` keeps its name only because no second
 provider here wants that shape, and would lose it if one did.
 
+Thirteen are shaped now and **61 are on the default**, of which two are
+right: Mux sends `t=...,v1=...` over `<ts>.<body>` and Stripe invented it. The
+default being a convention does not make it wrong everywhere, only wrong
+by assumption.
+
+### Some of these are not a format problem at all
+
+Three Recipes declare `hmac-sha256` for a provider that computes no HMAC, and
+in all three the header name says so plainly enough that nothing had to be
+looked up:
+
+- **Discord** -- `X-Signature-Ed25519`. A public-key signature verified with
+  Discord's public key, not a shared secret. The scheme is wrong rather than
+  unshaped and no format fixes it.
+- **Okta** -- `x-okta-verification-challenge`. Not a per-delivery signature:
+  it carries the one-time value Okta sends when an event hook is registered,
+  which an endpoint echoes to prove it owns the URL. Okta authenticates
+  deliveries with an Authorization header the subscriber chooses.
+- **Documenso** -- `X-Documenso-Secret`. The configured secret, sent
+  verbatim, compared against the endpoint's own copy. Not a digest of
+  anything.
+
+Each says so in its own Recipe now. The wider question -- what a Recipe
+should declare when a provider signs with something other than HMAC-SHA256 --
+is a scheme, not a format, and is not answered here.
+
+Others were looked at and left because the base string is unreachable rather
+than unknown: **Box** signs body plus timestamp, **Zendesk** timestamp plus
+body, **Webflow** `<ts>:<body>`, **Lob** `<ts>.<body>`, **HubSpot v3** method
+and URI and body and timestamp, **Trello** body plus the callback URL. All of
+them need a second header or a value a delivery does not have, the same limit
+Slack and Svix have.
+
 **Square is deliberately left on the default.** Its value is base64, which
 the format could send, but the digest is taken over the subscriber's
 notification URL followed by the body -- and a delivery does not know the URL

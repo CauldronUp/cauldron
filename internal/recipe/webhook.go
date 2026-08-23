@@ -59,6 +59,7 @@ type Signing struct {
 	// One of:
 	//
 	//   stripe        t=<unix>,v1=<hex>   over "<unix>.<body>"   (the default)
+	//   hex           <hex>               over the body
 	//   prefixed-hex  sha256=<hex>        over the body
 	//   base64        <base64>            over the body
 	//   v0-hex        v0=<hex>            over "v0:<unix>:<body>"
