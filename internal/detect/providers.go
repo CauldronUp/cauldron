@@ -36,6 +36,20 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// eBay's most-installed PHP package is the wrong one. dts/ebay-sdk-php
+			// and its fork have well over a million installs between them and
+			// they speak the XML Trading, Finding and Shopping APIs -- the ones
+			// the REST APIs modelled here were built to replace. Mapping by
+			// popularity would send almost every PHP eBay project to an
+			// emulator that does not serve a single endpoint it calls.
+			//
+			// ebay/digital-signature-php-sdk is eBay's own, and it exists to
+			// sign REST requests, so a project carrying it is on the REST side.
+			recipe:   "ebay",
+			composer: []string{"ebay/digital-signature-php-sdk"},
+			npm:      []string{"ebay-api", "@hendt/ebay-api"},
+		},
+		{
 			// Magento is the case where the same name covers three protocols.
 			// magento-api on npm is SOAP, @magento/peregrine is PWA Studio
 			// and talks GraphQL, and smalot/magento-client is SOAP v1 -- all

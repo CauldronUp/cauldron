@@ -323,13 +323,25 @@ func (s *Sandbox) errorBody(category, code, message string, status int, extra ma
 		// Clerk both send an array. The emulator reports one, in the shape a
 		// client already has to loop over.
 		//
-		// Declared fields sit beside the array rather than inside each entry:
-		// Clerk's trace id belongs to the response, not to one failure. A
-		// dotted key nests, which QuickBooks needs for Fault.Error.
+		// The two kinds of declared field go to two different places, because
+		// they describe two different things. Fields on the error envelope
+		// belong to the response: Clerk's trace id identifies the request, not
+		// one of the failures in it, so those sit beside the array. Fields on
+		// a named error belong to that failure: eBay puts domain, category and
+		// longMessage inside each entry, and a client reads them off the entry
+		// it is looping over. So those go inside.
+		//
+		// It used to put both beside the array, which made the enveloped
+		// branch disagree with the bare-array branch a few lines above -- the
+		// same Recipe changing key to "-" moved its fields from the response
+		// into the entry. That was an inconsistency rather than a decision,
+		// and no shipped Recipe relied on it.
+		//
+		// A dotted key nests, which QuickBooks needs for Fault.Error.
 		envelope := map[string]any{}
-		setPath(envelope, key, []any{body})
+		setPath(envelope, key, []any{withFields(body, extra)})
 
-		return withFields(withFields(envelope, spec.Fields), extra)
+		return withFields(envelope, spec.Fields)
 	}
 
 	return withFields(withFields(body, spec.Fields), extra)

@@ -159,6 +159,47 @@ func TestDetectDoesNotOfferMagentoForSoapOrGraphQLClients(t *testing.T) {
 	}
 }
 
+// eBay is the case where mapping by popularity would be worst. The two
+// most-installed eBay packages on Packagist have well over a million installs
+// between them and both speak the XML Trading, Finding and Shopping APIs --
+// the ones the REST APIs this Recipe models were built to replace. Sending
+// almost every PHP eBay project to an emulator that serves none of the
+// endpoints it calls would be a worse outcome than never detecting eBay.
+func TestDetectEBayFromRestClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"ebay/digital-signature-php-sdk": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"ebay-api": "^9.0.0"}}`},
+		{"package.json": `{"dependencies": {"@hendt/ebay-api": "^9.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "ebay") {
+			t.Errorf("%v did not detect ebay: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
+// The companion, and the more important half here given the install counts.
+func TestDetectDoesNotOfferEBayForTheXMLTradingSDKs(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"dts/ebay-sdk-php": "^19.0"}}`},
+		{"composer.json": `{"require": {"benmorel/ebay-sdk-php": "^19.0"}}`},
+		{"composer.json": `{"require": {"sapientpro/ebay-traditional-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "ebay") {
+			t.Errorf("%v offered the ebay Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
 func TestDetectReturnsErrNoProjectForEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 

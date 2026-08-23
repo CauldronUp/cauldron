@@ -66,7 +66,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~BigCommerce~~ | Shipped. Two APIs in one store: V3 wraps, V2 does not; a price is a number and the order total is a string |
 | ~~Magento / Adobe Commerce~~ | Shipped. searchCriteria brackets; a product is addressed by sku and an order by entity_id; error messages are templates |
 | ~~Etsy~~ | Shipped. Two credentials on every call; money is an integer over a divisor; an order is a receipt |
-| eBay | Listings, fulfilment, orders |
+| ~~eBay~~ | Shipped. A dozen APIs under one host that disagree: the collection key and the total field both change per endpoint |
 | Amazon Selling Partner API | Orders, inventory, reports, throttling. Very large |
 
 ## Shipping and logistics
