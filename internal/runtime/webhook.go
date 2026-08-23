@@ -312,6 +312,13 @@ func expandString(value string, with substitutions) any {
 		return with.record
 	case "{created}":
 		return with.at.Unix()
+	case "{created_ms}":
+		// Milliseconds, as a number. The Recipe format already treats this as
+		// a distinction that matters -- it has both timestamp and timestamp_ms
+		// field types, because a factor of a thousand puts a date in 1970 or
+		// in the year 55000 -- and a payload envelope needs the same choice.
+		// Zoom's event_ts is milliseconds.
+		return with.at.UnixMilli()
 	}
 
 	// The changed record's own identifier, which is not the delivery's.
@@ -326,6 +333,7 @@ func expandString(value string, with substitutions) any {
 		"{id}", with.id,
 		"{record_id}", recordID,
 		"{created}", strconv.FormatInt(with.at.Unix(), 10),
+		"{created_ms}", strconv.FormatInt(with.at.UnixMilli(), 10),
 		"{created_iso}", with.at.UTC().Format(time.RFC3339),
 	).Replace(value)
 

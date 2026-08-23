@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 8 declare a payload envelope and 91 fall
+Of the 99 Recipes that emit events, 10 declare a payload envelope and 89 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1495,6 +1495,24 @@ carries before and after status objects, an assignment carries users. A fixed
 literal would be inventing a shape rather than modelling one, so it is left
 out and the Recipe says why. The same will be true of any provider whose
 payload describes the change rather than the record.
+
+**The default is not Stripe's shape either.** Stripe's Recipe declares its own
+envelope now, and it is larger than the default that was modelled on it: the
+default carries `id`, `type`, `created` and `data.object`, and Stripe also
+sends `object: "event"`, `livemode`, `api_version`, `pending_webhooks` and a
+`request` object present with null members. The first two matter --
+`object: "event"` is what the libraries check before treating a body as an
+event, and `livemode` is what an application branches on to decide whether a
+charge was real. Under the default, `event.livemode` was undefined, which is
+falsy, which is accidentally right and the worst way for a check like that to
+pass. The README no longer calls the fallback Stripe's shape, because it is
+not one.
+
+**A payload needed milliseconds.** Zoom's `event_ts` is milliseconds and every
+other timestamp the format emits is seconds. The Recipe format already treats
+that as material -- it has `timestamp` and `timestamp_ms` field types for
+exactly this reason -- so the envelope templates now have `{created_ms}`
+beside `{created}`.
 
 **And the merge order was random.** A template naming a key the record also
 carries got one payload or the other depending on Go's map iteration. Slack's
