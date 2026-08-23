@@ -189,6 +189,29 @@ curl http://127.0.0.1:4600/_cauldron/stripe/requests
 
 Webhook deliveries are recorded even when nothing is subscribed, so "this event would have fired" is assertable without standing up a listener.
 
+Some webhooks arrive without being asked for. A create, update or delete fires
+the event its route names, so posting a customer to Stripe delivers
+`customer.created` with no further instruction, and creating a ticket in
+Freshdesk delivers `ticket_create` -- which is what Freshdesk calls it. A route
+says so with `emits:`, because the name is the provider's rather than a
+convention: Bitbucket sends `pullrequest:created`, Box `FILE.DELETED`, Trello
+`createCard`, Xero `INVOICE.CREATE`. A Recipe that names an event its own
+`webhooks.events` does not list is refused, since the failure mode of that typo
+is a webhook that never arrives, which is indistinguishable from a provider
+that does not send one.
+
+Most declared events are not named for a change at all. `crawl.completed`,
+`video.asset.ready`, `user.session.start` and `payment.failed` are things that
+happen to a record later, or to something that is not a record. Those are what
+`emit` is for, and a Recipe listing them is describing its provider rather than
+leaving something unwired. Of 482 events declared across these Recipes, 264 are
+in that category.
+
+One of the 264 fires anyway, which is the useful exception: Firecrawl's
+`crawl.started` is what creating a crawl does, so that route names it. Whether
+an event follows from a change is a question about the provider and not about
+the shape of its name.
+
 Or drive it from the CLI:
 
 ```bash
