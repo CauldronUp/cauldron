@@ -1474,10 +1474,38 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 5 declare a payload envelope and 94 fall
+Of the 99 Recipes that emit events, 8 declare a payload envelope and 91 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
+
+Three are declared now -- Shopify, Slack and ClickUp -- and doing them turned
+up two things the template cannot say and one it was saying by coin toss.
+
+**A top-level array.** `webhooks.payload` is a `map[string]any`, so a payload
+that is not an object cannot be declared. SendGrid's Event Webhook posts an
+array of event objects and batches several into one delivery, which is the
+whole reason its documentation warns about it. Nine SendGrid events are
+declared and every one of them would arrive here as a single object under
+Stripe's envelope.
+
+**A value the template has to compute.** ClickUp's delivery carries a
+`history_items` array whose contents depend on what changed -- a status move
+carries before and after status objects, an assignment carries users. A fixed
+literal would be inventing a shape rather than modelling one, so it is left
+out and the Recipe says why. The same will be true of any provider whose
+payload describes the change rather than the record.
+
+**And the merge order was random.** A template naming a key the record also
+carries got one payload or the other depending on Go's map iteration. Slack's
+envelope has a literal `type` beside the merged event, which is exactly that
+collision. The record is merged first now and explicit keys win, every time.
+
+Two of the three also had their event *names* wrong, which is worth more than
+the envelope: Shopify's topics are `orders/create`, not `order.created`, and
+Slack's are `channel_created`, not `channel.created`. A handler keyed on the
+real name matched nothing here, and one written against this Recipe would
+match nothing there. Event names are worth checking wherever the envelope is.
 
 It is the biggest remaining distance between a webhook from this emulator and
 one from the provider. ClickUp's real payload is `{event, task_id,
