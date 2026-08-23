@@ -25,10 +25,31 @@ type Route struct {
 	// declared and never fired. Creating a record produced no webhook at all,
 	// silently, and the only way to see one was to ask for it by hand.
 	//
-	// 438 of the 482 events declared across this collection are in that state.
 	// Naming the event here is what connects a change to the notification a
 	// provider would actually send.
+	//
+	// Most of the collection is now wired. What is left declared and unfired
+	// is mostly not wirable this way: an event like Freshdesk's
+	// ticket_status_change or Recurly's renewed_subscription_notification is
+	// not what an update route does, it is what one particular change to one
+	// field does. EmitsWhen is for those.
 	Emits string `yaml:"emits"`
+	// EmitsWhen names events that fire only when a particular field changes,
+	// rather than on every write.
+	//
+	// A great many declared events are this shape and no other: Freshdesk
+	// sends ticket_status_change when a ticket's status moves and stays quiet
+	// when its subject is edited, and ClickUp does the same for
+	// taskStatusUpdated. Hanging those off the update route unconditionally
+	// would be worse than leaving them unfired, because an application would
+	// see the event on every edit here and on almost none in production --
+	// the emulator would teach the handler to run when it will not.
+	//
+	// A list, because one route can owe several: the same Freshdesk update
+	// answers for status and priority separately. It composes with Emits, so
+	// a route may send an unconditional ticket_updated and a conditional
+	// ticket_status_change from the same write, which is what Freshdesk does.
+	EmitsWhen []ChangeEmit `yaml:"emits_when"`
 	// Operation is one of: create, get, list, update, delete.
 	Operation string `yaml:"operation"`
 	// Scope names the path parameters that partition this resource, e.g.
@@ -391,4 +412,15 @@ func (r Recipe) UnstatedPagination() int {
 	}
 
 	return unstated
+}
+
+// ChangeEmit is one conditional emission: an event, and the field whose change
+// triggers it.
+type ChangeEmit struct {
+	Event string `yaml:"event"`
+	// Field is compared before and after the write. Absent from the request
+	// means unchanged, and a write that sets a field to the value it already
+	// held is not a change either -- providers key these events off the
+	// transition, not off the request naming the field.
+	Field string `yaml:"field"`
 }

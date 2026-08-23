@@ -226,12 +226,44 @@ func checkWebhook(expect recipe.WebhookExpectation, before int, all []Delivery) 
 		return append(failures, "the request emitted no webhook at all")
 	}
 
-	// The last one, because a request emits at most one event and the last is
-	// the one it caused.
+	for _, unwanted := range expect.AbsentEvents {
+		for _, d := range produced {
+			if d.Event == unwanted {
+				failures = append(failures, fmt.Sprintf("the request should not emit %q, and it did", unwanted))
+				break
+			}
+		}
+	}
+
+	// The one the case named, because a request no longer emits at most one:
+	// a route with emits_when sends its unconditional event and then whichever
+	// conditional ones fired, so a Freshdesk status change produces both
+	// ticket_update and ticket_status_change. Taking the last would make which
+	// of the two a case can assert depend on the order the runtime happens to
+	// send them in.
+	//
+	// A case naming no event still gets the last, which is the only reading
+	// available when the claim is about payload shape alone.
 	delivery := produced[len(produced)-1]
 
-	if expect.Event != "" && delivery.Event != expect.Event {
-		failures = append(failures, fmt.Sprintf("webhook event: want %q, got %q", expect.Event, delivery.Event))
+	if expect.Event != "" {
+		found := false
+
+		for _, d := range produced {
+			if d.Event == expect.Event {
+				delivery, found = d, true
+				break
+			}
+		}
+
+		if !found {
+			names := make([]string, 0, len(produced))
+			for _, d := range produced {
+				names = append(names, d.Event)
+			}
+
+			return append(failures, fmt.Sprintf("webhook event: want %q, and the request emitted %s", expect.Event, strings.Join(names, ", ")))
+		}
 	}
 
 	if expect.SignatureHeader != "" && delivery.SignatureHeader != expect.SignatureHeader {
