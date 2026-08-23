@@ -1408,7 +1408,35 @@ reading:
   prefix, and whether that string is the webhook's event name or a marker on
   the resource is exactly the sort of thing to read rather than assume.
 
-**The rest are not wired**, and that is the work this leaves. Each needs the
+### And the number was overstated
+
+Forty-seven routes are wired now and 391 declared events still cannot be
+fired, which reads like a large backlog and mostly is not. Classified:
+
+| | |
+|---|---|
+| not a lifecycle event at all | **263** |
+| lifecycle-shaped, for a resource this Recipe cannot mutate | **88** |
+| lifecycle events for a mutable resource -- actually wirable | **40** |
+
+The 263 are things like `crawl.completed`, `video.asset.ready`,
+`user.session.start` and `payment.failed`. No create, update or delete
+produces any of them, and none ever should: they are what `cauldron emit`
+exists for, and a Recipe declaring them is describing the provider correctly.
+
+The 88 name a resource with no create, update or delete route. Those are
+Recipes modelling less of a provider than the provider emits about, which is a
+different question from wiring.
+
+**So the remaining work is forty routes, not 391 events.** The earlier note
+here said "the other 95 are the work this leaves", and that was wrong in the
+direction that flatters the finding.
+
+Pattern-matching candidate mappings is also spent. Widening the net produced
+`ghost: create:post -> member.added`, `slack: create:message ->
+channel.created` and `lob: create:address -> letter.created` -- a hit rate low
+enough that reading each provider is now cheaper than reviewing the
+suggestions. Each needs the
 provider read closely enough to know which change produces which event, which
 is not the same question as what the events are called -- Freshdesk has
 `ticket_status_change` and `ticket_priority_change` beside `ticket_update`,
