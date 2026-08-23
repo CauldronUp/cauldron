@@ -73,4 +73,16 @@ type Signing struct {
 	// Empty means stripe, so a Recipe that has not been looked at keeps the
 	// shape it had rather than silently changing.
 	Format string `yaml:"format"`
+	// TimestampHeader is the header the signed timestamp travels in, for the
+	// providers whose signature covers a timestamp the value does not carry.
+	//
+	// Slack signs "v0:<ts>:<body>" and sends the timestamp in
+	// X-Slack-Request-Timestamp; Zoom does the same in
+	// x-zm-request-timestamp. Without it a verifier has the signature and no
+	// way to reconstruct what was signed, so the delivery carries a value
+	// that cannot be checked -- which is the failure the whole signing
+	// surface exists to avoid, arrived at from a different direction.
+	//
+	// Stripe needs none of this because its timestamp is inside the value.
+	TimestampHeader string `yaml:"timestamp_header"`
 }

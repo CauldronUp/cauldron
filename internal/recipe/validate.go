@@ -307,6 +307,25 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A timestamp header is only worth sending when the signature covers a
+	// timestamp the value does not already carry. Stripe's does carry it, so
+	// declaring both there would send the same number twice and imply a
+	// verifier needs the second copy.
+	if header := r.Webhooks.Signing.TimestampHeader; header != "" {
+		if r.Webhooks.Signing.Scheme != "hmac-sha256" {
+			add("webhooks.signing declares timestamp_header %q and scheme %q, and there is no signed timestamp to send unless the scheme is hmac-sha256",
+				header, r.Webhooks.Signing.Scheme)
+		}
+
+		switch r.Webhooks.Signing.Format {
+		case "", "stripe":
+			add("webhooks.signing declares timestamp_header %q with the stripe format, whose signature already carries the timestamp inside the value", header)
+		case "hex", "prefixed-hex", "base64":
+			add("webhooks.signing declares timestamp_header %q with the %s format, which signs the body alone -- a verifier would have a timestamp that is part of nothing",
+				header, r.Webhooks.Signing.Format)
+		}
+	}
+
 	// A route naming an error to raise has to name one that exists, or the
 	// only sign of the typo is a 404 in the shape it was overriding.
 	for _, route := range r.Routes {

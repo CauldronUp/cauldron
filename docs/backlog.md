@@ -1582,11 +1582,30 @@ Signing the body where Slack signs `v0:<ts>:<body>` produces a well-formed
 That is why the base strings are checked by a unit test computing the HMAC
 the long way rather than by a case.
 
-Also owed, and stated in Slack's Recipe rather than papered over: a delivery
-carries the signing header and no others. Slack's verifier needs
-`X-Slack-Request-Timestamp` beside the signature, Svix needs `svix-id` and
-`svix-timestamp`, and neither can be sent. Those two formats are not
-declarable honestly until a delivery can carry more than one header.
+The same gap appeared again with the timestamp header, in a different place.
+A conformance case reads the recorded delivery; a subscriber reads the HTTP
+request; the header is set in two places to reach both. Removing it from the
+request alone leaves the suite green at nine of nine and every real handler
+without the value its verifier needs, so that has a unit test posting to a
+real sink. Twice now the thing a case structurally cannot see has been the
+thing worth checking.
+
+~~Also owed: a delivery carries the signing header and no others.~~ **Built.**
+`signing.timestamp_header` names where the signed timestamp travels, and a
+delivery carries it. Slack and Zoom sign `v0:<ts>:<body>` and now send the
+`<ts>` a verifier needs to rebuild that string; without it the delivery
+carried a signature nothing could check, which is the failure the whole
+signing surface exists to avoid, reached from the other side.
+
+The validator refuses the header on a format that does not sign a timestamp,
+and on `stripe`, whose signature carries the timestamp inside the value --
+sending it twice would imply a verifier needs the second copy.
+
+Four more are now within reach and are not done: **Zendesk** signs
+`<ts><body>` and base64s it, **Webflow** `<ts>:<body>` as hex, **Lob**
+`<ts>.<body>` as hex, and **Svix** (Clerk and two others) `<id>.<ts>.<body>`
+as `v1,<base64>` -- which wants an id header as well as a timestamp one.
+Each is a format plus, for Svix, one more header.
 
 ### The field a handler reaches for first is often a constant
 
