@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,7 +60,12 @@ func TestAWebhookCarriesTheSameShapeAsTheResponse(t *testing.T) {
 		t.Fatalf("the webhook object has no amount_money, so it is carrying the store's own field names: %v", keysOf(object))
 	}
 
-	if money["amount"] != float64(2500) {
+	// Compared as text rather than against a float64. A request body decodes
+	// with UseNumber now, so an amount posted as JSON arrives as a
+	// json.Number and keeps every digit -- which is the point, and which a
+	// test asserting one Go type cannot see. What matters here is the shape
+	// the field travels in, not which numeric type held it on the way.
+	if got := fmt.Sprint(money["amount"]); got != "2500" {
 		t.Errorf("amount_money.amount = %v, want 2500", money["amount"])
 	}
 
