@@ -531,7 +531,7 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	signed := string(body)
 
 	switch signing.Format {
-	case "slack":
+	case "v0-hex":
 		signed = fmt.Sprintf("v0:%d:%s", timestamp, body)
 	case "prefixed-hex", "base64":
 	default:
@@ -547,7 +547,7 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 		return "sha256=" + hex.EncodeToString(sum)
 	case "base64":
 		return base64.StdEncoding.EncodeToString(sum)
-	case "slack":
+	case "v0-hex":
 		return "v0=" + hex.EncodeToString(sum)
 	default:
 		return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(sum))

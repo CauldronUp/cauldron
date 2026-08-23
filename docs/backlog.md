@@ -1524,8 +1524,22 @@ that gave all seventy-four Recipes Stripe's `t=<unix>,v1=<hex>` over
 
 `signing.format` chooses now: `stripe` (the default, so nothing changes under
 a Recipe nobody has looked at), `prefixed-hex` for GitHub-style `sha256=`,
-`base64` for Shopify-style, and `slack` for `v0=` over `v0:<ts>:<body>`.
-Shopify, Bitbucket and Slack are correct; **71 are still on the default**.
+`base64` for Shopify-style, and `v0-hex` for `v0=` over `v0:<ts>:<body>`.
+Shopify, Bitbucket, Slack, Zoom and Jira are correct; **69 are still on the
+default**.
+
+The `v0-hex` format was called `slack` for one change and should not have
+been. Zoom's signature is Slack's, deliberately, and naming a shared shape
+after the first provider to want it is the same mistake as giving everyone
+Stripe's, in miniature. `stripe` keeps its name only because no second
+provider here wants that shape, and would lose it if one did.
+
+**Square is deliberately left on the default.** Its value is base64, which
+the format could send, but the digest is taken over the subscriber's
+notification URL followed by the body -- and a delivery does not know the URL
+it is going to. Declaring `base64` would give a value of exactly the right
+shape over the wrong string, which is the one signature bug a conformance
+case cannot see. Wrong and obvious beats wrong and plausible.
 
 Two halves can be wrong independently and only one is assertable from a
 Recipe. A conformance case can pin the wrapper with a pattern, and cannot see
