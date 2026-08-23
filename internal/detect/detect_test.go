@@ -114,6 +114,51 @@ func TestDetectDoesNotOfferEtsyForEtsysOwnToolingOrV2Clients(t *testing.T) {
 	}
 }
 
+// Magento is the case where one name covers three protocols. The Recipe
+// models the REST API at /rest/V1, and packages called magento talk to it,
+// or to the SOAP API it replaced, or to the GraphQL API PWA Studio uses --
+// three different wire formats, all correctly described as Magento.
+//
+// Detecting the wrong one is not a near miss. A SOAP client pointed at a REST
+// emulator gets a 404 on its endpoint; a GraphQL client gets one on its. So
+// the table names only packages that say REST and say 2.
+func TestDetectMagentoFromRestClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"springimport/swagger-magento2-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"zero1/magento2-rest-client": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"magento2-rest-client": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "magento") {
+			t.Errorf("%v did not detect magento: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
+// The companion: magento-api is a SOAP wrapper, smalot/magento-client is SOAP
+// v1, and @magento/peregrine is the PWA Studio runtime, which speaks GraphQL.
+// None of them would get a usable answer from a REST emulator.
+func TestDetectDoesNotOfferMagentoForSoapOrGraphQLClients(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"magento-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@magento/peregrine": "^14.0.0"}}`},
+		{"composer.json": `{"require": {"smalot/magento-client": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "magento") {
+			t.Errorf("%v offered the magento Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
 func TestDetectReturnsErrNoProjectForEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 

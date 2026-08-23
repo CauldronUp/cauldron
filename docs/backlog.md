@@ -64,7 +64,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | Shopify GraphQL Admin API | Separate from the REST Shopify Recipe, not a replacement |
 | ~~BigCommerce~~ | Shipped. Two APIs in one store: V3 wraps, V2 does not; a price is a number and the order total is a string |
-| Magento / Adobe Commerce | Carts, orders, inventory, customers |
+| ~~Magento / Adobe Commerce~~ | Shipped. searchCriteria brackets; a product is addressed by sku and an order by entity_id; error messages are templates |
 | ~~Etsy~~ | Shipped. Two credentials on every call; money is an integer over a divisor; an order is a receipt |
 | eBay | Listings, fulfilment, orders |
 | Amazon Selling Partner API | Orders, inventory, reports, throttling. Very large |
@@ -1272,7 +1272,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Twenty-eight Recipes send at least one identifier as a number now, and each
+Twenty-nine Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
