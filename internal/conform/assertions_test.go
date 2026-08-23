@@ -91,7 +91,7 @@ func TestEveryKindOfAssertionCanFail(t *testing.T) {
 			wants: "error",
 		},
 		{
-			kind:      "body_matches",
+			kind: "body_matches",
 			// The raw body, quotes and all, which is why npm's own case for
 			// this writes the opening quote into the pattern.
 			expect:    recipe.Expectation{Status: 404, BodyMatches: `^"version not found`},
