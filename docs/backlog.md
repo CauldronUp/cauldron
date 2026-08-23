@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 25 declare a payload envelope and 74 fall
+Of the 99 Recipes that emit events, 28 declare a payload envelope and 71 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1505,6 +1505,25 @@ different reasons:
   provider rather than a second: Asana splits an event the same way, sending
   `{resource: {resource_type}, action}`. One provider wanting a mechanism is
   a special case; two doing it independently is a shape.
+
+  It was defined wrongly the first time, as the part after the last dot,
+  which is only the action for providers that put the resource first.
+  Pipedrive does not -- its events are `added.deal` -- so the suffix was the
+  object and the prefix the action. It is the event with the resource removed
+  now, which needs no knowledge of the order a provider chose and is the
+  better definition anyway: the action is the part that is not the thing.
+
+### Owed: a before state in a payload template
+
+Pipedrive sends `previous` beside `current`, holding the record as it was
+before the write. A payload template has no access to one -- `emits_when` is
+the only thing in the format that compares a before and an after -- so
+Pipedrive's `previous` is null always, which is right for an add and wrong
+for an update.
+
+Declaring nothing would be worse rather than safer: Pipedrive always sends
+the key, so its absence would be a claim that it does not. The Recipe says
+which half is modelled.
 
 **A Recipe with no writes cannot show any of this.** Calendly declares five
 events and has no create, update or delete route, so nothing it declares can
@@ -1564,8 +1583,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **23 can fire at least one declared
-event and 51 cannot** -- 25 declared, 23 and 51, which is the 99 that emit
+Of the Recipes still on the default, **20 can fire at least one declared
+event and 51 cannot** -- 28 declared, 20 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
