@@ -446,6 +446,37 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### A live-verified case can still carry a wrong claim
+
+Docker Hub, and it is the fourth of these -- but the first with a `verified`
+date on it, which is what makes it worth writing down.
+
+Its paging case sent `limit=2` and had been checked against hub.docker.com.
+Both of its assertions were true: four tags matched whatever the page size,
+and a next link comes back regardless. So the live check confirmed the two
+things the case asserted and said nothing about the request it made.
+
+Docker Hub does not accept `limit`. Checked again on 2026-08-23 against
+`library/registry`, which has seventy tags:
+
+| request | returned |
+|---|---|
+| `?page_size=2` | 2, next reading `?page=2&page_size=2` |
+| `?limit=2` | **10** -- the default -- next reading `?limit=2&page=2&page_size=10` |
+
+The second row is the part worth having. An unknown parameter is not dropped,
+it is copied into the next URL, so a client sending `limit=2` gets ten
+results and a next link with `limit=2` in it. The parameter that was ignored
+is right there in the response, reading exactly as though it had been
+honoured.
+
+Six conformance cases across the collection send a paging parameter to a
+listing that declares none, relying on the runtime's fallback of ten read as
+`limit`. Docker Hub was the one that could be settled without credentials,
+and it was wrong. The other five -- Column, Increase, Orb, PostHog and Svix
+-- are providers whose listings do take `limit`, so the default is probably
+right for them, and "probably" is the word that matters: nothing is watching.
+
 ### A third case paging by a word its provider ignores
 
 SES. And this one is the sharpest of the three, because the case exists
@@ -552,7 +583,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**107 more listings across 60 Recipes declare no paging at all**, and the
+**106 more listings across 60 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
