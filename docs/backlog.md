@@ -446,11 +446,34 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Eight more, and two cases that were paging by a word nobody accepts
+
+Auth0, Contentful, Freshdesk, Ghost, Help Scout, Mailchimp, Mux and
+Statuspage are named now. Twenty-three routes, and none needed a description
+fetched: `per_page`, `skip`, `count` and `size` are the sort of thing a
+provider's paging is known for.
+
+Naming them broke two conformance cases, which is the whole argument for
+naming them. Help Scout's paging case sent `limit: 2` and Mailchimp's sent
+`limit: 1`, and both passed -- because nothing named the parameter, the
+runtime read `limit` from everybody, and neither provider accepts it. Each
+case was asking for a page, receiving the entire collection, and asserting
+against it happily. They send `size` and `count` now.
+
+That is exactly the failure `limit_param` was written to describe, found in
+the suite rather than in the field: an emulator that only understands
+`limit` answers with its own default, the response has no next page in it,
+and the paging loop a client carefully wrote runs once and passes.
+
+Auth0 also gained `first_page: 0`, because the comment written for it said
+its pages count from nought and the declaration did not. A comment claiming
+something the Recipe does not do is worth less than no comment.
+
 ### Restoring them, one description at a time
 
-**57 routes across 24 Recipes** still page by a parameter nobody named. Five
-providers have been settled since, each read from that provider's own
-description and none of them guessable:
+**34 routes across 16 Recipes** still page by a parameter nobody named.
+Thirteen providers have been settled. Five were read from that provider's own
+description, none of them guessable:
 
 | Provider | What the description said |
 |---|---|
