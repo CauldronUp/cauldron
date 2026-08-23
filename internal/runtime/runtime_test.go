@@ -419,7 +419,7 @@ func TestWebhooksAreDeliveredToSubscribers(t *testing.T) {
 func TestEmitRejectsAnUndeclaredEvent(t *testing.T) {
 	s := stripe(t)
 
-	_, err := s.Webhooks().Emit("customer.exploded", store.Record{})
+	_, _, err := s.Webhooks().Emit("customer.exploded", store.Record{})
 	if err == nil {
 		t.Fatal("expected an error for an event the provider never sends")
 	}
@@ -446,7 +446,7 @@ func TestADeclaredWebhookEnvelopeIsUsed(t *testing.T) {
 		t.Fatalf("new sandbox: %v", err)
 	}
 
-	delivery, err := s.Webhooks().Emit("AUTHORISATION", store.Record{
+	delivery, _, err := s.Webhooks().Emit("AUTHORISATION", store.Record{
 		"pspReference":      "8836183744AAAAAA",
 		"merchantReference": "order-1001",
 	})
@@ -494,7 +494,7 @@ func TestADeclaredWebhookEnvelopeIsUsed(t *testing.T) {
 func TestAnUndeclaredWebhookEnvelopeStaysTheDefault(t *testing.T) {
 	s := stripe(t)
 
-	delivery, err := s.Webhooks().Emit("customer.created", store.Record{"id": "cus_cauldron"})
+	delivery, _, err := s.Webhooks().Emit("customer.created", store.Record{"id": "cus_cauldron"})
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestAWebhookEnvelopeCanBeNoEnvelopeAtAll(t *testing.T) {
 		t.Fatalf("new sandbox: %v", err)
 	}
 
-	delivery, err := s.Webhooks().Emit("order.updated", store.Record{
+	delivery, _, err := s.Webhooks().Emit("order.updated", store.Record{
 		"id":     "1001",
 		"status": "processing",
 		"total":  "58.32",

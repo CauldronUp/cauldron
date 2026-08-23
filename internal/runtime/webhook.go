@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/CauldronUp/cauldron/internal/clock"
@@ -95,6 +96,23 @@ func newWebhookQueue(r *recipe.Recipe, c *clock.Clock) *webhookQueue {
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+			// The metadata check that matters, because it is the only one
+			// looking at an address rather than at a string somebody typed.
+			//
+			// Subscribe refuses a link-local literal, which is worth keeping
+			// as immediate feedback and is not a boundary: it parses the host
+			// as an IP and gives up when that fails, so every spelling that
+			// is not a dotted quad walked past it --
+			// metadata.google.internal, the decimal 2852039166, the octal
+			// 0251.0376.0251.0376, and a DNS name resolving to any of them.
+			//
+			// Control runs once per resolved address, after DNS, so the
+			// spelling stops mattering and a name that resolves differently
+			// between subscribing and delivering is caught at the moment it
+			// is used.
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{Control: refuseMetadata}).DialContext,
+			},
 		},
 	}
 }
@@ -146,16 +164,53 @@ func (q *webhookQueue) Subscribe(raw string) error {
 	return nil
 }
 
-// linkLocal reports whether a host is in the range cloud metadata services
-// live on. 169.254.169.254 is the address worth naming: it answers without
-// credentials on most providers and hands back instance role tokens.
+// linkLocal reports whether a host is a literal address in the range cloud
+// metadata services live on. 169.254.169.254 is the one worth naming: it
+// answers without credentials on most providers and hands back instance role
+// tokens.
+//
+// A host that is not an IP literal answers false here, and that is not a gap
+// as long as nothing treats this as the boundary. refuseMetadata is the
+// boundary; this is the message somebody gets while they are still typing.
 func linkLocal(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return false
 	}
 
-	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+	return metadataAddress(ip)
+}
+
+// refuseMetadata refuses a connection to a cloud metadata service, whatever
+// name was used to reach it. It runs from the dialer, so the address is
+// already resolved and is always a literal.
+func refuseMetadata(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil || !metadataAddress(ip) {
+		return nil
+	}
+
+	return fmt.Errorf("refusing a webhook delivery to the metadata address %s", ip)
+}
+
+// metadataAddress reports whether an address belongs to a cloud metadata
+// service.
+//
+// The link-local ranges cover 169.254.169.254 and fe80::/10. fd00:ec2::254 is
+// neither: it is AWS's IPv6 metadata endpoint and sits in the unique-local
+// range, so a check written around "link-local" misses it by category rather
+// than by spelling.
+func metadataAddress(ip net.IP) bool {
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	return ip.Equal(net.ParseIP("fd00:ec2::254"))
 }
 
 // Endpoints returns the registered endpoints.
@@ -398,9 +453,9 @@ func expandString(value string, with substitutions) any {
 //
 // Unknown events are refused. A typo in an event name should fail loudly here
 // rather than producing a webhook no real provider would ever send.
-func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
+func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, []Delivery, error) {
 	if !q.Known(event) {
-		return Delivery{}, fmt.Errorf("recipe %s does not emit %q (available: %s)", q.recipe.Name, event, strings.Join(q.Events(), ", "))
+		return Delivery{}, nil, fmt.Errorf("recipe %s does not emit %q (available: %s)", q.recipe.Name, event, strings.Join(q.Events(), ", "))
 	}
 
 	q.mu.Lock()
@@ -424,7 +479,7 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 
 	body, err := json.Marshal(delivery.Payload)
 	if err != nil {
-		return Delivery{}, err
+		return Delivery{}, nil, err
 	}
 
 	delivery.Signature = q.sign(delivery.ID, body, delivery.At)
@@ -440,7 +495,10 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 	if len(endpoints) == 0 {
 		q.record(delivery)
 
-		return delivery, nil
+		// No attempts, because nothing was attempted. An empty slice says
+		// that, where a delivery carrying a zero status would have claimed
+		// somebody answered.
+		return delivery, nil, nil
 	}
 
 	// Concurrently, because delivery happens inside the request that triggered
@@ -472,7 +530,16 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 		q.record(attempt)
 	}
 
-	return delivery, nil
+	// The attempts, not the delivery that was built before any of them
+	// happened. deliver works on a copy and sets Endpoint, Status and Error
+	// on that copy, so returning `delivery` reported an endpoint of "" and a
+	// status of 0 whether the receiver verified the signature and answered
+	// 200, refused it with 401, threw a 500, or was never listening.
+	//
+	// An emit that says the same thing however it went is worse than one that
+	// says nothing: somebody wiring up signature verification reads it as
+	// confirmation.
+	return delivery, attempts, nil
 }
 
 // deliver posts one webhook and reports what happened, without touching shared
