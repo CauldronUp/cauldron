@@ -446,6 +446,38 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### A note that recorded a failed attempt was worth retrying
+
+Grepping for the rest of these found four more, and three are principled
+refusals rather than tasks: observing Docker Hub's rate limit means
+exhausting a pull budget shared with everyone on this address, and observing
+GitHub's or Docker Hub's rejected-credential cases means sending a
+credential-shaped header at somebody else's authentication endpoint. Those
+stay unverified on purpose and say so.
+
+The fourth was worth another go. Docker Hub's rate-limit note recorded an
+attempt from 2026-08-22: an anonymous request answered with
+`docker-ratelimit-source` and no count at all, so the note concluded that the
+`100;w=21600` shape still rested on Docker's documentation.
+
+It did, and the documentation was stale. A HEAD against
+`registry-1.docker.io/v2/library/hello-world/manifests/latest` -- which does
+not count as a pull -- answered on 2026-08-23 with all four headers reading
+**`100;w=3600`**. An hour, not six.
+
+Two things came out of it:
+
+- The window is corrected. A client backing off for the window it read was
+  waiting six times too long, which is the direction that looks like the
+  emulator being careful rather than wrong.
+- Docker sends `ratelimit-limit` **and** `x-ratelimit-limit`, both spellings
+  of both headers on the same response. Only the un-prefixed pair was
+  modelled, so a client reading the `x-` form found nothing.
+
+The 429 itself is still unobserved and the case still carries no date. What
+is unobserved now is narrower: a `remaining` of zero is what a limited
+address reports, and this address is not limited.
+
 ### Two notes that said what would settle them, settled
 
 Three WordPress cases carried no `verified:` date and, instead of one, a note
