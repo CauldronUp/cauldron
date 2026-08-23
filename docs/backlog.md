@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 15 declare a payload envelope and 84 fall
+Of the 99 Recipes that emit events, 18 declare a payload envelope and 81 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1547,8 +1547,9 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **34 can fire at least one declared
-event and 51 cannot**. The 51 are not an envelope problem: every event they
+Of the Recipes still on the default, **30 can fire at least one declared
+event and 51 cannot** -- 18 declared, 30 and 51, which is the 99 that emit
+events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
 declaring five events with no create, update or delete route anywhere.
@@ -1557,7 +1558,13 @@ The first count of this was wrong and said 36. It asked whether a route's
 resource had any declared `resource.created`-shaped event, without checking
 that the verb matched the route's operation -- so Sentry counted because it
 updates and deletes issues while declaring `issue.created`, which an update
-does not fire. Corrected before it was published anywhere but here.
+does not fire.
+
+The correction was wrong too, in a smaller way: 34 and 51 do not add up to 99
+with the 13 declared at the time, and nobody noticed because the two numbers
+were reported without the total beside them. Every figure in this section is
+measured together now and stated with the sum, which is the only way the
+arithmetic can be checked at a glance.
 
 **A payload key needed to vary.** Square nests the record under its own type
 name -- a payment at `data.object.payment`, a customer at
