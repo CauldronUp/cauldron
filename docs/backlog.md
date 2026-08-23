@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 37 declare a payload envelope and 62 fall
+Of the 99 Recipes that emit events, 39 declare a payload envelope and 60 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1538,6 +1538,23 @@ one level further down than a reader expects.
 
 The default envelope hid all six. Under it every one of these Recipes had a
 `type` holding the event name, which is the one thing none of them does.
+
+### Owed: a webhook body that is not JSON
+
+Every delivery is `json.Marshal`ed. Nothing in the format chooses otherwise,
+which was invisible while the only question was what shape the JSON took.
+
+Recurly is where it stops being invisible. Its declared events are push
+notifications and a push notification is XML, with the event name as the root
+element -- `new_subscription_notification` is literally
+`<new_subscription_notification>`. So the choice there was an XML shape the
+runtime cannot send or a JSON one Recurly does not, and the Recipe says so
+rather than picking. It is the only Recipe whose missing payload is a
+decision rather than a gap not yet filled.
+
+Worth having before claiming the webhook surface is done, and it is more than
+a template change: the content type, the signature computed over the encoded
+body, and what a conformance case asserts against all follow from it.
 
 ### A great many deliveries carry no record
 
@@ -1618,8 +1635,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **11 can fire at least one declared
-event and 51 cannot** -- 37 declared, 11 and 51, which is the 99 that emit
+Of the Recipes still on the default, **9 can fire at least one declared
+event and 51 cannot** -- 39 declared, 9 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
