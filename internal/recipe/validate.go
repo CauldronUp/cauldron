@@ -319,9 +319,20 @@ func (r *Recipe) Validate() error {
 		// unreachable declaration reads as a description of the provider
 		// while describing nothing. Five Recipes shipped with one before this
 		// rule existed, each found by mutating it and watching nothing fail.
-		covered := len(r.Resources) > 0
+		// Only the resources something lists. A resource with a get and a
+		// create and no listing has no collection to name, and asking it for
+		// one produces a key that describes a response nobody can request.
+		//
+		// Stytch is where this showed: its user has a get and a create, no
+		// collection, and responses.list.key was set to "results" to satisfy
+		// the rule below. Nothing ever emitted results -- both of its listings
+		// name their own collection -- so the Recipe carried a name for a
+		// shape that does not exist.
+		listed := listedResources(r)
 
-		for _, name := range sortedKeys(r.Resources) {
+		covered := len(listed) > 0
+
+		for _, name := range listed {
 			if r.Resources[name].Collection == "" {
 				covered = false
 			}
@@ -334,7 +345,7 @@ func (r *Recipe) Validate() error {
 	}
 
 	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key == "" {
-		for _, name := range sortedKeys(r.Resources) {
+		for _, name := range listedResources(r) {
 			if r.Resources[name].Collection == "" {
 				add("resource %q needs a collection name, or responses.list.key must be set, because the list style is wrapped", name)
 			}
@@ -644,4 +655,29 @@ func IsPath(name string) bool {
 	}
 
 	return true
+}
+
+// listedResources names the resources some route lists, in a stable order.
+//
+// The distinction matters for anything about a collection's shape: a resource
+// nothing lists has no collection, and holding it to one produces a
+// declaration describing a response that cannot be asked for.
+func listedResources(r *Recipe) []string {
+	seen := map[string]bool{}
+
+	for _, route := range r.Routes {
+		if route.Operation == "list" {
+			seen[route.Resource] = true
+		}
+	}
+
+	var names []string
+
+	for _, name := range sortedKeys(r.Resources) {
+		if seen[name] {
+			names = append(names, name)
+		}
+	}
+
+	return names
 }
