@@ -446,6 +446,31 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### The behaviour under five wrong cases, stated once
+
+Five conformance cases had been found asking for a page with `limit` against
+providers that do not take it -- Help Scout, Mailchimp, SES, Zoom and Docker
+Hub -- and each was corrected in its own Recipe. What none of them said is
+why the mistake was so easy: until a Recipe named its parameter, the runtime
+read `limit` from everybody, so the wrong word worked and the right one was
+never tried.
+
+That behaviour has three branches and no test named for it. It has one now,
+in the runtime rather than in five providers that happen to exercise it:
+
+- a named parameter is the only one read, and every other spelling is inert
+- `"-"` refuses all of them, including the default
+- naming nothing reads `limit`, which is a guess for the providers that call
+  it something else
+
+The two mutations that matter both fail it. Making the named branch fall back
+to `limit` fails the first; making `"-"` read `limit` fails the second.
+
+A per-Recipe case for each of the twenty-odd Recipes that name a parameter
+would have said the same thing twenty times. Rollbar and Pipedrive keep
+theirs, because those two are also claims about what the provider does rather
+than only about what the runtime does.
+
 ### The rest of the verified set holds up
 
 Fifty-six cases carry a `verified:` date and three of them turned out to be
