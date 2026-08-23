@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1748 cases, 55 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1748 cases, 56 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -319,12 +319,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1748 cases, 55 run against
-a live account and 1693 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1748 cases, 56 run against
+a live account and 1692 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The fifty-five are the cases whose provider can be asked without a key. Six are
+The fifty-six are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -411,12 +411,14 @@ to watch it fail. Checking the rate-limit response means exhausting a rate
 limit on purpose, which spends capacity belonging to everyone sharing this
 address. The other fourteen needed nothing but a GET anybody can make.
 
-Four are GitLab's, which answers for a public project. A merge request is
+Five are GitLab's, which answers for a public project. A merge request is
 addressed by its per-project iid and not by its global id, and putting one
 where the other belongs finds nothing -- or, on a busy instance, finds a
 different merge request. A missing project answers one key and one only,
 `{"message":"404 Project Not Found"}`, with the status repeated inside the
-sentence and nothing called `error` or `errors`.
+sentence and nothing called `error` or `errors`. A refused credential answers
+the same way, `{"message":"401 Unauthorized"}`, so the status appears twice
+and neither copy is a number.
 
 The other two corrected this Recipe rather than confirming it. It had a closed
 merge request answering with no `merged_at` and a merged one with no
