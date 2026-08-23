@@ -42,7 +42,7 @@ func (r Record) Clone() Record {
 	out := make(Record, len(r))
 
 	for key, value := range r {
-		out[key] = deepCopy(value)
+		out[key] = DeepCopy(value)
 	}
 
 	return out
@@ -56,13 +56,13 @@ func (r Record) Clone() Record {
 // concrete slice and map types are listed rather than handled by reflection
 // because these are the only shapes that reach here: yaml.v3 and encoding/json
 // both produce map[string]any and []any, and Record is the store's own.
-func deepCopy(value any) any {
+func DeepCopy(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 
 		for key, held := range typed {
-			out[key] = deepCopy(held)
+			out[key] = DeepCopy(held)
 		}
 
 		return out
@@ -72,7 +72,7 @@ func deepCopy(value any) any {
 		out := make([]any, len(typed))
 
 		for i, held := range typed {
-			out[i] = deepCopy(held)
+			out[i] = DeepCopy(held)
 		}
 
 		return out

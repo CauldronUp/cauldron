@@ -91,9 +91,27 @@ func decodeBody(r *http.Request) (store.Record, error) {
 }
 
 func decodeJSON(body []byte) (store.Record, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+
+	// The same reason jsonBody and conform decode this way, and this was the
+	// one path that did not: json.Unmarshal turns every number into a
+	// float64, which holds 53 bits of integer. A Discord snowflake, a Stripe
+	// cursor, a ledger amount in minor units above 2^53 -- anything posted
+	// through a create or an update came back changed.
+	//
+	// 578730123365711993 in, 578730123365712000 out, with a 200 and a
+	// plausible body. Inconsistently, too: a YAML fixture decodes to an int
+	// and stays exact, so the same field was right when seeded and wrong when
+	// written, in the same collection.
+	//
+	// conform's own comment on this says it best -- the tool that exists to
+	// catch an emulator sending the wrong number was itself unable to see the
+	// right one.
+	decoder.UseNumber()
+
 	var raw map[string]any
 
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decoder.Decode(&raw); err != nil {
 		return nil, err
 	}
 

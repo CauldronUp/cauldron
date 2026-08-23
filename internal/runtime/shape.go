@@ -468,7 +468,25 @@ func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, idAs, resource stri
 // name nests, so response_metadata.next_cursor needs no second mechanism.
 func withFields(body map[string]any, fields map[string]any) map[string]any {
 	for name, value := range fields {
-		setPath(body, name, value)
+		// Copied, because setPath ends in an assignment and a nested constant
+		// would otherwise go into the response by reference -- and anything
+		// that writes into that path afterwards writes into the parsed
+		// Recipe. limit_field, page_field and pages_field are applied after
+		// this runs, so a Recipe declaring both a `meta` constant and
+		// `page_field: meta.page` had its own constant rewritten by serving a
+		// request:
+		//
+		//   before: {"source": "cauldron"}
+		//   after:  {"source": "cauldron", "page": 3, "limit": 1}
+		//
+		// The next request then carried the previous one's numbers, on a
+		// different route, and Reset does not undo it: it rewinds the store,
+		// the clock, the faults, the log and the webhooks, and never touches
+		// the Recipe. A long-lived serve was poisoned by one request.
+		//
+		// This is what store.Record.Clone was made deep to prevent. The same
+		// shape reached here and was missed.
+		setPath(body, name, store.DeepCopy(value))
 	}
 
 	return body
