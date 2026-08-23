@@ -58,7 +58,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | Detection engine (Composer, npm, Go modules) | Working. 147 of 167 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working |
-| Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe; Recipes that declare none fall back to Stripe's shape, which is a default rather than a claim about that provider |
+| Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe. Of the 99 Recipes that emit events, 5 declare one and 94 fall back to Stripe's shape, which is a default rather than a claim about that provider |
 | Fault injection, clock control, request log | Working |
 | Network conditions (latency, throttling, timeouts, resets) | Working. Toxiproxy's vocabulary, applied to the emulated providers |
 | `serve`, `status`, `requests`, `seed`, `reset`, `fault`, `network`, `emit`, `clock` | Working |
