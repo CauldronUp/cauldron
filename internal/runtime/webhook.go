@@ -233,7 +233,7 @@ func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record
 
 	return expand(template, substitutions{
 		event: event, id: id, at: at, record: map[string]any(data),
-		resource: resource, action: actionOf(event),
+		resource: resource, action: actionOf(event, resource),
 		recordID: q.identifierOf(resource, data),
 	})
 }
@@ -596,19 +596,31 @@ func (d Delivery) Fields() map[string]any {
 	return fields
 }
 
-// actionOf is the part of an event name after the last dot.
+// actionOf is what is left of an event name once the resource is taken out of
+// it.
 //
-// Empty when there is no dot, which is the honest answer rather than the
-// whole name: a provider whose events are single words has no separate action
-// to report, and handing back the event again would put a plausible value
-// somewhere the provider sends nothing.
-func actionOf(event string) string {
-	index := strings.LastIndex(event, ".")
-	if index < 0 {
+// Not the part after the last dot, which is what this was and which only
+// worked for providers that put the resource first. Pipedrive does not:
+// its events are added.deal and updated.person, so the suffix is the resource
+// and the prefix is the action. Asana's task.added and QuickBooks'
+// Customer.Create are the other way round, and Dropbox separates with an
+// underscore rather than a dot.
+//
+// Removing the resource handles all of them without needing to know which
+// order a provider chose, and it is the more honest definition anyway: the
+// action is the part that is not the thing.
+//
+// Empty when the resource is not in the name, which is the honest answer
+// rather than a guess. Handing back the whole event would put a plausible
+// value somewhere the provider sends something else.
+func actionOf(event, resource string) string {
+	if resource == "" || !strings.Contains(event, resource) {
 		return ""
 	}
 
-	return event[index+1:]
+	rest := strings.Replace(event, resource, "", 1)
+
+	return strings.Trim(rest, "._:-/ ")
 }
 
 // identifierOf reads a record's own identifier, under whatever name the
