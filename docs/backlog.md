@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 13 declare a payload envelope and 86 fall
+Of the 99 Recipes that emit events, 15 declare a payload envelope and 84 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1491,7 +1491,7 @@ Stripe's envelope.
 
 **A Recipe with no writes cannot show any of this.** Calendly declares five
 events and has no create, update or delete route, so nothing it declares can
-fire and no case can assert an envelope for it. Greenhouse is the same. That
+fire and no case can assert an envelope for it. That
 is not an envelope problem and declaring one there would be writing an
 unassertable claim, which is the mistake this collection keeps finding in its
 own past.
@@ -1535,6 +1535,29 @@ labels rather than codes, so the real payload may carry "Open" where this
 carries 2. The codes are what the Recipe knows to be true of the ticket and
 the label mapping is not modelled anywhere in it, so inventing one in the
 envelope would put a string in the payload nothing else could account for.
+
+**Greenhouse was not the same, and this note said it was.** It was named here
+beside Calendly as a Recipe that could not fire anything. It has a create
+route carrying `emits: candidate_has_been_created`, so it could fire all
+along; what it has no update route for is `candidate_stage_change`, which is
+a narrower claim than the one written down. Its envelope is declared now --
+Greenhouse names the event `action` and keys the record on the resource, so a
+candidate arrives at `payload.candidate` and none of the default's four
+fields are there at all.
+
+### How many of the rest can be checked
+
+Of the Recipes still on the default, **34 can fire at least one declared
+event and 51 cannot**. The 51 are not an envelope problem: every event they
+declare is unreachable from any route they have, so no case could assert a
+payload shape for them whatever the envelope said. Calendly is the clearest,
+declaring five events with no create, update or delete route anywhere.
+
+The first count of this was wrong and said 36. It asked whether a route's
+resource had any declared `resource.created`-shaped event, without checking
+that the verb matched the route's operation -- so Sentry counted because it
+updates and deletes issues while declaring `issue.created`, which an update
+does not fire. Corrected before it was published anywhere but here.
 
 **A payload key needed to vary.** Square nests the record under its own type
 name -- a payment at `data.object.payment`, a customer at
