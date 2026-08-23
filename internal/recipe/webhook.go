@@ -44,35 +44,33 @@ type Signing struct {
 	Scheme string `yaml:"scheme"`
 	Header string `yaml:"header"`
 	Secret string `yaml:"secret"`
-	// Format is how the digest is wrapped and what string it is taken over.
+	// Over, Encoding and Value are how a signature is built: what string the
+	// digest is taken over, how the digest is written down, and how it is
+	// wrapped before it goes in the header.
 	//
-	// Every Recipe declaring hmac-sha256 used to get Stripe's shape --
-	// t=<unix>,v1=<hex> over "<unix>.<body>" -- which is right for Stripe and
-	// wrong for the other seventy-three. The reason it matters more than an
-	// envelope does is that nobody parses a signature by hand: an application
-	// passes the header to the provider's own SDK, and a signature in the
-	// wrong shape fails that check every time. A fake that hands an
-	// application a signature its verifier rejects is worse than one that
-	// sends no signature at all, which is what the code here said while doing
-	// the opposite.
+	// This was an enum of named shapes and outgrew it. Nine providers here
+	// vary along three axes -- the separator between the timestamp and the
+	// body, hex or base64, and what prefix the value carries -- and naming
+	// each combination gives a list where most entries have exactly one user.
+	// Two templates and one word say all nine, and would say the tenth.
 	//
-	// One of:
+	//   Over     {body} {timestamp} {id}, e.g. "v0:{timestamp}:{body}"
+	//   Encoding hex or base64
+	//   Value    {digest} {timestamp} {id}, e.g. "sha256={digest}"
 	//
-	//   stripe        t=<unix>,v1=<hex>   over "<unix>.<body>"   (the default)
-	//   hex           <hex>               over the body
-	//   prefixed-hex  sha256=<hex>        over the body
-	//   base64        <base64>            over the body
-	//   v0-hex        v0=<hex>            over "v0:<unix>:<body>"
+	// Empty means Stripe's, which is what every Recipe sent before any of
+	// this existed: the digest over "{timestamp}.{body}", in hex, written as
+	// "t={timestamp},v1={digest}". A Recipe nobody has looked at keeps the
+	// shape it had rather than changing under it.
 	//
-	// Named for the shape rather than for a provider, because the shapes are
-	// shared: Zoom's signature is Slack's, deliberately, and calling that one
-	// "slack" would be the same mistake in miniature as giving every Recipe
-	// Stripe's. stripe keeps its name only because no second provider here
-	// wants it, and would lose it if one did.
-	//
-	// Empty means stripe, so a Recipe that has not been looked at keeps the
-	// shape it had rather than silently changing.
-	Format string `yaml:"format"`
+	// It matters more than an envelope does because nobody parses a signature
+	// by hand. An application passes the header to the provider's own SDK,
+	// and a signature in the wrong shape fails that check every time -- a
+	// fake handing an application a signature its verifier rejects is worse
+	// than one sending no signature at all.
+	Over     string `yaml:"over"`
+	Encoding string `yaml:"encoding"`
+	Value    string `yaml:"value"`
 	// TimestampHeader is the header the signed timestamp travels in, for the
 	// providers whose signature covers a timestamp the value does not carry.
 	//

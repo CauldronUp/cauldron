@@ -43,7 +43,7 @@ func TestAWebhookSignatureIsAnHMACOverTimestampAndBody(t *testing.T) {
 	body := []byte(`{"id":"evt_1","type":"customer.created"}`)
 	at := s.clock.Now()
 
-	signed := s.webhooks.sign(body, at)
+	signed := s.webhooks.sign("evt_00000000001", body, at)
 	if signed == "" {
 		t.Fatal("a Recipe declaring hmac-sha256 and a secret produced no signature")
 	}
@@ -90,8 +90,8 @@ func TestADifferentBodySignsDifferently(t *testing.T) {
 
 	at := s.clock.Now()
 
-	first := s.webhooks.sign([]byte(`{"id":"evt_1"}`), at)
-	second := s.webhooks.sign([]byte(`{"id":"evt_2"}`), at)
+	first := s.webhooks.sign("evt_00000000001", []byte(`{"id":"evt_1"}`), at)
+	second := s.webhooks.sign("evt_00000000001", []byte(`{"id":"evt_2"}`), at)
 
 	if first == second {
 		t.Errorf("two different payloads signed identically at the same instant: %s", first)
@@ -115,7 +115,7 @@ func TestARecipeWithoutSigningSendsNoSignature(t *testing.T) {
 		t.Fatalf("new sandbox: %v", err)
 	}
 
-	if signed := s.webhooks.sign([]byte(`{"id":1}`), s.clock.Now()); signed != "" {
+	if signed := s.webhooks.sign("evt_00000000001", []byte(`{"id":1}`), s.clock.Now()); signed != "" {
 		t.Errorf("a Recipe declaring no signing produced %q", signed)
 	}
 }

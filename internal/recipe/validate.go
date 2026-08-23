@@ -291,19 +291,27 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
-	// A signature format has to be one the runtime can produce. A typo here
-	// would fall through to Stripe's shape, which is the one thing this field
-	// exists to stop a Recipe sending by accident.
-	if format := r.Webhooks.Signing.Format; format != "" {
-		switch format {
-		case "stripe", "hex", "prefixed-hex", "base64", "v0-hex":
-		default:
-			add("webhooks.signing.format is %q, which is not one of stripe, hex, prefixed-hex, base64 or v0-hex", format)
+	// A signature that covers no body is a signature of nothing, and one that
+	// carries no digest is not a signature. Both are typos a Recipe could
+	// make silently, and neither shows up as anything but a verifier saying
+	// no somewhere else entirely.
+	signing := r.Webhooks.Signing
+
+	if signing.Over != "" || signing.Value != "" || signing.Encoding != "" {
+		if signing.Scheme != "hmac-sha256" {
+			add("webhooks.signing describes how to build a digest and the scheme is %q, so there is no digest to build", signing.Scheme)
 		}
 
-		if r.Webhooks.Signing.Scheme != "hmac-sha256" {
-			add("webhooks.signing declares format %q and scheme %q, and there is no digest to shape unless the scheme is hmac-sha256",
-				format, r.Webhooks.Signing.Scheme)
+		if signing.Encoding != "" && signing.Encoding != "hex" && signing.Encoding != "base64" {
+			add("webhooks.signing.encoding is %q, which is not hex or base64", signing.Encoding)
+		}
+
+		if signing.Over != "" && !strings.Contains(signing.Over, "{body}") {
+			add("webhooks.signing.over is %q and does not include {body}, so the signature would not cover the payload it is meant to authenticate", signing.Over)
+		}
+
+		if signing.Value != "" && !strings.Contains(signing.Value, "{digest}") {
+			add("webhooks.signing.value is %q and does not include {digest}, so the header would carry no signature", signing.Value)
 		}
 	}
 
@@ -311,18 +319,27 @@ func (r *Recipe) Validate() error {
 	// timestamp the value does not already carry. Stripe's does carry it, so
 	// declaring both there would send the same number twice and imply a
 	// verifier needs the second copy.
-	if header := r.Webhooks.Signing.TimestampHeader; header != "" {
-		if r.Webhooks.Signing.Scheme != "hmac-sha256" {
+	if header := signing.TimestampHeader; header != "" {
+		if signing.Scheme != "hmac-sha256" {
 			add("webhooks.signing declares timestamp_header %q and scheme %q, and there is no signed timestamp to send unless the scheme is hmac-sha256",
-				header, r.Webhooks.Signing.Scheme)
+				header, signing.Scheme)
 		}
 
-		switch r.Webhooks.Signing.Format {
-		case "", "stripe":
-			add("webhooks.signing declares timestamp_header %q with the stripe format, whose signature already carries the timestamp inside the value", header)
-		case "hex", "prefixed-hex", "base64":
-			add("webhooks.signing declares timestamp_header %q with the %s format, which signs the body alone -- a verifier would have a timestamp that is part of nothing",
-				header, r.Webhooks.Signing.Format)
+		over := signing.Over
+		if over == "" {
+			over = "{timestamp}.{body}"
+		}
+
+		value := signing.Value
+		if value == "" {
+			value = "t={timestamp},v1={digest}"
+		}
+
+		switch {
+		case !strings.Contains(over, "{timestamp}"):
+			add("webhooks.signing declares timestamp_header %q and signs %q, which covers no timestamp -- a verifier would have one that is part of nothing", header, over)
+		case strings.Contains(value, "{timestamp}"):
+			add("webhooks.signing declares timestamp_header %q and a value of %q, which already carries the timestamp", header, value)
 		}
 	}
 
