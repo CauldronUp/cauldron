@@ -446,6 +446,55 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### A case name can claim more than the case checks
+
+GitLab had one called "the token header is PRIVATE-TOKEN, not Authorization".
+It sends a bad token in the Authorization header and asserts a 401 whose body
+is `{"message":"401 Unauthorized"}`. Every assertion is right and none of them
+is about the name: the case never tests that a *valid* token in that header
+is refused, which is the exclusivity the name claims.
+
+GitLab's own authentication page contradicts it. A personal access token may
+be sent as `PRIVATE-TOKEN` or as an OAuth2-style bearer, so "not
+Authorization" is very likely false, and an anonymous probe cannot settle it
+either way -- a bad token answers 401 in both headers, which is exactly why.
+
+It is renamed to what it checks, and marked verified for that: the refusal
+shape, observed against gitlab.com on 2026-08-23. The status appears twice in
+that body and neither copy is a number, so code switching on a numeric code
+finds none.
+
+That makes two of these in consecutive changes -- Docker Hub's verified case
+asserting the right things about the wrong request, and this one asserting
+the right things under the wrong name. A `verified:` date says somebody
+watched the provider. It does not say the case was asking the question its
+title claims.
+
+**GitLab's visibility case is deliberately not marked verified.** gitlab.com's
+project listing reads without an account and everything in it is public, so
+an anonymous request confirms that `visibility` is a real field carrying
+`"public"`. The case turns on `internal` -- the value with no GitHub
+equivalent, and the one worth checking. Seeing the field is not seeing the
+claim.
+
+### OpenRouter's links.next is declared
+
+The follow-up from the last change. `cursor_field: links.next` with
+`cursor_url: path`, so the catalogue's next page is a path a client follows
+rather than an opaque token it could not use. The validator required a case
+asserting that name where the value exists before it would accept it, which
+is the rule working as intended.
+
+Its query parameters come out in a different order from OpenRouter's --
+`?limit=2&offset=2` against `?offset=2&limit=2` -- and the case does not
+assert the order, because that is nothing to a client following a URL rather
+than parsing one.
+
+Stated gap: OpenRouter sends `links` on every response with `next` null on
+the last page, and this omits the object entirely, because the runtime writes
+a cursor field only when there is a next page. Both are falsy, so a loop
+terminating on either is right and code distinguishing them is not.
+
 ### Four listings that said nothing about paging, asked
 
 The providers this collection can reach without a credential are worth more
