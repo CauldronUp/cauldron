@@ -446,6 +446,42 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### The same scan, widened past the page size
+
+A response field whose value the request decides, declared as a fixed one, is
+a class rather than an incident. Widening the scan past `limit` and `page` to
+positions, counts and page totals found four more:
+
+| Recipe | field | said | is now |
+|---|---|---|---|
+| Box | `offset` | 0 | the offset asked for |
+| Contentful | `skip` | 0 | the skip asked for |
+| Typeform | `page_count` | 1 | computed from the total |
+| Zoom | `page_count` | 1 | computed from the total |
+
+The two `page_count` constants are the worse pair. A client looping while
+`page <= page_count` stopped after the first page however many there were,
+and the pages it never asked for looked like an empty collection rather than
+a mistake.
+
+Both offset echoes needed `first_page: 0` beside them, which is the sort of
+thing that would have been found in production rather than here: a page
+number starts at one and an offset does not, so the echo would have reported
+`offset: 1` before anything had been skipped.
+
+Every one is asserted by a case that asks for something other than the
+default -- an offset of one rather than none, a page size that makes more
+than one page -- because an echo tested at the default is indistinguishable
+from the constant it replaced. Restoring the four fails four cases.
+
+**Miro is left, and is a different gap.** Its list envelope declares
+`size: 0`, and Miro's `size` is how many items came back in this page --
+neither the total, which `count_field` covers, nor the page size that was
+asked for, which `limit_field` covers. There is no mechanism for the length
+of the page actually served, so the constant stays and the Recipe cannot yet
+say what it means. Its `offset: 0` is a constant too, on a cursor-style
+listing where no offset is meaningful.
+
 ### Auditing the verified set found the bug in the audit's own case
 
 Two changes running had turned up a case claiming more than it checked, so
