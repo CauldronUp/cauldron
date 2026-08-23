@@ -427,7 +427,7 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 		return Delivery{}, err
 	}
 
-	delivery.Signature = q.sign(body, delivery.At)
+	delivery.Signature = q.sign(delivery.ID, body, delivery.At)
 
 	if delivery.Signature != "" {
 		delivery.SignatureHeader = q.recipe.Webhooks.Signing.Header
@@ -529,43 +529,43 @@ func (q *webhookQueue) record(d Delivery) {
 // shape. Seventy-four declare hmac-sha256 under sixty-eight different header
 // names, and a Stripe-shaped value under X-Shopify-Hmac-Sha256 fails
 // Shopify's verifier on the first call.
-func (q *webhookQueue) sign(body []byte, at time.Time) string {
+func (q *webhookQueue) sign(id string, body []byte, at time.Time) string {
 	signing := q.recipe.Webhooks.Signing
 
 	if signing.Scheme != "hmac-sha256" || signing.Secret == "" {
 		return ""
 	}
 
-	timestamp := at.Unix()
+	fill := strings.NewReplacer(
+		"{body}", string(body),
+		"{timestamp}", strconv.FormatInt(at.Unix(), 10),
+		"{id}", id,
+	)
 
-	// What is signed differs as much as how it is wrapped. Slack prefixes a
-	// version and the timestamp; GitHub and Shopify sign the body alone.
-	signed := string(body)
-
-	switch signing.Format {
-	case "v0-hex":
-		signed = fmt.Sprintf("v0:%d:%s", timestamp, body)
-	case "prefixed-hex", "base64", "hex":
-	default:
-		signed = fmt.Sprintf("%d.%s", timestamp, body)
+	over := signing.Over
+	if over == "" {
+		over = "{timestamp}.{body}"
 	}
 
 	mac := hmac.New(sha256.New, []byte(signing.Secret))
-	mac.Write([]byte(signed))
+	mac.Write([]byte(fill.Replace(over)))
 	sum := mac.Sum(nil)
 
-	switch signing.Format {
-	case "hex":
-		return hex.EncodeToString(sum)
-	case "prefixed-hex":
-		return "sha256=" + hex.EncodeToString(sum)
-	case "base64":
-		return base64.StdEncoding.EncodeToString(sum)
-	case "v0-hex":
-		return "v0=" + hex.EncodeToString(sum)
-	default:
-		return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(sum))
+	digest := hex.EncodeToString(sum)
+	if signing.Encoding == "base64" {
+		digest = base64.StdEncoding.EncodeToString(sum)
 	}
+
+	value := signing.Value
+	if value == "" {
+		value = "t={timestamp},v1={digest}"
+	}
+
+	return strings.NewReplacer(
+		"{digest}", digest,
+		"{timestamp}", strconv.FormatInt(at.Unix(), 10),
+		"{id}", id,
+	).Replace(value)
 }
 
 // resourceFor names the resource an event is about.

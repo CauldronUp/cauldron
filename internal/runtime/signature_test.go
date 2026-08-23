@@ -35,29 +35,47 @@ func TestWhatEachFormatSigns(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		format string
-		want   string
+		name             string
+		over, enc, value string
+		want             string
 	}{
-		// The body alone.
-		{"prefixed-hex", "sha256=" + hex.EncodeToString(digest(string(body)))},
-		{"base64", base64.StdEncoding.EncodeToString(digest(string(body)))},
+		// The body alone, written two ways.
+		{"prefixed hex", "{body}", "hex", "sha256={digest}", "sha256=" + hex.EncodeToString(digest(string(body)))},
+		{"base64", "{body}", "base64", "{digest}", base64.StdEncoding.EncodeToString(digest(string(body)))},
+		{"bare hex", "{body}", "hex", "{digest}", hex.EncodeToString(digest(string(body)))},
 
 		// The body with something in front of it.
-		{"v0-hex", "v0=" + hex.EncodeToString(digest(fmt.Sprintf("v0:%d:%s", at.Unix(), body)))},
-		{"stripe", fmt.Sprintf("t=%d,v1=%s", at.Unix(), hex.EncodeToString(digest(fmt.Sprintf("%d.%s", at.Unix(), body))))},
+		{"slack and zoom", "v0:{timestamp}:{body}", "hex", "v0={digest}",
+			"v0=" + hex.EncodeToString(digest(fmt.Sprintf("v0:%d:%s", at.Unix(), body)))},
+		{"zendesk", "{timestamp}{body}", "base64", "{digest}",
+			base64.StdEncoding.EncodeToString(digest(fmt.Sprintf("%d%s", at.Unix(), body)))},
+		{"webflow", "{timestamp}:{body}", "hex", "{digest}",
+			hex.EncodeToString(digest(fmt.Sprintf("%d:%s", at.Unix(), body)))},
 
-		// Unset is stripe, so a Recipe nobody has looked at keeps the shape it
-		// had rather than changing under it.
-		{"", fmt.Sprintf("t=%d,v1=%s", at.Unix(), hex.EncodeToString(digest(fmt.Sprintf("%d.%s", at.Unix(), body))))},
+		// The value can carry more than the digest.
+		{"stripe", "{timestamp}.{body}", "hex", "t={timestamp},v1={digest}",
+			fmt.Sprintf("t=%d,v1=%s", at.Unix(), hex.EncodeToString(digest(fmt.Sprintf("%d.%s", at.Unix(), body))))},
+
+		// And the delivery's own identifier, which Svix signs.
+		{"svix", "{id}.{timestamp}.{body}", "base64", "v1,{digest}",
+			"v1," + base64.StdEncoding.EncodeToString(digest(fmt.Sprintf("evt_1.%d.%s", at.Unix(), body)))},
+
+		// Unset is Stripe's, so a Recipe nobody has looked at keeps the shape
+		// it had rather than changing under it.
+		{"unset", "", "", "",
+			fmt.Sprintf("t=%d,v1=%s", at.Unix(), hex.EncodeToString(digest(fmt.Sprintf("%d.%s", at.Unix(), body))))},
 	} {
 		q := &webhookQueue{recipe: &recipe.Recipe{
 			Webhooks: recipe.Webhooks{
-				Signing: recipe.Signing{Scheme: "hmac-sha256", Secret: secret, Format: c.format},
+				Signing: recipe.Signing{
+					Scheme: "hmac-sha256", Secret: secret,
+					Over: c.over, Encoding: c.enc, Value: c.value,
+				},
 			},
 		}}
 
-		if got := q.sign(body, at); got != c.want {
-			t.Errorf("format %q signed to %q, want %q", c.format, got, c.want)
+		if got := q.sign("evt_1", body, at); got != c.want {
+			t.Errorf("%s signed to %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -71,7 +89,7 @@ func TestAnUnsignedRecipeSendsNoSignature(t *testing.T) {
 	} {
 		q := &webhookQueue{recipe: &recipe.Recipe{Webhooks: recipe.Webhooks{Signing: signing}}}
 
-		if got := q.sign([]byte("{}"), time.Unix(0, 0)); got != "" {
+		if got := q.sign("evt_1", []byte("{}"), time.Unix(0, 0)); got != "" {
 			t.Errorf("scheme %q secret %q signed to %q, want nothing", signing.Scheme, signing.Secret, got)
 		}
 	}

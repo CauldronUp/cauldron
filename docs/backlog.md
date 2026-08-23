@@ -1601,11 +1601,43 @@ The validator refuses the header on a format that does not sign a timestamp,
 and on `stripe`, whose signature carries the timestamp inside the value --
 sending it twice would imply a verifier needs the second copy.
 
-Four more are now within reach and are not done: **Zendesk** signs
-`<ts><body>` and base64s it, **Webflow** `<ts>:<body>` as hex, **Lob**
-`<ts>.<body>` as hex, and **Svix** (Clerk and two others) `<id>.<ts>.<body>`
-as `v1,<base64>` -- which wants an id header as well as a timestamp one.
-Each is a format plus, for Svix, one more header.
+Four more were within reach and turned out to want one more thing each.
+
+The named formats became templates first, because those four are what showed
+the enum was the wrong shape: nine providers vary along three axes -- the
+separator between timestamp and body, hex or base64, and what prefix the
+value carries -- and naming each combination gives a list where most entries
+have exactly one user. `over`, `encoding` and `value` say all nine and would
+say the tenth. Empty still means Stripe's, so the Recipes nobody has shaped
+keep what they had.
+
+Two rules came with it that the enum could not express, and both catch a
+typo that is otherwise invisible until a verifier somewhere else says no: a
+signature whose `over` omits `{body}` covers nothing it is meant to
+authenticate, and a `value` without `{digest}` carries no signature at all.
+
+### Owed: a timestamp that is not Unix seconds
+
+The reason Zendesk, Webflow and Lob are still not done. All three sign a
+timestamp beside the body, which the templates now express, and none of them
+sends Unix seconds: Zendesk's is ISO 8601, and Webflow's and Lob's are
+milliseconds. `{timestamp}` is seconds everywhere, in the signed string and
+in the header, and those have to agree or the signature is unverifiable in a
+way that looks exactly like a wrong secret.
+
+A `timestamp_format` beside `timestamp_header` -- `unix`, `unix_ms`, `iso` --
+would do it, and would be one field rather than three tokens, because the two
+places must never disagree.
+
+Not built here because the confidence that Webflow's and Lob's are
+milliseconds is moderate rather than settled, and a signature is the wrong
+place to be approximately right: it fails inside somebody else's verifier
+with nothing to point at. Worth ten minutes with the documentation open.
+
+**Svix** (Clerk and two others) is the fourth, and is closer than it was --
+`{id}` is a token now, so `v1,<base64>` over `<id>.<ts>.<body>` is
+expressible. It still wants the id in a header of its own beside the
+timestamp.
 
 ### The field a handler reaches for first is often a constant
 
