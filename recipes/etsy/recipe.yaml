@@ -1,0 +1,567 @@
+# Etsy Recipe for Cauldron
+#
+# Etsy is the only provider in this repository that wants two credentials on
+# every single request, and the failure that causes is the reason this Recipe
+# exists. An OAuth2 bearer token alone is not enough: without x-api-key beside
+# it, a perfectly valid token is refused. The refusal does not name the header
+# it wanted, so the obvious conclusion is that the token is wrong, and hours
+# go into reissuing a credential that was fine.
+#
+# Six things worth modelling exactly:
+#
+#   1. Two credentials, both mandatory. Authorization: Bearer carries the
+#      user's token and x-api-key carries the app's keystring. They are issued
+#      separately, they expire separately, and either one missing is the same
+#      401.
+#   2. Money is not a number. A price is {amount, divisor, currency_code} and
+#      the value is amount divided by divisor -- 8995 over 100. Reading
+#      listing.price as a number gives NaN in JavaScript and prints
+#      [object Object] in a template, and the shape is close enough to money
+#      that a schema written from one example passes.
+#   3. count in a listing is the total number matching, not the number in
+#      results. A loop sized from count over a page of 25 reads twenty-five
+#      records and then nothing, and a progress bar built on it is right only
+#      on the last page.
+#   4. Two rate limits run at once: ten requests a second and ten thousand a
+#      day, reported in four separate headers. Backing off on the per-second
+#      budget does nothing for the daily one, and the daily one is the one
+#      that ends a bulk import at four in the afternoon.
+#   5. An order is a receipt. It is receipt_id in the path, in the body and in
+#      every field that refers to one, and there is no order anywhere in the
+#      API to search for when the word does not appear.
+#   6. A failure is {"error": "a sentence"}. One string, under a key that
+#      sounds like an object. err.error.message is undefined, err.message is
+#      undefined, and there is no code to branch on at all -- the only
+#      machine-readable part of an Etsy failure is its status.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - An Etsy access token is <user_id>.<random>, so the user id is the part
+#     before the first dot and no endpoint hands it over. The fixture token
+#     below has that shape, but nothing here parses it: Cauldron compares the
+#     credential whole. Code that splits the token to find its user works
+#     against this Recipe by accident rather than because it is modelled.
+#   - Etsy's OAuth2 tokens expire after an hour and refresh is a separate
+#     grant. This Recipe accepts its fixture token forever. An integration
+#     that never refreshes passes here and stops after an hour in production,
+#     and no case in this file can catch that.
+#   - sold_out is a state Etsy derives from quantity rather than one a caller
+#     sets. Here it is an ordinary value of state, so that a fixture can seed
+#     one, and writing it directly is accepted where Etsy would ignore it.
+#
+# The keystring and token below are fixtures, not secrets. They belong to no
+# shop and no application.
+
+recipe: etsy
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.etsy.com/documentation/reference
+
+auth:
+  # Half of the credential. The other half is x-api-key, below, and Etsy wants
+  # both on the same request.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    # <user_id>.<random>, which is the shape Etsy issues. Nothing here reads
+    # the user id out of it; see the fidelity note above.
+    - 12345678.cauldronetsyaccesstoken
+
+# The header that turns a valid token into a 401 by its absence. It is not an
+# alternative to the bearer token and it is not optional on read-only calls:
+# every request to every endpoint carries both.
+required_headers:
+  x-api-key: missing_api_key
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # The total matching, not the length of results. Named here so a reader of
+    # this Recipe finds out before a loop does.
+    count_field: count
+  resource:
+    # No wrapper on a single record. So response.results exists on a listing
+    # and does not on the record it contains, and one response helper cannot
+    # read both.
+    style: bare
+  error:
+    style: flat
+    message_field: error
+
+resources:
+  listing:
+    id:
+      style: numeric
+      type: number
+      # Not id. Every Etsy resource names its identifier after itself, so
+      # response.id is undefined on all of them.
+      field: listing_id
+    fields:
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+      # An object, not a number. {amount, divisor, currency_code}, where the
+      # price is amount / divisor. Declared as a map because that is what the
+      # format has for an object whose keys pass through, and because saying
+      # number here would be a lie every case then inherited.
+      price:
+        type: map
+      quantity:
+        type: integer
+        default: 0
+      # active, inactive, draft, expired or sold_out. A new listing is draft
+      # and stays invisible until it is activated, which is the second thing
+      # an Etsy integration gets wrong after the api key.
+      state:
+        type: string
+        default: draft
+      shop_id:
+        type: integer
+        default: 0
+      # Seconds. Etsy is one of the providers that never moved to RFC 3339.
+      created_timestamp:
+        type: timestamp
+      # A listing expires four months after it is activated and the field says
+      # when. Nothing else in this repository ships an expiry a seller has to
+      # renew.
+      ending_timestamp:
+        type: timestamp
+
+  receipt:
+    id:
+      style: numeric
+      type: number
+      # The word order does not appear anywhere in this API.
+      field: receipt_id
+    fields:
+      # A receipt carries the buyer's email in plain text, which is worth
+      # having in a fixture so that code handling it is exercised.
+      buyer_email:
+        type: string
+      name:
+        type: string
+      # An object again, and the same shape as a listing price. A client with
+      # one money helper is fine here; a client with none reads
+      # grandtotal.amount as pounds and reports a hundredfold.
+      grandtotal:
+        type: map
+      total_price:
+        type: map
+      # Two independent flags rather than one status. A receipt can be paid
+      # and not shipped, shipped and not paid, or neither, and there is no
+      # single field that says which.
+      is_paid:
+        type: boolean
+        default: false
+      is_shipped:
+        type: boolean
+        default: false
+      # Etsy's own word for the state, present alongside the flags and not
+      # always agreeing with them.
+      status:
+        type: string
+        default: open
+      seller_user_id:
+        type: integer
+        default: 0
+      created_timestamp:
+        type: timestamp
+
+# shop_id is a path parameter and deliberately not a scope, the same way
+# BigCommerce's store_hash is. It addresses a shop rather than filtering within
+# one, and Etsy does not require every record to carry it.
+routes:
+  - method: GET
+    path: /v3/application/shops/{shop_id}/listings
+    resource: listing
+    operation: list
+    pagination:
+      # limit and offset, and neither is echoed back. count is the total, and
+      # it is the only number in the answer -- there is no page, no
+      # next_offset and no cursor, so a caller tracks its own offset or reads
+      # the same page forever.
+      style: offset
+      limit: 25
+      limit_param: limit
+      cursor_param: offset
+    filters:
+      # The default nobody reads. A shop listing answers with active listings
+      # only, so the draft a seller just created is not ranked lower here --
+      # it is absent, and the seller concludes the create failed. Asking for
+      # it means state=draft, one state at a time.
+      #
+      # No all, because Etsy has none: there is no value of state that returns
+      # everything, so a full inventory sync is five requests and a merge, and
+      # anybody who assumes otherwise silently syncs only what is on sale.
+      - param: state
+        field: state
+        default: active
+
+  - method: GET
+    path: /v3/application/listings/{id}
+    resource: listing
+    operation: get
+
+  - method: POST
+    path: /v3/application/shops/{shop_id}/listings
+    resource: listing
+    operation: create
+    status: 201
+
+  - method: PATCH
+    path: /v3/application/shops/{shop_id}/listings/{id}
+    resource: listing
+    operation: update
+
+  - method: DELETE
+    path: /v3/application/listings/{id}
+    resource: listing
+    operation: delete
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /v3/application/shops/{shop_id}/receipts
+    resource: receipt
+    operation: list
+    pagination:
+      style: offset
+      limit: 25
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /v3/application/shops/{shop_id}/receipts/{id}
+    resource: receipt
+    operation: get
+
+errors:
+  # The 401 that costs the afternoon. Etsy sends the same status whether the
+  # token is wrong, the token is expired, or the api key is simply not there,
+  # and the sentence is about the token in all three cases.
+  missing_api_key:
+    status: 401
+    message: "missing or invalid api key"
+
+  authentication_error:
+    status: 401
+    message: "invalid_token"
+
+  resource_missing:
+    status: 404
+    message: "Listing not found."
+
+  parameter_missing:
+    status: 400
+    message: "Missing required parameter."
+
+  rate_limit:
+    status: 429
+    message: "Too many requests. Please try again later."
+    headers:
+      # Four headers and two budgets. Nothing else in this repository has more
+      # than one, and a client that backs off on the per-second figure keeps
+      # spending the daily one at exactly the rate that exhausts it.
+      X-Limit-Per-Second: "10"
+      X-Remaining-This-Second: "0"
+      X-Limit-Per-Day: "10000"
+      X-Remaining-Today: "0"
+
+fixtures:
+  empty: {}
+
+  small-shop:
+    listing:
+      - id: "901"
+        title: Hand-thrown stoneware cauldron
+        description: Fired in a wood kiln.
+        price:
+          amount: 8995
+          divisor: 100
+          currency_code: USD
+        quantity: 3
+        state: active
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+      - id: "902"
+        title: Brass ladle
+        price:
+          amount: 1250
+          divisor: 100
+          currency_code: USD
+        quantity: 0
+        state: sold_out
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+      - id: "903"
+        title: Unfinished draft
+        price:
+          amount: 500
+          divisor: 100
+          currency_code: USD
+        quantity: 1
+        state: draft
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+      - id: "904"
+        title: Copper measuring spoons
+        price:
+          amount: 2200
+          divisor: 100
+          currency_code: USD
+        quantity: 7
+        state: active
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+      - id: "905"
+        title: Linen apron
+        price:
+          amount: 4500
+          divisor: 100
+          currency_code: USD
+        quantity: 2
+        state: active
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+      - id: "906"
+        title: Beeswax candle, tall
+        price:
+          amount: 900
+          divisor: 100
+          currency_code: USD
+        quantity: 12
+        state: active
+        shop_id: 4242
+        created_timestamp: 1735689600
+        ending_timestamp: 1746057600
+    receipt:
+      - id: "5501"
+        buyer_email: buyer@example.com
+        name: A Buyer
+        grandtotal:
+          amount: 9995
+          divisor: 100
+          currency_code: USD
+        total_price:
+          amount: 8995
+          divisor: 100
+          currency_code: USD
+        is_paid: true
+        is_shipped: false
+        status: paid
+        seller_user_id: 12345678
+        created_timestamp: 1735689600
+
+conformance:
+  # The one that costs the afternoon, and the reason this Recipe is worth
+  # having. A valid token, correctly formed, correctly sent -- and refused,
+  # because the second credential is missing and nothing says so.
+  - name: a valid token without the api key is refused
+    source: https://developer.etsy.com/documentation/essentials/authentication
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+    expect:
+      status: 401
+      body:
+        # A sentence under error, and that is the whole failure.
+        error: missing or invalid api key
+      absent:
+        # Everything a client reaches for on a failure. error sounds like an
+        # object and is a string, so error.message is undefined; there is no
+        # code, so there is nothing to branch on but the status.
+        - error.message
+        - error.code
+        - message
+        - code
+
+  - name: and with both credentials the shop answers
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        results[0].listing_id: 901
+
+  - name: count is the total matching and not the number returned
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings?limit=2
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        # Two records came back. count says four, because four match -- it is
+        # the size of the result set, not the size of the page. A loop that
+        # reads count records out of results reads two and then undefined.
+        count: 4
+        results[0].listing_id: 901
+        results[1].listing_id: 904
+      absent:
+        - results[2]
+
+  - name: a draft listing is absent from the shop unless its state is named
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        # Six listings in the shop and four in the answer. The draft and the
+        # sold-out one are filtered by a default the caller never set, which
+        # is why a seller who just created a listing cannot find it.
+        count: 4
+
+  - name: and naming it returns it, one state at a time
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings?state=draft
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        count: 1
+        results[0].listing_id: 903
+        results[0].state: draft
+
+  - name: money is an object over a divisor
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/listings/901
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        # 8995 over 100 is 89.95. Not a number, not a string, and not minor
+        # units either -- the divisor is data, and a currency with three
+        # decimal places sends a different one.
+        price.amount: 8995
+        price.divisor: 100
+        price.currency_code: USD
+
+  - name: the identifier is listing_id and there is no id beside it
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/listings/901
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        listing_id: 901
+      absent:
+        # response.id is undefined on every Etsy resource, and a client that
+        # keys a cache by it keys everything under undefined.
+        - id
+        # No envelope on a single record, though the listing that returned it
+        # had one. One response helper cannot read both.
+        - results
+        - count
+
+  - name: an order is a receipt
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/receipts/5501
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 200
+      body:
+        receipt_id: 5501
+        # Two flags rather than one status. Paid and not yet shipped is an
+        # ordinary state and there is no single field that says so.
+        is_paid: true
+        is_shipped: false
+        grandtotal.amount: 9995
+      absent:
+        # There is no order anywhere in this API, so searching the response
+        # for the word finds nothing and searching the docs finds nothing.
+        - order_id
+        - id
+
+  - name: the rate limit reports two budgets at once
+    source: https://developer.etsy.com/documentation/essentials/rate-limits
+    arm: rate_limit
+    fixture: small-shop
+    request:
+      method: GET
+      path: /v3/application/shops/4242/listings
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+    expect:
+      status: 429
+      headers:
+        # Two independent budgets. Sleeping a second restores the first and
+        # does nothing at all for the second, and the second is the one that
+        # stops a bulk import partway through the afternoon.
+        X-Limit-Per-Second: "10"
+        X-Remaining-This-Second: "0"
+        X-Limit-Per-Day: "10000"
+        X-Remaining-Today: "0"
+      body:
+        error: Too many requests. Please try again later.
+
+  - name: a created listing is a draft and does not appear in the shop
+    source: https://developer.etsy.com/documentation/reference
+    fixture: small-shop
+    request:
+      method: POST
+      path: /v3/application/shops/4242/listings
+      headers:
+        Authorization: Bearer 12345678.cauldronetsyaccesstoken
+        x-api-key: cauldronetsykeystring
+      json:
+        title: Pewter tankard
+        quantity: 1
+    expect:
+      status: 201
+      body:
+        # Created, and invisible. The listing exists, the call succeeded, and
+        # the shop listing above will not return it until it is activated.
+        state: draft
+        title: Pewter tankard
