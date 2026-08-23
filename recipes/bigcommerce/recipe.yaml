@@ -1,0 +1,524 @@
+# BigCommerce Recipe for Cauldron
+#
+# BigCommerce gives every developer a free sandbox store, which is genuinely
+# useful and is not the reason this Recipe exists. The reason is that a
+# BigCommerce integration talks to two APIs at once, and they disagree about
+# almost everything: the envelope, the shape of a failure, and how money is
+# written down. Catalogue and customers are V3; orders are V2. Nobody chooses
+# that -- it is where the endpoints are.
+#
+# Six things worth modelling exactly:
+#
+#   1. V3 wraps every response in {data, meta}. V2 returns a bare array with
+#      no envelope at all. A client with one response helper gets undefined
+#      from whichever half it was not written for, and both halves are needed
+#      to place an order against a catalogue.
+#   2. Money is a number in V3 and a string in V2. A product price is 89.95;
+#      the order that sells it carries total_inc_tax "89.9500", to four
+#      decimal places. Adding two V2 totals in JavaScript concatenates.
+#   3. An order state is status_id, an integer, with a status string beside
+#      it that a store owner can rename in the admin. 11 is Awaiting
+#      Fulfillment and 2 is Shipped. Branching on the string is branching on
+#      a setting.
+#   4. The credential header is X-Auth-Token. Not Authorization, and not a
+#      bearer -- a client that sends it the usual way is refused with a 401
+#      that does not mention the header it wanted.
+#   5. V3 failures are an object of {status, title, type}. The sentence lives
+#      under title, so a client reading .message finds undefined on every
+#      failure BigCommerce sends.
+#   6. The rate limit reports its window in X-Rate-Limit-Time-Reset-Ms.
+#      Milliseconds, in a header whose name says so and which nothing else
+#      spells that way. Read as seconds it is eight hours.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - V2 answers an empty collection with 204 No Content rather than an empty
+#     array, which is the most surprising thing about the API: a client
+#     calling .json() on it throws rather than reading nothing. Cauldron
+#     cannot express a status that depends on whether the page came back
+#     empty, so this answers 200 with an empty array. It is the one behaviour
+#     here that is deliberately wrong, and it is wrong in the forgiving
+#     direction.
+#   - V2 failures are a bare array of {status, message} objects, a second
+#     error envelope in the same store. A Recipe declares one, and the one
+#     declared is V3.
+#
+# The store hash and token below are fixtures, not secrets. They belong to no
+# store.
+
+recipe: bigcommerce
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.bigcommerce.com/docs/rest
+
+auth:
+  # Not Authorization. A client sending a bearer token is refused, and the
+  # refusal does not name the header it wanted.
+  scheme: header
+  header: X-Auth-Token
+  keys:
+    - cauldron_bigcommerce_token
+
+responses:
+  # V3. The catalogue and customers answer this way; the order routes below
+  # override it, because V2 does not.
+  list:
+    style: wrapped
+    key: data
+    count_field: meta.pagination.total
+    limit_field: meta.pagination.per_page
+    page_field: meta.pagination.current_page
+    pages_field: meta.pagination.total_pages
+  resource:
+    style: wrapped
+    key: data
+  # An object with a title and no message.
+  error:
+    style: flat
+    status_field: status
+    message_field: title
+    type_field: type
+
+resources:
+  product:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+        required: true
+      # A number here, and a string on the order that sells it.
+      price:
+        type: number
+      sku:
+        type: string
+      # Stock is only enforced when inventory_tracking says so, and the
+      # default is none -- so a product with inventory_level 0 sells happily
+      # until somebody turns tracking on.
+      inventory_level:
+        type: integer
+        default: 0
+      inventory_tracking:
+        type: string
+        default: none
+      # Hidden products are still returned by the catalogue API. Filtering a
+      # storefront by what this sends shows products the shop does not.
+      is_visible:
+        type: boolean
+        default: true
+      date_created:
+        type: datetime
+
+  customer:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      email:
+        type: string
+        required: true
+      first_name:
+        type: string
+      last_name:
+        type: string
+      # Group 0 means no group rather than a group whose id is zero. Joining
+      # on it finds nothing.
+      customer_group_id:
+        type: integer
+        default: 0
+      date_created:
+        type: datetime
+
+  order:
+    # V2, so no collection key: the listing is a bare array.
+    id:
+      style: numeric
+      type: number
+    fields:
+      # 0 Incomplete, 1 Pending, 2 Shipped, 3 Partially Shipped,
+      # 5 Cancelled, 7 Awaiting Payment, 11 Awaiting Fulfillment.
+      status_id:
+        type: integer
+        default: 1
+      # The label, which a store owner can rename. Here because BigCommerce
+      # sends it, not because it is safe to branch on.
+      status:
+        type: string
+        default: Pending
+      # A string, to four decimal places, on an API whose sibling sends
+      # numbers.
+      total_inc_tax:
+        type: string
+      total_ex_tax:
+        type: string
+      currency_code:
+        type: string
+        default: GBP
+      customer_id:
+        type: integer
+        default: 0
+      date_created:
+        type: datetime
+      payment_method:
+        type: string
+
+# store_hash is a path parameter and deliberately not a scope. It addresses
+# the store rather than filtering within one, the same way an API version
+# segment does -- a scope would make every record need a store_hash field to
+# match on, and BigCommerce does not put one there.
+routes:
+  - method: GET
+    path: /stores/{store_hash}/v3/catalog/products
+    resource: product
+    operation: list
+    pagination:
+      # page and limit, and the answer reports both back inside
+      # meta.pagination.
+      style: page
+      limit: 50
+      limit_param: limit
+      cursor_param: page
+
+  - method: GET
+    path: /stores/{store_hash}/v3/catalog/products/{id}
+    resource: product
+    operation: get
+
+  - method: POST
+    path: /stores/{store_hash}/v3/catalog/products
+    resource: product
+    operation: create
+    status: 201
+
+  - method: PUT
+    path: /stores/{store_hash}/v3/catalog/products/{id}
+    resource: product
+    operation: update
+
+  - method: DELETE
+    path: /stores/{store_hash}/v3/catalog/products/{id}
+    resource: product
+    operation: delete
+    status: 204
+    empty_body: true
+
+  - method: GET
+    path: /stores/{store_hash}/v3/customers
+    resource: customer
+    operation: list
+    pagination:
+      style: page
+      limit: 50
+      limit_param: limit
+      cursor_param: page
+
+  - method: POST
+    path: /stores/{store_hash}/v3/customers
+    resource: customer
+    operation: create
+    status: 201
+
+  # V2 from here down. Same store, same token, different envelope.
+  - method: GET
+    path: /stores/{store_hash}/v2/orders
+    resource: order
+    operation: list
+    list:
+      # No envelope, and none of the V3 metadata. A client reading
+      # response.data here gets undefined, and one sizing a loop from
+      # meta.pagination.total gets undefined and treats it as zero.
+      style: bare
+      key: "-"
+      count_field: "-"
+      limit_field: "-"
+      page_field: "-"
+      pages_field: "-"
+    pagination:
+      style: page
+      limit: 50
+      limit_param: limit
+      cursor_param: page
+
+  - method: GET
+    path: /stores/{store_hash}/v2/orders/{id}
+    resource: order
+    operation: get
+    envelope:
+      # Bare here too. The single-resource envelope above is V3's, and orders
+      # are not V3.
+      style: bare
+
+  - method: POST
+    path: /stores/{store_hash}/v2/orders
+    resource: order
+    operation: create
+    status: 201
+    envelope:
+      style: bare
+
+errors:
+  rate_limit:
+    status: 429
+    message: "Too many requests."
+    headers:
+      # Milliseconds, and the header name says so. Read as seconds this is
+      # eight hours; treated as a Retry-After it is thirty thousand seconds.
+      # Neither mistake looks like one.
+      X-Rate-Limit-Time-Reset-Ms: "30000"
+      X-Rate-Limit-Requests-Left: "0"
+      X-Rate-Limit-Requests-Quota: "150"
+
+  authentication_error:
+    status: 401
+    message: "Invalid credentials."
+
+  resource_missing:
+    status: 404
+    message: "The requested resource was not found."
+
+  parameter_missing:
+    status: 422
+    message: "The request was invalid."
+
+fixtures:
+  empty: {}
+
+  small-store:
+    product:
+      - id: "111"
+        name: Cast iron cauldron
+        price: 89.95
+        sku: CAULD-01
+        inventory_level: 4
+        inventory_tracking: product
+        is_visible: true
+      - id: "112"
+        name: Copper stirring rod
+        price: 12.5
+        sku: ROD-01
+        # No stock and no tracking, so it sells anyway. Turning tracking on
+        # later is what stops it, not the number.
+        inventory_level: 0
+        inventory_tracking: none
+        is_visible: true
+      - id: "113"
+        name: Discontinued brass burner
+        price: 45.0
+        sku: BURN-99
+        inventory_level: 0
+        inventory_tracking: product
+        # Hidden in the shop and still returned here.
+        is_visible: false
+    customer:
+      - id: "201"
+        email: ada@example.com
+        first_name: Ada
+        last_name: Lovelace
+        customer_group_id: 0
+      - id: "202"
+        email: grace@example.com
+        first_name: Grace
+        last_name: Hopper
+        customer_group_id: 3
+    order:
+      - id: "301"
+        status_id: 11
+        status: Awaiting Fulfillment
+        total_inc_tax: "89.9500"
+        total_ex_tax: "74.9600"
+        currency_code: GBP
+        customer_id: 201
+        payment_method: Test Payment
+      - id: "302"
+        status_id: 2
+        status: Shipped
+        total_inc_tax: "12.5000"
+        total_ex_tax: "10.4200"
+        currency_code: GBP
+        customer_id: 202
+        payment_method: Test Payment
+
+conformance:
+  - name: a V3 listing is wrapped and a V2 listing is not
+    source: https://developer.bigcommerce.com/docs/rest-catalog
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # Under data, with the count beside it rather than in it.
+        data[0].name: Cast iron cauldron
+        meta.pagination.total: 3
+      absent:
+        # The two shapes a client reaches for first, neither of which is what
+        # BigCommerce sends.
+        - products
+        - '[0]'
+
+  - name: and the orders half has no envelope to read
+    source: https://developer.bigcommerce.com/docs/rest-management/orders
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v2/orders
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # A bare array, in the same store, behind the same token.
+        '[0].id': 301
+      absent:
+        # Everything the catalogue half carries. A client sizing a loop from
+        # meta.pagination.total here reads undefined and stops at nothing.
+        - data
+        - meta
+
+  - name: money is a string on the order
+    source: https://developer.bigcommerce.com/docs/rest-management/orders
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v2/orders/301
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # Quoted, to four decimal places. Adding two of these in JavaScript
+        # concatenates, and the result stringifies again on the way out
+        # without complaint.
+        total_inc_tax: "89.9500"
+        total_ex_tax: "74.9600"
+
+  - name: and a number in the catalogue that sold it
+    source: https://developer.bigcommerce.com/docs/rest-catalog
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products/111
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # Unquoted. One money helper cannot read both halves of this API.
+        data.price: 89.95
+
+  - name: the state is an integer and the label beside it is editable
+    source: https://developer.bigcommerce.com/docs/rest-management/orders
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v2/orders/301
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # 11 is Awaiting Fulfillment. The string is what the admin shows and
+        # what a store owner can rename, so branching on it is branching on a
+        # setting rather than on a state.
+        status_id: 11
+        status: Awaiting Fulfillment
+
+  - name: a hidden product is still in the catalogue
+    source: https://developer.bigcommerce.com/docs/rest-catalog
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products/113
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # Filtering a storefront by what this API returns shows three
+        # products where the shop shows two.
+        data.is_visible: false
+        data.name: Discontinued brass burner
+
+  - name: no stock is not the same as not for sale
+    source: https://developer.bigcommerce.com/docs/rest-catalog
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products/112
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 200
+      body:
+        # Zero, and it does not matter, because tracking is off. A stock
+        # check written against inventory_level alone refuses a sale
+        # BigCommerce would have allowed.
+        data.inventory_level: 0
+        data.inventory_tracking: none
+
+  - name: the failure has a title and no message
+    source: https://developer.bigcommerce.com/docs/start/about/common-responses
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products/999
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 404
+      body:
+        # The sentence lives under title. A client reading .message off a
+        # BigCommerce failure finds undefined on every one of them.
+        title: The requested resource was not found.
+        status: 404
+      absent:
+        - message
+        - error
+        - errors
+
+  - name: a bearer token is not a credential here
+    source: https://developer.bigcommerce.com/docs/start/authentication
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products
+      headers:
+        Authorization: Bearer cauldron_bigcommerce_token
+    expect:
+      # The header is X-Auth-Token, and the refusal does not say so -- which
+      # is why an integration written against the usual convention takes a
+      # while to work out.
+      status: 401
+      body:
+        title: Invalid credentials.
+      absent:
+        - message
+
+  - name: the rate limit window is milliseconds
+    source: https://developer.bigcommerce.com/docs/start/best-practices/api-rate-limits
+    arm: rate_limit
+    fixture: small-store
+    request:
+      method: GET
+      path: /stores/cauldron/v3/catalog/products
+      headers:
+        X-Auth-Token: cauldron_bigcommerce_token
+    expect:
+      status: 429
+      headers:
+        # Thirty seconds, written as thirty thousand. Read as seconds it is
+        # eight hours; treated as a Retry-After it is thirty thousand
+        # seconds. Neither mistake looks like one.
+        X-Rate-Limit-Time-Reset-Ms: "30000"
+        X-Rate-Limit-Requests-Left: "0"
+      body:
+        title: Too many requests.

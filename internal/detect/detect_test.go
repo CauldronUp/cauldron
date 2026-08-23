@@ -43,6 +43,28 @@ func requirement(t *testing.T, p *Project, kind Kind, name string) Requirement {
 	return Requirement{}
 }
 
+// BigCommerce ships two client packages under different names and neither is
+// called bigcommerce on npm, which is exactly why the table is explicit: a
+// prefix rule would match @bigcommerce/checkout-sdk and miss node-bigcommerce
+// entirely, and sending somebody to a Recipe they are not using is worse than
+// not detecting at all.
+func TestDetectBigCommerceFromEitherClient(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"bigcommerce/api": "^3.0"}}`},
+		{"package.json": `{"dependencies": {"node-bigcommerce": "^4.0.0"}}`},
+		{"package.json": `{"dependencies": {"@bigcommerce/checkout-sdk": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "bigcommerce") {
+			t.Errorf("%v did not detect bigcommerce: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
 func TestDetectReturnsErrNoProjectForEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 
