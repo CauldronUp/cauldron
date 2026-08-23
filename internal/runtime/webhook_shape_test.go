@@ -51,7 +51,7 @@ func TestAWebhookCarriesTheSameShapeAsTheResponse(t *testing.T) {
 		t.Fatal("creating a payment emitted no webhook, so there is nothing to compare")
 	}
 
-	object := deliveryObject(t, deliveries[len(deliveries)-1])
+	object := deliveryObject(t, r, deliveries[len(deliveries)-1])
 
 	// The declared nesting, which the HTTP response has had all along.
 	money, nested := object["amount_money"].(map[string]any)
@@ -78,7 +78,13 @@ func TestAWebhookCarriesTheSameShapeAsTheResponse(t *testing.T) {
 
 // deliveryObject digs the changed record out of whatever envelope the Recipe
 // declares, so the test is about the record's shape rather than the envelope's.
-func deliveryObject(t *testing.T, d Delivery) map[string]any {
+//
+// It said that and did not do it: the path was hard-coded to data.object,
+// which is the default envelope's and was every Recipe's for as long as no
+// Recipe declared its own. Square declares one now and nests the record under
+// its own type name, so data.object holds {payment: {...}} and the record is
+// one level further down.
+func deliveryObject(t *testing.T, r *recipe.Recipe, d Delivery) map[string]any {
 	t.Helper()
 
 	data, ok := d.Payload["data"].(map[string]any)
@@ -89,6 +95,21 @@ func deliveryObject(t *testing.T, d Delivery) map[string]any {
 	object, ok := data["object"].(map[string]any)
 	if !ok {
 		t.Fatalf("the payload has no data.object: %v", data)
+	}
+
+	// One more step when the envelope keys the record on its own type, which
+	// is only distinguishable from a record that happens to have one field by
+	// that field being named after a resource this Recipe declares.
+	if len(object) == 1 {
+		for name, nested := range object {
+			if _, declared := r.Resources[name]; !declared {
+				continue
+			}
+
+			if inner, isObject := nested.(map[string]any); isObject {
+				return inner
+			}
+		}
 	}
 
 	return object

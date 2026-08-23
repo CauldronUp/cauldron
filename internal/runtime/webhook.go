@@ -231,6 +231,7 @@ func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record
 
 	filled, _ := expand(template, substitutions{
 		event: event, id: id, at: at, record: map[string]any(data),
+		resource: q.resourceFor(event),
 	}).(map[string]any)
 
 	return filled
@@ -242,6 +243,9 @@ type substitutions struct {
 	id     string
 	at     time.Time
 	record map[string]any
+	// resource is the name of the thing the event is about, which some
+	// envelopes key on. Square nests the record under it twice over.
+	resource string
 }
 
 // objectKey marks the place a record's own fields are merged into. Adyen needs
@@ -280,7 +284,12 @@ func expand(node any, with substitutions) any {
 				continue
 			}
 
-			out[key] = expand(value, with)
+			// The key as well as the value. Square's data.object holds the
+			// record under a key that is the resource's own name -- a payment
+			// arrives at data.object.payment and a customer at
+			// data.object.customer -- so a Recipe-wide envelope can only
+			// describe it if the key can vary.
+			out[expandKey(key, with)] = expand(value, with)
 		}
 
 		return out
@@ -298,6 +307,20 @@ func expand(node any, with substitutions) any {
 	}
 
 	return node
+}
+
+// expandKey substitutes into a template's key.
+//
+// Only the plain replacements. A key is a name rather than a value, so the
+// forms that return a non-string -- {object}, {created} -- have no meaning
+// here, and {object} as a key is the merge marker and is handled before this.
+func expandKey(key string, with substitutions) string {
+	replaced, _ := expandString(key, with).(string)
+	if replaced == "" {
+		return key
+	}
+
+	return replaced
 }
 
 // expandString substitutes into one scalar.
@@ -330,6 +353,7 @@ func expandString(value string, with substitutions) any {
 
 	replaced := strings.NewReplacer(
 		"{event}", with.event,
+		"{resource}", with.resource,
 		"{id}", with.id,
 		"{record_id}", recordID,
 		"{created}", strconv.FormatInt(with.at.Unix(), 10),
@@ -477,4 +501,34 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	mac.Write([]byte(payload))
 
 	return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(mac.Sum(nil)))
+}
+
+// resourceFor names the resource an event is about.
+//
+// Taken from the route that declares it where one does, and from the
+// convention otherwise, so the manual `cauldron emit` path resolves it the
+// same way a write does rather than needing to be told.
+func (q *webhookQueue) resourceFor(event string) string {
+	for _, route := range q.recipe.Routes {
+		if route.Emits == event {
+			return route.Resource
+		}
+
+		for _, conditional := range route.EmitsWhen {
+			if conditional.Event == event {
+				return route.Resource
+			}
+		}
+	}
+
+	name, _, found := strings.Cut(event, ".")
+	if !found {
+		return ""
+	}
+
+	if _, known := q.recipe.Resources[name]; known {
+		return name
+	}
+
+	return ""
 }
