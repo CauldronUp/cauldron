@@ -333,6 +333,17 @@ type WebhookExpectation struct {
 	// a case naming only the event it wants passes just as happily when both
 	// arrive.
 	AbsentEvents []string `yaml:"absent_events"`
+	// Signature is a pattern the signature value must match.
+	//
+	// The name of the header was assertable and the value was not, which left
+	// the more consequential half unchecked: an application does not read a
+	// signature, it hands the header to the provider's SDK, and a value in
+	// the wrong shape fails there rather than anywhere a Recipe could see.
+	//
+	// A pattern rather than a value, because the digest depends on the body
+	// and the body carries generated identifiers. The shape is the claim --
+	// sha256= and hex, or bare base64, or Stripe's t= and v1= pair.
+	Signature string `yaml:"signature"`
 	// SignatureHeader is the header a case claims the signature travels in.
 	//
 	// The name a handler reads before it can verify anything, and until this

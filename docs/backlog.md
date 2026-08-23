@@ -1513,6 +1513,34 @@ different reasons:
   now, which needs no knowledge of the order a provider chose and is the
   better definition anyway: the action is the part that is not the thing.
 
+### Every signature was Stripe's shape
+
+The same finding as the envelope and a worse one, because nobody parses a
+signature by hand. An application hands the header to the provider's SDK, so
+a value in the wrong shape fails there rather than anywhere a Recipe could
+see -- and the comment above the signing code said exactly that, above code
+that gave all seventy-four Recipes Stripe's `t=<unix>,v1=<hex>` over
+`<unix>.<body>`. Sixty-eight distinct header names, one shape.
+
+`signing.format` chooses now: `stripe` (the default, so nothing changes under
+a Recipe nobody has looked at), `prefixed-hex` for GitHub-style `sha256=`,
+`base64` for Shopify-style, and `slack` for `v0=` over `v0:<ts>:<body>`.
+Shopify, Bitbucket and Slack are correct; **71 are still on the default**.
+
+Two halves can be wrong independently and only one is assertable from a
+Recipe. A conformance case can pin the wrapper with a pattern, and cannot see
+what string was signed -- every digest of the right length looks alike.
+Signing the body where Slack signs `v0:<ts>:<body>` produces a well-formed
+`v0=` value that Slack's verifier rejects, and the suite passes nine of nine.
+That is why the base strings are checked by a unit test computing the HMAC
+the long way rather than by a case.
+
+Also owed, and stated in Slack's Recipe rather than papered over: a delivery
+carries the signing header and no others. Slack's verifier needs
+`X-Slack-Request-Timestamp` beside the signature, Svix needs `svix-id` and
+`svix-timestamp`, and neither can be sent. Those two formats are not
+declarable honestly until a delivery can carry more than one header.
+
 ### The field a handler reaches for first is often a constant
 
 Enough envelopes have been written now for one shape to have turned up

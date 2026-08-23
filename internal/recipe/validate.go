@@ -291,6 +291,22 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A signature format has to be one the runtime can produce. A typo here
+	// would fall through to Stripe's shape, which is the one thing this field
+	// exists to stop a Recipe sending by accident.
+	if format := r.Webhooks.Signing.Format; format != "" {
+		switch format {
+		case "stripe", "prefixed-hex", "base64", "slack":
+		default:
+			add("webhooks.signing.format is %q, which is not one of stripe, prefixed-hex, base64 or slack", format)
+		}
+
+		if r.Webhooks.Signing.Scheme != "hmac-sha256" {
+			add("webhooks.signing declares format %q and scheme %q, and there is no digest to shape unless the scheme is hmac-sha256",
+				format, r.Webhooks.Signing.Scheme)
+		}
+	}
+
 	// A route naming an error to raise has to name one that exists, or the
 	// only sign of the typo is a 404 in the shape it was overriding.
 	for _, route := range r.Routes {

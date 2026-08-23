@@ -44,4 +44,26 @@ type Signing struct {
 	Scheme string `yaml:"scheme"`
 	Header string `yaml:"header"`
 	Secret string `yaml:"secret"`
+	// Format is how the digest is wrapped and what string it is taken over.
+	//
+	// Every Recipe declaring hmac-sha256 used to get Stripe's shape --
+	// t=<unix>,v1=<hex> over "<unix>.<body>" -- which is right for Stripe and
+	// wrong for the other seventy-three. The reason it matters more than an
+	// envelope does is that nobody parses a signature by hand: an application
+	// passes the header to the provider's own SDK, and a signature in the
+	// wrong shape fails that check every time. A fake that hands an
+	// application a signature its verifier rejects is worse than one that
+	// sends no signature at all, which is what the code here said while doing
+	// the opposite.
+	//
+	// One of:
+	//
+	//   stripe        t=<unix>,v1=<hex>   over "<unix>.<body>"   (the default)
+	//   prefixed-hex  sha256=<hex>        over the body
+	//   base64        <base64>            over the body
+	//   slack         v0=<hex>            over "v0:<unix>:<body>"
+	//
+	// Empty means stripe, so a Recipe that has not been looked at keeps the
+	// shape it had rather than silently changing.
+	Format string `yaml:"format"`
 }

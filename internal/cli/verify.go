@@ -74,7 +74,7 @@ func runVerify(ctx *context, args []string) int {
 			out := make([]conform.Delivery, 0, len(recorded))
 
 			for _, d := range recorded {
-				out = append(out, conform.Delivery{Event: d.Event, Payload: d.Payload, SignatureHeader: d.SignatureHeader})
+				out = append(out, conform.Delivery{Event: d.Event, Payload: d.Payload, SignatureHeader: d.SignatureHeader, Signature: d.Signature})
 			}
 
 			return out

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -508,10 +509,14 @@ func (q *webhookQueue) record(d Delivery) {
 
 // sign produces the signature header value.
 //
-// The format mirrors Stripe's — a timestamp and a versioned HMAC over
-// "timestamp.body" — because applications verify signatures with the
-// provider's own SDK, and a signature that does not round-trip through that
-// SDK is worse than no signature at all.
+// The shape comes from the Recipe, because applications verify signatures
+// with the provider's own SDK and a signature that does not round-trip
+// through that SDK is worse than no signature at all.
+//
+// That sentence was here before, above code that gave every Recipe Stripe's
+// shape. Seventy-four declare hmac-sha256 under sixty-eight different header
+// names, and a Stripe-shaped value under X-Shopify-Hmac-Sha256 fails
+// Shopify's verifier on the first call.
 func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	signing := q.recipe.Webhooks.Signing
 
@@ -520,12 +525,33 @@ func (q *webhookQueue) sign(body []byte, at time.Time) string {
 	}
 
 	timestamp := at.Unix()
-	payload := fmt.Sprintf("%d.%s", timestamp, body)
+
+	// What is signed differs as much as how it is wrapped. Slack prefixes a
+	// version and the timestamp; GitHub and Shopify sign the body alone.
+	signed := string(body)
+
+	switch signing.Format {
+	case "slack":
+		signed = fmt.Sprintf("v0:%d:%s", timestamp, body)
+	case "prefixed-hex", "base64":
+	default:
+		signed = fmt.Sprintf("%d.%s", timestamp, body)
+	}
 
 	mac := hmac.New(sha256.New, []byte(signing.Secret))
-	mac.Write([]byte(payload))
+	mac.Write([]byte(signed))
+	sum := mac.Sum(nil)
 
-	return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(mac.Sum(nil)))
+	switch signing.Format {
+	case "prefixed-hex":
+		return "sha256=" + hex.EncodeToString(sum)
+	case "base64":
+		return base64.StdEncoding.EncodeToString(sum)
+	case "slack":
+		return "v0=" + hex.EncodeToString(sum)
+	default:
+		return fmt.Sprintf("t=%d,v1=%s", timestamp, hex.EncodeToString(sum))
+	}
 }
 
 // resourceFor names the resource an event is about.
