@@ -87,7 +87,7 @@ func TestAWebhookCarriesTheSameShapeAsTheResponse(t *testing.T) {
 func deliveryObject(t *testing.T, r *recipe.Recipe, d Delivery) map[string]any {
 	t.Helper()
 
-	data, ok := d.Payload["data"].(map[string]any)
+	data, ok := d.Fields()["data"].(map[string]any)
 	if !ok {
 		t.Fatalf("the payload has no data: %v", d.Payload)
 	}

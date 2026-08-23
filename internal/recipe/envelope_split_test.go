@@ -48,7 +48,7 @@ func TestTheREADMEEnvelopeSplitMatchesTheRecipes(t *testing.T) {
 
 		emitting++
 
-		if len(r.Webhooks.Payload) > 0 {
+		if r.Webhooks.Payload != nil {
 			declared++
 		}
 	}

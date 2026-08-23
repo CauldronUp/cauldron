@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 21 declare a payload envelope and 78 fall
+Of the 99 Recipes that emit events, 22 declare a payload envelope and 77 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1482,12 +1482,24 @@ provider, and now says so with the numbers in it and a test holding them.
 Three are declared now -- Shopify, Slack and ClickUp -- and doing them turned
 up two things the template cannot say and one it was saying by coin toss.
 
-**A top-level array.** `webhooks.payload` is a `map[string]any`, so a payload
-that is not an object cannot be declared. SendGrid's Event Webhook posts an
-array of event objects and batches several into one delivery, which is the
-whole reason its documentation warns about it. Nine SendGrid events are
-declared and every one of them would arrive here as a single object under
-Stripe's envelope.
+~~**A top-level array.**~~ **Built.** `webhooks.payload` is `any` now, so a
+payload that is not an object can be declared. HubSpot's is: an array of
+subscription objects, batched, carrying no record at all -- a delivery names
+the object that changed and leaves you to fetch it, so an application reading
+a contact's email off the webhook is reading something HubSpot has never sent.
+
+Two of the three providers that motivated it are still not done, for
+different reasons:
+
+- **SendGrid** can now be described and still cannot be checked. None of its
+  nine events is reachable from any route it has, so declaring the array
+  would be writing a claim no case could exercise -- the Calendly rule.
+- **QuickBooks** sends `{eventNotifications: [{realmId, dataChangeEvent:
+  {entities: [{name, id, operation, lastUpdated}]}}]}`, which the template
+  can nest happily except for one thing: `name` and `operation` are the two
+  halves of an event this Recipe declares as `Customer.Create`, and splitting
+  a string is not something a template does. Same shape of gap as Xero's
+  INVOICE and UPDATE.
 
 **A Recipe with no writes cannot show any of this.** Calendly declares five
 events and has no create, update or delete route, so nothing it declares can
@@ -1547,8 +1559,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **27 can fire at least one declared
-event and 51 cannot** -- 21 declared, 27 and 51, which is the 99 that emit
+Of the Recipes still on the default, **26 can fire at least one declared
+event and 51 cannot** -- 22 declared, 26 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,

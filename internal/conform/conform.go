@@ -102,7 +102,7 @@ type Armer func(errorName string) error
 // this package has no business knowing.
 type Delivery struct {
 	Event   string
-	Payload map[string]any
+	Payload any
 	// SignatureHeader is the header the signature travelled in, which is a
 	// claim the Recipe makes and nothing could check.
 	SignatureHeader string
@@ -270,7 +270,7 @@ func checkWebhook(expect recipe.WebhookExpectation, before int, all []Delivery) 
 		failures = append(failures, fmt.Sprintf("webhook signature header: want %q, got %q", expect.SignatureHeader, delivery.SignatureHeader))
 	}
 
-	document := any(delivery.Payload)
+	document := delivery.Payload
 
 	for _, path := range sortedKeys(expect.Body) {
 		failures = append(failures, prefixed("webhook", compare(path, expect.Body[path], document))...)
