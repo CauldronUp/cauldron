@@ -1617,6 +1617,21 @@ Swept across the thirty-four descriptions already fetched: **twenty-one are
 contradicted by nothing at all**, up from thirteen, and no description in that
 set now fails to read.
 
+Four more were fetched on 2026-08-23 -- Documenso, Apify, Fly and LaunchDarkly
+all publish one at a stable URL -- and every one of the four contradicts
+nothing. Thirty-eight descriptions, twenty-five clean.
+
+Documenso's is the only one that said anything at all: its `rate_limit` error
+answers 429 and the description declares no 429 anywhere, which is the
+declined-to-say category rather than a disagreement.
+
+Guessing at URLs for the providers whose paging is still unnamed failed
+again, as it did before: AssemblyAI, Vonage, Deel and Segment were each tried
+at the address a description would plausibly live at and none of the four
+answered with one. That approach has now failed ten times out of ten and is
+not worth a eleventh -- the descriptions that exist are found by reading a
+provider's documentation, not by pattern.
+
 Two of that rise came from a status nobody declares. A description that names
 a status nowhere has not contradicted a Recipe answering with it -- it has
 declined to say. Nineteen of the thirty-one descriptions here declare no 429
