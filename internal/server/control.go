@@ -437,18 +437,40 @@ func (s *Server) emit(w http.ResponseWriter, r *http.Request, sandbox *runtime.S
 		data = raw
 	}
 
-	delivery, err := sandbox.Webhooks().Emit(event, data)
+	delivery, attempts, err := sandbox.Webhooks().Emit(event, data)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	// What each subscriber said, rather than what the delivery looked like
+	// before anybody was asked. endpoint and status were reported here from
+	// the pre-delivery value, so both were always "" and 0 -- the same answer
+	// whether a receiver verified the signature and returned 200, refused it,
+	// or was never listening. Somebody wiring up verification read that as
+	// confirmation.
+	//
+	// A delivery goes to every subscriber, so there is a result per endpoint
+	// rather than one.
+	delivered := make([]map[string]any, 0, len(attempts))
+	for _, attempt := range attempts {
+		result := map[string]any{
+			"endpoint": attempt.Endpoint,
+			"status":   attempt.Status,
+		}
+
+		if attempt.Error != "" {
+			result["error"] = attempt.Error
+		}
+
+		delivered = append(delivered, result)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"recipe":   sandbox.Name(),
-		"event":    delivery.Event,
-		"id":       delivery.ID,
-		"endpoint": delivery.Endpoint,
-		"status":   delivery.Status,
+		"recipe":     sandbox.Name(),
+		"event":      delivery.Event,
+		"id":         delivery.ID,
+		"deliveries": delivered,
 	})
 }
 
