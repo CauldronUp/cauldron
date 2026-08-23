@@ -36,6 +36,16 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Magento is the case where the same name covers three protocols.
+			// magento-api on npm is SOAP, @magento/peregrine is PWA Studio
+			// and talks GraphQL, and smalot/magento-client is SOAP v1 -- all
+			// of them Magento, none of them the REST API this Recipe models.
+			// So the table names only packages that say REST and say 2.
+			recipe:   "magento",
+			composer: []string{"springimport/swagger-magento2-client", "zero1/magento2-rest-client"},
+			npm:      []string{"magento2-rest-client"},
+		},
+		{
 			// Both of these say Etsy API v3 in as many words, which is the
 			// bar here: the Recipe models v3, and the older wrappers on both
 			// registries speak v2. Pointing a v2 project at a v3 emulator

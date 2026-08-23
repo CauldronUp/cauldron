@@ -1,0 +1,535 @@
+# Magento / Adobe Commerce Recipe for Cauldron
+#
+# Magento is the largest self-hosted commerce platform anybody still writes
+# integrations against, and almost nothing about its REST API resembles the
+# other commerce Recipes here. A query is not a query string in any ordinary
+# sense, a product and an order are addressed by different kinds of thing, and
+# the sentence in a failure is a template with the substitutions sitting
+# beside it unapplied.
+#
+# Six things worth modelling exactly:
+#
+#   1. A search is expressed as nested brackets in the query string:
+#      searchCriteria[filterGroups][0][filters][0][field]. Paging is
+#      searchCriteria[pageSize] and searchCriteria[currentPage]. Nothing else
+#      in this repository looks remotely like it, and a client that sends
+#      limit and page is not refused -- it is answered with page one of
+#      everything, which looks like working code until the catalogue outgrows
+#      one page.
+#   2. A listing is {items, search_criteria, total_count} and a single record
+#      is bare. So response.items exists on the list and not on the record it
+#      contained, and the paging you sent comes back to you nested inside the
+#      answer rather than beside it.
+#   3. A product is addressed by sku. GET /V1/products/ABC-1 works and
+#      GET /V1/products/42 does not, even though the product carries id 42 in
+#      its body. Code that reads the id out of a listing and then fetches by
+#      it gets 404 on every product it ever handled.
+#   4. An order is addressed by entity_id -- and the number printed on the
+#      invoice is increment_id, a zero-padded string like "000000123". Two
+#      identifiers on one record, and the one a customer quotes down the
+#      phone is not the one the API takes.
+#   5. custom_attributes is an array of {attribute_code, value} objects, so
+#      product.custom_attributes.description is undefined and the description
+#      is sitting in the array under a code that has to be searched for. Most
+#      of a real Magento product lives in there.
+#   6. A failure message is a template. Magento sends
+#      "The %fieldName value is required." with {"fieldName": "sku"} beside
+#      it in parameters, and it is the client's job to substitute. Showing
+#      message straight to a user shows them a percent sign and a variable
+#      name.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Magento's filter groups have real semantics: groups are combined with
+#     AND and the filters inside one group with OR. Getting that backwards is
+#     a silent wrong-results bug and it is exactly the kind of thing worth
+#     emulating, but the format expresses a filter as one parameter matched
+#     against one field, with no notion of a group. The filter below is
+#     modelled as a plain equality match on the parameter Magento would send
+#     for a single filter in a single group, which is the common case and not
+#     the interesting one.
+#   - search_criteria echoes back page_size and current_page here, which is
+#     the half a client reads. Magento also echoes filter_groups inside it,
+#     in the same nested shape it received them, and the format has no way to
+#     reflect a filter back into the envelope. So search_criteria exists and
+#     is smaller than the real one.
+#   - conditionType (eq, like, gteq, in, ...) is sent as its own bracketed
+#     parameter and is ignored here; every filter behaves as eq. A client
+#     relying on like against this Recipe gets exact matching and does not
+#     find out.
+#   - Magento's admin tokens expire after four hours and integration tokens
+#     never do. This Recipe accepts its fixture token forever, so the
+#     difference between the two, which decides whether an integration needs
+#     to re-authenticate at all, is not visible here.
+#
+# The token below is a fixture, not a secret. It belongs to no store.
+
+recipe: magento
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: V1
+  docs: https://developer.adobe.com/commerce/webapi/rest/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_magento_integration_token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    # Magento's own name for it, and one of only two providers here that
+    # spells the total this way rather than count or total.
+    count_field: total_count
+    # The criteria come back inside the answer, nested under search_criteria,
+    # which is why a Magento response is bigger than it looks and why a
+    # client can read back what it actually asked for rather than what it
+    # meant to.
+    limit_field: search_criteria.page_size
+    page_field: search_criteria.current_page
+  resource:
+    # Bare. The listing has an envelope and the record it contained has none,
+    # so one response helper cannot read both halves of the same resource.
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  product:
+    id:
+      style: numeric
+      type: number
+      # Present, and not what the API addresses a product by. See the sku
+      # route below: this id is readable and unusable.
+      field: id
+    fields:
+      # The real key. Everything that refers to a product refers to its sku,
+      # including the cart, the order item and the stock record.
+      sku:
+        type: string
+        required: true
+      name:
+        type: string
+        required: true
+      # A number, unlike the string BigCommerce sends on an order.
+      price:
+        type: number
+      # 1 is enabled and 2 is disabled. Not a boolean, and not 0 and 1 --
+      # a disabled product is truthy in every language that has truthiness.
+      status:
+        type: integer
+        default: 1
+      # simple, configurable, bundle, grouped, virtual, downloadable. A
+      # configurable product has no price of its own; its children do.
+      type_id:
+        type: string
+        default: simple
+      # An array of {attribute_code, value}, which is where most of a real
+      # Magento product lives: description, url_key, meta_title, and every
+      # attribute the merchant added.
+      #
+      # Declared a list because that is what it is. No conformance case can
+      # check that declaration: list and map put identical bytes on the wire
+      # for a value that arrives already shaped, so changing this line to map
+      # breaks nothing here and was the one mutation of sixteen that survived
+      # the sweep. The cases below pin the shape -- an array, read by index,
+      # with the code inside the element -- which is the part client code
+      # depends on. The word is documentation, and saying so is better than
+      # implying a check that does not exist.
+      custom_attributes:
+        type: list
+      created_at:
+        type: datetime
+
+  order:
+    id:
+      style: numeric
+      type: number
+      # The identifier the API takes.
+      field: entity_id
+    fields:
+      # The identifier the customer has. Zero-padded, a string, and useless
+      # in every path in this file. Looking an order up by the number on its
+      # invoice is a 404 and a support ticket.
+      increment_id:
+        type: string
+      # Two words for the state, both present, and they are not synonyms:
+      # state is the coarse lifecycle (new, processing, complete, closed,
+      # canceled) and status is a merchant-configurable label mapped onto it.
+      # Branching on status is branching on a setting.
+      state:
+        type: string
+        default: new
+      status:
+        type: string
+        default: pending
+      grand_total:
+        type: number
+      subtotal:
+        type: number
+      customer_email:
+        type: string
+      # 1 is guest, 0 is a registered customer. The sense reads backwards.
+      customer_is_guest:
+        type: integer
+        default: 0
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /rest/V1/products
+    resource: product
+    operation: list
+    pagination:
+      # The bracketed names are literal. A client sending page and pageSize,
+      # or limit and offset, is not refused -- Magento ignores what it does
+      # not recognise and answers with the first page of everything.
+      style: page
+      limit: 20
+      limit_param: searchCriteria[pageSize]
+      cursor_param: searchCriteria[currentPage]
+      first_page: 1
+    filters:
+      # One filter, in one group, written out in full. This is the shortest
+      # a Magento filter ever gets, and it is already four levels of bracket
+      # deep before it says which field it means.
+      - param: searchCriteria[filterGroups][0][filters][0][value]
+        field: status
+
+  # A product is addressed by sku, and the path parameter is still called id
+  # because that is what the format calls the thing in the path. lookup_by is
+  # what makes the difference expressible: the segment is matched against sku
+  # rather than against the identifier.
+  - method: GET
+    path: /rest/V1/products/{id}
+    resource: product
+    operation: get
+    lookup_by: sku
+
+  # Magento answers a create with 200 rather than 201, which is unusual
+  # enough that a client asserting 201 fails against a store that worked.
+  - method: POST
+    path: /rest/V1/products
+    resource: product
+    operation: create
+
+  - method: DELETE
+    path: /rest/V1/products/{id}
+    resource: product
+    operation: delete
+    lookup_by: sku
+
+  - method: GET
+    path: /rest/V1/orders
+    resource: order
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      limit_param: searchCriteria[pageSize]
+      cursor_param: searchCriteria[currentPage]
+      first_page: 1
+
+  # And an order is addressed by entity_id, in the same API, with no
+  # lookup_by, because here the path segment really is the identifier. The
+  # inconsistency is Magento's.
+  - method: GET
+    path: /rest/V1/orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  # The one that shows a percent sign to a customer. message is a template
+  # and parameters carries the substitutions, unapplied.
+  parameter_missing:
+    status: 400
+    message: 'The "%fieldName" value is required. Enter the value and try again.'
+    fields:
+      parameters:
+        fieldName: sku
+
+  # Magento's 401 is about an ACL resource rather than about the token, and
+  # it is templated too. A client that logs message and moves on logs a
+  # sentence with a variable name in it.
+  authentication_error:
+    status: 401
+    message: "The consumer isn't authorized to access %resources."
+    fields:
+      parameters:
+        resources: Magento_Catalog::products
+
+  resource_missing:
+    status: 404
+    message: "The product that was requested doesn't exist. Verify the product and try again."
+
+  rate_limit:
+    status: 429
+    message: "Too Many Requests"
+
+fixtures:
+  empty: {}
+
+  small-store:
+    product:
+      - id: "42"
+        sku: CAULD-01
+        name: Cast iron cauldron
+        price: 89.95
+        status: 1
+        type_id: simple
+        custom_attributes:
+          - attribute_code: description
+            value: Seasoned, twelve litres.
+          - attribute_code: url_key
+            value: cast-iron-cauldron
+          - attribute_code: meta_title
+            value: Cast iron cauldron
+        created_at: "2026-01-01 00:00:00"
+      - id: "43"
+        sku: LADLE-02
+        name: Brass ladle
+        price: 12.50
+        status: 1
+        type_id: simple
+        custom_attributes:
+          - attribute_code: description
+            value: Hand finished.
+          - attribute_code: url_key
+            value: brass-ladle
+        created_at: "2026-01-01 00:00:00"
+      - id: "44"
+        sku: APRON-03
+        name: Linen apron
+        price: 45.00
+        # Disabled, and 2 rather than 0. Truthy everywhere.
+        status: 2
+        type_id: simple
+        custom_attributes:
+          - attribute_code: description
+            value: Undyed.
+        created_at: "2026-01-01 00:00:00"
+    order:
+      - id: "123"
+        increment_id: "000000123"
+        state: processing
+        status: processing
+        grand_total: 102.45
+        subtotal: 89.95
+        customer_email: buyer@example.com
+        customer_is_guest: 0
+        created_at: "2026-02-01 09:15:00"
+
+conformance:
+  - name: a listing is wrapped and echoes the criteria back
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/performing-searches/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        items[0].sku: CAULD-01
+        # Magento's own name for the total.
+        total_count: 3
+
+  - name: a product is addressed by sku
+    source: https://developer.adobe.com/commerce/webapi/rest/tutorials/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products/CAULD-01
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        sku: CAULD-01
+        # The id is right there in the body, and it is not what fetched this.
+        id: 42
+      absent:
+        # Bare. The listing that contained this record had an envelope and
+        # the record does not.
+        - items
+        - total_count
+        - search_criteria.page_size
+
+  - name: and not by the id it carries
+    source: https://developer.adobe.com/commerce/webapi/rest/tutorials/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products/42
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      # The exact failure a client hits when it reads the id out of a listing
+      # and fetches by it. Every product, every time, and the body says the
+      # product does not exist rather than that the key was the wrong kind.
+      status: 404
+      body:
+        message: The product that was requested doesn't exist. Verify the product and try again.
+
+  - name: the description is in an array and not on the product
+    source: https://developer.adobe.com/commerce/webapi/rest/modules/catalog/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products/CAULD-01
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        # Under a code, in a list, at whatever position it happens to be.
+        custom_attributes[0].attribute_code: description
+        custom_attributes[0].value: Seasoned, twelve litres.
+      absent:
+        # The two shapes a client reaches for, neither of which Magento sends.
+        - description
+        - custom_attributes.description
+
+  - name: paging is bracketed and a page is a page
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/performing-searches/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products?searchCriteria[pageSize]=2&searchCriteria[currentPage]=2
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        # The third product, because pages are one-based here. A client that
+        # counts from zero re-reads page one and never terminates.
+        items[0].sku: APRON-03
+        total_count: 3
+        # Nested, not beside. A client reading response.page_size finds
+        # undefined and one reading response.search_criteria.page_size does
+        # not.
+        search_criteria.page_size: 2
+        search_criteria.current_page: 2
+      absent:
+        - items[1]
+        - page_size
+        - current_page
+
+  - name: a filter is four levels of bracket deep
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/performing-searches/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products?searchCriteria[filterGroups][0][filters][0][field]=status&searchCriteria[filterGroups][0][filters][0][value]=2&searchCriteria[filterGroups][0][filters][0][conditionType]=eq
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        # The disabled one, and only it.
+        total_count: 1
+        items[0].sku: APRON-03
+        items[0].status: 2
+
+  - name: an order carries the number on the invoice and is not found by it
+    source: https://developer.adobe.com/commerce/webapi/rest/modules/sales/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/orders/123
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 200
+      body:
+        entity_id: 123
+        # Zero-padded, a string, and the only number the customer has. Fetching
+        # /V1/orders/000000123 is a 404.
+        increment_id: "000000123"
+        # Two words for the state, both present.
+        state: processing
+        status: processing
+      absent:
+        - id
+
+  - name: a failure message is a template with the substitutions beside it
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/common-error-messages/
+    arm: parameter_missing
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 400
+      body:
+        # Shown to a user unmodified, this reads: The "%fieldName" value is
+        # required. The substitution is the client's job and nothing in the
+        # response says so.
+        message: 'The "%fieldName" value is required. Enter the value and try again.'
+        parameters.fieldName: sku
+
+  - name: and so is the refusal to authorise
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/common-error-messages/
+    arm: authentication_error
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+    expect:
+      status: 401
+      body:
+        # About an ACL resource rather than about the credential, so a client
+        # that reads this as "bad token" reissues a token that was fine.
+        message: The consumer isn't authorized to access %resources.
+        parameters.resources: Magento_Catalog::products
+
+  - name: a created product keeps its attributes in the array
+    source: https://developer.adobe.com/commerce/webapi/rest/modules/catalog/
+    fixture: small-store
+    request:
+      method: POST
+      path: /rest/V1/products
+      headers:
+        Authorization: Bearer cauldron_magento_integration_token
+      json:
+        sku: TANKARD-04
+        name: Pewter tankard
+        price: 28
+        custom_attributes:
+          - attribute_code: description
+            value: Half a litre.
+    expect:
+      # 200, not 201. Magento does not use 201 for a create, so a client
+      # asserting it fails against a store that did exactly what was asked.
+      status: 200
+      body:
+        sku: TANKARD-04
+        # Still an array on the way back out, read by index, with the code
+        # inside the element rather than as the key.
+        custom_attributes[0].attribute_code: description
+        custom_attributes[0].value: Half a litre.
+      absent:
+        - description
+
+  - name: a bad token is refused
+    source: https://developer.adobe.com/commerce/webapi/rest/use-rest/folder-structure/
+    fixture: small-store
+    request:
+      method: GET
+      path: /rest/V1/products
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      status: 401
