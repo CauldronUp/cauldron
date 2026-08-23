@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 39 declare a payload envelope and 60 fall
+Of the 99 Recipes that emit events, 41 declare a payload envelope and 58 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1538,6 +1538,28 @@ one level further down than a reader expects.
 
 The default envelope hid all six. Under it every one of these Recipes had a
 `type` holding the event name, which is the one thing none of them does.
+
+### The seven left, and why they are left
+
+Recurly is one and is a decision, below. The other six are not blocked by the
+format and are not done, which is a different thing from being hard:
+
+- **Xero** wants `eventCategory: INVOICE` beside `eventType: CREATE`.
+  `{action}` supplies the second half; the first is the resource shouted, and
+  there is no substitution that changes case. One provider, so it stays a
+  gap rather than a mechanism.
+- **Cloudflare** and **Klaviyo** declare event names this note is not
+  confident are real. Cloudflare's notifications are alert-shaped rather than
+  `zone.created`-shaped, and Klaviyo's outbound payloads are configured per
+  flow rather than fixed. Declaring an envelope on top of an event name that
+  may itself be wrong would put two guesses in one place, so these want the
+  provider read before anything is written.
+- **LaunchDarkly**, **Miro** and **Stytch** are ordinary remaining work: a
+  documented shape nobody has transcribed yet.
+
+The distinction is worth keeping. Six of these could be filled in an
+afternoon by someone with the documentation open, and two of the six would be
+wrong to fill without checking the events first.
 
 ### Owed: a webhook body that is not JSON
 
@@ -1635,8 +1657,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **9 can fire at least one declared
-event and 51 cannot** -- 39 declared, 9 and 51, which is the 99 that emit
+Of the Recipes still on the default, **7 can fire at least one declared
+event and 51 cannot** -- 41 declared, 7 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
