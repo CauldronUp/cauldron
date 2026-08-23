@@ -446,6 +446,34 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Four listings that said nothing about paging, asked
+
+The providers this collection can reach without a credential are worth more
+than their number suggests, because a question about them can be settled
+rather than reasoned about. Four of their listings declared no paging at all,
+and all four were wrong to:
+
+| listing | observed on 2026-08-23 | what it declared |
+|---|---|---|
+| GitHub labels | `per_page=2` answers two with a `rel="next"` Link header | nothing -- paged at ten reading `limit`, which GitHub does not take |
+| OpenRouter models | all 422 with `links.next` null; `?limit=2` answers two with `links.next` `/api/v1/models?offset=2&limit=2` | nothing |
+| Discourse `/latest.json` | thirty topics, `topic_list.per_page` thirty; `?per_page=5` answers five and reports five | nothing |
+| Discourse `/categories.json` | twelve categories, and `category_list` carries no paging field at all | nothing |
+
+Three of the four are now exercised by a case that fails without the
+declaration. **OpenRouter's is not**, and the reason is worth keeping: its
+size parameter really is called `limit`, so the fallback happened to read the
+right word and only the style was wrong. Nothing distinguishes offset paging
+from the default here because the Recipe does not model `links` -- the field
+that would show the difference is `links.next`, and it is not declared.
+
+That is the next thing to do for OpenRouter, and it is a response-shape gap
+rather than a paging one.
+
+GitHub's labels fixture had one label, which cannot distinguish "pages by
+per_page" from its opposite. It has two now, for the same reason Typeform's
+webhooks fixture gained a second.
+
 ### A live-verified case can still carry a wrong claim
 
 Docker Hub, and it is the fourth of these -- but the first with a `verified`
@@ -583,7 +611,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**106 more listings across 60 Recipes declare no paging at all**, and the
+**102 more listings across 57 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

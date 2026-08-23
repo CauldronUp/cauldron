@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1744 cases, 51 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1748 cases, 55 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -319,12 +319,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1744 cases, 51 run against
+That second line is the honest one. Of every Recipe: 1748 cases, 55 run against
 a live account and 1693 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The fifty-one are the cases whose provider can be asked without a key. Five are
+The fifty-five are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -372,7 +372,7 @@ still be answered like any other: `library/registry` returns its `2.5.2` with
 `2.7.0` among them. Plain version tags, which is what makes it worth having --
 somebody pinned to `registry:2.5.2` is pinned to something the registry has
 already decided is a candidate for removal, and it says so in a field nobody
-reads while answering 200. Fourteen are GitHub's, which answers for a public repository
+reads while answering 200. Fifteen are GitHub's, which answers for a public repository
 without a token: its errors repeat the HTTP status in the body as a string,
 an issue carries no owner and no repo, and an issue is addressed by its
 number rather than by its id -- `golang/go` issue 81026 has id 5222669952,
@@ -426,7 +426,7 @@ difference between `"merged_at" in mr` being false and being true: code asking
 whether the key exists got one answer here and the other from GitLab, passed
 locally, and read every merge request as merged.
 
-Five are Discourse's, which is the first provider added to this list since the
+Seven are Discourse's, which is the first provider added to this list since the
 list was written. Any Discourse forum answers `/latest.json` and `/t/{id}.json`
 without a key, so meta.discourse.org settles all five: the topics are two
 levels down and there is no `topics` or `per_page` at the top level at all;
