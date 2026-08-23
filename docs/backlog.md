@@ -446,6 +446,31 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### An assertion that cannot fail is not an assertion
+
+Mapping every field of the format to whether any test names it -- by its YAML
+tag or its Go field -- found twenty-seven that Recipes use and nothing tests.
+Most are shapes, and a wrong shape shows up as a failing case somewhere.
+
+Six are not shapes. They are the ways a case *asserts* something:
+`header_matches`, `absent_headers`, `body_matches`, `matches_header`,
+`absent_events`, `signature_header`. A shape that is quietly broken fails
+loudly; an assertion that is quietly broken passes, and every case built on
+it passes with it. Nineteen cases use `signature_header` and eight use
+`header_matches`, and the only evidence any of them did anything was that a
+Recipe somewhere used them and stayed green -- which is what a silently
+ignored field looks like from outside.
+
+There is a test now that gives each kind a response it should refuse and one
+it should accept: status, headers, header_matches, absent_headers, body,
+matches, absent, body_matches, no_body. Neutering any of the three untested
+ones makes it fail.
+
+All nine work. The one that failed first was the test rather than the
+mechanism: `body_matches` applies to the raw body, quotes and all, which
+npm's own case gets right by writing the opening quote into its pattern and
+which this test had wrong.
+
 ### The behaviour under five wrong cases, stated once
 
 Five conformance cases had been found asking for a page with `limit` against
