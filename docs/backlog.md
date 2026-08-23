@@ -446,6 +446,43 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### The rest of the verified set holds up
+
+Fifty-six cases carry a `verified:` date and three of them turned out to be
+claiming more than they check: Docker Hub's asserted the right things about
+the wrong request, GitLab's asserted them under the wrong name, and
+Discourse's left half its name unasserted. Reading the other fifty-three
+found nothing further.
+
+That is worth recording rather than leaving as an absence. The three that
+were wrong shared a shape -- the assertions held under both the claim and its
+opposite -- and the rest do not: GitHub's page-two case names the issue it
+expects rather than merely counting one, WordPress's names the slug, and the
+two Link-header cases assert the header rather than inferring it from the
+body.
+
+An earlier pass over this set looked emptier than it was, because the dump
+behind it did not print header assertions. The two GitHub cases that appeared
+to assert nothing assert `Link`.
+
+### One name whose second half nothing checked
+
+Pipedrive's "the position is start, not offset or page" sends `start` and
+asserts the second deal comes back, which shows `start` works and says
+nothing about the other two words. That half is the one a client gets wrong,
+because every neighbouring API spells it `offset` or `page`.
+
+There is a case for it now: `offset=1` answers the first deal, unmoved.
+Declaring `cursor_param` is what makes the other spellings inert, and
+pointing it at `offset` fails both cases.
+
+A scan for the same shape -- a name drawing a contrast with a single
+assertion behind it -- returned seventy-eight, and almost all of them are
+sound: "a bad api key is a 403, not a 401" is a contrast whose whole content
+is the status, and the status is asserted. The heuristic counted body
+assertions and not the status line, which is the sort of thing that makes a
+scan look alarming and mean little.
+
 ### The same scan, widened past the page size
 
 A response field whose value the request decides, declared as a fixed one, is
