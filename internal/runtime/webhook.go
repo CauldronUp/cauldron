@@ -26,7 +26,7 @@ type Delivery struct {
 	ID      string
 	Event   string
 	At      time.Time
-	Payload map[string]any
+	Payload any
 	// Signature is the value sent in the Recipe's signing header.
 	Signature string
 	// SignatureHeader is the header that value travels in.
@@ -215,10 +215,10 @@ func (q *webhookQueue) Events() []string {
 // written before envelopes were declarable behaves exactly as it did; it is
 // not a claim that the provider in question sends that shape, and a Recipe
 // that knows its provider's envelope should say so.
-func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record) map[string]any {
+func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record) any {
 	template := q.recipe.Webhooks.Payload
 
-	if len(template) == 0 {
+	if template == nil {
 		return map[string]any{
 			"id":      id,
 			"type":    event,
@@ -229,12 +229,10 @@ func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record
 		}
 	}
 
-	filled, _ := expand(template, substitutions{
+	return expand(template, substitutions{
 		event: event, id: id, at: at, record: map[string]any(data),
 		resource: q.resourceFor(event),
-	}).(map[string]any)
-
-	return filled
+	})
 }
 
 // substitutions are the values a payload template can refer to.
@@ -571,4 +569,16 @@ func lookupIn(record map[string]any, path string) any {
 	}
 
 	return current
+}
+
+// Fields is the payload as an object, or nil when the provider sends
+// something else.
+//
+// Most envelopes are objects and reading one field out of them should not
+// need a type assertion at every call site. The ones that are not -- an array
+// of batched events -- have nothing to return here, and nil says so.
+func (d Delivery) Fields() map[string]any {
+	fields, _ := d.Payload.(map[string]any)
+
+	return fields
 }

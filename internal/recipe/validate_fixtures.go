@@ -202,7 +202,7 @@ func (r *Recipe) validateCases(add func(string, ...any)) {
 			// while its name claimed it was checking the webhook matched the
 			// response. The claim was right and the path was Stripe's, and
 			// nothing could tell the difference.
-			if len(r.Webhooks.Payload) == 0 {
+			if r.Webhooks.Payload == nil {
 				for _, path := range append(sortedKeys(w.Body), sortedKeys(w.Matches)...) {
 					if path != "data" && !strings.HasPrefix(path, "data.") {
 						continue

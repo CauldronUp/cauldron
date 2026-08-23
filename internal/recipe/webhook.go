@@ -29,7 +29,13 @@ type Webhooks struct {
 	// *key* of "{object}" merges the record's fields into that map instead,
 	// which is what Adyen needs: its notification item carries the payment's
 	// fields alongside eventCode and success rather than under them.
-	Payload map[string]any `yaml:"payload"`
+	// any rather than a map, because a payload is not always an object.
+	// SendGrid's Event Webhook posts an array and batches several events into
+	// one delivery, HubSpot does the same, and QuickBooks sends an array of
+	// change notifications -- three providers whose defining behaviour could
+	// not be described while this was a map, and all three would have arrived
+	// as a single object under Stripe's envelope.
+	Payload any `yaml:"payload"`
 }
 
 // Signing describes webhook payload signing.

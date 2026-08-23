@@ -457,14 +457,14 @@ func TestADeclaredWebhookEnvelopeIsUsed(t *testing.T) {
 	// Stripe's envelope must not be there at all, or a client written against
 	// the real Adyen finds two shapes and picks the wrong one.
 	for _, absent := range []string{"id", "type", "created", "data"} {
-		if _, present := delivery.Payload[absent]; present {
+		if _, present := delivery.Fields()[absent]; present {
 			t.Errorf("Adyen sends no top-level %q", absent)
 		}
 	}
 
-	items, _ := delivery.Payload["notificationItems"].([]any)
+	items, _ := delivery.Fields()["notificationItems"].([]any)
 	if len(items) != 1 {
-		t.Fatalf("notificationItems = %v, want one entry", delivery.Payload["notificationItems"])
+		t.Fatalf("notificationItems = %v, want one entry", delivery.Fields()["notificationItems"])
 	}
 
 	wrapper, _ := items[0].(map[string]any)
@@ -485,8 +485,8 @@ func TestADeclaredWebhookEnvelopeIsUsed(t *testing.T) {
 		t.Errorf("merchantReference = %v, want the record merged in", item["merchantReference"])
 	}
 
-	if live, isString := delivery.Payload["live"].(string); !isString || live != "false" {
-		t.Errorf("live = %#v, want the string \"false\"", delivery.Payload["live"])
+	if live, isString := delivery.Fields()["live"].(string); !isString || live != "false" {
+		t.Errorf("live = %#v, want the string \"false\"", delivery.Fields()["live"])
 	}
 }
 
@@ -499,11 +499,11 @@ func TestAnUndeclaredWebhookEnvelopeStaysTheDefault(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 
-	if delivery.Payload["type"] != "customer.created" {
-		t.Errorf("type = %v", delivery.Payload["type"])
+	if delivery.Fields()["type"] != "customer.created" {
+		t.Errorf("type = %v", delivery.Fields()["type"])
 	}
 
-	data, _ := delivery.Payload["data"].(map[string]any)
+	data, _ := delivery.Fields()["data"].(map[string]any)
 	object, _ := data["object"].(map[string]any)
 
 	if object["id"] != "cus_cauldron" {
@@ -536,13 +536,13 @@ func TestAWebhookEnvelopeCanBeNoEnvelopeAtAll(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 
-	if delivery.Payload["status"] != "processing" {
-		t.Errorf("status = %v, want the record at the top level", delivery.Payload["status"])
+	if delivery.Fields()["status"] != "processing" {
+		t.Errorf("status = %v, want the record at the top level", delivery.Fields()["status"])
 	}
 
 	// Nothing wrapping it, and nothing naming the event.
 	for _, absent := range []string{"type", "event", "created", "data"} {
-		if _, present := delivery.Payload[absent]; present {
+		if _, present := delivery.Fields()[absent]; present {
 			t.Errorf("WooCommerce sends no top-level %q", absent)
 		}
 	}
