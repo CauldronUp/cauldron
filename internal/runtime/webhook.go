@@ -614,11 +614,18 @@ func (d Delivery) Fields() map[string]any {
 // rather than a guess. Handing back the whole event would put a plausible
 // value somewhere the provider sends something else.
 func actionOf(event, resource string) string {
-	if resource == "" || !strings.Contains(event, resource) {
+	// Case-insensitively, because a provider's event names and a Recipe's
+	// resource names do not have to agree on it: Xero declares INVOICE.CREATE
+	// against a resource called invoice, and Documenso DOCUMENT_CREATED
+	// against document. Matching exactly returned the empty string for both,
+	// which is the failure this whole substitution exists to avoid -- a
+	// present field with nothing in it.
+	at := strings.Index(strings.ToLower(event), strings.ToLower(resource))
+	if resource == "" || at < 0 {
 		return ""
 	}
 
-	rest := strings.Replace(event, resource, "", 1)
+	rest := event[:at] + event[at+len(resource):]
 
 	return strings.Trim(rest, "._:-/ ")
 }

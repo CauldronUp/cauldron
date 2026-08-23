@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 34 declare a payload envelope and 65 fall
+Of the 99 Recipes that emit events, 37 declare a payload envelope and 62 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1512,6 +1512,41 @@ different reasons:
   object and the prefix the action. It is the event with the resource removed
   now, which needs no knowledge of the order a provider chose and is the
   better definition anyway: the action is the part that is not the thing.
+
+### The field a handler reaches for first is often a constant
+
+Enough envelopes have been written now for one shape to have turned up
+repeatedly, and it is worth naming because it is the same bug every time:
+
+| provider | the field a handler tries | what it always holds | where the answer is |
+|---|---|---|---|
+| Slack | `type` | `event_callback` | `event.type` |
+| Box | `type` | `webhook_event` | `trigger` |
+| Intercom | `type` | `notification_event` | `topic` |
+| Okta | `eventType` | `com.okta.event_hook` | `data.events[0].eventType` |
+
+Four providers, four constants, and in every one the real discriminator has a
+different name somewhere else. Code switching on the obvious field takes one
+branch forever and never learns it was reading the envelope's description of
+itself rather than the event.
+
+Two more are the same idea wearing a different hat. Lob's `event_type` is an
+object rather than a string, so `event.event_type === "letter.created"`
+compares an object to a string and is false forever. Clerk's `data.object` is
+the string `"user"` rather than the record, so `data.object.id` is undefined
+one level further down than a reader expects.
+
+The default envelope hid all six. Under it every one of these Recipes had a
+`type` holding the event name, which is the one thing none of them does.
+
+### A great many deliveries carry no record
+
+Also worth stating together, because a fake supplying the record is teaching
+the easy version of an integration that is not easy: Dropbox, ClickUp,
+Mollie, HubSpot, QuickBooks, Okta, Notion, Asana and Airtable all send
+references or pings and leave the fetching to the application. Airtable's is
+the starkest -- a base id, a webhook id and a timestamp, the same three keys
+whatever happened.
 
 ### Owed: a before state in a payload template
 
@@ -1583,8 +1618,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **14 can fire at least one declared
-event and 51 cannot** -- 34 declared, 14 and 51, which is the 99 that emit
+Of the Recipes still on the default, **11 can fire at least one declared
+event and 51 cannot** -- 37 declared, 11 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
