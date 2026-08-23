@@ -309,4 +309,11 @@ type WebhookExpectation struct {
 	// able to say: an event that fires when it should not is as wrong as one
 	// that does not fire.
 	None bool `yaml:"none"`
+	// SignatureHeader is the header a case claims the signature travels in.
+	//
+	// The name a handler reads before it can verify anything, and until this
+	// existed no case could assert it: seventy-four Recipes name one and the
+	// name was only applied when something was listening, which a conformance
+	// case never is.
+	SignatureHeader string `yaml:"signature_header"`
 }
