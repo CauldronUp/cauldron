@@ -446,6 +446,30 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### A third case paging by a word its provider ignores
+
+SES. And this one is the sharpest of the three, because the case exists
+precisely to pin the name of the paging field -- "a name a Recipe chooses is
+only a claim if something asserts it where the value exists" -- and it was
+itself asking for a page with `limit`, which SES does not take. It sends
+`PageSize` now.
+
+That makes three: Help Scout, Mailchimp, SES. Every one passed, and every one
+was receiving a whole collection where it believed it had received a page.
+The pattern is not that these cases were written carelessly; it is that
+`limit` worked for everybody until somebody said otherwise, so writing the
+wrong word had no consequence a case could show.
+
+Typeform needed a per-route answer rather than a per-recipe one, which is why
+it was left last time: its forms listing counts pages, its responses listing
+walks a token, and its webhooks listing is not paged at all. Pusher's channel
+listing is not paged either.
+
+Both of those "not paged" claims needed something to be wrong about. Pusher's
+fixture had three channels and could carry a case straight away; Typeform's
+had one webhook, where every page size returns the same thing and an
+assertion holds whatever the Recipe says. It has two now.
+
 ### Five where the answer is that there is no parameter
 
 Salesforce, Sanity, DynamoDB, ClickUp and Rollbar. Twelve routes, and in
@@ -497,8 +521,8 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**23 routes across 11 Recipes** still page by a parameter nobody named.
-Eighteen providers have been settled. Five were read from that provider's own
+**15 routes across 7 Recipes** still page by a parameter nobody named.
+Twenty-two providers have been settled. Five were read from that provider's own
 description, none of them guessable:
 
 | Provider | What the description said |
