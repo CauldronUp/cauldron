@@ -1,0 +1,524 @@
+# eBay Recipe for Cauldron
+#
+# eBay is not one API. It is a dozen of them under one host, written by
+# different teams at different times, and the thing worth modelling is that
+# they do not agree with each other about the shape of an answer. The
+# collection key changes per endpoint. So does the field carrying the total.
+# A client that writes one paging helper against Fulfillment and reuses it on
+# Inventory reads undefined twice and reports an empty account.
+#
+# Six things worth modelling exactly:
+#
+#   1. The collection key is different on every API. Fulfillment sends
+#      orders, Browse sends itemSummaries, Inventory sends inventoryItems.
+#      Same host, same token, same envelope in every other respect.
+#   2. And so is the total. Fulfillment and Browse send total; Inventory
+#      sends size. One paging loop cannot read both, and the one that reads
+#      the wrong name sees undefined, treats it as zero, and stops after the
+#      first page.
+#   3. Money is {value, currency} and value is a string. "89.95", quoted, so
+#      adding two of them in JavaScript concatenates and the result
+#      stringifies again on the way out without complaint.
+#   4. Failures are an array. {"errors": [{errorId, domain, category,
+#      message, longMessage}]}, because one request can fail several ways at
+#      once. response.message is undefined and so is response.error --
+#      a client has to index before it can read anything. message is the
+#      short form and longMessage is the one worth showing anybody.
+#   5. An inventory item has no id. It is addressed by sku in the path and
+#      carries no identifier of its own anywhere in the body, so there is
+#      nothing to key a cache by except the sku you already had.
+#   6. Content-Language is required on an inventory write and on nothing
+#      else. Omitting it fails the call with error 25709, and the sentence
+#      is about a language rather than about the product you were trying to
+#      list.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - eBay issues two kinds of OAuth2 token: an application token from the
+#     client credentials grant, which reaches Browse, and a user token from
+#     the authorization code grant, which is the only thing that reaches
+#     Sell. Sending the application token to a Sell endpoint fails, and it is
+#     one of the most common eBay integration mistakes. This Recipe has one
+#     token that reaches everything, because the format authenticates a
+#     request rather than scoping a credential, so the mistake cannot be
+#     reproduced here.
+#   - X-EBAY-C-MARKETPLACE-ID decides which eBay you are talking to, and
+#     omitting it does not fail -- it quietly means EBAY_US. A UK seller who
+#     forgets it gets US results and no error at all. required_headers can
+#     only refuse a missing header, not silently default it, so this Recipe
+#     ignores the header entirely rather than inventing a refusal eBay does
+#     not send.
+#   - An eBay order id is grouped with hyphens: 12-34567-89012. Cauldron's
+#     opaque style mints an ungrouped string, so seeded records carry the
+#     real shape and anything created during a run does not. Code that
+#     splits an order id on the hyphen works against the fixtures here and
+#     not against records it made itself.
+#
+# The token below is a fixture, not a secret. It belongs to no account.
+
+recipe: ebay
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.ebay.com/api-docs/static/ebay-rest-landing.html
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - v1cauldronebayusertoken
+
+# Required on an inventory write and on nothing else, which is why it is
+# scoped to the methods that write. A read of the same resource does not want
+# it, so an integration that only ever reads in its tests meets the
+# requirement for the first time in production.
+required_headers:
+  Content-Language:
+    error: invalid_content_language
+    methods: [PUT, POST]
+
+responses:
+  # Fulfillment's shape, which the other two override. There is no
+  # recipe-wide answer here because eBay does not have one.
+  list:
+    style: wrapped
+    key: orders
+    count_field: total
+    limit_field: limit
+  resource:
+    style: bare
+  error:
+    # An array, because one request can fail several ways at once.
+    style: list
+    key: errors
+    message_field: message
+
+resources:
+  order:
+    id:
+      # Grouped with hyphens on the wire: 12-34567-89012. Not a number, and
+      # not safe to strip the hyphens out of.
+      style: opaque
+      length: 14
+      field: orderId
+    fields:
+      # Two words for the state, and they are not synonyms. orderFulfillmentStatus
+      # is about shipping; orderPaymentStatus is about money. An order can be
+      # PAID and NOT_STARTED at the same time, which is the normal case.
+      orderFulfillmentStatus:
+        type: string
+        default: NOT_STARTED
+      orderPaymentStatus:
+        type: string
+        default: PAID
+      buyer:
+        type: map
+      # {value, currency} with value quoted.
+      pricingSummary:
+        type: map
+      creationDate:
+        type: datetime
+
+  itemSummary:
+    id:
+      # A Browse item id is prefixed and the prefix is part of it: v1|1234|0.
+      # Declared opaque because the pipe grouping is not a style here, and
+      # noted so the omission reads as a decision.
+      style: opaque
+      length: 12
+      field: itemId
+    fields:
+      title:
+        type: string
+        required: true
+      price:
+        type: map
+      condition:
+        type: string
+        default: NEW
+      seller:
+        type: map
+
+  inventoryItem:
+    id:
+      # No identifier at all. An inventory item is addressed by sku and the
+      # body carries nothing to key a cache by, so "-" is the honest answer
+      # and carried_by says where identity actually lives. The style is still
+      # declared because Cauldron has to key the record somehow; it is just
+      # never put on the wire.
+      style: opaque
+      length: 8
+      field: "-"
+      carried_by: sku
+    fields:
+      sku:
+        type: string
+        required: true
+      availability:
+        type: map
+      product:
+        type: map
+      condition:
+        type: string
+        default: NEW
+
+routes:
+  # Fulfillment. orders and total.
+  - method: GET
+    path: /sell/fulfillment/v1/order
+    resource: order
+    operation: list
+    pagination:
+      style: offset
+      limit: 50
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /sell/fulfillment/v1/order/{id}
+    resource: order
+    operation: get
+
+  # Browse. itemSummaries and total -- a different collection key on the same
+  # host, behind the same token, with the same envelope otherwise.
+  - method: GET
+    path: /buy/browse/v1/item_summary/search
+    resource: itemSummary
+    operation: list
+    list:
+      style: wrapped
+      key: itemSummaries
+      count_field: total
+      limit_field: limit
+    pagination:
+      style: offset
+      limit: 50
+      limit_param: limit
+      cursor_param: offset
+
+  # Inventory. inventoryItems, and size rather than total, so a paging helper
+  # written against either of the two above reads undefined here and stops.
+  - method: GET
+    path: /sell/inventory/v1/inventory_item
+    resource: inventoryItem
+    operation: list
+    list:
+      style: wrapped
+      key: inventoryItems
+      count_field: size
+      limit_field: limit
+    pagination:
+      style: offset
+      limit: 25
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /sell/inventory/v1/inventory_item/{id}
+    resource: inventoryItem
+    operation: get
+    lookup_by: sku
+
+  # The write that wants Content-Language. 204 and no body, so a client
+  # calling .json() on the answer throws even when the call succeeded.
+  - method: PUT
+    path: /sell/inventory/v1/inventory_item/{id}
+    resource: inventoryItem
+    operation: update
+    lookup_by: sku
+    status: 204
+    empty_body: true
+
+errors:
+  invalid_content_language:
+    status: 400
+    code: "25709"
+    message: Invalid value for Content-Language
+    fields:
+      # eBay's own taxonomy, on every error it sends. domain says which API
+      # refused and category says whose fault it was.
+      domain: API_INVENTORY
+      category: REQUEST
+      longMessage: The Content-Language header is missing or invalid. Provide a value such as en-GB.
+
+  authentication_error:
+    status: 401
+    code: "1001"
+    message: Invalid access token
+    fields:
+      domain: OAuth
+      category: REQUEST
+      longMessage: Invalid access token. Check the value of the Authorization header.
+
+  resource_missing:
+    status: 404
+    code: "11001"
+    message: The order was not found.
+    fields:
+      domain: API_FULFILLMENT
+      category: REQUEST
+      longMessage: The order ID in the request was not found. Check the value and try again.
+
+  rate_limit:
+    status: 429
+    code: "10001"
+    message: Service call has exceeded the number of times the operation is allowed to be called
+    fields:
+      domain: API_BROWSE
+      category: REQUEST
+      longMessage: The application has exceeded its call limit for this operation. Try again later.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    order:
+      - id: 12-34567-89012
+        orderFulfillmentStatus: NOT_STARTED
+        orderPaymentStatus: PAID
+        buyer:
+          username: cauldron_buyer
+        pricingSummary:
+          total:
+            value: "89.95"
+            currency: GBP
+        creationDate: "2026-02-01T09:15:00.000Z"
+      - id: 12-34567-89013
+        orderFulfillmentStatus: FULFILLED
+        orderPaymentStatus: PAID
+        buyer:
+          username: another_buyer
+        pricingSummary:
+          total:
+            value: "12.50"
+            currency: GBP
+        creationDate: "2026-02-02T11:00:00.000Z"
+    itemSummary:
+      - id: v1|110000000001|0
+        title: Cast iron cauldron
+        price:
+          value: "89.95"
+          currency: GBP
+        condition: NEW
+        seller:
+          username: cauldron_seller
+          feedbackPercentage: "99.3"
+    inventoryItem:
+      # The internal key is deliberately not the sku. It is never on the wire
+      # -- id.field is "-" -- and making the two differ is what lets a case
+      # tell lookup_by: sku from an ordinary id lookup. Seeding them equal
+      # made the claim untestable: both paths found the record, and dropping
+      # lookup_by broke nothing.
+      - id: k3n8q2wd
+        sku: CAULD-01
+        availability:
+          shipToLocationAvailability:
+            quantity: 4
+        product:
+          title: Cast iron cauldron
+        condition: NEW
+      - id: p7v4m1xz
+        sku: LADLE-02
+        availability:
+          shipToLocationAvailability:
+            quantity: 11
+        product:
+          title: Brass ladle
+        condition: NEW
+
+conformance:
+  - name: fulfillment sends orders and a total
+    source: https://developer.ebay.com/api-docs/sell/fulfillment/resources/order/methods/getOrders
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/fulfillment/v1/order
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 200
+      body:
+        orders[0].orderId: 12-34567-89012
+        total: 2
+      absent:
+        # The names the other two APIs use, on the same host behind the same
+        # token.
+        - itemSummaries
+        - inventoryItems
+        - size
+
+  - name: browse sends itemSummaries and a total
+    source: https://developer.ebay.com/api-docs/buy/browse/resources/item_summary/methods/search
+    fixture: small-account
+    request:
+      method: GET
+      path: /buy/browse/v1/item_summary/search
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 200
+      body:
+        itemSummaries[0].title: Cast iron cauldron
+        total: 1
+      absent:
+        - orders
+        - inventoryItems
+
+  - name: and inventory sends inventoryItems and a size
+    source: https://developer.ebay.com/api-docs/sell/inventory/resources/inventory_item/methods/getInventoryItems
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/inventory/v1/inventory_item
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 200
+      body:
+        inventoryItems[0].sku: CAULD-01
+        # size, not total. A paging loop written against either API above
+        # reads undefined here, treats it as zero, and stops after one page
+        # with no error anywhere.
+        size: 2
+      absent:
+        - total
+        - orders
+        - itemSummaries
+
+  - name: money is a quoted string inside an object
+    source: https://developer.ebay.com/api-docs/sell/fulfillment/resources/order/methods/getOrder
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/fulfillment/v1/order/12-34567-89012
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 200
+      body:
+        # Quoted. Two of these added together in JavaScript concatenate, and
+        # the result stringifies again on the way out without complaint.
+        pricingSummary.total.value: "89.95"
+        pricingSummary.total.currency: GBP
+        # Two states, both present, and not synonyms: paid and not yet
+        # shipped is the ordinary case.
+        orderPaymentStatus: PAID
+        orderFulfillmentStatus: NOT_STARTED
+      absent:
+        # Bare. The listing that contained this record had an envelope.
+        - orders
+        - total
+
+  - name: an inventory item is addressed by sku and carries no id
+    source: https://developer.ebay.com/api-docs/sell/inventory/resources/inventory_item/methods/getInventoryItem
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/inventory/v1/inventory_item/CAULD-01
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 200
+      body:
+        sku: CAULD-01
+        availability.shipToLocationAvailability.quantity: 4
+      absent:
+        # Nothing to key a cache by except the sku you already had.
+        - id
+        - inventoryItemId
+
+  - name: a failure is an array and has to be indexed
+    source: https://developer.ebay.com/api-docs/static/handling-error-messages.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/fulfillment/v1/order
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      status: 401
+      body:
+        # errors[0], not error. response.message is undefined and so is
+        # response.error, so a client has to index before it can read
+        # anything at all.
+        errors[0].message: Invalid access token
+        # The one worth showing anybody. message is the short form.
+        errors[0].longMessage: Invalid access token. Check the value of the Authorization header.
+        errors[0].domain: OAuth
+        errors[0].category: REQUEST
+      absent:
+        - message
+        - error
+        - errors.message
+
+  - name: an inventory write without Content-Language is refused
+    source: https://developer.ebay.com/api-docs/sell/inventory/resources/inventory_item/methods/createOrReplaceInventoryItem
+    fixture: small-account
+    request:
+      method: PUT
+      path: /sell/inventory/v1/inventory_item/CAULD-01
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+      json:
+        condition: USED_EXCELLENT
+    expect:
+      status: 400
+      body:
+        # The sentence is about a language, not about the product you were
+        # trying to list.
+        errors[0].message: Invalid value for Content-Language
+        errors[0].domain: API_INVENTORY
+
+  - name: and with it, succeeds with no body at all
+    source: https://developer.ebay.com/api-docs/sell/inventory/resources/inventory_item/methods/createOrReplaceInventoryItem
+    fixture: small-account
+    request:
+      method: PUT
+      path: /sell/inventory/v1/inventory_item/CAULD-01
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+        Content-Language: en-GB
+      json:
+        condition: USED_EXCELLENT
+    expect:
+      # 204 and nothing. A client calling .json() on this throws even though
+      # the call did exactly what was asked.
+      status: 204
+      no_body: true
+
+  - name: a read of the same resource does not want Content-Language
+    source: https://developer.ebay.com/api-docs/sell/inventory/resources/inventory_item/methods/getInventoryItem
+    fixture: small-account
+    request:
+      method: GET
+      path: /sell/inventory/v1/inventory_item/LADLE-02
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      # The header is required on the write and on nothing else, so an
+      # integration that only reads in its tests meets the requirement for
+      # the first time in production.
+      status: 200
+      body:
+        sku: LADLE-02
+
+  - name: the rate limit names the operation rather than the account
+    source: https://developer.ebay.com/api-docs/static/handling-error-messages.html
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /buy/browse/v1/item_summary/search
+      headers:
+        Authorization: Bearer v1cauldronebayusertoken
+    expect:
+      status: 429
+      body:
+        # Per operation, not per application. Backing off globally on this is
+        # slower than it needs to be, and backing off on the wrong operation
+        # does not help at all.
+        errors[0].message: Service call has exceeded the number of times the operation is allowed to be called
+        errors[0].domain: API_BROWSE
