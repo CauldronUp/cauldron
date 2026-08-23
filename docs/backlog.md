@@ -446,6 +446,50 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Auditing the verified set found the bug in the audit's own case
+
+Two changes running had turned up a case claiming more than it checked, so
+the rest of the fifty-six were read the same way. The first thing the reading
+found was one written in the change before: Discourse's "a topic listing
+takes per_page and reports what it gave" asserted only that the second topic
+was absent. The half about reporting was in the name and nowhere else.
+
+It was reporting thirty. `topic_list.per_page` was a route constant, so
+asking for one topic returned one and said thirty -- from the field whose
+entire purpose is to say how big the page was.
+
+`responses.list.limit_field` exists for exactly this, and its own comment
+describes the same bug found in Algolia: "A constant cannot do this job, and
+putting one there is worse than leaving the field out... a client that asked
+for page 3 was told it was looking at page 0, by a field whose entire purpose
+is to say where you are."
+
+Scanning for the pattern found **five more**, every one a constant where an
+echo belongs:
+
+| Recipe | field | said | should echo |
+|---|---|---|---|
+| Box | `limit` | 100 | the size asked for |
+| Contentful | `limit` | 100 | the size asked for |
+| Help Scout | `page.size`, `page.number` | 25, 1 | both halves |
+| Typesense | `page` | 1 | the page asked for |
+| Zoom | `page_size` | 30 | the size asked for |
+
+All six are echoes now, each asserted by a case that asks for a page smaller
+than the default. Restoring the constants fails five cases across five
+Recipes.
+
+Zoom turned up a second thing on the way. Its listings declared a cursor
+style and no `limit_param`, so they read `limit`, which Zoom does not take --
+and its paging case, the one named for pinning `next_page_token`, was paging
+by that word. That is the fifth case found doing this, after Help Scout,
+Mailchimp, SES and Docker Hub, and the constant echo is why it stayed
+invisible: a wrong page size and a page size that never changes look
+identical.
+
+Three stranded placeholder comments in Contentful were removed as well, left
+behind when its paging was declared two changes ago.
+
 ### A case name can claim more than the case checks
 
 GitLab had one called "the token header is PRIVATE-TOKEN, not Authorization".
