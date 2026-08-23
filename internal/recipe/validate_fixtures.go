@@ -190,6 +190,29 @@ func (r *Recipe) validateCases(add func(string, ...any)) {
 			if w.Event != "" && !contains(r.Webhooks.Events, w.Event) {
 				add("%s: expects webhook %q, which the Recipe does not declare", where, w.Event)
 			}
+
+			// A Recipe with no payload template sends the default envelope,
+			// which is this project's convention and not any provider's
+			// shape. A case pinning a path inside it is evidence about
+			// Cauldron rather than about the provider, which is the one
+			// thing a conformance case is not for.
+			//
+			// Square had one of these and it passed: it asserted
+			// data.object.amount_money.amount, which Square has never sent,
+			// while its name claimed it was checking the webhook matched the
+			// response. The claim was right and the path was Stripe's, and
+			// nothing could tell the difference.
+			if len(r.Webhooks.Payload) == 0 {
+				for _, path := range append(sortedKeys(w.Body), sortedKeys(w.Matches)...) {
+					if path != "data" && !strings.HasPrefix(path, "data.") {
+						continue
+					}
+
+					add("%s: asserts webhook %s, and the Recipe declares no payload envelope -- that path belongs to the default, so the case pins this project's convention rather than anything %s sends", where, path, r.Name)
+
+					break
+				}
+			}
 		}
 
 		if echoesOnly(c) {

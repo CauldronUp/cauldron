@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 12 declare a payload envelope and 87 fall
+Of the 99 Recipes that emit events, 13 declare a payload envelope and 86 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1514,6 +1514,27 @@ charge was real. Under the default, `event.livemode` was undefined, which is
 falsy, which is accidentally right and the worst way for a check like that to
 pass. The README no longer calls the fallback Stripe's shape, because it is
 not one.
+
+**A template could not name one field.** Splicing the whole record was the
+only way to get data into an envelope, which left a provider that renames or
+prefixes what it sends undescribable. Freshdesk wraps its payload in
+`freshdesk_webhook` and prefixes every key with `ticket_`, so the record's own
+names appear nowhere in it -- a template that could only merge had to send the
+wrong key names or send Stripe's envelope instead. `{record.field}` reads one
+field at whatever type it already has, so an integer status stays an integer.
+
+Freshdesk is also the last Recipe that was pinning the default envelope in a
+case, and the case was one written in this session: it asserted
+`data.object.status` with a comment saying "Freshdesk wraps the record", which
+is true of Cauldron and not of Freshdesk. The validator refuses that now --
+a webhook case may not assert a path inside the default envelope unless the
+Recipe declares one -- so the Square mistake cannot be made again quietly.
+
+Left open on purpose: Freshdesk's placeholders render status and priority as
+labels rather than codes, so the real payload may carry "Open" where this
+carries 2. The codes are what the Recipe knows to be true of the ticket and
+the label mapping is not modelled anywhere in it, so inventing one in the
+envelope would put a string in the payload nothing else could account for.
 
 **A payload key needed to vary.** Square nests the record under its own type
 name -- a payment at `data.object.payment`, a customer at
