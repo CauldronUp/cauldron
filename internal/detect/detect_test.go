@@ -65,6 +65,55 @@ func TestDetectBigCommerceFromEitherClient(t *testing.T) {
 	}
 }
 
+// Etsy is the case where a prefix rule would be actively wrong rather than
+// merely incomplete. Etsy the company publishes phan and phpunit-extensions
+// under the etsy/ vendor name -- a static analyser and a test library, which
+// have nothing to do with the Etsy API and which plenty of projects depend on
+// without selling anything. Matching etsy/ would offer a commerce emulator to
+// a project that runs a linter.
+//
+// The other half is version. The Recipe models Open API v3, and the older
+// wrappers on both registries speak v2, which is a different API with a
+// different envelope and a different auth scheme. Detecting one of those and
+// pointing it here would hand back shapes its client cannot read, so the
+// table names only the two packages that say v3.
+func TestDetectEtsyFromEitherV3Client(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"rhysnhall/etsy-php-sdk": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"etsy-ts": "^8.0.1"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "etsy") {
+			t.Errorf("%v did not detect etsy: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
+// The companion to the test above: the packages that must not reach the Etsy
+// Recipe. phan is a static analyser, phpunit-extensions is a test library, and
+// oauth1-etsy is for the v2-era OAuth 1.0 flow the v3 API replaced.
+func TestDetectDoesNotOfferEtsyForEtsysOwnToolingOrV2Clients(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"etsy/phan": "^5.0"}}`},
+		{"composer.json": `{"require": {"etsy/phpunit-extensions": "^4.0"}}`},
+		{"composer.json": `{"require": {"y0lk/oauth1-etsy": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"etsy-js": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "etsy") {
+			t.Errorf("%v offered the etsy Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
 func TestDetectReturnsErrNoProjectForEmptyDirectory(t *testing.T) {
 	root := t.TempDir()
 

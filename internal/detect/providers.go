@@ -36,6 +36,15 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Both of these say Etsy API v3 in as many words, which is the
+			// bar here: the Recipe models v3, and the older wrappers on both
+			// registries speak v2. Pointing a v2 project at a v3 emulator
+			// would answer every call with a shape its client cannot read.
+			recipe:   "etsy",
+			composer: []string{"rhysnhall/etsy-php-sdk"},
+			npm:      []string{"etsy-ts"},
+		},
+		{
 			recipe:   "github",
 			composer: []string{"knplabs/github-api"},
 			npm:      []string{"@octokit/rest", "@octokit/core", "octokit"},
