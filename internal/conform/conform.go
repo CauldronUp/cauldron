@@ -103,6 +103,9 @@ type Armer func(errorName string) error
 type Delivery struct {
 	Event   string
 	Payload map[string]any
+	// SignatureHeader is the header the signature travelled in, which is a
+	// claim the Recipe makes and nothing could check.
+	SignatureHeader string
 }
 
 // Watcher returns the webhooks recorded since the last case, newest last.
@@ -229,6 +232,10 @@ func checkWebhook(expect recipe.WebhookExpectation, before int, all []Delivery) 
 
 	if expect.Event != "" && delivery.Event != expect.Event {
 		failures = append(failures, fmt.Sprintf("webhook event: want %q, got %q", expect.Event, delivery.Event))
+	}
+
+	if expect.SignatureHeader != "" && delivery.SignatureHeader != expect.SignatureHeader {
+		failures = append(failures, fmt.Sprintf("webhook signature header: want %q, got %q", expect.SignatureHeader, delivery.SignatureHeader))
 	}
 
 	document := any(delivery.Payload)

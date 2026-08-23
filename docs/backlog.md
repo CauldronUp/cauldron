@@ -1443,6 +1443,24 @@ is not the same question as what the events are called -- Freshdesk has
 and deciding which of the three an update fires is a matter of reading
 Freshdesk rather than pattern-matching on names.
 
+### The signing header nothing could assert
+
+Seventy-four Recipes name the header a webhook signature travels in, and until
+now no case could assert one. Not because nobody had written the assertion --
+because the format had no way to express it, and the name was only ever
+applied at send time, which a conformance case never reaches: it has no
+subscriber.
+
+A case may now claim it with `signature_header:`. Square's is
+`x-square-hmacsha256-signature`, lower-case and hyphenated with the algorithm
+in the middle, which is not a shape anybody guesses. It is also the first
+thing a handler reads, so a Recipe naming the wrong one produces a handler
+that looks for a header which never arrives, and verification that fails only
+against the real provider.
+
+Square is pinned. The other seventy-three are not, and they want a webhook
+case each rather than a header assertion bolted to nothing.
+
 ### And 97 of 99 assert no webhook at all
 
 Separately from the naming: 99 Recipes declare events, and 97 have no

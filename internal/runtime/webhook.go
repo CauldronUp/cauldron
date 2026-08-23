@@ -29,6 +29,17 @@ type Delivery struct {
 	Payload map[string]any
 	// Signature is the value sent in the Recipe's signing header.
 	Signature string
+	// SignatureHeader is the header that value travels in.
+	//
+	// Recorded whether or not anything is listening, because it is a claim the
+	// Recipe makes rather than a property of a delivery: seventy-four Recipes
+	// name a header and no case could assert one, since the name was only ever
+	// applied at send time and a conformance case has no subscriber.
+	//
+	// It is the first thing a webhook handler reads. A Recipe naming the wrong
+	// one produces a handler that looks for a header which never arrives, and
+	// signature verification that fails only against the real provider.
+	SignatureHeader string
 	// Endpoint is where it was sent, empty if nothing was listening.
 	Endpoint string
 	// Status is the response code the endpoint returned, zero if undelivered.
@@ -340,6 +351,10 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 	}
 
 	delivery.Signature = q.sign(body, delivery.At)
+
+	if delivery.Signature != "" {
+		delivery.SignatureHeader = q.recipe.Webhooks.Signing.Header
+	}
 
 	if len(endpoints) == 0 {
 		q.record(delivery)
