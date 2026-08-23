@@ -43,7 +43,7 @@ func TestWhatEachFormatSigns(t *testing.T) {
 		{"base64", base64.StdEncoding.EncodeToString(digest(string(body)))},
 
 		// The body with something in front of it.
-		{"slack", "v0=" + hex.EncodeToString(digest(fmt.Sprintf("v0:%d:%s", at.Unix(), body)))},
+		{"v0-hex", "v0=" + hex.EncodeToString(digest(fmt.Sprintf("v0:%d:%s", at.Unix(), body)))},
 		{"stripe", fmt.Sprintf("t=%d,v1=%s", at.Unix(), hex.EncodeToString(digest(fmt.Sprintf("%d.%s", at.Unix(), body))))},
 
 		// Unset is stripe, so a Recipe nobody has looked at keeps the shape it

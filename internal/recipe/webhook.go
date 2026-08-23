@@ -61,7 +61,13 @@ type Signing struct {
 	//   stripe        t=<unix>,v1=<hex>   over "<unix>.<body>"   (the default)
 	//   prefixed-hex  sha256=<hex>        over the body
 	//   base64        <base64>            over the body
-	//   slack         v0=<hex>            over "v0:<unix>:<body>"
+	//   v0-hex        v0=<hex>            over "v0:<unix>:<body>"
+	//
+	// Named for the shape rather than for a provider, because the shapes are
+	// shared: Zoom's signature is Slack's, deliberately, and calling that one
+	// "slack" would be the same mistake in miniature as giving every Recipe
+	// Stripe's. stripe keeps its name only because no second provider here
+	// wants it, and would lose it if one did.
 	//
 	// Empty means stripe, so a Recipe that has not been looked at keeps the
 	// shape it had rather than silently changing.
