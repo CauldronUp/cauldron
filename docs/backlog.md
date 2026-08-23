@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 22 declare a payload envelope and 77 fall
+Of the 99 Recipes that emit events, 25 declare a payload envelope and 74 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1494,12 +1494,17 @@ different reasons:
 - **SendGrid** can now be described and still cannot be checked. None of its
   nine events is reachable from any route it has, so declaring the array
   would be writing a claim no case could exercise -- the Calendly rule.
-- **QuickBooks** sends `{eventNotifications: [{realmId, dataChangeEvent:
-  {entities: [{name, id, operation, lastUpdated}]}}]}`, which the template
-  can nest happily except for one thing: `name` and `operation` are the two
-  halves of an event this Recipe declares as `Customer.Create`, and splitting
-  a string is not something a template does. Same shape of gap as Xero's
-  INVOICE and UPDATE.
+- ~~**QuickBooks**~~ is unblocked. `name` and `operation` are the two halves
+  of an event declared as `Customer.Create`, which looked like a gap and was
+  half of one: `{resource}` already gave the first half and `{action}` now
+  gives the second. Xero still needs the case change on top -- INVOICE and
+  UPDATE -- so that one is a third of a mechanism away rather than a whole
+  one.
+
+  The judgement to build `{action}` at all was close, and turned on a third
+  provider rather than a second: Asana splits an event the same way, sending
+  `{resource: {resource_type}, action}`. One provider wanting a mechanism is
+  a special case; two doing it independently is a shape.
 
 **A Recipe with no writes cannot show any of this.** Calendly declares five
 events and has no create, update or delete route, so nothing it declares can
@@ -1559,8 +1564,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **26 can fire at least one declared
-event and 51 cannot** -- 22 declared, 26 and 51, which is the 99 that emit
+Of the Recipes still on the default, **23 can fire at least one declared
+event and 51 cannot** -- 25 declared, 23 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,

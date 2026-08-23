@@ -229,9 +229,12 @@ func (q *webhookQueue) payload(event, id string, at time.Time, data store.Record
 		}
 	}
 
+	resource := q.resourceFor(event)
+
 	return expand(template, substitutions{
 		event: event, id: id, at: at, record: map[string]any(data),
-		resource: q.resourceFor(event),
+		resource: resource, action: actionOf(event),
+		recordID: q.identifierOf(resource, data),
 	})
 }
 
@@ -244,6 +247,22 @@ type substitutions struct {
 	// resource is the name of the thing the event is about, which some
 	// envelopes key on. Square nests the record under it twice over.
 	resource string
+	// action is the rest of the event name, which some envelopes carry
+	// separately from the resource: Asana sends {resource: {resource_type},
+	// action} and QuickBooks sends {name, operation}, so the one string this
+	// project calls an event is two fields to them.
+	action string
+	// recordID is the changed record's own identifier, which is not the
+	// delivery's. Mollie's webhook body is that id and nothing else, on
+	// purpose: the notification says something happened and you fetch the
+	// payment to find out what.
+	//
+	// Resolved against the resource rather than read from a field called id,
+	// because 121 resources in this collection call it something else --
+	// Asana's is gid, Adyen's is pspReference, Calendly's is a uri -- and
+	// reading "id" off those gives the empty string, which renders as a
+	// present field with nothing in it rather than as an error.
+	recordID string
 }
 
 // objectKey marks the place a record's own fields are merged into. Adyen needs
@@ -356,18 +375,12 @@ func expandString(value string, with substitutions) any {
 		return with.at.UnixMilli()
 	}
 
-	// The changed record's own identifier, which is not the delivery's.
-	// Mollie's webhook body is that id and nothing else, on purpose: the
-	// notification tells you something happened and you have to fetch the
-	// payment to find out what. An emulator sending the whole payment would
-	// let an application read fields the real notification never carries.
-	recordID, _ := with.record["id"].(string)
-
 	replaced := strings.NewReplacer(
 		"{event}", with.event,
 		"{resource}", with.resource,
+		"{action}", with.action,
 		"{id}", with.id,
-		"{record_id}", recordID,
+		"{record_id}", with.recordID,
 		"{created}", strconv.FormatInt(with.at.Unix(), 10),
 		"{created_ms}", strconv.FormatInt(with.at.UnixMilli(), 10),
 		"{created_iso}", with.at.UTC().Format(time.RFC3339),
@@ -581,4 +594,38 @@ func (d Delivery) Fields() map[string]any {
 	fields, _ := d.Payload.(map[string]any)
 
 	return fields
+}
+
+// actionOf is the part of an event name after the last dot.
+//
+// Empty when there is no dot, which is the honest answer rather than the
+// whole name: a provider whose events are single words has no separate action
+// to report, and handing back the event again would put a plausible value
+// somewhere the provider sends nothing.
+func actionOf(event string) string {
+	index := strings.LastIndex(event, ".")
+	if index < 0 {
+		return ""
+	}
+
+	return event[index+1:]
+}
+
+// identifierOf reads a record's own identifier, under whatever name the
+// resource gives it.
+func (q *webhookQueue) identifierOf(resource string, record store.Record) string {
+	name := "id"
+
+	if spec, known := q.recipe.Resources[resource]; known && spec.ID.Field != "" {
+		name = spec.ID.Field
+	}
+
+	switch value := record[name].(type) {
+	case string:
+		return value
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
