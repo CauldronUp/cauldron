@@ -256,12 +256,27 @@ func expand(node any, with substitutions) any {
 	case map[string]any:
 		out := map[string]any{}
 
+		// The record first, then the template's own keys, rather than both in
+		// whatever order the map yields.
+		//
+		// Go randomises map iteration, so a template naming a key the record
+		// also carries produced one payload or the other from run to run --
+		// Slack's envelope has a literal type beside the merged event, and a
+		// record with a type field would have won or lost the coin toss. An
+		// explicit key is the Recipe author saying what the provider sends
+		// there, so it takes precedence, and it does so every time.
+		for key := range typed {
+			if key != objectKey {
+				continue
+			}
+
+			for name, field := range with.record {
+				out[name] = field
+			}
+		}
+
 		for key, value := range typed {
 			if key == objectKey {
-				for name, field := range with.record {
-					out[name] = field
-				}
-
 				continue
 			}
 
