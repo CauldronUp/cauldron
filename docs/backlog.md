@@ -446,6 +446,34 @@ Two real bugs fell out of the verification. DigitalOcean was ignoring
 parameter name rather than the provider's. Twilio capitalises its parameters
 and both spellings were being ignored.
 
+### Two notes that said what would settle them, settled
+
+Three WordPress cases carried no `verified:` date and, instead of one, a note
+saying exactly why. Two of those notes named what was missing rather than
+merely recording an absence, and both turned out to be findable:
+
+- "Settling this needs a public site on some other timezone." wptavern.com is
+  one. Post 185079 carries `date 2025-01-08T22:48:02` and `date_gmt
+  2025-01-09T03:48:02` -- five hours apart and on different days, so reading
+  the first as UTC files the post under the wrong date. ma.tt and
+  techcrunch.com diverge the same way, so it is ordinary rather than a quirk.
+- "A site with no child pages cannot answer this." ma.tt has five. Page 2545
+  carries `parent: 2536` and page 2536 carries `parent: 0`, which settles
+  both halves: the id is an integer pointing at another page, and zero is
+  what a top-level page says rather than the field being absent.
+
+The third is still open and now for a better-established reason. Its sticky
+half needs a pinned post, and wordpress.org/news, wptavern.com, ma.tt and
+techcrunch.com were each asked for `?sticky=true`: every one answered with
+nothing. A pinned post is a setting most publications do not use.
+
+Live-verified cases 56 to 58.
+
+The general point is worth keeping. A note saying "this was not checked"
+records an absence; a note saying "checking this needs a site on another
+timezone" is a task somebody can pick up, and two of these were done in the
+time it took to read them.
+
 ### An assertion that cannot fail is not an assertion
 
 Mapping every field of the format to whether any test names it -- by its YAML

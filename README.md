@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 1753 cases, 56 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 1753 cases, 58 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -319,12 +319,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 1753 cases, 56 run against
-a live account and 1697 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 1753 cases, 58 run against
+a live account and 1695 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The fifty-six are the cases whose provider can be asked without a key. Six are
+The fifty-eight are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -444,7 +444,7 @@ lists what a response may carry. It does not say what a response leaves out,
 and the whole point of that case is a field the listing has and the topic does
 not.
 
-Four are WordPress's, which serves any public site's posts to anybody:
+Six are WordPress's, which serves any public site's posts to anybody:
 `title` is an object whose only key is `rendered` and `id` beside it is a JSON
 number; `categories` and `tags` are arrays of term ids with no names anywhere
 in the post; a missing post answers exactly three keys -- `code`, `message`,
@@ -453,14 +453,24 @@ in the post; a missing post answers exactly three keys -- `code`, `message`,
 must be greater than or equal to 1", which settles the counting-from-one half
 outright rather than by inference.
 
-Three more of that Recipe's cases were looked at and left without a date, and
-the reasons are written where the date would be. Eight of twenty posts carry
-`featured_media: 0`, so the zero is real, but none of the twenty was sticky
-and the case claims both on one post. The site publishes two pages and neither
-has a parent. And `date` and `date_gmt` are both there with no zone marker on
-either, which is the shape -- but they are identical, because that site runs
-UTC, so nothing was seen of the two diverging, which is the entire trap. Half
-a case watched is not a case watched.
+Two of those six were left without a date until a site could answer them, and
+what the notes asked for turned out to exist. `date` and `date_gmt` are both
+there with no zone marker on either, which is the shape -- and on
+wordpress.org/news they are identical, because that site runs UTC, so nothing
+of the trap was visible. wptavern.com runs on another timezone: its post
+185079 carries `2025-01-08T22:48:02` and `2025-01-09T03:48:02`, five hours
+apart and on different days, so a client parsing the first as UTC files that
+post under the wrong date. Likewise, wordpress.org/news publishes two pages
+and neither has a parent, which cannot show a child naming one; ma.tt's page
+2545 carries `parent: 2536`, and 2536 carries `parent: 0`, so the id is an
+integer pointing at another page and zero is what a top-level page says
+rather than the field being absent.
+
+One is still without a date. Eight of twenty posts carry `featured_media: 0`,
+so the zero is real and common, but the case claims a sticky post as well --
+and wordpress.org/news, wptavern.com, ma.tt and techcrunch.com were each
+asked for `?sticky=true` and every one answered with nothing. Half a case
+watched is not a case watched.
 
 Four are Bitbucket's, whose public workspaces answer without a token. Its
 listing envelope is exactly `values`, `size`, `pagelen`, `page` and `next`,
