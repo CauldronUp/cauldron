@@ -31,6 +31,11 @@ func providers() []provider {
 			gomod:    []string{"github.com/bold-commerce/go-shopify"},
 		},
 		{
+			recipe:   "bigcommerce",
+			composer: []string{"bigcommerce/api"},
+			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
+		},
+		{
 			recipe:   "github",
 			composer: []string{"knplabs/github-api"},
 			npm:      []string{"@octokit/rest", "@octokit/core", "octokit"},
