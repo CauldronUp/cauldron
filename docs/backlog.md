@@ -1461,6 +1461,31 @@ fire it rarely, which is worse than the silence it replaced.
 **The unconditional wiring is done.** What is left needs a provider read, and
 now has somewhere to go when the answer is "only when this field moves".
 
+ClickUp is wired that way too now, and wiring it turned up the thing worth
+having done this for: `taskStatusUpdated` did not fire because the status had
+not changed, and the status had not changed because a ClickUp task's status
+could not be written at all. `flatten` dropped every declared wrapper name
+rather than the ones it unpacked, and ClickUp's status field is nested under a
+wrapper of its own name, so a write in the shape ClickUp documents was
+silently a no-op that answered 200. Nine fields collide that way and one sits
+on a writable resource, so the exposure was exactly that one -- but it was
+found by asserting a webhook, not by any of the ten cases that already
+exercised the route.
+
+### The envelope is the larger webhook gap
+
+Of the 99 Recipes that emit events, 5 declare a payload envelope and 94 fall
+back to the default, which is Stripe's `{id, type, created, data.object}`.
+The README has always said this is a default rather than a claim about the
+provider, and now says so with the numbers in it and a test holding them.
+
+It is the biggest remaining distance between a webhook from this emulator and
+one from the provider. ClickUp's real payload is `{event, task_id,
+history_items}` and shares nothing with the shape it currently sends. The
+mechanism to fix it exists -- `webhooks.payload` is a template and five
+Recipes use it -- so this is 94 provider reads rather than a design question,
+and the same "read each provider" work the conditional events need.
+
 Pattern-matching candidate mappings is also spent. Widening the net produced
 `ghost: create:post -> member.added`, `slack: create:message ->
 channel.created` and `lob: create:address -> letter.created` -- a hit rate low

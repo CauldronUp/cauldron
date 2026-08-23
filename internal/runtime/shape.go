@@ -340,6 +340,14 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 		return record
 	}
 
+	// Extracted separately, and applied after the wrappers are dropped,
+	// because a field can be nested under a wrapper of its own name. ClickUp's
+	// status is: the response carries {"status": {"status": "review", ...}},
+	// so the field is named status and sits in status. Writing the value
+	// before deleting the wrapper deleted the value.
+	extracted := store.Record{}
+	unpacked := map[string]bool{}
+
 	for name, field := range spec.Fields {
 		if field.In == "" {
 			continue
@@ -350,17 +358,28 @@ func (s *Sandbox) flatten(resource string, record store.Record) store.Record {
 			continue
 		}
 
+		unpacked[strings.Split(field.In, ".")[0]] = true
+
 		if value, present := nested[field.WireName(name)]; present {
-			record[name] = value
+			extracted[name] = value
 		}
 	}
 
 	// The sub-objects have been unpacked, so drop them rather than storing the
 	// same values twice under two shapes.
-	for _, field := range spec.Fields {
-		if field.In != "" {
-			delete(record, strings.Split(field.In, ".")[0])
-		}
+	//
+	// Only the ones actually unpacked. Dropping every declared wrapper name
+	// discarded a plain value that happened to share one, which is how a
+	// ClickUp task's status became unsettable: the real API takes a flat
+	// {"status": "review"} on a write and answers with the object, and a
+	// request in the shape the provider documents was silently a no-op. The
+	// write returned 200 with the old status, so nothing looked wrong.
+	for wrapper := range unpacked {
+		delete(record, wrapper)
+	}
+
+	for name, value := range extracted {
+		record[name] = value
 	}
 
 	return record
