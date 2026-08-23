@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 10 declare a payload envelope and 89 fall
+Of the 99 Recipes that emit events, 12 declare a payload envelope and 87 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1488,6 +1488,13 @@ array of event objects and batches several into one delivery, which is the
 whole reason its documentation warns about it. Nine SendGrid events are
 declared and every one of them would arrive here as a single object under
 Stripe's envelope.
+
+**A Recipe with no writes cannot show any of this.** Calendly declares five
+events and has no create, update or delete route, so nothing it declares can
+fire and no case can assert an envelope for it. Greenhouse is the same. That
+is not an envelope problem and declaring one there would be writing an
+unassertable claim, which is the mistake this collection keeps finding in its
+own past.
 
 **A value the template has to compute.** ClickUp's delivery carries a
 `history_items` array whose contents depend on what changed -- a status move
@@ -1507,6 +1514,22 @@ charge was real. Under the default, `event.livemode` was undefined, which is
 falsy, which is accidentally right and the worst way for a check like that to
 pass. The README no longer calls the fallback Stripe's shape, because it is
 not one.
+
+**A payload key needed to vary.** Square nests the record under its own type
+name -- a payment at `data.object.payment`, a customer at
+`data.object.customer` -- so a Recipe-wide envelope could not describe it
+while template keys were fixed strings. Keys are substituted now, and
+`{resource}` names the thing an event is about, taken from the route that
+declares the event and from the convention otherwise so `cauldron emit`
+resolves it the same way a write does.
+
+Square is the case that shows why this is worth having: it already had a
+webhook case, and that case asserted `data.object.amount_money.amount` and
+passed. It was pinning a path Square has never sent, under the default
+envelope, while its own name claimed it was checking that the webhook matches
+the response. A Go test had the same assumption hard-coded in a helper whose
+comment said it dug the record out of "whatever envelope the Recipe
+declares".
 
 **A payload needed milliseconds.** Zoom's `event_ts` is milliseconds and every
 other timestamp the format emits is seconds. The Recipe format already treats
