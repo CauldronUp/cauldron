@@ -296,9 +296,9 @@ func (r *Recipe) Validate() error {
 	// exists to stop a Recipe sending by accident.
 	if format := r.Webhooks.Signing.Format; format != "" {
 		switch format {
-		case "stripe", "prefixed-hex", "base64", "v0-hex":
+		case "stripe", "hex", "prefixed-hex", "base64", "v0-hex":
 		default:
-			add("webhooks.signing.format is %q, which is not one of stripe, prefixed-hex, base64 or v0-hex", format)
+			add("webhooks.signing.format is %q, which is not one of stripe, hex, prefixed-hex, base64 or v0-hex", format)
 		}
 
 		if r.Webhooks.Signing.Scheme != "hmac-sha256" {
