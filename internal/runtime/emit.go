@@ -3,6 +3,9 @@
 package runtime
 
 import (
+	"fmt"
+
+	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
@@ -31,4 +34,35 @@ func (s *Sandbox) emitFor(resource, action, named string, record store.Record) {
 	// to the response. A webhook has its own envelope and the record sits
 	// inside it unwrapped.
 	_, _ = s.webhooks.Emit(event, s.present(resource, record, ""))
+}
+
+// emitChanges sends the events a route owes only when the field each names
+// actually moved.
+//
+// The comparison is before-and-after rather than "did the request mention the
+// field", because a write that sets status to the value it already held is not
+// a status change and the provider does not announce one.
+func (s *Sandbox) emitChanges(spec recipe.Route, before, after store.Record) {
+	for _, conditional := range spec.EmitsWhen {
+		if same(before[conditional.Field], after[conditional.Field]) {
+			continue
+		}
+
+		if !s.webhooks.Known(conditional.Event) {
+			continue
+		}
+
+		_, _ = s.webhooks.Emit(conditional.Event, s.present(spec.Resource, after, ""))
+	}
+}
+
+// same compares two decoded JSON values for equality.
+//
+// Formatting them is enough for the scalars these events key off -- a status,
+// a priority, a stage -- and avoids depending on the numeric type JSON
+// decoding happened to choose. It is not a general deep equality and does not
+// claim to be: EmitsWhen rejects a field that is not scalar, so this is never
+// asked to compare a map whose key order would make it unreliable.
+func same(before, after any) bool {
+	return fmt.Sprintf("%v", before) == fmt.Sprintf("%v", after)
 }

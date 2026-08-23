@@ -1432,6 +1432,35 @@ different question from wiring.
 here said "the other 95 are the work this leaves", and that was wrong in the
 direction that flatters the finding.
 
+### And forty was overstated too
+
+The same measurement, made properly, gives eleven. Forty counted an event as
+wirable when the Recipe mutates that resource *somewhere*; the route the event
+would actually hang off has to exist, and for most of them it does not. Jira
+declares `jira:issue_updated` and has no update route at all. Dropbox declares
+`file_added` and creates no files.
+
+Of the eleven that survive, none is a plain wire:
+
+- Six are substring accidents. `miro:board` matched `board_item.updated`
+  because "board" is inside "board_item"; `okta:user` matched
+  `group.user_membership.add`; `recurly:subscription/create` matched
+  `renewed_subscription_notification`, which is a renewal and not a creation.
+- The rest are a different shape entirely, and are the reason `emits_when`
+  now exists: `ticket_status_change`, `ticket_priority_change` and
+  `taskStatusUpdated` are not what an update does, they are what one
+  particular change to one particular field does.
+
+Freshdesk is wired that way now. The general lesson is the one from the
+Stytch finding, arrived at from the other side: an event left unfired has two
+possible fixes, and "wire it to the nearest route" is only the right one when
+that route is genuinely what produces it. Hanging `ticket_status_change` off
+every update would have made the emulator fire it constantly and production
+fire it rarely, which is worse than the silence it replaced.
+
+**The unconditional wiring is done.** What is left needs a provider read, and
+now has somewhere to go when the answer is "only when this field moves".
+
 Pattern-matching candidate mappings is also spent. Widening the net produced
 `ghost: create:post -> member.added`, `slack: create:message ->
 channel.created` and `lob: create:address -> letter.created` -- a hit rate low

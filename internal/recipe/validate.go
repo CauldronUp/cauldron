@@ -249,6 +249,48 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A conditional emission has more ways to be quietly wrong than an
+	// unconditional one, because every mistake here shows up as an event that
+	// never fires -- and an event that never fires looks exactly like a
+	// provider that had nothing to announce.
+	for _, route := range r.Routes {
+		for _, conditional := range route.EmitsWhen {
+			where := fmt.Sprintf("%s %s", route.Method, route.Path)
+
+			if conditional.Event == "" || conditional.Field == "" {
+				add("%s declares an emits_when entry needing both event and field", where)
+				continue
+			}
+
+			if route.Operation != "update" {
+				add("%s is a %s route and declares emits_when %q, which compares a field before and after a write that this route does not make",
+					where, route.Operation, conditional.Event)
+			}
+
+			if !contains(r.Webhooks.Events, conditional.Event) {
+				add("%s declares emits_when %q and webhooks.events does not list it, so the change would fire nothing",
+					where, conditional.Event)
+			}
+
+			spec, known := r.Resources[route.Resource]
+			if !known {
+				continue
+			}
+
+			field, declared := spec.Fields[conditional.Field]
+			if !declared {
+				add("%s declares emits_when on field %q and resource %s does not declare it, so the comparison is between two absences and never fires",
+					where, conditional.Field, route.Resource)
+				continue
+			}
+
+			if field.Type == "list" || field.Type == "map" {
+				add("%s declares emits_when on field %q, which is a %s -- these events key off a scalar moving, and comparing a composite would fire on orderings the provider does not consider a change",
+					where, conditional.Field, field.Type)
+			}
+		}
+	}
+
 	// A route naming an error to raise has to name one that exists, or the
 	// only sign of the typo is a 404 in the shape it was overriding.
 	for _, route := range r.Routes {

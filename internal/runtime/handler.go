@@ -276,6 +276,7 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 	}
 
 	s.emitFor(matched.spec.Resource, "updated", matched.spec.Emits, updated)
+	s.emitChanges(matched.spec, existing, updated)
 
 	return s.writeRecord(w, matched, updated)
 }

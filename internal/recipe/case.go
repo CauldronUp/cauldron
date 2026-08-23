@@ -151,6 +151,19 @@ func echoesOnly(c Case) bool {
 		return false
 	}
 
+	// So does a claim about what the request emitted. Which event a write
+	// produced, and which it did not, is decided entirely by the emulator --
+	// no part of it can be satisfied by handing the request back.
+	//
+	// webhook.body is left out on purpose: a payload assertion can echo the
+	// request as easily as a response one, and counting it would reopen the
+	// hole this rule exists to close.
+	if w := c.Expect.Webhook; w != nil {
+		if w.None || w.Event != "" || len(w.Matches) > 0 || len(w.Absent) > 0 || len(w.AbsentEvents) > 0 {
+			return false
+		}
+	}
+
 	sent := map[string]any{}
 
 	for name, value := range c.Request.JSON {
@@ -291,9 +304,10 @@ type Expectation struct {
 // WebhookExpectation is what a case claims about the webhook its request
 // emitted.
 //
-// The last delivery is the one examined, because a request emits at most one
-// event and asserting on "the one this caused" is the only reading that stays
-// true as a Recipe grows.
+// Naming an event picks that delivery out of the ones the request caused,
+// rather than examining the last. A request can emit more than one now that a
+// route may carry emits_when beside emits, and "the last" would silently mean
+// a different event depending on the order the runtime sent them.
 type WebhookExpectation struct {
 	// Event is the type the delivery must carry.
 	Event string `yaml:"event"`
@@ -309,6 +323,16 @@ type WebhookExpectation struct {
 	// able to say: an event that fires when it should not is as wrong as one
 	// that does not fire.
 	None bool `yaml:"none"`
+	// AbsentEvents names events the request must not emit, for when it does
+	// emit something.
+	//
+	// None says a request emitted nothing; this says it emitted the right
+	// thing and not the wrong one, and without it the whole point of
+	// emits_when is unassertable. The claim a conditional emission makes is
+	// that editing a ticket's subject leaves ticket_status_change unsent, and
+	// a case naming only the event it wants passes just as happily when both
+	// arrive.
+	AbsentEvents []string `yaml:"absent_events"`
 	// SignatureHeader is the header a case claims the signature travels in.
 	//
 	// The name a handler reads before it can verify anything, and until this
