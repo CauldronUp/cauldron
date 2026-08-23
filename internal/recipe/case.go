@@ -344,6 +344,11 @@ type WebhookExpectation struct {
 	// and the body carries generated identifiers. The shape is the claim --
 	// sha256= and hex, or bare base64, or Stripe's t= and v1= pair.
 	Signature string `yaml:"signature"`
+	// HeaderMatches asserts patterns against the delivery's other headers.
+	//
+	// A pattern rather than a value because what travels beside a signature
+	// is usually the timestamp it was taken over, which moves.
+	HeaderMatches map[string]string `yaml:"header_matches"`
 	// SignatureHeader is the header a case claims the signature travels in.
 	//
 	// The name a handler reads before it can verify anything, and until this

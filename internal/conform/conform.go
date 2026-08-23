@@ -110,6 +110,8 @@ type Delivery struct {
 	// by even less: every Recipe declaring hmac-sha256 sent Stripe's shape,
 	// and nothing looked.
 	Signature string
+	// Headers are the other headers the delivery carried.
+	Headers map[string]string
 }
 
 // Watcher returns the webhooks recorded since the last case, newest last.
@@ -282,6 +284,17 @@ func checkWebhook(expect recipe.WebhookExpectation, before int, all []Delivery) 
 			failures = append(failures, fmt.Sprintf("webhook signature: %s is not a valid pattern: %v", expect.Signature, err))
 		case !pattern.MatchString(delivery.Signature):
 			failures = append(failures, fmt.Sprintf("webhook signature: %q does not match %s", delivery.Signature, expect.Signature))
+		}
+	}
+
+	for _, name := range sortedKeys(expect.HeaderMatches) {
+		pattern, err := regexp.Compile(expect.HeaderMatches[name])
+
+		switch {
+		case err != nil:
+			failures = append(failures, fmt.Sprintf("webhook header %s: %s is not a valid pattern: %v", name, expect.HeaderMatches[name], err))
+		case !pattern.MatchString(delivery.Headers[name]):
+			failures = append(failures, fmt.Sprintf("webhook header %s: %q does not match %s", name, delivery.Headers[name], expect.HeaderMatches[name]))
 		}
 	}
 

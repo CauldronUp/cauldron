@@ -30,6 +30,10 @@ type Delivery struct {
 	Payload any
 	// Signature is the value sent in the Recipe's signing header.
 	Signature string
+	// Headers are the other headers a delivery carries, beyond the signature
+	// and the content type. A signature over a timestamp is unverifiable
+	// without the timestamp beside it.
+	Headers map[string]string
 	// SignatureHeader is the header that value travels in.
 	//
 	// Recorded whether or not anything is listening, because it is a claim the
@@ -427,6 +431,10 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, error) {
 
 	if delivery.Signature != "" {
 		delivery.SignatureHeader = q.recipe.Webhooks.Signing.Header
+
+		if header := q.recipe.Webhooks.Signing.TimestampHeader; header != "" {
+			delivery.Headers = map[string]string{header: strconv.FormatInt(at.Unix(), 10)}
+		}
 	}
 
 	if len(endpoints) == 0 {
@@ -485,6 +493,10 @@ func (q *webhookQueue) deliver(delivery Delivery, endpoint string, body []byte) 
 
 	if header := q.recipe.Webhooks.Signing.Header; header != "" && attempt.Signature != "" {
 		req.Header.Set(header, attempt.Signature)
+	}
+
+	for name, value := range attempt.Headers {
+		req.Header.Set(name, value)
 	}
 
 	resp, err := q.client.Do(req)
