@@ -1474,7 +1474,7 @@ exercised the route.
 
 ### The envelope is the larger webhook gap
 
-Of the 99 Recipes that emit events, 31 declare a payload envelope and 68 fall
+Of the 99 Recipes that emit events, 34 declare a payload envelope and 65 fall
 back to the default, which is Stripe's `{id, type, created, data.object}`.
 The README has always said this is a default rather than a claim about the
 provider, and now says so with the numbers in it and a test holding them.
@@ -1583,8 +1583,8 @@ fields are there at all.
 
 ### How many of the rest can be checked
 
-Of the Recipes still on the default, **17 can fire at least one declared
-event and 51 cannot** -- 31 declared, 17 and 51, which is the 99 that emit
+Of the Recipes still on the default, **14 can fire at least one declared
+event and 51 cannot** -- 34 declared, 14 and 51, which is the 99 that emit
 events at all. The 51 are not an envelope problem: every event they
 declare is unreachable from any route they have, so no case could assert a
 payload shape for them whatever the envelope said. Calendly is the clearest,
