@@ -1752,3 +1752,81 @@ func TestDetectSquarespaceCommerceClientsAndNotItsTemplateTooling(t *testing.T) 
 		}
 	}
 }
+
+// "wix" is three different things on two registries, which makes this the
+// busiest exclusion list in the file.
+//
+// It is a homonym: WiX is the Windows Installer XML toolset, and
+// electron-wix-msi and @electron-forge/maker-wix build MSI packages with it.
+// No shape recorded here covered that -- Lago met Lagoon and Polar met
+// Polaris, which are longer words containing a provider's name, where this is
+// the same word meaning something else.
+//
+// It is a prefix: wixel/gump is a PHP input validator with over a million
+// downloads, and wixiweb, wixnit and wixet are three more vendors whose names
+// begin with it.
+//
+// And the vendor's own scope is mostly not this API: @wix/design-system and
+// wix-style-react are a React component library, @wix-pilot/core is an
+// LLM-driven test runner, @wix/wix-code-types is types for Velo.
+func TestDetectWixCommerceClientsAndNotTheInstallerToolsetOrTheDesignSystem(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@wix/sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wix/ecom": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wix/api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wix/headless-ecom": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"chkltlabs/wix-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"storessuite/wix": "^1.0"}}`},
+		{"composer.json": `{"require": {"storessuite/wix-connect": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "wix") {
+			t.Errorf("%v did not detect wix: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Windows Installer XML toolset, which is a different product
+		// with the same name.
+		{"package.json": `{"devDependencies": {"electron-wix-msi": "^5.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@electron-forge/maker-wix": "^7.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@mongodb-js/electron-wix-msi": "^5.0.0"}}`},
+		// The vendor's own front end, which never calls the REST API.
+		{"package.json": `{"dependencies": {"@wix/design-system": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"wix-style-react": "^10.0.0"}}`},
+		{"package.json": `{"dependencies": {"wix-ui-core": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wix/wix-ui-icons-common": "^3.0.0"}}`},
+		// The vendor's own test runner, which is the most installed package
+		// with the word in its name.
+		{"package.json": `{"devDependencies": {"@wix-pilot/core": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@wix-pilot/detox": "^1.0.0"}}`},
+		// Types for the language sites are scripted in.
+		{"package.json": `{"devDependencies": {"@wix/wix-code-types": "^1.0.0"}}`},
+		// The App Market SDK, published by an individual.
+		{"package.json": `{"dependencies": {"wix": "^1.0.0"}}`},
+		// A vendor whose name merely starts with it.
+		{"composer.json": `{"require": {"wixel/gump": "^2.0"}}`},
+		{"composer.json": `{"require": {"wixiweb/wixiweb-laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"wixnit/core": "^1.0"}}`},
+		// Logging in with Wix, not calling it.
+		{"composer.json": `{"require": {"lezhnev74/laravel-socialite-wix": "^1.0"}}`},
+		// The retired contacts API.
+		{"composer.json": `{"require": {"epicformbuilder/wixhive-php-api": "^1.0"}}`},
+		// And Wix's own Symfony plumbing.
+		{"composer.json": `{"require": {"wix/framework-bundle": "^1.0"}}`},
+		{"composer.json": `{"require": {"wix/framework-component": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "wix") {
+			t.Errorf("%v offered the wix Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

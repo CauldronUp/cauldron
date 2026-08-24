@@ -1,0 +1,864 @@
+# Wix eCommerce Orders Recipe for Cauldron
+#
+# Written against the API definition Wix ships inside its own reference pages
+# -- a megabyte of OpenAPI embedded in dev.wix.com/docs/rest/business-solutions
+# /e-commerce/orders/order-object, with 632 component schemas, per-method
+# triggered events, per-method error tables and the field descriptions this
+# Recipe's claims are quoted from -- together with the About Errors and API
+# Keys articles for the envelope and the credential.
+#
+# Wix was named in this collection's own backlog as part of a category gap
+# rather than a provider gap: the small-business storefront that lives inside
+# somebody else's website. Printify, Shopware, Ecwid and Squarespace have
+# shipped from that list; this is the fifth and the largest.
+#
+# The shipping address is not where it ships to.
+#
+# Wix says it in the field's own description:
+#
+#   shippingDestination -- "Shipping destination address and contact details.
+#   For pickup orders, this contains the pickup location address, not the
+#   recipient's address."
+#
+# So on a pickup order, the field with the word shipping in it twice --
+# shippingInfo.logistics.shippingDestination -- holds a shop. The customer is
+# in recipientInfo, a field whose name says nothing about shipping, and whose
+# description is the other half of the same sentence: "This field represents
+# who will ultimately receive the order. It may differ from
+# shippingInfo.logistics.shippingDestination when: the chosen shipping option
+# is a pickup point or store pickup, where shippingDestination contains the
+# pickup location."
+#
+# Every integration that prints labels reaches for the shipping field, because
+# that is what it is called. On the orders a shop sells most of, the two agree
+# and nothing goes wrong. On a click-and-collect order the parcel is posted to
+# the depot the customer was going to walk to, addressed to the depot, and the
+# only sign is a delivery that succeeded to the wrong place.
+#
+# Six more, each from the same document:
+#
+#   1. Importing an order is not creating one. POST /ecom/v1/orders triggers
+#      wix.ecom.v1.order_created; POST /ecom/v1/orders/import triggers
+#      wix.ecom.v1.order_imported and nothing else. The Recipe's own words:
+#      "Imported orders trigger the dedicated OrderImported and
+#      ImportedOrderDeleted domain events." A shop migrating ten years of
+#      history from another platform produces ten years of orders and not one
+#      order_created, so every handler subscribed to the obvious event stays
+#      silent through the entire migration -- and stays silent in exactly the
+#      way a working system does.
+#   2. An order with nothing to ship is born fulfilled. Of FULFILLED: "All of
+#      the order items are fulfilled or the order was manually marked as
+#      fulfilled. Orders without shipping info are fulfilled automatically."
+#      So a download, a gift card or a booking is FULFILLED the moment it
+#      exists, and code reading that status as "we have sent it" is reading a
+#      fact about the catalogue rather than about the warehouse.
+#   3. Cancelling announces itself twice. Wix's method table gives the cancel
+#      endpoint two triggered events, Order Updated and Order Canceled, so a
+#      subscriber to both is woken twice for one act -- and a handler that is
+#      not idempotent does whatever it does twice.
+#   4. archived hides an order from the people, not from the program:
+#      "Archived orders are hidden from the main orders view in the dashboard,
+#      but remain retrievable through the API." That is the inverse of the
+#      shape Ecwid and Squarespace have, where the listing hides something the
+#      dashboard shows, and it fails the other way round -- a merchant who
+#      archives an order to get it out of the way has not removed it from
+#      anything a report counts.
+#   5. taxSummary carries a removal date that has been and gone: "Deprecated.
+#      Use `taxInfo` instead. This field will be removed on September 30,
+#      2024." The document saying so was updated in 2026 and still ships the
+#      field, so the notice is now evidence of nothing except that somebody
+#      wrote it.
+#   6. Two enumerations in this one document are called PaymentStatus and do
+#      not share a vocabulary. The order's is NOT_PAID, PAID, PARTIALLY_PAID,
+#      PARTIALLY_REFUNDED, FULLY_REFUNDED, PENDING, PENDING_MERCHANT, CANCELED,
+#      DECLINED. The other is APPROVED, PENDING, PENDING_MERCHANT, CANCELED,
+#      DECLINED, REFUNDED, PARTIALLY_REFUNDED, AUTHORIZED, VOIDED. Four values
+#      overlap, PAID and APPROVED are the same idea under different names, and
+#      a generated client keeps one type for both.
+#
+# Three shapes here are recorded against other providers and are stated as
+# shared rather than offered as findings:
+#
+#   - The listing is a POST with its paging in the body, which is Attio's and
+#     is now common enough here to be a convention rather than a surprise.
+#   - metadata.count is "Number of items returned in current page" and not the
+#     number matching -- Shopware's, and the same trap: on a fixture that fits
+#     one page the two agree.
+#   - Money travels as a decimal string beside a preformatted display string,
+#     {"amount": "85.00", "formattedAmount": "$85.00"}, which is FastSpring's.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Wix requires wix-site-id or wix-account-id "but not both". The required
+#     half is served; the exclusion is a refusal keyed on two headers
+#     appearing together, which this format cannot say, and declaring it
+#     against particular values would serve one pair of strings while claiming
+#     a rule.
+#   - Search Orders takes a filter object in Wix's own query language and a
+#     sort array of at most four entries. What is served is the paging and the
+#     envelope; the filter language is not modelled, and a request carrying
+#     one gets the whole collection rather than a refusal.
+#   - The order object has forty top-level fields and this Recipe declares the
+#     ones its claims need. Line items, activities, additional fees, extended
+#     fields, balance summaries and platform fees are present in the fixture
+#     only where a claim rests on them.
+#   - The dedicated cancel endpoint is not modelled and its refusals are the
+#     reason. Cancel Order lists ORDER_IS_PENDING -- "Order can't be canceled
+#     because its status is `PENDING`" -- beside ORDER_IS_REJECTED and
+#     ORDER_HAS_AUTHORIZED_TRANSACTION, all three at HTTP 428 Precondition
+#     Required, which is a status most error handling has no branch for. All
+#     three refuse on the record's own state rather than on anything in the
+#     request, and a route here either always fails or never does. Cancelling
+#     through the update route is served, including both of its events.
+#   - Catalogs, checkouts, carts, fulfillments and the rest of the eCommerce
+#     platform are absent. Orders only.
+#   - Wix's error body carries two sentences about one failure -- message and
+#     details.applicationError.description -- and its own example shows them
+#     disagreeing in detail ("Payment failed" beside "Payment declined due to
+#     insufficient funds"). Only the first is served: this format has one
+#     message per failure, and duplicating it under the second name would
+#     claim the two always agree, which is the opposite of what the example
+#     shows.
+#   - imported is "Set automatically at import time and cannot be changed
+#     afterwards", and no route here stamps it: the flag is seeded on the
+#     migrated order in the fixture, and what the import route serves is the
+#     event, which is the claim that matters.
+#   - fulfillmentStatus is readOnly in Wix's schema and derived from whether
+#     the order has anything to ship. This Recipe serves it as seeded and
+#     declares no default, because a default of NOT_FULFILLED would
+#     contradict the claim above for every order with nothing to ship, and a
+#     default of FULFILLED would contradict it for every order with something.
+#
+# The key and the ids below are fixtures and belong to no site.
+
+recipe: wix
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders
+
+auth:
+  # The key bare in the header, with no scheme word in front of it. Wix's
+  # instruction is to "include the key from the API Key Manager in the
+  # Authorization header", and a client that helpfully prefixes Bearer is
+  # refused.
+  scheme: header
+  header: Authorization
+  keys:
+    - IST.cauldron-wix-fixture-key
+
+# Site-level calls carry the site. Account-level calls carry wix-account-id
+# instead, and Wix's rule is one or the other and "not both" -- see the gaps
+# at the top of this file for the half that is not served.
+required_headers:
+  wix-site-id: site_id_missing
+
+responses:
+  list:
+    style: wrapped
+    key: orders
+    # "Number of items returned in current page", which is not the number of
+    # orders matching. Shopware's trap, in Wix's own words.
+    count_field: metadata.count
+    count_means: page
+    cursor_field: metadata.cursors.next
+    has_more_field: metadata.hasNext
+  resource:
+    style: wrapped
+    key: order
+  error:
+    # Flat, because Wix's message sits at the top level and only the code
+    # nests: {"message": ..., "details": {"applicationError": {"code": ...}}}.
+    # A dotted code_field puts it where Wix puts it.
+    style: flat
+    message_field: message
+    code_field: details.applicationError.code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      style: uuid
+    fields:
+      # A number, not a string, and displayed to the merchant rather than
+      # used to address anything.
+      number:
+        type: integer
+      createdDate:
+        type: datetime
+      updatedDate:
+        type: datetime
+      # INITIALIZED, APPROVED, CANCELED, PENDING, REJECTED.
+      status:
+        type: string
+        default: APPROVED
+      # NOT_PAID, PAID, PARTIALLY_PAID, PARTIALLY_REFUNDED, FULLY_REFUNDED,
+      # PENDING, PENDING_MERCHANT, CANCELED, DECLINED -- and not the other
+      # PaymentStatus in the same document.
+      paymentStatus:
+        type: string
+        default: PAID
+      # "Orders without shipping info are fulfilled automatically." Wix marks
+      # this readOnly and works it out; there is no default here because
+      # either value would be a claim about a computation this Recipe does
+      # not perform. See the gaps at the top of this file.
+      fulfillmentStatus:
+        type: string
+      buyerInfo:
+        type: map
+      lineItems:
+        type: list
+      priceSummary:
+        type: map
+      currency:
+        type: string
+        default: GBP
+      # Where the parcel goes, which on a pickup order is a shop.
+      shippingInfo:
+        type: map
+      # And who is meant to end up with it.
+      recipientInfo:
+        type: map
+      billingInfo:
+        type: map
+      # Hidden from the dashboard and not from here.
+      archived:
+        type: boolean
+        default: false
+      # Set when somebody clicks the order in the dashboard.
+      seenByAHuman:
+        type: boolean
+        default: false
+      # Set at import time and never afterwards.
+      imported:
+        type: boolean
+        default: false
+      taxIncludedInPrices:
+        type: boolean
+        default: true
+      buyerLanguage:
+        type: string
+        default: en
+      weightUnit:
+        type: string
+        default: KG
+      # "Deprecated. Use `taxInfo` instead. This field will be removed on
+      # September 30, 2024." Still here.
+      taxSummary:
+        type: map
+      taxInfo:
+        type: map
+
+routes:
+  # A POST that reads. The paging travels in the body with the filter, which
+  # is Attio's shape and is stated as shared.
+  - method: POST
+    path: /ecom/v1/orders/search
+    resource: order
+    operation: list
+    pagination:
+      style: cursor
+      in: body
+      cursor_param: search.cursorPaging.cursor
+      limit_param: search.cursorPaging.limit
+      limit: 100
+
+  - method: GET
+    path: /ecom/v1/orders/{id}
+    resource: order
+    operation: get
+
+  # The order somebody placed.
+  - method: POST
+    path: /ecom/v1/orders
+    resource: order
+    operation: create
+    emits: wix.ecom.v1.order_created
+
+  # And the order somebody moved, which is a different event and no other.
+  - method: POST
+    path: /ecom/v1/orders/import
+    resource: order
+    operation: create
+    emits: wix.ecom.v1.order_imported
+
+  - method: PATCH
+    path: /ecom/v1/orders/{id}
+    resource: order
+    operation: update
+    emits: wix.ecom.v1.order_updated
+    emits_when:
+      # Cancelling announces itself twice: the general update above and the
+      # specific one here, both listed against the cancel endpoint.
+      - event: wix.ecom.v1.order_canceled
+        field: status
+
+webhooks:
+  events:
+    - wix.ecom.v1.order_created
+    - wix.ecom.v1.order_imported
+    - wix.ecom.v1.order_updated
+    - wix.ecom.v1.order_canceled
+  payload:
+    id: "{id}"
+    eventType: "{event}"
+    instanceId: 4c7f5a2e-9d31-4b18-b0a6-51d2c3f88a04
+    entityId: "{record_id}"
+    slug: "{action}"
+    entityFqdn: wix.ecom.v1.order
+
+errors:
+  authentication_error:
+    status: 401
+    message: Missing or invalid Authorization header.
+    code: UNAUTHENTICATED
+
+  site_id_missing:
+    status: 400
+    message: A wix-site-id or wix-account-id header is required.
+    code: MISSING_SITE_ID
+
+  resource_missing:
+    status: 404
+    message: Order not found.
+    code: ORDER_NOT_FOUND
+
+  invalid_request:
+    status: 400
+    message: One or more request parameters is wrong or missing.
+    code: INVALID_ARGUMENT
+
+fixtures:
+  empty: {}
+
+  site:
+    order:
+      # Click and collect. The shipping field holds the shop; the customer is
+      # somewhere else entirely.
+      - id: 5e402679-69e4-4329-9cc1-25d607cdfaca
+        number: 10033
+        createdDate: "2026-08-03T09:14:02.118Z"
+        updatedDate: "2026-08-03T09:14:02.118Z"
+        status: APPROVED
+        paymentStatus: PAID
+        fulfillmentStatus: NOT_FULFILLED
+        currency: GBP
+        buyerInfo:
+          contactId: 7d9a1c04-3f52-4a8b-9e11-6c4d2b8f0a37
+          email: ada@example.com
+        lineItems:
+          - id: 00000000-0000-0000-0000-000000000001
+            productName:
+              original: Brine kettle
+              translated: Brine kettle
+            quantity: 1
+            price:
+              amount: "85.00"
+              formattedAmount: "£85.00"
+            physicalProperties:
+              sku: SQ3381024
+              shippable: true
+        priceSummary:
+          subtotal:
+            amount: "85.00"
+            formattedAmount: "£85.00"
+          shipping:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          tax:
+            amount: "17.00"
+            formattedAmount: "£17.00"
+          discount:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          total:
+            amount: "102.00"
+            formattedAmount: "£102.00"
+        shippingInfo:
+          code: pickup_point_dpd
+          title: Collect from a DPD pickup point
+          logistics:
+            # A shop on an industrial estate, which is where this order says
+            # it is shipping to.
+            shippingDestination:
+              address:
+                addressLine: DPD Pickup, Unit 7 Vale Trading Estate
+                city: Bristol
+                postalCode: BS3 4EA
+                country: GB
+              contactDetails:
+                firstName: DPD
+                lastName: Pickup Point
+        recipientInfo:
+          # And the person who is going to walk into it.
+          address:
+            addressLine: 14 Cotham Brow
+            city: Bristol
+            postalCode: BS6 6AS
+            country: GB
+          contactDetails:
+            firstName: Ada
+            lastName: Lovelace
+            phone: "+447700900123"
+        billingInfo:
+          address:
+            addressLine: 14 Cotham Brow
+            city: Bristol
+            postalCode: BS6 6AS
+            country: GB
+          contactDetails:
+            firstName: Ada
+            lastName: Lovelace
+        archived: false
+        seenByAHuman: false
+        imported: false
+        taxIncludedInPrices: true
+        taxSummary:
+          totalTax:
+            amount: "17.00"
+            formattedAmount: "£17.00"
+        taxInfo:
+          totalTax:
+            amount: "17.00"
+            formattedAmount: "£17.00"
+      # A download. Nothing to ship, so it is fulfilled before anybody has
+      # done anything.
+      - id: 8b3c1d97-2e64-4f05-a1b8-9c07de35f412
+        number: 10034
+        createdDate: "2026-08-05T18:41:55.300Z"
+        updatedDate: "2026-08-05T18:41:55.300Z"
+        status: APPROVED
+        paymentStatus: PAID
+        fulfillmentStatus: FULFILLED
+        currency: GBP
+        buyerInfo:
+          contactId: c1f8e0a2-6b47-4d39-8a05-2e7139bc4d68
+          email: grace@example.com
+        lineItems:
+          - id: 00000000-0000-0000-0000-000000000002
+            productName:
+              original: Preserving handbook (PDF)
+              translated: Preserving handbook (PDF)
+            quantity: 1
+            price:
+              amount: "12.00"
+              formattedAmount: "£12.00"
+            physicalProperties:
+              shippable: false
+        priceSummary:
+          subtotal:
+            amount: "12.00"
+            formattedAmount: "£12.00"
+          shipping:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          tax:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          discount:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          total:
+            amount: "12.00"
+            formattedAmount: "£12.00"
+        archived: false
+        seenByAHuman: false
+        imported: false
+        taxIncludedInPrices: true
+      # Archived by the merchant, and still right here.
+      - id: a04f7b62-8d15-4e93-bc27-30fa9e1d6c85
+        number: 10035
+        createdDate: "2026-06-19T11:02:33.007Z"
+        updatedDate: "2026-07-01T08:20:14.552Z"
+        status: APPROVED
+        paymentStatus: PAID
+        fulfillmentStatus: FULFILLED
+        currency: GBP
+        buyerInfo:
+          contactId: 5a2d9e17-4c83-4b60-91fe-8d3072ac5b41
+          email: alan@example.com
+        lineItems:
+          - id: 00000000-0000-0000-0000-000000000003
+            productName:
+              original: Beet crate
+              translated: Beet crate
+            quantity: 2
+            price:
+              amount: "40.00"
+              formattedAmount: "£40.00"
+            physicalProperties:
+              sku: SCH-BEET
+              shippable: true
+        priceSummary:
+          subtotal:
+            amount: "80.00"
+            formattedAmount: "£80.00"
+          shipping:
+            amount: "4.99"
+            formattedAmount: "£4.99"
+          tax:
+            amount: "16.00"
+            formattedAmount: "£16.00"
+          discount:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          total:
+            amount: "100.99"
+            formattedAmount: "£100.99"
+        archived: true
+        # Somebody looked at this one before filing it away.
+        seenByAHuman: true
+        imported: false
+        taxIncludedInPrices: true
+      # Brought in from another platform, which is why it exists without ever
+      # having been created.
+      - id: f6019c48-7a2b-4d51-8e30-b5c7d2f41a09
+        number: 4471
+        createdDate: "2019-03-12T14:55:09.221Z"
+        updatedDate: "2026-05-30T10:00:00.000Z"
+        status: APPROVED
+        paymentStatus: PAID
+        fulfillmentStatus: FULFILLED
+        currency: GBP
+        buyerInfo:
+          contactId: 2b6f4a80-91c5-4e27-bd13-7a05e8c39f62
+          email: katherine@example.com
+        lineItems:
+          - id: 00000000-0000-0000-0000-000000000004
+            productName:
+              original: Preserving jar, 1L
+              translated: Preserving jar, 1L
+            quantity: 6
+            price:
+              amount: "5.50"
+              formattedAmount: "£5.50"
+            physicalProperties:
+              sku: JAR-1L
+              shippable: true
+        priceSummary:
+          subtotal:
+            amount: "33.00"
+            formattedAmount: "£33.00"
+          shipping:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          tax:
+            amount: "6.60"
+            formattedAmount: "£6.60"
+          discount:
+            amount: "0.00"
+            formattedAmount: "£0.00"
+          total:
+            amount: "39.60"
+            formattedAmount: "£39.60"
+        archived: false
+        seenByAHuman: false
+        imported: true
+        taxIncludedInPrices: true
+
+conformance:
+  - name: the shipping address on a pickup order is the shop, not the customer
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # "For pickup orders, this contains the pickup location address, not
+        # the recipient's address." A label printed from the field with
+        # shipping in its name goes to an industrial estate.
+        "order.shippingInfo.logistics.shippingDestination.address.addressLine": DPD Pickup, Unit 7 Vale Trading Estate
+        "order.shippingInfo.logistics.shippingDestination.address.postalCode": BS3 4EA
+        # And the person the order is for, under a name that says nothing
+        # about shipping at all.
+        "order.recipientInfo.address.addressLine": 14 Cotham Brow
+        "order.recipientInfo.address.postalCode": BS6 6AS
+        "order.recipientInfo.contactDetails.firstName": Ada
+
+  - name: and on an ordinary order the two agree, which is why nobody notices
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/a04f7b62-8d15-4e93-bc27-30fa9e1d6c85
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # No shipping option, so no destination to disagree with anything.
+        # The orders a shop sells most of look like this, which is the whole
+        # reason the pickup case survives to production.
+        "order.number": 10035
+      absent:
+        - order.shippingInfo.logistics.shippingDestination
+
+  - name: an order with nothing to ship is fulfilled before anyone touches it
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/8b3c1d97-2e64-4f05-a1b8-9c07de35f412
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # "Orders without shipping info are fulfilled automatically." A PDF
+        # sold four seconds ago, already FULFILLED, and a report counting
+        # fulfilled orders as dispatched parcels counts this one.
+        "order.fulfillmentStatus": FULFILLED
+        "order.lineItems[0].physicalProperties.shippable": false
+        "order.paymentStatus": PAID
+
+  - name: and a physical order that has not shipped says the opposite
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # The other end of the distinction: paid, shippable, and not
+        # fulfilled, so the status is about the parcel here and about the
+        # catalogue two orders up.
+        "order.fulfillmentStatus": NOT_FULFILLED
+        "order.lineItems[0].physicalProperties.shippable": true
+
+  - name: creating an order announces a creation
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/create-order
+    fixture: empty
+    request:
+      method: POST
+      path: /ecom/v1/orders
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+      json:
+        number: 10040
+        status: APPROVED
+        paymentStatus: PAID
+        currency: GBP
+    expect:
+      status: 200
+      webhook:
+        event: wix.ecom.v1.order_created
+        body:
+          entityFqdn: wix.ecom.v1.order
+        absent_events:
+          - wix.ecom.v1.order_imported
+
+  - name: and importing one announces an import and nothing a listener expects
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/import-order
+    fixture: empty
+    request:
+      method: POST
+      path: /ecom/v1/orders/import
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+      json:
+        number: 4471
+        status: APPROVED
+        paymentStatus: PAID
+        currency: GBP
+    expect:
+      status: 200
+      webhook:
+        event: wix.ecom.v1.order_imported
+        absent_events:
+          # The whole migration is silent on this one, and silence is what a
+          # working integration also sounds like.
+          - wix.ecom.v1.order_created
+
+  - name: an archived order is hidden from the dashboard and not from here
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/a04f7b62-8d15-4e93-bc27-30fa9e1d6c85
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # "Archived orders are hidden from the main orders view in the
+        # dashboard, but remain retrievable through the API." The inverse of
+        # the shape Ecwid and Squarespace have, and it fails the other way:
+        # the merchant thinks it is gone and every report still counts it.
+        "order.archived": true
+        "order.seenByAHuman": true
+
+  - name: the deprecated tax field outlived the date it said it would go
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # "This field will be removed on September 30, 2024." Both are here
+        # and both carry the same number, so code reading either is right and
+        # code reading the deprecated one has been told for two years that it
+        # is about to break.
+        "order.taxSummary.totalTax.amount": "17.00"
+        "order.taxInfo.totalTax.amount": "17.00"
+
+  - name: the listing counts the page rather than the collection
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/search-orders
+    fixture: site
+    request:
+      method: POST
+      path: /ecom/v1/orders/search
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+      json:
+        search:
+          cursorPaging:
+            limit: 2
+    expect:
+      status: 200
+      body:
+        # "Number of items returned in current page." Two, on a site holding
+        # four, and nothing in the envelope says four. Shopware's trap, and a
+        # fixture that fits one page hides it.
+        "metadata.count": 2
+        "metadata.hasNext": true
+        "orders[0].number": 10033
+        "orders[1].number": 10034
+      matches:
+        # And the pointer to the rest, which is the only thing the envelope
+        # offers in place of a total.
+        "metadata.cursors.next": '^.+$'
+      absent:
+        - orders[2]
+
+  - name: a request that does not say which site is refused
+    source: https://dev.wix.com/docs/rest/articles/getting-started/api-keys
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+    expect:
+      status: 400
+      body:
+        message: A wix-site-id or wix-account-id header is required.
+        "details.applicationError.code": MISSING_SITE_ID
+
+  - name: a missing order names itself in the application code
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/get-order
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/00000000-0000-0000-0000-000000009999
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      # Wix's own error table for Get Order: httpCode 404, statusCode
+      # NOT_FOUND, applicationCode ORDER_NOT_FOUND. The status says a thing
+      # is missing and the code says which kind.
+      status: 404
+      body:
+        "details.applicationError.code": ORDER_NOT_FOUND
+
+  - name: a key the site does not know is refused
+    source: https://dev.wix.com/docs/rest/articles/get-started/errors
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.not-this-sites-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      # "The system wasn't able to authenticate you. For example, there was a
+      # missing or incorrect Authorization header or an expired token."
+      status: 401
+      body:
+        "details.applicationError.code": UNAUTHENTICATED
+
+  - name: an order that arrived from another platform is flagged as such
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/order-object
+    fixture: site
+    request:
+      method: GET
+      path: /ecom/v1/orders/f6019c48-7a2b-4d51-8e30-b5c7d2f41a09
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+    expect:
+      status: 200
+      body:
+        # "When `true`, the order originated outside of Wix (for example,
+        # during a migration from another eCommerce platform) rather than
+        # being placed through the Wix checkout flow or created manually."
+        # Seven years old, in a shop that opened last year.
+        "order.imported": true
+        "order.number": 4471
+        "order.createdDate": "2019-03-12T14:55:09.221Z"
+
+  - name: cancelling an order wakes two subscribers for one act
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/cancel-order
+    fixture: site
+    request:
+      method: PATCH
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+      json:
+        status: CANCELED
+    expect:
+      status: 200
+      body:
+        "order.status": CANCELED
+      webhook:
+        # Wix's method table gives the cancel endpoint both of these, so a
+        # handler subscribed to each runs twice for one cancellation.
+        event: wix.ecom.v1.order_canceled
+        body:
+          entityFqdn: wix.ecom.v1.order
+
+  - name: and editing something else wakes only the general one
+    source: https://dev.wix.com/docs/rest/business-solutions/e-commerce/orders/orders/update-order
+    fixture: site
+    request:
+      method: PATCH
+      path: /ecom/v1/orders/5e402679-69e4-4329-9cc1-25d607cdfaca
+      headers:
+        Authorization: IST.cauldron-wix-fixture-key
+        wix-site-id: 3c76e2ab-1f04-4a8d-9b25-e7f0c81d3a56
+      json:
+        archived: true
+    expect:
+      status: 200
+      body:
+        "order.archived": true
+      webhook:
+        event: wix.ecom.v1.order_updated
+        absent_events:
+          # Archiving is not cancelling, and a subscriber to the cancellation
+          # must not be woken by somebody tidying the dashboard.
+          - wix.ecom.v1.order_canceled
