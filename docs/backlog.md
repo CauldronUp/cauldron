@@ -410,7 +410,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
-| Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
+| ~~Lightspeed~~ | Shipped, R-Series. The row said two unrelated products and there are four: R-Series is retail, K-Series is restaurants, X-Series is the former Vend and eCom is the former SEOshop, each with its own API and credential. The Recipe says which one it is in its first line, and detection maps the R-Series client alone |
 | ~~Clover~~ | Shipped. An order comes back with no items in it unless the request asked to expand them, and forgetting is answered rather than refused |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
 | ~~Lemon Squeezy~~ | Shipped, and see the row below — the merchant-of-record half is FastSpring's and is repeated rather than new. What is new: licence keys, store-scoped identifiers, and totals in two currencies at once |

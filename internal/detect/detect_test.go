@@ -933,3 +933,42 @@ func TestDetectCloverFromTheEcommerceSdkOnly(t *testing.T) {
 		}
 	}
 }
+
+// Lightspeed is four unrelated products sharing a brand, not the two the
+// backlog said: R-Series is retail, K-Series is restaurants, X-Series is the
+// former Vend and eCom is the former SEOshop. Four APIs, four credentials,
+// four vocabularies, and a client for one does not partly work against
+// another -- it does not reach it.
+//
+// The two nearest misses are not Lightspeed at all. The unscoped npm package
+// is the speed of light as a constant, and Packagist's most-installed match
+// is a Magento performance module that borrowed the word.
+func TestDetectLightspeedFromTheRetailClientOnly(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"composer.json": `{"require": {"timothydc/laravel-lightspeed-retail-api": "^1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "lightspeed") {
+		t.Errorf("the R-Series client did not detect lightspeed: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"timothydc/laravel-lightspeed-ecom-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"seoshop/seoshop-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"anytech/lightspeed-x-series-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"elgentos/module-lightspeed": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"lightspeed": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "lightspeed") {
+			t.Errorf("%v offered the lightspeed Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}

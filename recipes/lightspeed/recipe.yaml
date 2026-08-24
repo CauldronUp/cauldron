@@ -1,0 +1,437 @@
+# Lightspeed Retail Recipe for Cauldron
+#
+# This is the R-Series API, and saying so is most of the point. Lightspeed
+# sells two things under one name: R-Series for shops and K-Series for
+# restaurants, and they are not two versions of one API. Different
+# credentials, different objects, different vocabulary, different hosts. A
+# client written for one does not partly work against the other; it does not
+# reach it at all.
+#
+# What the API itself looks like is an XML service wearing JSON. The paging
+# metadata is under a key that begins with an at sign, the count inside it is
+# a string, and the array of records is under the resource's singular name
+# with a capital letter. None of those is a choice anybody makes when they
+# design a JSON API; all three are what happens when an XML one is translated.
+#
+# Six things worth modelling exactly:
+#
+#   1. The envelope is "@attributes", and reaching it means response
+#      ["@attributes"] in every language that lets you write response.field.
+#   2. The count inside it is the string "2", not the number 2. Adding it to
+#      an offset concatenates, and comparing it to a length fails on type.
+#   3. The records are under "Sale" -- singular, capitalised -- rather than
+#      "sales". So the key is different for every endpoint and none of them
+#      is the plural a client would guess.
+#   4. Money is a string with four decimal places. "47.6000" rather than
+#      47.60, so it neither adds nor compares as a number and rounds
+#      differently depending on where it is parsed.
+#   5. Relations are absent unless asked for, and the asking is a JSON array
+#      inside a query parameter: ?load_relations=["SaleLines"]. A sale
+#      without it has no lines and is not an error.
+#   6. A sale exists from the moment a till starts one. completed is the
+#      boolean that says it finished, so a total summed without checking it
+#      includes baskets somebody walked away from.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - A single result is an object rather than a one-element array. Ask for a
+#     sale by id and "Sale" is the object; ask for two and it is a list. That
+#     is the sharpest thing about this API -- code that maps over the result
+#     works until a shop has one matching sale -- and Cauldron cannot make a
+#     shape depend on how many records matched, so a listing here is always
+#     an array. It is the one behaviour deliberately wrong, and it is wrong
+#     in the direction that hides the bug.
+#   - load_relations is matched for one relation at a time. The real
+#     parameter takes a JSON array, so ["SaleLines","SaleLineItems"] asks for
+#     two, and a route matches on one member.
+#   - K-Series is not modelled at all, and neither are inventory, customers,
+#     purchase orders or the register.
+#
+# The token below is a fixture, not a secret. It belongs to no account.
+
+recipe: lightspeed
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: API/V3
+  docs: https://developers.lightspeedhq.com/retail/introduction/introduction/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_lightspeed_r_token
+
+responses:
+  list:
+    style: wrapped
+    # Singular and capitalised, because this used to be an element name.
+    key: Sale
+    # Under a key beginning with an at sign, which is what an XML attribute
+    # becomes when somebody translates it.
+    count_field: "@attributes.count"
+    # And a string. Adding it to an offset concatenates.
+    count_as_string: true
+    limit_field: "@attributes.limit"
+    page_field: "@attributes.offset"
+  resource:
+    style: wrapped
+    key: Sale
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  sale:
+    id:
+      style: numeric
+      type: string
+      field: saleID
+    fields:
+      # A sale exists from the moment a till starts one. This says whether it
+      # finished.
+      completed:
+        type: boolean
+        default: false
+      # Four decimal places, as a string.
+      total:
+        type: string
+      totalDue:
+        type: string
+      # ISO with an offset, which is the one conventional thing here.
+      timeStamp:
+        type: datetime
+      # The register, the employee and the shop, all as string identifiers on
+      # an API whose own id is a string too.
+      registerID:
+        type: string
+      employeeID:
+        type: string
+      shopID:
+        type: string
+      # Absent unless load_relations asked for it.
+      SaleLines:
+        type: map
+
+routes:
+  # With the relation. The parameter carries a JSON array, so the declared
+  # value is the array as written.
+  - method: GET
+    path: /API/V3/Account/{accountID}/Sale.json
+    resource: sale
+    operation: list
+    matches_query:
+      load_relations: '["SaleLines"]'
+    pagination:
+      style: offset
+      limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+  # Without it. A sale with no lines, which is not an error and is what a
+  # request that did not ask receives.
+  - method: GET
+    path: /API/V3/Account/{accountID}/Sale.json
+    resource: sale
+    operation: list
+    returns:
+      - id
+      - completed
+      - total
+      - totalDue
+      - timeStamp
+      - registerID
+      - employeeID
+      - shopID
+    pagination:
+      style: offset
+      limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+  # A till starting a basket. The sale exists immediately and is not
+  # complete, which is what makes the flag worth having -- without a create
+  # the declared default described a state no request could produce.
+  - method: POST
+    path: /API/V3/Account/{accountID}/Sale.json
+    resource: sale
+    operation: create
+
+  - method: GET
+    path: /API/V3/Account/{accountID}/Sale/{id}.json
+    resource: sale
+    operation: get
+    returns:
+      - id
+      - completed
+      - total
+      - totalDue
+      - timeStamp
+      - registerID
+      - employeeID
+      - shopID
+
+errors:
+  authentication_error:
+    status: 401
+    message: Access token is invalid or expired.
+
+  resource_missing:
+    status: 404
+    message: Requested resource could not be found.
+
+  parameter_missing:
+    status: 400
+    message: Bad request.
+
+  rate_limit:
+    status: 429
+    message: Bucket level exceeded.
+    headers:
+      # A leaky bucket, reported as used out of capacity in one header. Not a
+      # remaining count and not a reset time.
+      X-LS-API-Bucket-Level: "60/60"
+      X-LS-API-Drip-Rate: "1"
+
+fixtures:
+  empty: {}
+
+  one-shop:
+    sale:
+      - id: "1001"
+        completed: true
+        total: "47.6000"
+        totalDue: "0.0000"
+        timeStamp: "2026-02-01T09:15:00+00:00"
+        registerID: "1"
+        employeeID: "3"
+        shopID: "1"
+        SaleLines:
+          SaleLine:
+            - saleLineID: "5001"
+              unitPrice: "34.0000"
+              unitQuantity: "1"
+            - saleLineID: "5002"
+              unitPrice: "13.6000"
+              unitQuantity: "1"
+      # A basket somebody walked away from. It is a sale, it has a total, and
+      # nobody paid.
+      - id: "1002"
+        completed: false
+        total: "19.0000"
+        totalDue: "19.0000"
+        timeStamp: "2026-02-01T11:40:00+00:00"
+        registerID: "1"
+        employeeID: "3"
+        shopID: "1"
+        SaleLines:
+          SaleLine:
+            - saleLineID: "5003"
+              unitPrice: "19.0000"
+              unitQuantity: "1"
+
+conformance:
+  - name: the paging metadata is under an at sign and counts in a string
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # An at sign, so response.count is undefined and reaching it means
+        # response["@attributes"]["count"] in every language that lets you
+        # write a dotted field.
+        "@attributes.count": "2"
+        "@attributes.limit": 100
+      absent:
+        # The two shapes a client reaches for first.
+        - count
+        - total_count
+
+  - name: the records are under the singular name with a capital letter
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # Sale, not sales and not data. The key is different for every
+        # endpoint and none of them is the plural a client would guess.
+        Sale[0].saleID: "1001"
+        Sale[1].saleID: "1002"
+      absent:
+        - sales
+        - data
+
+  - name: money is a string with four decimal places
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale/1001.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # "47.6000", so it neither adds nor compares as a number, and where
+        # it gets rounded decides what a report says.
+        Sale.total: "47.6000"
+        Sale.totalDue: "0.0000"
+
+  - name: an identifier is a string of digits
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale/1001.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # Quoted, and so is every reference beside it. Comparing one to a
+        # number from anywhere else fails on type before it fails on value.
+        Sale.saleID: "1001"
+        Sale.registerID: "1"
+        Sale.shopID: "1"
+      absent:
+        - Sale.id
+
+  - name: an unfinished sale is a sale
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale/1002.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # A basket somebody walked away from. It has a total, nobody paid,
+        # and it is in the listing beside the completed one -- so a day's
+        # takings summed without checking this is nineteen pounds over.
+        Sale.completed: false
+        Sale.total: "19.0000"
+        Sale.totalDue: "19.0000"
+      absent:
+        # And the flag is the only thing distinguishing it. Nothing about the
+        # total, the timestamp or the register says this one was abandoned.
+        - Sale.abandoned
+        - Sale.voided
+
+  - name: a sale has no lines unless the request asked for them
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        Sale[0].total: "47.6000"
+      absent:
+        # The sale is there, the total is right, and what was bought is not.
+        # Not an error, and an empty sale is an ordinary thing for a shop to
+        # have.
+        - Sale[0].SaleLines
+
+  - name: and asking is a JSON array inside a query parameter
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json?load_relations=["SaleLines"]
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # The value is a JSON array, in a query string, url-encoded by
+        # whatever client sends it -- and the lines arrive nested under
+        # another singular capitalised name.
+        Sale[0].SaleLines.SaleLine[0].unitPrice: "34.0000"
+        Sale[0].SaleLines.SaleLine[1].unitPrice: "13.6000"
+
+  - name: the line prices add to the sale total
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json?load_relations=["SaleLines"]
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 200
+      body:
+        # 34.0000 plus 13.6000 is 47.6000, and all three are strings, so the
+        # arithmetic a client has to do is on text it must parse first.
+        Sale[0].total: "47.6000"
+        Sale[0].SaleLines.SaleLine[0].unitQuantity: "1"
+
+  - name: a new sale is not a sale that happened
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: POST
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+      json:
+        registerID: "1"
+        employeeID: "3"
+    expect:
+      status: 200
+      body:
+        # A till has started a basket. The sale is in the API from this
+        # moment, it will be in a listing, and nobody has paid -- so a
+        # takings report that counts sales rather than completed sales counts
+        # every basket currently on a counter.
+        Sale.completed: false
+        Sale.registerID: "1"
+
+  - name: the rate limit is a bucket reading
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    arm: rate_limit
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer cauldron_lightspeed_r_token
+    expect:
+      status: 429
+      headers:
+        # Used out of capacity, and a drip rate beside it. Neither is a
+        # remaining count and neither is a reset time, so a client has to
+        # subtract and divide before it knows how long to wait.
+        X-LS-API-Bucket-Level: "60/60"
+        X-LS-API-Drip-Rate: "1"
+
+  - name: a bad token is refused
+    source: https://developers.lightspeedhq.com/retail/introduction/introduction/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /API/V3/Account/CAULDRON/Sale.json
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      status: 401
+      body:
+        message: Access token is invalid or expired.
