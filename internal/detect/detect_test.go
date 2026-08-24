@@ -1474,3 +1474,36 @@ func TestDetectApideckAndNotAppdeck(t *testing.T) {
 		}
 	}
 }
+
+// Royal Mail is mapped to nothing on purpose, and this guards the decision the
+// way the Toast test guards its own.
+//
+// The company runs three separate APIs on three hosts, and every client
+// package on Packagist targets one of the other two.
+// elliotjreed/royal-mail-tracking is the tracking service;
+// turtledesign/royalmail-php, zvps/royal-mail-shipping-rest-api-client and
+// mobi-market/royalmail-shipping-v3 are all the Shipping API. Click & Drop --
+// the API this Recipe describes, at api.parcel.royalmail.com -- has no client
+// of its own.
+//
+// Offering its emulator to a project using a different Royal Mail API would be
+// wrong about the host, the credential and the vocabulary at once, which is a
+// worse answer than offering nothing.
+func TestRoyalMailIsMappedToNothingOnPurpose(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"elliotjreed/royal-mail-tracking": "^4.0"}}`},
+		{"composer.json": `{"require": {"turtledesign/royalmail-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"zvps/royal-mail-shipping-rest-api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"mobi-market/royalmail-shipping-v3": "^1.0"}}`},
+		{"composer.json": `{"require": {"octolize/wp-royal-mail-shipping-method": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "royalmail") {
+			t.Errorf("%v offered the royalmail Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
