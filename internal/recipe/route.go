@@ -307,6 +307,20 @@ type Pagination struct {
 	// Style is one of: cursor, offset, page.
 	Style string `yaml:"style"`
 	Limit int    `yaml:"limit"`
+	// MaxLimit is the largest page a provider will serve, for the ones that
+	// cap it and answer with less rather than refusing.
+	//
+	// Printify is the reason. Its own description says "default: 10, maximum:
+	// 10", so a client asking for a hundred orders is answered with ten and
+	// not told -- and a paging loop that stops when it receives fewer records
+	// than it asked for stops on the first page. A shop with four hundred
+	// orders reports ten, and nothing errored.
+	//
+	// Without this the declared Limit is only a default and the caller always
+	// wins, so a Recipe could describe the cap in a comment and not serve it.
+	// Zero means the provider serves whatever is asked for, which is what
+	// every Recipe written before this assumed.
+	MaxLimit int `yaml:"max_limit"`
 	// LimitParam names the query parameter carrying the page size, for the
 	// providers that do not call it "limit". Google Calendar calls it
 	// maxResults, GitHub calls it per_page, Salesforce does not accept one at
