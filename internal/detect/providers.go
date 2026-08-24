@@ -70,6 +70,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// Two exclusions, both shapes already recorded here, arriving
+			// together on one small provider.
+			//
+			// mugnate/oauth2-ecwid is a login provider for the PHP League --
+			// signing in with an Ecwid account rather than calling the store
+			// API, which is what socialiteproviders/gumroad was.
+			//
+			// And npm's bare "ecwid" describes itself as "ecwid" and lists no
+			// repository, which is exactly the state the backlog records
+			// against Marqeta: a package of that name exists and cannot be
+			// verified, so it is left alone rather than guessed at.
+			//
+			// What is mapped is small -- three-figure install counts at best.
+			// Ecwid has no widely installed client on either registry, which
+			// is a fact about the provider rather than a gap in the search.
+			recipe: "ecwid",
+			composer: []string{
+				"dspacelabs/ecwid",
+				"dspacelabs/ecwid-client",
+				"strappberry/ecwid-api-wrapper",
+			},
+			npm: []string{"ecwid-api"},
+		},
+		{
 			// The exclusion here is "sign in with" rather than "talk to".
 			// socialiteproviders/gumroad is a Laravel Socialite provider and
 			// alofoxx/oauth2-gumroad is the same idea for the PHP League: a

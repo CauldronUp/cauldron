@@ -1,0 +1,497 @@
+# Ecwid Recipe for Cauldron
+#
+# Written against the documentation Ecwid publishes as source in its own
+# GitHub organisation, at Ecwid/ecwid-api-docs -- includes/_orders.md, a
+# hundred and thirty kilobytes of it, with the request and response examples
+# and the field tables that this Recipe's claims are quoted from.
+#
+# Ecwid was named in this collection's own backlog as part of a category gap
+# rather than a provider gap: the small-business storefront that lives inside
+# somebody else's website. Shopware and Printify have since shipped from that
+# list; this is another.
+#
+# The order list leaves out a whole category of orders and does not say so.
+#
+# The documentation says it in a note beside the parameter table:
+#
+#   "If no filters are set in the URL, API will return all orders except for
+#   unfinished orders. To get unfinished orders, use INCOMPLETE value for
+#   paymentStatus parameter."
+#
+# So the default listing is not the orders. It is the orders minus the
+# abandoned ones, and the response says nothing about the ones it left out --
+# the count agrees with the array, the paging agrees with the count, and every
+# number is internally consistent and short. A shop reconciling its own
+# takings against this endpoint finds them, because abandoned sales carry no
+# money; a shop counting conversions or chasing recovery does not, and has no
+# way to notice from the response.
+#
+# Six more, each from the same document:
+#
+#   1. acceptMarketing is a boolean with three meanings, and null is a yes.
+#      The field table: "`true` if customer has accepted email marketing and
+#      you can use their email for promotions (`null` too). If value is
+#      `false`, you can't use this email for promotions." So the ordinary
+#      test -- if (order.acceptMarketing) -- treats null as a refusal, which
+#      is the opposite of what it means. The correct test is
+#      `!== false`, and a shop that gets it wrong quietly under-mails its own
+#      list forever.
+#   2. discount is not the discount. "The sum of all applied discounts except
+#      for the coupon discount. To get the total order discount, take the sum
+#      of couponDiscount and discount field values." A field with the obvious
+#      name holds part of the answer, and the whole one is an addition.
+#   3. One filter silences the rest. Of orderNumber: "If this field is not
+#      empty, other filters are ignored." So a request that names an order
+#      number and a date range gets the order number, and the date range is
+#      discarded without complaint.
+#   4. The reason a payment is pending is destroyed by the payment landing.
+#      Of paymentMessage: "It is present and visible in order details only if
+#      order status is not paid. When order becomes paid, paymentMessage is
+#      cleared." Whatever the processor said about the delay is gone the
+#      moment it stops mattering, which is after anybody would have read it.
+#   5. Null and empty are different answers for taxes on shipping. "`null`
+#      for old orders, `[]` for orders with taxes applied to subtotal only."
+#      One means the feature did not exist yet and the other means it applied
+#      to nothing, and code that treats them alike cannot tell a historical
+#      gap from a deliberate zero.
+#   6. Every order carries its total twice, in two currencies -- total in the
+#      store's and usdTotal in dollars -- and every instant twice, as
+#      "2018-05-31 15:08:36 +0000" with a space where ISO 8601 has a T and
+#      again as a Unix timestamp beside it.
+#
+# The envelope names its two counts apart -- total for everything matching and
+# count for what came back -- which several Recipes here now do, so it is
+# stated as shared rather than claimed.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The default exclusion is modelled the only way the format allows, as a
+#     filter default naming what is included rather than what is left out.
+#     On this fixture the two are the same set, so the observable behaviour
+#     matches; a fixture with a third payment status would expose the
+#     difference. What matters is served: the abandoned order is invisible
+#     until it is asked for by name.
+#   - Abandoned sales also live behind a carts endpoint, which the document
+#     points at and this Recipe does not model.
+#   - Products, categories, customers, coupons, the batch API and the
+#     storefront JS API are absent. Orders only.
+#
+# The token below is a fixture and belongs to no store.
+
+recipe: ecwid
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://api-docs.ecwid.com/reference/
+
+auth:
+  # In the URL, which is how every request example in the document sends it.
+  scheme: query
+  param: token
+  keys:
+    - cauldron-ecwid-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    # Everything matching the filter.
+    count_field: total
+    # And what came back.
+    page_count_field: count
+    page_field: offset
+    limit_field: limit
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: errorMessage
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      # A number, and the one a customer quotes.
+      style: numeric
+      type: number
+      field: orderNumber
+    fields:
+      # The merchant's own numbering, with whatever prefix they configured.
+      vendorOrderNumber:
+        type: string
+      paymentStatus:
+        type: string
+        default: PAID
+      fulfillmentStatus:
+        type: string
+        default: AWAITING_PROCESSING
+      subtotal:
+        type: number
+      # In the store's currency.
+      total:
+        type: number
+      # And the same order again, in dollars, whatever the store's currency.
+      usdTotal:
+        type: number
+      tax:
+        type: number
+      # Everything except the coupon. The whole discount is this plus the one
+      # below it.
+      discount:
+        type: number
+        default: 0
+      couponDiscount:
+        type: number
+        default: 0
+      email:
+        type: string
+      # True and null both mean yes. Only false means no.
+      acceptMarketing:
+        type: boolean
+        null_when_unset: true
+      # Present only while the payment has not landed, and cleared when it
+      # does.
+      paymentMessage:
+        type: string
+      # null for orders that predate the feature, [] for taxes on the
+      # subtotal only.
+      taxesOnShipping:
+        type: list
+        null_when_unset: true
+      # "Applies to unfinished orders only."
+      hidden:
+        type: boolean
+        default: false
+      items:
+        type: list
+      # A space where ISO 8601 has a T.
+      createDate:
+        type: string
+      # And the same instant as seconds.
+      createTimestamp:
+        type: integer
+
+routes:
+  # The listing everybody calls, which is the orders minus the abandoned ones.
+  - method: GET
+    path: /api/v3/{storeId}/orders
+    resource: order
+    operation: list
+    filters:
+      # Ecwid excludes unfinished orders unless the caller names a payment
+      # status. The format cannot say "everything except one value", so this
+      # says what is included instead -- see the gaps at the top of this file.
+      - param: paymentStatus
+        field: paymentStatus
+        default: PAID
+    pagination:
+      style: offset
+      # "Maximum number of returned items. Maximum allowed value: 100.
+      # Default value: 100."
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+      # An offset counts records from nought.
+      first_page: 0
+
+  - method: GET
+    path: /api/v3/{storeId}/orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  authentication_error:
+    status: 403
+    message: Access token is invalid.
+
+  resource_missing:
+    status: 404
+    message: Order not found.
+
+  invalid_request:
+    status: 400
+    message: Request parameters are invalid.
+
+fixtures:
+  empty: {}
+
+  store:
+    order:
+      # Paid, delivered, and the customer said yes to marketing.
+      - id: "1028"
+        vendorOrderNumber: lala1028001
+        paymentStatus: PAID
+        fulfillmentStatus: DELIVERED
+        subtotal: 1076.64
+        total: 2014.97
+        usdTotal: 2014.97
+        tax: 488.48
+        # Four of discount and twenty-two of coupon. Neither field is the
+        # answer on its own.
+        discount: 4
+        couponDiscount: 22
+        email: mscott@gmail.com
+        acceptMarketing: true
+        # Applied to the subtotal only, which is what an empty array means.
+        taxesOnShipping: []
+        hidden: false
+        items:
+          - id: 140273658
+            productId: 66722487
+            sku: ABCA-IAC
+            name: iMac
+            quantity: 1
+            price: 1060
+            productPrice: 1000
+            tax: 331.01
+        createDate: "2018-05-31 15:08:36 +0000"
+        createTimestamp: 1527779316
+      # Paid, and the customer never said either way -- which the document
+      # says is a yes.
+      - id: "1029"
+        vendorOrderNumber: lala1029001
+        paymentStatus: PAID
+        fulfillmentStatus: AWAITING_PROCESSING
+        subtotal: 120.00
+        total: 132.50
+        usdTotal: 132.50
+        tax: 12.50
+        discount: 0
+        couponDiscount: 0
+        email: pbeesly@gmail.com
+        # Not stated by the customer, and not the same as a refusal. The
+        # declared default is what puts the null here.
+        items:
+          - id: 140273659
+            productId: 66722488
+            sku: DUN-MUG
+            name: World's Best Boss mug
+            quantity: 2
+            price: 60
+            productPrice: 60
+            tax: 6.25
+        createDate: "2026-02-14 09:31:07 +0000"
+        createTimestamp: 1771061467
+      # Abandoned. Invisible in the ordinary listing, and carrying the reason
+      # the payment never landed -- which would be cleared if it ever did.
+      - id: "1030"
+        vendorOrderNumber: lala1030001
+        paymentStatus: INCOMPLETE
+        fulfillmentStatus: AWAITING_PROCESSING
+        subtotal: 899.00
+        total: 989.90
+        usdTotal: 989.90
+        tax: 90.90
+        discount: 0
+        couponDiscount: 0
+        email: dschrute@gmail.com
+        acceptMarketing: false
+        paymentMessage: The card was declined by the issuing bank.
+        hidden: false
+        items:
+          - id: 140273660
+            productId: 66722489
+            sku: SCH-BEET
+            name: Beet crate
+            quantity: 1
+            price: 899
+            productPrice: 899
+            tax: 90.90
+        createDate: "2026-02-20 17:45:22 +0000"
+        createTimestamp: 1771609522
+
+conformance:
+  - name: the ordinary listing leaves out the abandoned order
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # Two, not three. "If no filters are set in the URL, API will return
+        # all orders except for unfinished orders." Every number in the
+        # response agrees with every other one and the set is short.
+        total: 2
+        count: 2
+        "items[0].orderNumber": 1028
+        "items[1].orderNumber": 1029
+
+  - name: and asking for it by name is the only way to see it
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders?paymentStatus=INCOMPLETE&token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # There it is. A client has to know both that the category exists and
+        # what it is called, and the response that hid it gave no hint of
+        # either.
+        total: 1
+        "items[0].orderNumber": 1030
+        "items[0].paymentStatus": INCOMPLETE
+
+  - name: a null in the marketing flag is a yes
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1029?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # "`true` if customer has accepted email marketing and you can use
+        # their email for promotions (`null` too)." So if (acceptMarketing)
+        # is false here and the customer did not refuse. The test that
+        # matches the documentation is !== false.
+        acceptMarketing: null
+        email: pbeesly@gmail.com
+
+  - name: and a false in it is the only refusal
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1030?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # The one value that means no, on the one order a shop is most likely
+        # to want to chase.
+        acceptMarketing: false
+
+  - name: the discount field is not the discount
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1028?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # "The sum of all applied discounts except for the coupon discount.
+        # To get the total order discount, take the sum of couponDiscount and
+        # discount field values." Four here and twenty-two beside it, so the
+        # answer is twenty-six and neither field holds it.
+        discount: 4
+        couponDiscount: 22
+        # And the other side of both two-sided distinctions in this file, so
+        # each is pinned at both ends: a stated yes beside the unstated one
+        # two orders down, and an empty list beside that order's null.
+        acceptMarketing: true
+        taxesOnShipping: []
+
+  - name: the reason a payment is pending is on the order until it is not
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1030?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # "It is present and visible in order details only if order status is
+        # not paid. When order becomes paid, paymentMessage is cleared." The
+        # processor's explanation exists exactly while the order is
+        # unfinished, which is exactly while it is hidden from the listing.
+        paymentMessage: The card was declined by the issuing bank.
+        paymentStatus: INCOMPLETE
+
+  - name: and a paid order has none
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1028?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        paymentStatus: PAID
+      absent:
+        # Cleared when the payment landed, so nothing records why it was ever
+        # late.
+        - paymentMessage
+
+  - name: null and empty are different answers about shipping tax
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1029?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # "`null` for old orders, `[]` for orders with taxes applied to
+        # subtotal only." This one is null: the order predates the feature,
+        # which is not the same as no tax having applied.
+        taxesOnShipping: null
+
+  - name: an order carries its total twice and its date twice
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1028?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # The store's currency and dollars, side by side, so a report across
+        # stores has one comparable column and one that is not.
+        total: 2014.97
+        usdTotal: 2014.97
+        # And the same instant twice: a space where ISO 8601 has a T, and
+        # seconds beside it.
+        createDate: "2018-05-31 15:08:36 +0000"
+        createTimestamp: 1527779316
+
+  - name: the identifier is a number rather than a quoted one
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders/1028?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # A JSON number, so a schema declaring an integer accepts it and
+        # orderNumber === 1028 is true. The merchant's own numbering sits
+        # beside it as a string.
+        orderNumber: 1028
+        vendorOrderNumber: lala1028001
+
+  - name: a request naming no page size gets a hundred
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders?token=cauldron-ecwid-fixture-token
+    expect:
+      status: 200
+      body:
+        # "Maximum allowed value: 100. Default value: 100." The default and
+        # the ceiling are the same number, so the only way to ask for less is
+        # to say so.
+        limit: 100
+        offset: 0
+        count: 2
+
+  - name: the credential travels in the URL
+    source: https://github.com/Ecwid/ecwid-api-docs/blob/master/includes/_orders.md
+    fixture: store
+    request:
+      method: GET
+      path: /api/v3/4870020/orders
+    expect:
+      # Every request example in the document ends in &token=..., which is
+      # worth reproducing precisely because URLs end up in access logs and
+      # error reports.
+      status: 403
+      body:
+        errorMessage: Access token is invalid.
