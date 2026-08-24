@@ -1555,3 +1555,50 @@ func TestDetectLagoAndNotLagoon(t *testing.T) {
 		}
 	}
 }
+
+// Polar meets prefix containment, which Lago met first with Lagoon.
+//
+// "polar" starts "polaris" and "polarising", and both out-install the real
+// client on Packagist: eduard9969/blade-polaris-icons is Shopify's design
+// system at eighty-nine thousand and polarising/bcrypt is a password hashing
+// library at sixty-eight. The first is worth naming twice over -- a prefix
+// rule would offer a payments emulator to a project using Shopify's icons,
+// and Shopify has two Recipes of its own here.
+//
+// npm's polar is the ordinary sort: an express boilerplate.
+func TestDetectPolarAndNotPolarisOrPolarising(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"polar-sh/sdk": "^0.4"}}`},
+		{"composer.json": `{"require": {"danestves/laravel-polar": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@polar-sh/sdk": "^0.32.0"}}`},
+		{"package.json": `{"dependencies": {"@polar-sh/nextjs": "^0.4.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "polar") {
+			t.Errorf("%v did not detect polar: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Shopify's design system, and the bigger match by installs.
+		{"composer.json": `{"require": {"eduard9969/blade-polaris-icons": "^1.0"}}`},
+		{"composer.json": `{"require": {"rwsite/moonshine-polaris-theme": "^1.0"}}`},
+		// A password hashing library whose vendor starts with the word.
+		{"composer.json": `{"require": {"polarising/bcrypt": "^1.0"}}`},
+		// And an express boilerplate that took the name outright.
+		{"package.json": `{"dependencies": {"polar": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "polar") {
+			t.Errorf("%v offered the polar Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
