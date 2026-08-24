@@ -70,6 +70,33 @@ func providers() []provider {
 			},
 		},
 		{
+			// The exclusion here is "sign in with" rather than "talk to".
+			// socialiteproviders/gumroad is a Laravel Socialite provider and
+			// alofoxx/oauth2-gumroad is the same idea for the PHP League: a
+			// project holding either one lets people log in with a Gumroad
+			// account and may never touch a product or a licence. That is the
+			// shape Shopware's meteor-admin-sdk and Saleor's app-sdk have --
+			// an authentication or extension package rather than a client.
+			//
+			// Worth noting for once: npm's gumroad really is the client
+			// ("API client for Gumroad."), where the same bare word turned
+			// out to be an algorithms library for Lago and an express
+			// boilerplate for Polar. A collision on the plain name is common
+			// enough to check for and not common enough to assume.
+			//
+			// Every mapped package here is small. Gumroad has no widely
+			// installed client on either registry, which is a fact about the
+			// provider rather than a shortfall in the search.
+			recipe: "gumroad",
+			composer: []string{
+				"serenity_technologies/gumroad",
+				"serenity_technologies/cashier-gumroad",
+				"diskopete/laravel-gumroad",
+				"flowframe/laravel-gumroad",
+			},
+			npm: []string{"gumroad", "gumroad-api"},
+		},
+		{
 			// Prefix containment, which Lago met first with Lagoon and which
 			// is now common enough to be a shape rather than a coincidence.
 			// "polar" is the start of "polaris" and of "polarising", and both
