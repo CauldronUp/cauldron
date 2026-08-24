@@ -1383,3 +1383,46 @@ func TestDetectAkeneoFromClientsAndNotTheVendorsOtherLibraries(t *testing.T) {
 		}
 	}
 }
+
+// Voucherify's near miss is a different company rather than a different word.
+//
+// voucherly/voucherly-php-sdk belongs to Voucherly, an Italian payments
+// business whose name differs from Voucherify by two letters, so a prefix or
+// substring rule matches it and a reader skims past it.
+// fastwebmedia/laravel-vouchering is the ordinary kind, matching on the word.
+//
+// rspective/voucherify is mapped although the prefix is not the product name:
+// rspective is Voucherify's parent company and the package describes itself
+// as the "Voucherify promotion engine REST API".
+func TestDetectVoucherifyAndNotVoucherly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"rspective/voucherify": "^3.0"}}`},
+		{"package.json": `{"dependencies": {"@voucherify/sdk": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"voucherify": "^4.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "voucherify") {
+			t.Errorf("%v did not detect voucherify: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A different company, two letters away.
+		{"composer.json": `{"require": {"voucherly/voucherly-php-sdk": "^1.0"}}`},
+		// And a different thing entirely, matching on the word.
+		{"composer.json": `{"require": {"fastwebmedia/laravel-vouchering": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "voucherify") {
+			t.Errorf("%v offered the voucherify Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

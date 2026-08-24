@@ -1,0 +1,584 @@
+# Voucherify Recipe for Cauldron
+#
+# Written against the OpenAPI description Voucherify publishes at
+# voucherifyio/voucherify-openapi, under production/readOnly-openAPI.json --
+# three megabytes of it, covering a hundred and sixty-one paths, and the same
+# document its own SDKs are generated from. Every enum value, field name and
+# quoted sentence below was read out of it.
+#
+# Promotions are the first thing of their kind in this collection: coupons,
+# gift cards, discounts and loyalty, rather than a shop or a shipper. The
+# reason this Recipe exists is what that domain does to the word "failed".
+#
+# A failed redemption is a stored object, not an error.
+#
+# The redemption ledger contains failures. A Redemption carries
+# result: SUCCESS or FAILURE, and when it is FAILURE it carries a
+# failure_code and a failure_message alongside -- so the row exists, is
+# listed, is counted, and is returned by GET /v1/redemptions like any other.
+# The listing has a result filter to exclude them, which means the default
+# view of "how many times was this code redeemed" includes the times it was
+# not.
+#
+# And the redeem call that produced it answers 200. POST /v1/redemptions
+# documents one response and it is a success: the codes that were refused come
+# back inside the body, in two arrays that are not the same array.
+# inapplicable_redeemables holds the ones that failed validation, each with
+# status INAPPLICABLE and an error object under result;
+# skipped_redeemables holds the ones that were valid and not applied anyway,
+# each with status SKIPPED. A client that checks response.ok, or that checks
+# only one of those two arrays, reports a discount the customer did not get.
+#
+# Seven more, each from the same document:
+#
+#   1. One object, two verdicts, and they are not synonyms. A Redemption has
+#      result -- SUCCESS or FAILURE -- and status -- SUCCEEDED, FAILED or
+#      ROLLED_BACK. The second has a value the first cannot express, so a
+#      rolled-back redemption still reads as a success in result. And
+#      result === 'SUCCEEDED' is false forever, which is the kind of mistake
+#      that survives review because both words are right somewhere.
+#   2. quantity: null means unlimited. "How many times a voucher can be
+#      redeemed. A `null` value means unlimited" -- so quantity minus
+#      redeemed_quantity is NaN on the vouchers that never run out, and
+#      redeemed_quantity >= quantity is false for them forever.
+#   3. gift exists only on gift cards: "Child attributes are present only if
+#      `type` is `GIFT_VOUCHER`". Reading voucher.gift.balance on a discount
+#      code throws.
+#   4. Money is multiplied by a hundred, and the schema says so with a worked
+#      example: "The value is multiplied by 100 to represent 2 decimal
+#      places. For example `100` is 1.00."
+#   5. active is not the date window. "A flag to toggle the voucher on or off.
+#      You can disable a voucher even though it's within the active period" --
+#      so there are two independent reasons a code will not work and a client
+#      that checks the dates has checked one of them.
+#   6. The listing tells you where its data is. Every list envelope carries
+#      data_ref, "Identifies the name of the attribute that contains the array
+#      of voucher objects", because the key is named after the resource:
+#      vouchers here, redemptions there. Generic code has to read one field to
+#      learn the name of another.
+#   7. Paging stops at page 99. The parameter's own description says "The
+#      lowest value is `1`, the highest value is `99`", and the limit tops out
+#      at 100, so a listing reaches nine thousand nine hundred records and no
+#      more. That is the third documented paging ceiling in this collection
+#      after VTEX's thirty pages and commercetools' ten-thousand offset, so it
+#      is noted as a recurring shape rather than a finding.
+#
+# Two things here are shared with Recipes already in the collection and are
+# stated rather than claimed. The credential is a pair of headers, X-App-Id
+# and X-App-Token, which is VTEX's arrangement. And the error body repeats the
+# HTTP status in a field called code while the machine-readable name lives in
+# key, which is Akeneo's.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Redeeming is not modelled. The two rejection arrays are described above
+#     and served only as the failed rows in the ledger, because Cauldron
+#     answers a create by echoing what was posted and this endpoint answers
+#     with a verdict on it. Reading redemptions is what this Recipe does.
+#   - The result filter on the redemptions listing is served, and the
+#     campaign, customer and created_at filters are not.
+#   - The page ceiling of 99 is documented and not enforced, and neither is
+#     the limit's range. The document says the limit "can range between 1 and
+#     100" and does not say what happens above it -- clamp, refuse or serve --
+#     so this Recipe declares the default and no ceiling. Declaring one would
+#     be a claim about behaviour nothing here has read.
+#   - Campaigns, promotion tiers, loyalty programmes, validation rules,
+#     publications, rollbacks and the client-side API are absent.
+#
+# The identifier and token below are fixtures and belong to no project.
+
+recipe: voucherify
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.voucherify.io/reference
+
+auth:
+  # Half the credential. The other half is a second header, which
+  # required_headers insists on -- the same arrangement VTEX has.
+  scheme: header
+  header: X-App-Id
+  keys:
+    - cauldron-fixture-app-id-0000
+
+required_headers:
+  X-App-Token:
+    error: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    key: vouchers
+    count_field: total
+  resource:
+    style: bare
+  error:
+    # {code, key, message, details, request_id}, where code is the HTTP status
+    # again and key is the name to switch on.
+    style: flat
+    message_field: message
+    code_field: key
+    type_field: "-"
+    status_field: code
+
+resources:
+  voucher:
+    id:
+      # A coupon code, which is the identifier: human-typed, case-carrying,
+      # and chosen by whoever made the campaign.
+      style: opaque
+      field: code
+    fields:
+      id:
+        type: string
+      object:
+        type: string
+        default: voucher
+      # GIFT_VOUCHER, DISCOUNT_VOUCHER or LOYALTY_CARD, and the type decides
+      # which of the three sibling objects below is present.
+      type:
+        type: string
+        default: DISCOUNT_VOUCHER
+      campaign:
+        type: string
+        null_when_unset: true
+      discount:
+        type: map
+      # Present only on a gift card, which the schema says in as many words.
+      gift:
+        type: map
+      # quantity and redeemed_quantity, where a null quantity means unlimited.
+      redemption:
+        type: map
+      # Not the date window. A voucher can be switched off inside it.
+      active:
+        type: boolean
+        default: true
+      start_date:
+        type: string
+        null_when_unset: true
+      expiration_date:
+        type: string
+        null_when_unset: true
+      is_referral_code:
+        type: boolean
+        default: false
+      created_at:
+        type: string
+
+  redemption:
+    id:
+      style: prefixed
+      prefix: "r_"
+    fields:
+      object:
+        type: string
+        default: redemption
+      date:
+        type: string
+      customer_id:
+        type: string
+        null_when_unset: true
+      tracking_id:
+        type: string
+        null_when_unset: true
+      # SUCCESS or FAILURE. The row exists either way.
+      result:
+        type: string
+        default: SUCCESS
+      # SUCCEEDED, FAILED or ROLLED_BACK -- three values where result has two.
+      status:
+        type: string
+        default: SUCCEEDED
+      # Present when the result is FAILURE, and only then.
+      failure_code:
+        type: string
+      failure_message:
+        type: string
+      # "a positive integer in the smallest currency unit" for a gift card.
+      amount:
+        type: integer
+      voucher:
+        type: map
+      order:
+        type: map
+
+routes:
+  - method: GET
+    path: /v1/vouchers
+    resource: voucher
+    operation: list
+    fields:
+      object: list
+      # The name of the key holding the array, in the body, because the key
+      # changes with the resource.
+      data_ref: vouchers
+    pagination:
+      style: page
+      limit: 10
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v1/vouchers/{id}
+    resource: voucher
+    operation: get
+
+  # The ledger, failures included.
+  - method: GET
+    path: /v1/redemptions
+    resource: redemption
+    operation: list
+    list:
+      key: redemptions
+    fields:
+      object: list
+      data_ref: redemptions
+    filters:
+      # No default, so the ordinary listing carries the failures too. The
+      # filter exists and a caller has to know to use it.
+      - param: result
+        field: result
+    pagination:
+      style: page
+      limit: 10
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v1/redemptions/{id}
+    resource: redemption
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    code: authentication_error
+    message: Invalid credentials.
+    fields:
+      details: Check your application ID and token.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: Resource not found.
+    fields:
+      details: Cannot find voucher with id NONEXISTENT.
+
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: Too many requests.
+
+fixtures:
+  empty: {}
+
+  project:
+    voucher:
+      # A gift card, with the three lifetime figures the schema defines and
+      # money in the smallest currency unit.
+      - id: GIFT-4X9K-2M7P
+        object: voucher
+        type: GIFT_VOUCHER
+        campaign: Winter gift cards
+        gift:
+          # 50.00 spent onto the card over its life.
+          amount: 5000
+          # 3250 of it used.
+          subtracted_amount: 3250
+          # And what is left, which is the only one of the three a checkout
+          # should look at.
+          balance: 1750
+          effect: APPLY_TO_ORDER
+        redemption:
+          # Unlimited, because a gift card is spent down rather than counted.
+          quantity: null
+          redeemed_quantity: 3
+        # Not stated, so the declared default supplies it -- which is the
+        # ordinary case and is why the flag below on the other voucher is
+        # worth noticing.
+        start_date: "2026-01-01T00:00:00.000Z"
+        expiration_date: "2027-01-01T00:00:00.000Z"
+        created_at: "2026-01-04T11:20:07.000Z"
+      # A discount code with no gift object at all, switched off inside its
+      # own validity window.
+      - id: SPRING20
+        object: voucher
+        type: DISCOUNT_VOUCHER
+        campaign: Spring sale
+        discount:
+          type: PERCENT
+          percent_off: 20
+        redemption:
+          quantity: 1000
+          redeemed_quantity: 812
+        # Off. The dates below say it should work, and it will not.
+        active: false
+        start_date: "2026-03-01T00:00:00.000Z"
+        expiration_date: "2026-04-30T23:59:59.000Z"
+        created_at: "2026-02-14T09:03:44.000Z"
+    redemption:
+      # A redemption that worked.
+      - id: r_0dc1f4b7a25e8c3901
+        object: redemption
+        date: "2026-03-05T14:22:11.000Z"
+        customer_id: cust_7Kd2Pq
+        result: SUCCESS
+        status: SUCCEEDED
+        amount: 1200
+        voucher:
+          code: GIFT-4X9K-2M7P
+          type: GIFT_VOUCHER
+        order:
+          id: ord_5Nb8Yt
+          amount: 4990
+      # One that did not, and is in the ledger all the same, with the reason
+      # on the row rather than in an HTTP status.
+      - id: r_9fa3e0c81b47d5620a
+        object: redemption
+        date: "2026-03-06T08:41:53.000Z"
+        customer_id: cust_3Rm9Xz
+        result: FAILURE
+        status: FAILED
+        failure_code: voucher_disabled
+        failure_message: Voucher is disabled.
+        voucher:
+          code: SPRING20
+          type: DISCOUNT_VOUCHER
+        order:
+          id: ord_2Qw4Er
+          amount: 8500
+      # And one that succeeded and was then undone. status has moved and
+      # result has not.
+      - id: r_5b81c2de704f9a3316
+        object: redemption
+        date: "2026-03-07T16:09:28.000Z"
+        customer_id: cust_7Kd2Pq
+        result: SUCCESS
+        status: ROLLED_BACK
+        amount: 800
+        voucher:
+          code: GIFT-4X9K-2M7P
+          type: GIFT_VOUCHER
+        order:
+          id: ord_8Hj1Kl
+          amount: 3200
+
+conformance:
+  - name: a failed redemption is a row in the ledger
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/redemptions/r_9fa3e0c81b47d5620a
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # 200, and the object says FAILURE. The reason is a field rather than
+        # a status code, so nothing a client checks about the response tells
+        # it the discount was refused.
+        result: FAILURE
+        failure_code: voucher_disabled
+        failure_message: Voucher is disabled.
+        "voucher.code": SPRING20
+
+  - name: and the default listing counts it with the rest
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/redemptions
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # Three rows, one of which failed. "How many times was this code
+        # redeemed" is not this number, and the filter that would make it that
+        # number is one a caller has to know about.
+        total: 3
+        "redemptions[1].result": FAILURE
+
+  - name: unless the caller asks for successes
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/redemptions?result=SUCCESS
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # Two, and the failure is gone. The filter is opt in, which is the
+        # whole point: the honest number takes an extra parameter.
+        total: 2
+        "redemptions[0].result": SUCCESS
+        "redemptions[1].result": SUCCESS
+
+  - name: one object carries two verdicts and they are not synonyms
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/redemptions/r_5b81c2de704f9a3316
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # A rolled-back redemption. status has three values where result has
+        # two, so the rollback is only visible in one of them -- and this row
+        # still says the redemption succeeded.
+        result: SUCCESS
+        status: ROLLED_BACK
+
+  - name: an unlimited voucher has a null where the number goes
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers/GIFT-4X9K-2M7P
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # "A null value means unlimited". So quantity minus redeemed_quantity
+        # is NaN here, and redeemed_quantity >= quantity is false forever --
+        # both of which read as "there are none left" or "there are plenty"
+        # depending on which way the code was written.
+        "redemption.quantity": null
+        "redemption.redeemed_quantity": 3
+
+  - name: a gift card has three figures and only one is the balance
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers/GIFT-4X9K-2M7P
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # Multiplied by a hundred, which the schema states with a worked
+        # example: "For example 100 is 1.00". So this card was loaded with
+        # fifty pounds, has spent thirty-two fifty, and has seventeen fifty
+        # left -- and a checkout that reads amount charges the wrong thing.
+        "gift.amount": 5000
+        "gift.subtracted_amount": 3250
+        "gift.balance": 1750
+        type: GIFT_VOUCHER
+        # On, because nothing turned it off. The default is what supplies
+        # this, and the voucher below shows what the other value looks like.
+        active: true
+
+  - name: and a discount code has no gift object at all
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers/SPRING20
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        type: DISCOUNT_VOUCHER
+        "discount.percent_off": 20
+      absent:
+        # "Child attributes are present only if type is GIFT_VOUCHER", so
+        # voucher.gift.balance throws here and reads fine on the card above.
+        - gift
+
+  - name: a voucher can be switched off inside its own dates
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers/SPRING20
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # The window says March to April and the flag says no. Two independent
+        # reasons a code will not work, and code that checks the dates has
+        # checked one of them.
+        active: false
+        start_date: "2026-03-01T00:00:00.000Z"
+        expiration_date: "2026-04-30T23:59:59.000Z"
+
+  - name: the envelope names the key that holds the data
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers?limit=1
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # The array is under a key named for the resource, and data_ref is the
+        # field that says which name that is. Generic code reads one field to
+        # learn the name of another.
+        object: list
+        data_ref: vouchers
+        total: 2
+        "vouchers[0].code": GIFT-4X9K-2M7P
+
+  - name: and the same envelope names a different key for redemptions
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/redemptions?limit=1
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+        X-App-Token: cauldron-fixture-app-token-0000
+    expect:
+      status: 200
+      body:
+        # Same shape, different name, and nothing but data_ref connects the
+        # two. A client that hardcoded "vouchers" gets undefined here.
+        object: list
+        data_ref: redemptions
+        "redemptions[0].id": r_0dc1f4b7a25e8c3901
+      absent:
+        - vouchers
+
+  - name: half a credential is not a credential
+    source: https://github.com/voucherifyio/voucherify-openapi/blob/master/production/readOnly-openAPI.json
+    fixture: project
+    request:
+      method: GET
+      path: /v1/vouchers
+      headers:
+        X-App-Id: cauldron-fixture-app-id-0000
+    expect:
+      # The identifier without the token. Two headers carry one credential,
+      # which is VTEX's arrangement and is stated here as shared rather than
+      # claimed as new.
+      status: 401
+      body:
+        # The machine-readable name, and the HTTP status repeated beside it.
+        key: authentication_error
+        code: 401
+        message: Invalid credentials.
