@@ -500,3 +500,37 @@ func TestDetectDoesNotOfferAmazonSPForMWSOrTheAWSSDK(t *testing.T) {
 		}
 	}
 }
+
+// The unscoped npm package called easypost is not this EasyPost. It reads
+// POST bodies from form submissions in Node and has nothing to do with
+// shipping, which is exactly the collision a substring rule would fall into:
+// a project parsing form data would be offered a carrier emulator.
+func TestDetectEasyPostFromTheCarrierClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"easypost/easypost-php": "^7.0"}}`},
+		{"package.json": `{"dependencies": {"@easypost/api": "^7.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "easypost") {
+			t.Errorf("%v did not detect easypost: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"easypost": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"gebruederheitz/wp-easy-post-options": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "easypost") {
+			t.Errorf("%v offered the easypost Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}

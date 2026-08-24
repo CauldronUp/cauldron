@@ -1,0 +1,511 @@
+# EasyPost Recipe for Cauldron
+#
+# Buying a shipping label is not one call and it is not idempotent. You create
+# a shipment, EasyPost answers with an array of rates from every carrier it
+# could reach, and you buy by handing one of those rate objects back. The rate
+# you hand back has to have come from that shipment, and it goes stale.
+#
+# So the shape of an EasyPost integration is decided by something that is not
+# in any single endpoint's documentation: a rate is a value you were given,
+# not a price you can look up, and code that stores a rate id and buys with it
+# an hour later is buying with something that no longer exists.
+#
+# Six things worth modelling exactly:
+#
+#   1. A rate is bought by id, and the id came from a shipment. rate_ ids are
+#      not addressable on their own -- there is no GET for one -- so a rate is
+#      only ever as fresh as the shipment that produced it.
+#   2. mode says test or production, on every object, and a test label is a
+#      picture of a label. It scans as nothing. The field is easy to read past
+#      because both modes answer 200 with a postage_label and a tracking code
+#      that looks real.
+#   3. Every id is prefixed by its type: shp_, rate_, trk_, adr_, pl_. Passing
+#      a shipment id where a rate id belongs is caught; passing one address id
+#      where another belongs is not, and that ships a parcel to the wrong
+#      person.
+#   4. Money is a string in dollars. "7.35", quoted, and the field is called
+#      rate rather than amount or price, so an object called a rate has a
+#      field called rate inside it.
+#   5. An address can be created successfully and still be undeliverable.
+#      Verification is a nested object with its own success flag, so a 201
+#      means the record was stored, not that anybody lives there.
+#   6. A failure nests under error, and error.message is sometimes a string
+#      and sometimes an array of field errors. Rendering it into a sentence
+#      works until the first validation failure, which is the one time
+#      somebody reads it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Rates do not expire here, and buying with a rate from another shipment
+#     is not refused. Both are real EasyPost failures and both are about
+#     relationships between records that the format checks by id alone, so a
+#     stale rate works forever against this Recipe.
+#   - The carriers are fixtures. A real shipment returns whatever the
+#     account's carrier accounts can quote, in whatever order, and the
+#     cheapest is not always first -- lowest_rate exists because picking
+#     rates[0] is wrong. This Recipe answers with two fixed rates.
+#   - Tracking does not advance. A real tracker moves through pre_transit,
+#     in_transit, out_for_delivery and delivered, driven by carrier
+#     webhooks; here a tracker is whatever the fixture says.
+#
+# The key below is a fixture, not a secret. It belongs to no account.
+
+recipe: easypost
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.easypost.com/docs/shipments
+
+auth:
+  # HTTP Basic with the key as the username and no password, which is what
+  # Stripe popularised and what several of these APIs copied. The key travels
+  # base64-encoded rather than hashed, so it is a header in a coat.
+  scheme: basic
+  credential: username
+  keys:
+    - EZTKcauldron00000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: shipments
+  resource:
+    style: bare
+  error:
+    # Nested under error, so a client reading body.message finds undefined.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+
+resources:
+  shipment:
+    id:
+      style: prefixed
+      prefix: shp_
+      length: 32
+    fields:
+      mode:
+        type: string
+        default: test
+      # The rates this shipment was quoted. A rate is only ever as fresh as
+      # the shipment that carries it, which is why they live here rather than
+      # anywhere addressable.
+      rates:
+        type: list
+      # EasyPost computes this because picking rates[0] is wrong: the array
+      # is not sorted by price.
+      lowest_rate:
+        type: map
+      # Absent until the shipment is bought. A client that reads it off the
+      # create response gets undefined.
+      postage_label:
+        type: map
+      tracking_code:
+        type: string
+        null_when_unset: true
+      # unknown, pre_transit, in_transit, out_for_delivery, delivered,
+      # available_for_pickup, return_to_sender, failure, cancelled.
+      status:
+        type: string
+        default: unknown
+      to_address:
+        type: map
+      from_address:
+        type: map
+      created_at:
+        type: datetime
+
+  address:
+    id:
+      style: prefixed
+      prefix: adr_
+      length: 32
+    fields:
+      name:
+        type: string
+      street1:
+        type: string
+      city:
+        type: string
+      zip:
+        type: string
+      country:
+        type: string
+        default: US
+      mode:
+        type: string
+        default: test
+      # A 201 says the record was stored. This says whether anybody lives
+      # there, and the two are independent.
+      verifications:
+        type: map
+      created_at:
+        type: datetime
+
+  tracker:
+    id:
+      style: prefixed
+      prefix: trk_
+      length: 32
+    fields:
+      tracking_code:
+        type: string
+        required: true
+      carrier:
+        type: string
+      status:
+        type: string
+        default: pre_transit
+      # Each scan, oldest first. A client reading the last one for "where is
+      # it now" has to know the ordering, and the ordering is not documented
+      # on the field.
+      tracking_details:
+        type: list
+      mode:
+        type: string
+        default: test
+      created_at:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /v2/shipments
+    resource: shipment
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/shipments/{id}
+    resource: shipment
+    operation: get
+
+  - method: GET
+    path: /v2/shipments
+    resource: shipment
+    operation: list
+
+  # Buying. The body carries a rate object -- the whole thing, or at least
+  # its id -- taken from the shipment's own rates array. There is no endpoint
+  # that turns a rate id into a rate, so a client that stored only the id and
+  # threw the shipment away has to fetch the shipment again to buy.
+  - method: POST
+    path: /v2/shipments/{id}/buy
+    resource: shipment
+    operation: update
+
+  - method: POST
+    path: /v2/addresses
+    resource: address
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/addresses/{id}
+    resource: address
+    operation: get
+
+  - method: POST
+    path: /v2/trackers
+    resource: tracker
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v2/trackers/{id}
+    resource: tracker
+    operation: get
+
+errors:
+  # The one that breaks a renderer. message is an array here rather than a
+  # string, and the field errors are underneath it.
+  parameter_missing:
+    status: 422
+    code: PARAMETER.REQUIRED
+    message: Missing required parameter.
+    fields:
+      # Nested by hand under error, which is the idiom for a nested envelope:
+      # a named error's fields are merged into the body at the top level, so
+      # reaching inside the envelope means writing the envelope key. Kratos
+      # and Onfido both do the same.
+      error:
+        errors:
+          - field: to_address
+            message: must be present
+
+  authentication_error:
+    status: 401
+    code: UNAUTHORIZED
+    message: Authorization header is not formatted correctly.
+
+  resource_missing:
+    status: 404
+    code: NOT_FOUND
+    message: The requested resource could not be found.
+
+  rate_limit:
+    status: 429
+    code: RATE_LIMIT.EXCEEDED
+    message: Too many requests.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    address:
+      - id: adr_cauldron0000000000000000000001
+        name: A Recipient
+        street1: 417 Montgomery Street
+        city: San Francisco
+        zip: "94104"
+        country: US
+        mode: test
+        verifications:
+          delivery:
+            # Stored, and deliverable. Both true here, and they are separate
+            # questions.
+            success: true
+            errors: []
+      - id: adr_cauldron0000000000000000000002
+        name: Nobody At All
+        street1: 1 Nonexistent Way
+        city: San Francisco
+        zip: "94104"
+        country: US
+        mode: test
+        verifications:
+          delivery:
+            # Created successfully. Undeliverable. The 201 said nothing about
+            # this.
+            success: false
+            errors:
+              - code: E.ADDRESS.NOT_FOUND
+                message: Address not found
+    shipment:
+      - id: shp_cauldron0000000000000000000001
+        mode: test
+        status: unknown
+        rates:
+          # Not sorted by price, which is why lowest_rate exists.
+          - id: rate_cauldron000000000000000000002
+            carrier: UPS
+            service: Ground
+            rate: "12.10"
+            currency: USD
+          - id: rate_cauldron000000000000000000001
+            carrier: USPS
+            service: Priority
+            rate: "7.35"
+            currency: USD
+        lowest_rate:
+          id: rate_cauldron000000000000000000001
+          carrier: USPS
+          service: Priority
+          rate: "7.35"
+          currency: USD
+        to_address:
+          id: adr_cauldron0000000000000000000001
+          name: A Recipient
+        from_address:
+          id: adr_cauldron0000000000000000000003
+          name: A Sender
+        created_at: "2026-02-01T09:15:00Z"
+    tracker:
+      - id: trk_cauldron0000000000000000000001
+        tracking_code: EZ1000000001
+        carrier: USPS
+        status: in_transit
+        mode: test
+        tracking_details:
+          # Oldest first.
+          - status: pre_transit
+            message: Shipping Label Created
+            datetime: "2026-02-01T09:20:00Z"
+          - status: in_transit
+            message: Arrived at Post Office
+            datetime: "2026-02-02T07:05:00Z"
+
+conformance:
+  - name: a shipment is quoted several rates and they are not sorted
+    source: https://docs.easypost.com/docs/shipments
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/shipments/shp_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        # UPS first at $12.10, USPS second at $7.35. Picking rates[0] buys
+        # the dearer one, every time, and nothing says so.
+        rates[0].carrier: UPS
+        rates[0].rate: "12.10"
+        rates[1].rate: "7.35"
+        # Which is why this exists.
+        lowest_rate.rate: "7.35"
+        lowest_rate.id: rate_cauldron000000000000000000001
+
+  - name: money is a quoted string in a field called rate
+    source: https://docs.easypost.com/docs/shipments/rates
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/shipments/shp_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        # An object called a rate, with a field called rate inside it, holding
+        # a quoted string. Adding two of these concatenates.
+        rates[1].rate: "7.35"
+        rates[1].currency: USD
+        rates[1].service: Priority
+
+  - name: a rate id is not addressable on its own
+    source: https://docs.easypost.com/docs/shipments/rates
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/rates/rate_cauldron000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      # There is no endpoint that turns a rate id into a rate. A client that
+      # stored the id and threw the shipment away has to fetch the shipment
+      # again before it can buy.
+      #
+      # This case is weaker than the others in the file and it is worth
+      # saying so: it asserts that a route is absent, and every path this
+      # Recipe does not route answers the same way, so /v2/anything would
+      # satisfy it too. It records a true fact about EasyPost -- rates are
+      # not addressable -- rather than checking a behaviour only this Recipe
+      # could produce. The claim that a rate lives on its shipment and
+      # nowhere else is carried by the first case, which reads one out of
+      # the rates array.
+      status: 404
+      body:
+        error.code: NOT_FOUND
+
+  - name: an unbought shipment has no label and no tracking code
+    source: https://docs.easypost.com/docs/shipments/buy
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/shipments/shp_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: unknown
+        # Null rather than absent, which are different on the wire and which
+        # EasyPost distinguishes.
+        tracking_code: null
+      absent:
+        # A client that reads this off a create response gets undefined.
+        - postage_label
+
+  - name: an address is created successfully and is undeliverable
+    source: https://docs.easypost.com/docs/addresses/verify
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/addresses/adr_cauldron0000000000000000000002
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        # The record was stored. Nobody lives there. Two separate questions,
+        # and only one of them is answered by the status code.
+        verifications.delivery.success: false
+        verifications.delivery.errors[0].code: E.ADDRESS.NOT_FOUND
+
+  - name: and the deliverable one differs only in a nested flag
+    source: https://docs.easypost.com/docs/addresses/verify
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/addresses/adr_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        verifications.delivery.success: true
+
+  - name: everything says which mode it is in
+    source: https://docs.easypost.com/docs/api-keys
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/shipments/shp_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        # A test label is a picture of a label and scans as nothing. Both
+        # modes answer 200 with a tracking code that looks real, so this
+        # field is the only thing that says which one you have.
+        mode: test
+
+  - name: a tracker lists its scans oldest first
+    source: https://docs.easypost.com/docs/trackers
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/trackers/trk_cauldron0000000000000000000001
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        # Oldest first, so "where is it now" is the last element rather than
+        # the first, and the ordering is not stated on the field.
+        tracking_details[0].status: pre_transit
+        tracking_details[1].status: in_transit
+        # And the summary agrees with the last scan rather than the first.
+        status: in_transit
+
+  - name: a failure nests under error and the field errors nest again
+    source: https://docs.easypost.com/docs/errors
+    arm: parameter_missing
+    fixture: small-account
+    request:
+      method: POST
+      path: /v2/shipments
+      headers:
+        Authorization: Basic RVpUS2NhdWxkcm9uMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+      json:
+        mode: test
+    expect:
+      status: 422
+      body:
+        error.code: PARAMETER.REQUIRED
+        error.message: Missing required parameter.
+        # A second level. Rendering error.message into a sentence works until
+        # the first validation failure, which is the one time anybody reads
+        # it, and the detail that matters is down here.
+        error.errors[0].field: to_address
+        error.errors[0].message: must be present
+      absent:
+        - message
+        - code
+
+  - name: a bad key is refused
+    source: https://docs.easypost.com/docs/api-keys
+    fixture: small-account
+    request:
+      method: GET
+      path: /v2/shipments
+      headers:
+        Authorization: Basic bm90X3RoZV9rZXk6
+    expect:
+      status: 401
+      body:
+        error.code: UNAUTHORIZED
