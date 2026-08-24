@@ -1,0 +1,846 @@
+# Shopware Recipe for Cauldron
+#
+# Written against Shopware's own source at github.com/shopware/shopware and
+# against the Store API description its frontends repository generates from
+# that tree (Shopware API version 6.7.10.1). Where the two disagreed the
+# source won. Every number below was read out of a file rather than
+# remembered, and the file is named beside the claim it settles.
+#
+# This Recipe exists because one provider disagrees with itself.
+#
+# Shopware answers products from two endpoints. /store-api/product is the
+# generic entity route: criteria in, records out, the same machinery every
+# resource gets. /store-api/product-listing/{categoryId} is the storefront's
+# own listing: the same products, in a category, with sortings and filters
+# beside them. Both are listings of products in one API, and they do not share
+# a single paging rule.
+#
+#                       /product                  /product-listing/{id}
+#   page parameter      page                      p
+#   default page size   100                       24
+#   asking for 250      400, refused              100, silently
+#   total               the size of this page     the whole matching set
+#   past the last page  an empty page             404
+#
+# Four of those five disagreements fail quietly. A client that learned paging
+# from the entity route and moves to the category listing sends page=2, is
+# served page one again, reads a total it believes, and asks for pages that do
+# not exist.
+#
+# The total is the worst of them, and it is not a Shopware bug. Counting rows
+# costs a second query, so the framework does not run one unless the request
+# asks for it: Criteria.php sets totalCountMode to TOTAL_COUNT_MODE_NONE by
+# default, and EntitySearcher::getTotalCount returns count($data) -- the rows
+# it already has -- for every mode except exact. So a shop with four hundred
+# products answers a ten-record page with total: 10. There is nothing wrong
+# with that number except the question it looks like it is answering.
+#
+# There are three of these totals and they arrive under one name:
+#
+#   * none, the default -- the length of this page.
+#   * exact -- the real count, from a second query the docblock calls "slow".
+#   * next-pages -- limit * 6 + 1 rows are fetched, the count is taken, and
+#     the rows are then sliced back to limit. So ten per page over four
+#     hundred products reports 61: not the page, not the total, and large
+#     enough that neither looks like a problem. Criteria::getNextPagesLimit
+#     says what the extra row is for -- "its presence means there are results
+#     beyond that window, so the exact last page is unknown".
+#
+# The storefront listing never has this problem, because
+# PagingListingProcessor::prepare overwrites whatever the caller asked for
+# with TOTAL_COUNT_MODE_EXACT. Which is the point: the two endpoints are not
+# configured differently, they are written differently, and nothing in either
+# response says which one is in your hand.
+#
+# Six more things worth modelling exactly:
+#
+#   1. Identifiers are 32 hex characters with no dashes. Uuid::randomHex is
+#      bin2hex of sixteen random bytes, so anything validating a UUID by its
+#      dashes rejects every id Shopware mints.
+#   2. A wrong access key is 412 Precondition Failed. Not 401, not 403.
+#      SalesChannelNotFoundException says so in as many words, and no client's
+#      retry logic has a branch for 412.
+#   3. Errors are JSON:API shaped -- {"errors": [...]} -- and the status
+#      inside the body is a string, so err.status === 412 never matches.
+#   4. Money is a float in the shop's currency rather than minor units, and
+#      totalPrice means gross or net depending on a taxStatus sitting beside
+#      it. Same field, same endpoint, two meanings, decided by a customer
+#      group setting the caller did not choose.
+#   5. An order carries the same money twice: flattened as amountTotal and
+#      amountNet at the top, and structured under price. Both come out of the
+#      same calculation and both inherit the tax status.
+#   6. Every entity carries apiAlias, a snake_case name for what it is. It is
+#      the discriminator and it is not called type.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - A missing sw-access-key is 401 with 'Header "sw-access-key" is
+#     required.' and a wrong one is 412. Cauldron checks the credential before
+#     it checks required headers, so both answer 412 here. That 401 is
+#     rendered from a Symfony exception rather than a Shopware one, which is
+#     also why no error code is claimed for it.
+#   - Asking the category listing for a page past the end is a 404 carrying
+#     PRODUCT__LISTING_PAGE_OUT_OF_RANGE. Cauldron cannot make an error
+#     conditional on a parameter's value, so that failure is declared and
+#     injectable but never raised on its own; an empty page comes back
+#     instead.
+#   - The POST forms of both listings take their criteria in the request body
+#     rather than the query string, and total-count-mode travels with them.
+#     Only the GET forms are modelled, so the mode is chosen by query
+#     parameter here and cannot be chosen by body field.
+#   - Carts, the context token, checkout, customers, categories, aggregations
+#     and translations beyond the resolved name are all absent. Products and
+#     orders only.
+#
+# The access key below is a fixture. It matches the shape AccessKeyHelper
+# mints -- the four letters SWSC and then uppercase base64 of sixteen random
+# characters -- and it belongs to no shop.
+
+recipe: shopware
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: store-api 6.7
+  docs: https://shopware.stoplight.io/docs/store-api/
+
+auth:
+  scheme: header
+  header: sw-access-key
+  keys:
+    - SWSCCAULDRONFIXTUREKEY00
+
+responses:
+  list:
+    style: wrapped
+    key: elements
+    # The name is honest. The number under it is not, unless the request asked
+    # for a real one -- see the header of this file.
+    count_field: total
+    count_means: page
+    page_field: page
+    limit_field: limit
+  resource:
+    style: bare
+  error:
+    # JSON:API. One request can fail several ways at once, so failures arrive
+    # as an array whether or not there is more than one of them.
+    style: list
+    key: errors
+    message_field: detail
+    code_field: code
+    type_field: "-"
+
+resources:
+  product:
+    id:
+      # 32 hex characters, no dashes: bin2hex of sixteen random bytes.
+      style: hex
+      length: 32
+    fields:
+      # The discriminator, on every entity Shopware sends. Not "type".
+      apiAlias:
+        type: string
+        default: product
+      productNumber:
+        type: string
+      name:
+        type: string
+      active:
+        type: boolean
+        default: true
+      # Whether it can be bought, which is not the same as whether it is
+      # active.
+      available:
+        type: boolean
+        default: true
+      # What is on the shelf.
+      stock:
+        type: integer
+        default: 0
+      # And what is left to sell. The description's own words are "the stock
+      # minus the open orders", so these are two numbers about one shelf and
+      # the one a storefront should show is the second.
+      availableStock:
+        type: integer
+        default: 0
+      taxId:
+        type: string
+      # unitPrice and totalPrice, netPrice beside them, and the taxStatus that
+      # says which of the first two includes the tax.
+      calculatedPrice:
+        type: map
+      # The translation resolved for the language this request asked for. The
+      # top-level name is the raw value; this one has been through the
+      # fallback chain, and the two can differ.
+      translated:
+        type: map
+
+  order:
+    id:
+      style: hex
+      length: 32
+    fields:
+      apiAlias:
+        type: string
+        default: order
+      orderNumber:
+        type: string
+      orderDateTime:
+        type: string
+      # Gross or net, depending on taxStatus. A float in the shop's currency.
+      amountTotal:
+        type: number
+      amountNet:
+        type: number
+      shippingTotal:
+        type: number
+      positionPrice:
+        type: number
+      # The word that decides what amountTotal meant. Most shops are gross,
+      # which is why it is the default here and why the exception is the one
+      # nobody codes for.
+      taxStatus:
+        type: string
+        default: gross
+      # The same money again, structured, with the per-rate breakdown.
+      price:
+        type: map
+      stateMachineState:
+        type: map
+      currencyId:
+        type: string
+      deepLinkCode:
+        type: string
+
+routes:
+  # The generic entity route. Criteria in the query string, records out, and a
+  # total that counts only what it is already holding.
+  - method: GET
+    path: /store-api/product
+    resource: product
+    operation: list
+    fields:
+      apiAlias: dal_entity_search_result
+      entity: product
+    pagination:
+      style: page
+      # RequestCriteriaBuilder::parse gives a request with no limit the store
+      # API's max_limit, which shopware.yaml sets to 100. The ceiling doubles
+      # as the default.
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+      # And this endpoint refuses rather than trims: QueryLimitExceededException
+      # is a 400 that names the ceiling it enforced.
+      over_limit: limit_exceeded
+
+  # The same path, asked to count. total-count-mode=exact buys the second
+  # query, and it is the only way this endpoint answers the question its own
+  # field name asks.
+  - method: GET
+    path: /store-api/product
+    resource: product
+    operation: list
+    matches_query:
+      total-count-mode: exact
+    fields:
+      apiAlias: dal_entity_search_result
+      entity: product
+    list:
+      # "-" clears the Recipe-wide count_means, so total means the total.
+      count_means: "-"
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+      over_limit: limit_exceeded
+
+  # And the third answer: a window six pages wide, with one row past its edge
+  # to say whether anything lies beyond.
+  - method: GET
+    path: /store-api/product
+    resource: product
+    operation: list
+    matches_query:
+      total-count-mode: next-pages
+    fields:
+      apiAlias: dal_entity_search_result
+      entity: product
+    list:
+      count_means: lookahead
+      count_lookahead: 6
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+      over_limit: limit_exceeded
+
+  # The storefront's listing of the same products, which shares none of the
+  # rules above. PagingListingProcessor is the entire difference.
+  - method: GET
+    path: /store-api/product-listing/{categoryId}
+    resource: product
+    operation: list
+    fields:
+      apiAlias: product_listing
+      entity: product
+    list:
+      # prepare() overwrites the caller's mode with TOTAL_COUNT_MODE_EXACT, so
+      # this listing always knows how many there are.
+      count_means: "-"
+    pagination:
+      style: page
+      # DEFAULT_LIMIT, used when the shop has not set
+      # core.listing.productsPerPage.
+      limit: 24
+      # DEFAULT_MAX_LIMIT, applied with min() rather than by refusing.
+      max_limit: 100
+      limit_param: limit
+      # Not "page". getPage() reads p, and only p.
+      cursor_param: p
+      first_page: 1
+
+  - method: GET
+    path: /store-api/product/{id}
+    resource: product
+    operation: get
+
+  # Orders are POST-only and their criteria travels in the body, which is why
+  # this route pages from there. The collection arrives one level down, under
+  # a key named for the resource, with the search result wrapped inside it.
+  - method: POST
+    path: /store-api/order
+    resource: order
+    operation: list
+    list:
+      key: orders.elements
+      count_field: orders.total
+      page_field: orders.page
+      limit_field: orders.limit
+    fields:
+      # Whether the payment method can still be changed, keyed by order id. It
+      # is a fact about an order and it is not on the order, so code reading
+      # order.paymentChangeable finds undefined however many orders come back.
+      paymentChangeable:
+        c1f4a37e2b8d4c9fa0e6d5b3c7a91024: false
+    pagination:
+      style: page
+      in: body
+      limit: 100
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+
+errors:
+  # A key that belongs to no sales channel. Not 401 and not 403:
+  # SalesChannelNotFoundException, FRAMEWORK__ROUTING_SALES_CHANNEL_NOT_FOUND.
+  authentication_error:
+    status: 412
+    code: FRAMEWORK__ROUTING_SALES_CHANNEL_NOT_FOUND
+    message: No matching sales channel found.
+    fields:
+      # JSON:API sends the status as a string, so a client comparing it with a
+      # number never matches.
+      status: "412"
+      title: Precondition Failed
+
+  # QueryLimitExceededException. The entity route refuses an oversized page
+  # rather than trimming it, and says what the ceiling was.
+  limit_exceeded:
+    status: 400
+    code: FRAMEWORK__QUERY_LIMIT_EXCEEDED
+    message: "The limit must be lower than or equal to MAX_LIMIT(=100). Given: 250"
+    fields:
+      status: "400"
+      title: Bad Request
+
+  # ProductException::pageOutOfRange, from the storefront listing only, and a
+  # 404 where the other paging failures are 400s. Declared and injectable; see
+  # the fidelity gaps at the top for why nothing raises it unprompted.
+  page_out_of_range:
+    status: 404
+    code: PRODUCT__LISTING_PAGE_OUT_OF_RANGE
+    message: "Requested listing page 9 is out of range (last page: 1)."
+    fields:
+      status: "404"
+      title: Not Found
+
+  # InvalidLimitQueryException: limit=0, limit=-1 and limit=abc are all this
+  # one, and none of them is the ceiling error above.
+  invalid_limit:
+    status: 400
+    code: FRAMEWORK__INVALID_LIMIT_QUERY
+    message: The limit parameter must be a positive integer greater or equal than 1.
+    fields:
+      status: "400"
+      title: Bad Request
+
+  resource_missing:
+    status: 404
+    code: FRAMEWORK__ENTITY_NOT_FOUND
+    message: 'Entity "product" not found.'
+    fields:
+      status: "404"
+      title: Not Found
+
+fixtures:
+  empty: {}
+
+  # Nine products, which is the smallest catalogue that can tell the three
+  # totals apart. At one per page the default reports 1, exact reports 9, and
+  # the six-page window reports 7 -- because 1 * 6 + 1 is 7 and there is a
+  # ninth product it never looked at. A fixture of three would make all three
+  # modes agree, and this Recipe would be describing a difference it does not
+  # serve.
+  catalogue:
+    product:
+      - id: 0d4f2b81c6a34e1f9b7d5a2c8e60f931
+        productNumber: SW10001
+        name: Aerodynamic Bronze Lamp
+        stock: 12
+        # Three of them are already spoken for by open orders.
+        availableStock: 9
+        taxId: 5d5a1b3c9e7f4a2b8c6d0e3f1a9b7c25
+        calculatedPrice:
+          apiAlias: calculated_price
+          # Gross, because taxStatus says gross. Net is beside it and the
+          # difference is the 19% below.
+          unitPrice: 59.99
+          totalPrice: 59.99
+          netPrice: 50.41
+          quantity: 1
+          taxStatus: gross
+          calculatedTaxes:
+            - apiAlias: cart_tax_calculated
+              price: 59.99
+              tax: 9.58
+              taxRate: 19
+          taxRules:
+            - name: Standard rate
+              taxRate: 19
+        translated:
+          name: Aerodynamic Bronze Lamp
+      - id: 1e5a3c92d7b45f2a0c8e6b3d9f71a042
+        productNumber: SW10002
+        name: Gorgeous Granite Chair
+        stock: 4
+        availableStock: 4
+        taxId: 5d5a1b3c9e7f4a2b8c6d0e3f1a9b7c25
+        calculatedPrice:
+          apiAlias: calculated_price
+          unitPrice: 249.95
+          totalPrice: 249.95
+          netPrice: 210.04
+          quantity: 1
+          taxStatus: gross
+          calculatedTaxes:
+            - apiAlias: cart_tax_calculated
+              price: 249.95
+              tax: 39.91
+              taxRate: 19
+          taxRules:
+            - name: Standard rate
+              taxRate: 19
+        translated:
+          name: Gorgeous Granite Chair
+      # The rest of the shelf. None of them records a stock, an availability
+      # or an active flag, so the declared defaults are what fills those in --
+      # which is what a fixture omitting a field is for.
+      - id: 2f6b4da03c8560eb1d9f7c4e0a82b153
+        productNumber: SW10003
+        name: Handcrafted Steel Bench
+      - id: 3a7c5eb14d9671fc2e0a8d5f1b93c264
+        productNumber: SW10004
+        name: Incredible Cotton Hat
+      - id: 4b8d6fc25ea782ad3f1b9e601c04d375
+        productNumber: SW10005
+        name: Practical Wooden Table
+      - id: 5c9e70d36fb893be402ca0712d15e486
+        productNumber: SW10006
+        name: Refined Plastic Clock
+      - id: 6da081e470c9a4cf513db1823e26f597
+        productNumber: SW10007
+        name: Rustic Copper Mirror
+      - id: 7eb192f581dab5d0624ec2934f3706a8
+        productNumber: SW10008
+        name: Sleek Marble Vase
+      - id: 8fc2a30692ebc6e1735fd3a4504817b9
+        productNumber: SW10009
+        name: Tasty Leather Shoes
+    order:
+      # A gross shop. taxStatus is not stated here, so the declared default is
+      # what says so, and amountTotal includes the tax.
+      - id: c1f4a37e2b8d4c9fa0e6d5b3c7a91024
+        orderNumber: "10001"
+        orderDateTime: "2026-02-11T09:12:44.000+00:00"
+        amountTotal: 369.93
+        amountNet: 310.86
+        shippingTotal: 59.99
+        positionPrice: 309.94
+        currencyId: b7d2554b0ce847cd82f3ac9bd1c0dfca
+        deepLinkCode: hL7kQ2nR9vXs4TzP1mYb6WdA
+        price:
+          apiAlias: calculated_price
+          totalPrice: 369.93
+          netPrice: 310.86
+          positionPrice: 309.94
+          rawTotal: 369.93
+          taxStatus: gross
+          calculatedTaxes:
+            - apiAlias: cart_tax_calculated
+              price: 369.93
+              tax: 59.07
+              taxRate: 19
+        stateMachineState:
+          apiAlias: state_machine_state
+          technicalName: open
+          name: Open
+      # A net shop: the same API, the same field names, and a different
+      # meaning for two of them. The 249.95 here excludes the tax that the
+      # 369.93 above includes.
+      - id: d2a5b48f3c9e5d0ab1f7e6c4d8b02135
+        orderNumber: "10002"
+        orderDateTime: "2026-02-12T14:03:10.000+00:00"
+        amountTotal: 249.95
+        amountNet: 249.95
+        shippingTotal: 0
+        positionPrice: 249.95
+        taxStatus: net
+        currencyId: b7d2554b0ce847cd82f3ac9bd1c0dfca
+        deepLinkCode: pR3jN8wKt5ZcQ7vB2xMf9HgL
+        price:
+          apiAlias: calculated_price
+          totalPrice: 249.95
+          netPrice: 249.95
+          positionPrice: 249.95
+          rawTotal: 249.95
+          taxStatus: net
+          calculatedTaxes:
+            - apiAlias: cart_tax_calculated
+              price: 249.95
+              tax: 47.49
+              taxRate: 19
+        stateMachineState:
+          apiAlias: state_machine_state
+          technicalName: in_progress
+          name: In Progress
+
+conformance:
+  - name: the total is the size of the page in front of you
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/DataAbstractionLayer/Dbal/EntitySearcher.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product?limit=1
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # Nine products in the shop, one on the page, and the total is one.
+        # getTotalCount returns count($data) for every mode except exact, and
+        # none is the mode nobody selected.
+        total: 1
+        limit: 1
+        page: 1
+        elements[0].productNumber: SW10001
+        # What the envelope calls itself. Not the same word the category
+        # listing uses for its envelope.
+        apiAlias: dal_entity_search_result
+        entity: product
+
+  - name: asking for a count changes the number under the same name
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/DataAbstractionLayer/Search/RequestCriteriaBuilder.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product?limit=1&total-count-mode=exact
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # Same page, same one record on it, and now the total is the shop.
+        # The docblock calls this mode slow, which is why it is opt in and why
+        # the number a caller gets by default is the other one.
+        total: 9
+        limit: 1
+        elements[0].productNumber: SW10001
+
+  - name: the lookahead counts a window six pages wide and stops
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/DataAbstractionLayer/Search/Criteria.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product?limit=1&total-count-mode=next-pages
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # getNextPagesLimit is limit * 6 + 1, so seven rows are fetched from a
+        # shelf of nine and the count is taken before the slice. Seven is
+        # neither the page nor the shop, and it is the most convincing of the
+        # three wrong answers.
+        total: 7
+        limit: 1
+        elements[0].productNumber: SW10001
+
+  - name: the entity route refuses a page larger than the ceiling
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/DataAbstractionLayer/Exception/QueryLimitExceededException.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product?limit=250
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 400
+      body:
+        errors[0].code: FRAMEWORK__QUERY_LIMIT_EXCEEDED
+        # A string, because JSON:API says so. Comparing it with 400 fails.
+        errors[0].status: "400"
+        errors[0].title: Bad Request
+      matches:
+        errors[0].detail: MAX_LIMIT
+
+  - name: the category listing trims the same ceiling instead of refusing it
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/SalesChannel/Listing/Processor/PagingListingProcessor.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24?limit=250
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # min($limit, $this->maxLimit), and nothing said. The same request
+        # against /store-api/product is the 400 above, which is the whole
+        # reason both routes are here.
+        limit: 100
+        apiAlias: product_listing
+
+  - name: and it always knows how many there are
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/SalesChannel/Listing/Processor/PagingListingProcessor.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24?limit=1
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # prepare() sets TOTAL_COUNT_MODE_EXACT before the search runs, so the
+        # caller cannot ask this listing for a cheap total and cannot be given
+        # one by accident either.
+        total: 9
+        limit: 1
+        elements[0].productNumber: SW10001
+
+  - name: a request naming no page size gets a hundred from the entity route
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/Resources/config/packages/shopware.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # RequestCriteriaBuilder falls back to the store API's max_limit when
+        # the request names no limit, so the ceiling and the default are the
+        # same hundred. Nothing in the response says the number was chosen
+        # rather than asked for.
+        limit: 100
+        elements[0].productNumber: SW10001
+
+  - name: and twenty-four from the category listing
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/SalesChannel/Listing/Processor/PagingListingProcessor.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # DEFAULT_LIMIT, because the processor prefers the shop's
+        # core.listing.productsPerPage over whatever the criteria was carrying
+        # and falls back to twenty-four. Four times smaller than the other
+        # listing's default, on the same nine products.
+        limit: 24
+        total: 9
+
+  - name: the category listing pages by p
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/SalesChannel/Listing/Processor/PagingListingProcessor.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24?limit=1&p=2
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        page: 2
+        elements[0].productNumber: SW10002
+
+  - name: and ignores page, which is what the other listing reads
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/SalesChannel/Listing/Processor/PagingListingProcessor.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24?limit=1&page=2
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # getPage reads p and only p, so the second page asked for this way is
+        # the first page served. No error, no warning, and a loop written
+        # against the entity route walks record one forever.
+        page: 1
+        elements[0].productNumber: SW10001
+
+  - name: the shelf numbers fill in rather than going missing
+    source: https://shopware.stoplight.io/docs/store-api/
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product?limit=1&page=3&total-count-mode=exact
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # Page three at one per page, which also shows the entity route
+        # reading the parameter the category listing ignores.
+        elements[0].productNumber: SW10003
+        elements[0].stock: 0
+        elements[0].availableStock: 0
+        elements[0].active: true
+        elements[0].available: true
+
+  - name: two numbers about one shelf, and the sellable one is the second
+    source: https://shopware.stoplight.io/docs/store-api/
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product/0d4f2b81c6a34e1f9b7d5a2c8e60f931
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      status: 200
+      body:
+        # stock is what is in the warehouse; availableStock is that minus the
+        # open orders. A storefront showing the first oversells by three.
+        stock: 12
+        availableStock: 9
+        apiAlias: product
+        # Gross, and the field that says so is inside the price rather than
+        # beside the number.
+        calculatedPrice.totalPrice: 59.99
+        calculatedPrice.netPrice: 50.41
+        calculatedPrice.taxStatus: gross
+      matches:
+        # Thirty-two hex characters and not one dash. A UUID validator that
+        # expects 8-4-4-4-12 rejects every identifier this provider mints.
+        id: ^[0-9a-f]{32}$
+
+  - name: a wrong access key is a 412
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Framework/Routing/Exception/SalesChannelNotFoundException.php
+    fixture: catalogue
+    request:
+      method: GET
+      path: /store-api/product
+      headers:
+        sw-access-key: SWSCNOTAREALKEY000000000
+    expect:
+      # Precondition Failed. A client with branches for 401 and 403 takes
+      # neither, and a retry policy keyed on 401 never refreshes anything.
+      status: 412
+      body:
+        errors[0].code: FRAMEWORK__ROUTING_SALES_CHANNEL_NOT_FOUND
+        errors[0].status: "412"
+      matches:
+        errors[0].detail: No matching sales channel
+
+  - name: the same field means gross on one order and net on the next
+    source: https://shopware.stoplight.io/docs/store-api/
+    fixture: catalogue
+    request:
+      method: POST
+      path: /store-api/order
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+        Content-Type: application/json
+      json:
+        limit: 10
+    expect:
+      status: 200
+      body:
+        # Both are amountTotal. The first includes 59.07 of tax and the second
+        # includes none, and the only thing that says which is a word sitting
+        # in a different field.
+        orders.elements[0].amountTotal: 369.93
+        orders.elements[0].taxStatus: gross
+        orders.elements[1].amountTotal: 249.95
+        orders.elements[1].taxStatus: net
+        # The same money again, structured, carrying the same status.
+        orders.elements[0].price.totalPrice: 369.93
+        orders.elements[0].price.taxStatus: gross
+
+  - name: the order collection is a search result inside a key of its own
+    source: https://shopware.stoplight.io/docs/store-api/
+    fixture: catalogue
+    request:
+      method: POST
+      path: /store-api/order
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+        Content-Type: application/json
+      json:
+        limit: 1
+    expect:
+      status: 200
+      body:
+        # Not a top-level array and not a top-level total: both sit under
+        # orders, and the paging read from the request body rather than the
+        # query string put one record there.
+        orders.total: 1
+        orders.limit: 1
+        orders.elements[0].orderNumber: "10001"
+        # And whether the payment method can still be changed is a map keyed
+        # by order id, beside the collection rather than on the order.
+        paymentChangeable.c1f4a37e2b8d4c9fa0e6d5b3c7a91024: false
+
+  - name: paging past the end of a category listing is a 404
+    source: https://github.com/shopware/shopware/blob/trunk/src/Core/Content/Product/ProductException.php
+    fixture: catalogue
+    arm: page_out_of_range
+    request:
+      method: GET
+      path: /store-api/product-listing/4a1c8e0b6d2f47a39c5e1b7d0f836a24?limit=1&p=9
+      headers:
+        sw-access-key: SWSCCAULDRONFIXTUREKEY00
+    expect:
+      # A 404 where every other paging complaint is a 400, and the only
+      # listing here that has this failure at all. The entity route answers an
+      # over-run page with an empty page.
+      status: 404
+      body:
+        errors[0].code: PRODUCT__LISTING_PAGE_OUT_OF_RANGE
+        errors[0].status: "404"

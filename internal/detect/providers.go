@@ -70,6 +70,42 @@ func providers() []provider {
 			},
 		},
 		{
+			// The engine-is-not-a-client exclusion Medusa already needed,
+			// at a much larger scale: shopware/core, shopware/storefront,
+			// shopware/administration and shopware/platform run between one
+			// and six million installs each, and every one of them is the
+			// shop rather than a caller of one.
+			//
+			// shopware/shopware is a new shape and the sharper exclusion,
+			// because it is the same vendor and the same word. It is
+			// Shopware 5 -- a different product with a different API
+			// entirely: /api/articles, basic auth, no sales channel and no
+			// sw-access-key anywhere in it. Three quarters of a million
+			// installs of a shop this Recipe describes nothing about, and
+			// the only thing separating it from a match is the second half
+			// of the package name.
+			//
+			// @shopware-ag/meteor-admin-sdk is excluded for the third
+			// reason: it is an SDK for extensions that run inside the
+			// administration's own interface, so it talks to a Vue
+			// application rather than over HTTP to the Store API.
+			//
+			// What is left are the four that really are clients.
+			// vin-sw/shopware-sdk is the PHP one, @shopware/api-client the
+			// official TypeScript one, @shopware-pwa/api-client its
+			// deprecated predecessor -- still installed, still calling the
+			// same endpoints -- and @shopware/api-gen the generator that
+			// exists only to build a client for this API.
+			recipe:   "shopware",
+			composer: []string{"vin-sw/shopware-sdk"},
+			npm: []string{
+				"@shopware/api-client",
+				"@shopware-pwa/api-client",
+				"@shopware/api-gen",
+				"shopware-api-client",
+			},
+		},
+		{
 			// A new reason to exclude something: @medusajs/medusa is not a
 			// client, it is the commerce engine. A project depending on it is
 			// the store rather than a caller of one, and emulating the thing

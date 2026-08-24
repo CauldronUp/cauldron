@@ -1078,3 +1078,61 @@ func TestDetectPrintifyFromThePhpSdksOnly(t *testing.T) {
 		t.Errorf("a print-CSS helper offered the printify Recipe: %+v", p.Requirements)
 	}
 }
+
+// Shopware's detection has to exclude the provider from its own name twice
+// over.
+//
+// The four most-installed Packagist matches -- shopware/core,
+// shopware/storefront, shopware/administration and shopware/platform -- are
+// the shop, not a client of one. That is the exclusion Medusa already needed,
+// at four to six million installs apiece rather than at Medusa's scale.
+//
+// shopware/shopware is the one worth a test of its own, because it is a shape
+// nothing else here has: same vendor, same word, three quarters of a million
+// installs, and a completely different product. Shopware 5's API is
+// /api/articles behind basic auth, with no sales channel and no sw-access-key
+// anywhere in it. This Recipe is 6.7's Store API and describes nothing that
+// shop does.
+//
+// @shopware-ag/meteor-admin-sdk is excluded because it is for extensions
+// running inside the administration interface, which is a Vue application
+// rather than an HTTP API.
+func TestDetectShopwareFromItsClientsAndNotFromTheShopItself(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"vin-sw/shopware-sdk": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@shopware/api-client": "^1.5.0"}}`},
+		{"package.json": `{"dependencies": {"@shopware-pwa/api-client": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@shopware/api-gen": "^1.5.0"}}`},
+		{"package.json": `{"dependencies": {"shopware-api-client": "^1.6.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "shopware") {
+			t.Errorf("%v did not detect shopware: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The shop itself, four ways.
+		{"composer.json": `{"require": {"shopware/core": "^6.7"}}`},
+		{"composer.json": `{"require": {"shopware/storefront": "^6.7"}}`},
+		{"composer.json": `{"require": {"shopware/administration": "^6.7"}}`},
+		{"composer.json": `{"require": {"shopware/platform": "^6.7"}}`},
+		// And the previous generation, which is a different API.
+		{"composer.json": `{"require": {"shopware/shopware": "^5.7"}}`},
+		// An administration extension, which never speaks to the Store API.
+		{"package.json": `{"dependencies": {"@shopware-ag/meteor-admin-sdk": "^6.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "shopware") {
+			t.Errorf("%v offered the shopware Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
