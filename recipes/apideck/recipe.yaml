@@ -1,0 +1,583 @@
+# Apideck Unify (Ecommerce) Recipe for Cauldron
+#
+# Written against the OpenAPI 3.0 description Apideck publishes at
+# apideck-libraries/openapi-specs, ecommerce.yml, version 10.44.0. Every
+# quoted sentence, enum value and field name below was read out of that
+# document, including its x-apideck-gotchas extension, which is where it
+# records what each downstream connector does differently.
+#
+# This is the first unified API in the collection: one shape in front of
+# Shopify, WooCommerce, Magento, Walmart, TikTok, Wix, PrestaShop, Shopware
+# and the rest. Everything else here models a provider. This models a provider
+# of providers, and the seams are the subject.
+#
+# A 200 from here can contain somebody else's 429.
+#
+# The response envelope has a meta.warnings array, and the schema says what it
+# is for: "Non-fatal warnings emitted when optional workflow steps failed.
+# Present only when at least one step degraded; the response status remains
+# 200." Each entry carries "HTTP status code returned by the failed downstream
+# request", and the example the document gives is 429.
+#
+# So the request succeeded, the array came back, and part of it is missing
+# because a shop somewhere was rate limited. The field that says so exists
+# only when something went wrong, which means code that does not look for it
+# cannot learn there was anything to look for. Every check a client normally
+# makes -- the status, the absence of an error object, the presence of data --
+# passes.
+#
+# Six more, each from the same document:
+#
+#   1. A valid request can be unsupported. The error list includes
+#      UnsupportedFiltersError ("Filters in the request are valid, but not
+#      supported by the connector"), UnsupportedSortFieldError,
+#      PaginationNotSupportedError ("Pagination is not yet supported for this
+#      connector, try removing limit and/or cursor") and
+#      ConnectorOperationUnsupportedError. The same call with the same
+#      parameters works against one shop and is refused for another, and the
+#      remedy for the paging one is to ask for less.
+#   2. Every response names the connector that answered it. service is a
+#      required field -- "Apideck ID of service provider", example shopify --
+#      because what the fields below mean depends on which one it was.
+#   3. And the header that chooses it is optional until it is not.
+#      x-apideck-service-id is "Only needed when a consumer has activated
+#      multiple integrations for a Unified API", so a working integration
+#      starts failing when the customer connects a second store and nothing
+#      in the calling code changed.
+#   4. A unified field can be a fact from one provider and an inference from
+#      another. The Walmart gotcha says it outright: "Walmart's order API does
+#      not expose a payment status. payment_status is inferred from the order
+#      line status: active orders (Created/Acknowledged/Shipped/Delivered)
+#      report `paid` because Walmart Marketplace collects customer payment
+#      upfront." The same field from Shopify is reported rather than reasoned.
+#   5. There are two ways of not knowing. payment_status is nullable and its
+#      enum also contains "unknown", so absent and unknown are different
+#      answers and a client has to handle both.
+#   6. Filters change what a connector will even accept. The Walmart gotcha
+#      again: "When the created_since filter is not provided, Walmart only
+#      returns orders from the last 7 days." The unified listing looks like
+#      every other listing and quietly means the last week.
+#
+# Two things are shared with Recipes already here and are stated rather than
+# claimed. meta.cursors.previous is nullable, and the document explains why in
+# a warning of its own -- it "is not available for all connectors" -- which is
+# the same nullable-for-somebody-else's-reason shape as the rest of this file.
+# And the body repeats the HTTP status in status_code, which Akeneo and
+# Voucherify both do.
+#
+# The credential is three parts: an Authorization bearer token, an
+# x-apideck-app-id and an x-apideck-consumer-id, all required. VTEX and
+# Voucherify each need two; this needs three, and the third identifies the end
+# customer rather than the caller.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The inference in point four cannot be served. A payment_status that was
+#     reasoned out and one that was reported look identical on the wire, which
+#     is the entire problem, so this Recipe states it and serves the parts
+#     that are visible: which connector answered, and what it warned about.
+#   - The connector-shaped errors are declared and injectable rather than
+#     raised by a filter Cauldron does not understand. Arming
+#     unsupported_filters is how to see one.
+#   - The limit's ceiling is not declared. The document says "Minimum 1,
+#     Maximum 200, Default 20" and does not say what happens above it, so
+#     this Recipe declares the default and no ceiling -- the same call the
+#     Voucherify Recipe made for the same reason. Declaring a clamp or a
+#     refusal would be a claim about behaviour nothing here has read.
+#   - raw=true, pass_through, fields, filter and sort are accepted and
+#     honoured by nothing.
+#   - Customers, the store endpoint, and every unified API other than
+#     ecommerce are absent.
+#
+# The credentials below are fixtures and belong to no application.
+
+recipe: apideck
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: unify
+  docs: https://developers.apideck.com/apis/ecommerce/reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.apideck.fixture.key.00000
+
+required_headers:
+  # Which application is asking.
+  x-apideck-app-id:
+    error: missing_headers
+  # And which of its customers the data belongs to. A unified API is
+  # multi-tenant twice over: your tenants, and their connected shops.
+  x-apideck-consumer-id:
+    error: missing_headers
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: meta.total_count
+    page_count_field: meta.items_on_page
+    cursor_field: meta.cursors.next
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # {status_code, error, type_name, message, detail, ref}
+    style: flat
+    message_field: message
+    # The machine-readable name, which is not called code.
+    code_field: type_name
+    type_field: "-"
+    status_field: status_code
+
+resources:
+  order:
+    id:
+      style: opaque
+    fields:
+      order_number:
+        type: string
+      currency:
+        type: string
+        default: USD
+      total_amount:
+        type: string
+      total_tax:
+        type: string
+      status:
+        type: string
+        default: open
+      # Reported by some connectors and inferred by others, and nothing on the
+      # wire says which. Nullable, and with "unknown" in the enum as well.
+      payment_status:
+        type: string
+        null_when_unset: true
+      fulfillment_status:
+        type: string
+        null_when_unset: true
+      customer:
+        type: map
+      line_items:
+        type: list
+      created_at:
+        type: string
+      updated_at:
+        type: string
+
+routes:
+  # A consumer with one shop connected. No service header needed, and the
+  # envelope still says which connector answered.
+  - method: GET
+    path: /ecommerce/orders
+    resource: order
+    operation: list
+    fields:
+      status_code: 200
+      status: OK
+      # Required, because the meaning of everything under data depends on it.
+      service: shopify
+      resource: orders
+      operation: all
+      # Nullable, and the document warns that it "is not available for all
+      # connectors" -- so a client that pages backwards works against some
+      # shops and not others.
+      meta.cursors.previous: null
+      meta.cursors.current: ZW1wdHktY3Vyc29yLTA=
+      links.current: https://unify.apideck.com/ecommerce/orders
+    pagination:
+      style: cursor
+      # "Number of results to return. Minimum 1, Maximum 200, Default 20"
+      limit: 20
+      limit_param: limit
+      cursor_param: cursor
+
+  # The same call with the service named, which is what a consumer with two
+  # shops connected has to send. Same path, same parameters, different
+  # answer -- and this one is degraded.
+  - method: GET
+    path: /ecommerce/orders
+    resource: order
+    operation: list
+    matches_header:
+      x-apideck-service-id: walmart
+    fields:
+      status_code: 200
+      status: OK
+      service: walmart
+      resource: orders
+      operation: all
+      meta.cursors.previous: null
+      meta.cursors.current: ZW1wdHktY3Vyc29yLTA=
+      links.current: https://unify.apideck.com/ecommerce/orders
+      # The whole point. A step failed, the request did not, and the status
+      # code inside belongs to a shop rather than to this response.
+      meta.warnings:
+        - type: downstream_request_failed
+          status_code: 429
+          error: Too Many Requests
+          operation: ordersAll
+    pagination:
+      style: cursor
+      limit: 20
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /ecommerce/orders/{id}
+    resource: order
+    operation: get
+    fields:
+      status_code: 200
+      status: OK
+      service: shopify
+      resource: orders
+      operation: one
+
+errors:
+  # "Filters in the request are valid, but not supported by the connector.
+  # Remove the unsupported filter(s) to get a successful response."
+  unsupported_filters:
+    status: 422
+    code: UnsupportedFiltersError
+    message: Filters are valid but not supported by this connector.
+    fields:
+      error: Unprocessable Entity
+      detail: Remove the unsupported filter(s) to get a successful response.
+      ref: https://developers.apideck.com/errors#unsupportedfilterserror
+
+  # "Pagination is not yet supported for this connector, try removing limit
+  # and/or cursor from the query." The remedy for a paging error is to stop
+  # asking for pages.
+  pagination_not_supported:
+    status: 422
+    code: PaginationNotSupportedError
+    message: Pagination is not supported for this connector.
+    fields:
+      error: Unprocessable Entity
+      detail: Try removing limit and/or cursor from the query.
+      ref: https://developers.apideck.com/errors#paginationnotsupportederror
+
+  # "A Unified API request made via one of our downstream connectors returned
+  # an unexpected error. The status_code returned is proxied through to error
+  # response along with their original response via the error detail."
+  connector_execution_error:
+    status: 400
+    code: ConnectorExecutionError
+    message: The connector returned an unexpected error.
+    fields:
+      error: Bad Request
+      detail: "Downstream responded 429: Too Many Requests"
+      ref: https://developers.apideck.com/errors#connectorexecutionerror
+
+  missing_headers:
+    status: 400
+    code: RequestHeadersValidationError
+    message: Invalid Params
+    fields:
+      error: Bad Request
+      detail: "Missing Header: x-apideck-consumer-id"
+      ref: https://developers.apideck.com/errors#requestheadersvalidationerror
+
+  authentication_error:
+    status: 401
+    code: UnauthorizedError
+    message: Unauthorized Request
+    fields:
+      error: Unauthorized
+      detail: Verify your Api Key is being set correctly in the authorization header.
+      ref: https://developers.apideck.com/errors#unauthorizederror
+
+  resource_missing:
+    status: 404
+    code: EntityNotFoundError
+    message: Unknown Entity
+    fields:
+      error: Not Found
+      detail: You've made a request for a resource or route that does not exist.
+      ref: https://developers.apideck.com/errors#entitynotfounderror
+
+fixtures:
+  empty: {}
+
+  consumer:
+    order:
+      # A Shopify order, where payment_status is a thing Shopify reports.
+      - id: gid-order-4102
+        order_number: "1042"
+        currency: USD
+        total_amount: "119.98"
+        total_tax: "9.60"
+        status: open
+        payment_status: paid
+        fulfillment_status: shipped
+        customer:
+          id: cus_88231
+          name: Dana Whitfield
+          email: dana@example.test
+        line_items:
+          - id: li_9021
+            name: Ceramic mug
+            quantity: 2
+            unit_price: "55.19"
+            total_amount: "110.38"
+        created_at: "2026-02-18T10:04:12.000Z"
+        updated_at: "2026-02-19T08:31:44.000Z"
+      # And one where the connector could not tell. unknown is a value in the
+      # enum, and null is also allowed, so "we do not know" has two spellings.
+      - id: gid-order-4103
+        order_number: "1043"
+        currency: USD
+        total_amount: "44.50"
+        total_tax: "3.56"
+        status: open
+        payment_status: unknown
+        fulfillment_status: pending
+        customer:
+          id: cus_88232
+          name: Marcus Iyer
+          email: marcus@example.test
+        line_items:
+          - id: li_9022
+            name: Enamel pin
+            quantity: 1
+            unit_price: "44.50"
+            total_amount: "44.50"
+        created_at: "2026-02-19T14:22:07.000Z"
+        updated_at: "2026-02-19T14:22:07.000Z"
+
+conformance:
+  - name: a two hundred can carry somebody else's four two nine
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=1
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+        x-apideck-service-id: walmart
+    expect:
+      # "The overall request still succeeds (HTTP 200); inspect this to detect
+      # partial or degraded data."
+      status: 200
+      body:
+        status_code: 200
+        status: OK
+        # The status code inside belongs to a shop rather than to this
+        # response, and it is the only sign anything went wrong.
+        "meta.warnings[0].status_code": 429
+        "meta.warnings[0].type": downstream_request_failed
+        "data[0].order_number": "1042"
+        # Reported by Shopify rather than reasoned out, which is the half of
+        # point four that can be shown: the value is here and nothing on the
+        # wire says how it was arrived at.
+        "data[0].payment_status": paid
+
+  - name: and the same call without the degraded connector has no warnings
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=1
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      status: 200
+      body:
+        status_code: 200
+        "data[0].order_number": "1042"
+      absent:
+        # "Present only when at least one step degraded", so its absence is
+        # the ordinary case -- which is why a client never learns to look.
+        - "meta.warnings"
+
+  - name: every response names the connector that answered it
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=1
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      status: 200
+      body:
+        # A required field, because what the fields under data mean depends on
+        # which shop they came from -- and on that shop's caveats.
+        service: shopify
+        resource: orders
+        operation: all
+
+  - name: and naming a different one changes which shop answers
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=1
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+        x-apideck-service-id: walmart
+    expect:
+      status: 200
+      body:
+        # The header is documented as "Only needed when a consumer has
+        # activated multiple integrations", so it is optional right up until
+        # the customer connects a second shop -- at which point a request that
+        # omits it is ambiguous and nothing in the calling code changed.
+        service: walmart
+
+  - name: not knowing has two spellings
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders/gid-order-4103
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      status: 200
+      body:
+        # payment_status is nullable and its enum also contains "unknown", so
+        # a client has to handle both -- and this is the one that is not null.
+        "data.payment_status": unknown
+        "data.order_number": "1043"
+        # And the envelope on a single fetch says which operation it was, in
+        # a vocabulary of its own: "one" here, "all" on the listing.
+        operation: one
+        service: shopify
+
+  - name: the backwards cursor is null because of somebody else's connector
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=1
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      status: 200
+      body:
+        # The document carries its own warning about this one: previous "is
+        # not available for all connectors". So paging backwards is a feature
+        # of the unified shape that some shops do not have.
+        "meta.cursors.previous": null
+        "meta.items_on_page": 1
+        "meta.total_count": 2
+      matches:
+        "meta.cursors.next": .
+
+  - name: a valid filter can still be unsupported
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    arm: unsupported_filters
+    request:
+      method: GET
+      path: /ecommerce/orders?filter[created_since]=2026-01-01T00:00:00Z
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      # "Filters in the request are valid, but not supported by the
+      # connector." The request is well formed and the shop cannot do it.
+      status: 422
+      body:
+        type_name: UnsupportedFiltersError
+        status_code: 422
+        error: Unprocessable Entity
+        # Four fields describing one failure: the status as a number, the
+        # status as prose, the name to switch on, and the sentence to read.
+        message: Filters are valid but not supported by this connector.
+      matches:
+        detail: Remove the unsupported filter
+
+  - name: and the remedy for a paging error is to ask for less
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    arm: pagination_not_supported
+    request:
+      method: GET
+      path: /ecommerce/orders?limit=50
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      # "Pagination is not yet supported for this connector, try removing
+      # limit and/or cursor from the query."
+      status: 422
+      body:
+        type_name: PaginationNotSupportedError
+      matches:
+        detail: removing limit
+
+  - name: a downstream status arrives inside an error rather than as one
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    arm: connector_execution_error
+    request:
+      method: GET
+      path: /ecommerce/orders
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      # "The status_code returned is proxied through to error response along
+      # with their original response via the error detail." So the 429 is in
+      # the prose and the response itself is a 400.
+      status: 400
+      body:
+        type_name: ConnectorExecutionError
+        status_code: 400
+      matches:
+        detail: "429"
+
+  - name: the credential is three parts and the third is the customer
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-app-id: cauldron-app-0000
+    expect:
+      # The token and the application, without the consumer. A unified API is
+      # multi-tenant twice over and the request has to say whose shop it
+      # means.
+      status: 400
+      body:
+        type_name: RequestHeadersValidationError
+        status_code: 400
+      matches:
+        detail: Missing Header
+
+  - name: and without the application either
+    source: https://github.com/apideck-libraries/openapi-specs/blob/master/ecommerce.yml
+    fixture: consumer
+    request:
+      method: GET
+      path: /ecommerce/orders
+      headers:
+        Authorization: Bearer cauldron.apideck.fixture.key.00000
+        x-apideck-consumer-id: test-consumer
+    expect:
+      status: 400
+      body:
+        type_name: RequestHeadersValidationError

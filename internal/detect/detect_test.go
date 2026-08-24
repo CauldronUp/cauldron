@@ -1426,3 +1426,51 @@ func TestDetectVoucherifyAndNotVoucherly(t *testing.T) {
 		}
 	}
 }
+
+// Apideck's near miss is one letter, three times over.
+//
+// appdeck publishes sql, sampa and filter -- a PDO wrapper, an MVC framework
+// and an input filter -- and none of them has anything to do with a unified
+// commerce API. Voucherify had Voucherly two letters away; this has appdeck
+// at one. muammarsiddiqui/apideck-laravel is the ordinary sort: an API
+// playground that took the name.
+//
+// The mapping is also deliberately imprecise, and the comment beside it says
+// so: one SDK covers every unified API Apideck offers, so the dependency
+// proves the caller uses Apideck rather than that they use this one.
+func TestDetectApideckAndNotAppdeck(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"apideck-libraries/php-sdk": "^0.10"}}`},
+		{"composer.json": `{"require": {"apideck-libraries/sdk-php": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@apideck/unify": "^0.20.0"}}`},
+		{"package.json": `{"dependencies": {"@apideck/node": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"apideck": "^2.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "apideck") {
+			t.Errorf("%v did not detect apideck: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// One letter away, and three different libraries.
+		{"composer.json": `{"require": {"appdeck/sql": "^1.0"}}`},
+		{"composer.json": `{"require": {"appdeck/sampa": "^1.0"}}`},
+		{"composer.json": `{"require": {"appdeck/filter": "^1.0"}}`},
+		// And a Laravel API playground that took the name.
+		{"composer.json": `{"require": {"muammarsiddiqui/apideck-laravel": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "apideck") {
+			t.Errorf("%v offered the apideck Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
