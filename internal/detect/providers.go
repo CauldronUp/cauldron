@@ -53,6 +53,15 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Four vendors publish a package called shipengine on Packagist,
+			// including ShipEngine's own, and all four are API clients. Same
+			// shape as ship-station below: the vendor half of the name says
+			// who wrote the wrapper rather than what it talks to.
+			recipe:   "shipengine",
+			composer: []string{"shipengine/shipengine", "always-open/shipengine", "jsamhall/shipengine"},
+			npm:      []string{"shipengine"},
+		},
+		{
 			// Three unrelated vendors publish a package called ship-station on
 			// Packagist and all three are real API wrappers, so the vendor
 			// prefix carries no information here and each has to be named.

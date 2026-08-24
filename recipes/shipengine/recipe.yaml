@@ -1,0 +1,546 @@
+# ShipEngine Recipe for Cauldron
+#
+# Asking for rates talks to several carriers at once, and they do not all
+# answer. Some quote, some refuse, and one 200 comes back carrying both. The
+# rates array is the carriers that quoted; the errors array beside it is the
+# ones that did not, and a client that checks the status code and reads rates
+# sees a shorter list than it asked for and no sign that anything went wrong.
+#
+# That is the failure worth reproducing, because it does not look like one.
+# The postcode is malformed for UPS and fine for USPS, or the account is not
+# connected to FedEx, and the customer is shown two options instead of three
+# with the cheapest one missing. Nobody finds out until somebody compares a
+# quote to a carrier's own website.
+#
+# Six things worth modelling exactly:
+#
+#   1. A rate request half-fails with a 200. rate_response.rates holds the
+#      carriers that answered and rate_response.errors holds the ones that
+#      refused, in the same body, and the status code describes neither.
+#   2. rate_response.status says "completed" even when carriers errored. It
+#      is about whether ShipEngine finished asking, not about whether the
+#      answers are complete.
+#   3. Money is {amount, currency} with amount a number, and a rate carries
+#      four of them -- shipping, insurance, confirmation and other -- that
+#      have to be added up. The total a customer should see is in none of
+#      the fields on their own.
+#   4. Identifiers are prefixed by type and the prefixes are close together:
+#      se- for shipments, rate ids are bare, car_ for carriers. A carrier id
+#      where a carrier code belongs is accepted by the type system and
+#      refused by the API.
+#   5. Validation failures come back as an errors array with a source, a
+#      type and an error_code on each entry -- so the same array shape
+#      carries both "the carrier refused" and "your request was wrong", and
+#      source is the only thing that tells them apart.
+#   6. A label is bought from a rate id, and buying is where the money moves.
+#      The label carries its own id, and voiding it later is a separate call
+#      that can fail on its own.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Rates are fixtures. A real request returns whatever the connected
+#     carriers quote at that moment, in whatever order, and the errors depend
+#     on the address and the parcel. The half-failure below is seeded rather
+#     than produced.
+#   - Nothing expires. A real rate is good for a short window and buying
+#     against a stale one fails; here a rate id works forever.
+#   - Only rates, labels and a shipment are modelled. Carriers, warehouses,
+#     manifests, batches and tracking webhooks are absent.
+#
+# The key below is a fixture, not a secret. It belongs to no account.
+
+recipe: shipengine
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.shipengine.com/docs/rates/
+
+auth:
+  # Not a bearer and not Basic. Its own header, so a client written for
+  # either of the usual two authenticates as nobody.
+  scheme: header
+  header: API-Key
+  keys:
+    - cauldron_shipengine_key_000000
+
+responses:
+  list:
+    style: wrapped
+    key: shipments
+    count_field: total
+    page_field: page
+    pages_field: pages
+  resource:
+    style: bare
+  error:
+    # An array, because a request can be wrong in several ways at once -- and
+    # the same shape carries a carrier's refusal, which is not the same kind
+    # of thing at all.
+    style: list
+    key: errors
+    message_field: message
+    code_field: error_code
+
+resources:
+  shipment:
+    id:
+      style: prefixed
+      prefix: se-
+      length: 9
+      field: shipment_id
+    fields:
+      carrier_id:
+        type: string
+      service_code:
+        type: string
+      # pending, processing, label_purchased, cancelled.
+      shipment_status:
+        type: string
+        default: pending
+      ship_to:
+        type: map
+      ship_from:
+        type: map
+      packages:
+        type: list
+      created_at:
+        type: datetime
+
+  rate:
+    # The half-failure lives here: the carriers that quoted and the ones that
+    # refused, in one record.
+    id:
+      style: prefixed
+      prefix: se-
+      length: 9
+      field: rate_request_id
+    fields:
+      shipment_id:
+        type: string
+      # completed even when carriers errored. It is about whether ShipEngine
+      # finished asking, not about whether the answers are complete.
+      status:
+        type: string
+        default: completed
+      # The carriers that answered.
+      rates:
+        type: list
+      # The ones that did not, in the same body, behind the same 200.
+      errors:
+        type: list
+      created_at:
+        type: datetime
+
+  label:
+    id:
+      style: prefixed
+      prefix: se-
+      length: 9
+      field: label_id
+    fields:
+      status:
+        type: string
+        default: completed
+      shipment_id:
+        type: string
+      # What was actually charged, once the four amounts on the rate are
+      # added together.
+      shipment_cost:
+        type: map
+      insurance_cost:
+        type: map
+      tracking_number:
+        type: string
+      carrier_code:
+        type: string
+      # A label that has been voided keeps its id and its tracking number.
+      voided:
+        type: boolean
+        default: false
+      label_download:
+        type: map
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/shipments
+    resource: shipment
+    operation: list
+    pagination:
+      style: page
+      limit: 25
+      limit_param: page_size
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v1/shipments/{id}
+    resource: shipment
+    operation: get
+
+  - method: POST
+    path: /v1/shipments
+    resource: shipment
+    operation: create
+    status: 201
+
+  # Rates. The answer is one record carrying both halves.
+  - method: POST
+    path: /v1/rates
+    resource: rate
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/rates/{id}
+    resource: rate
+    operation: get
+
+  - method: POST
+    path: /v1/labels
+    resource: label
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/labels/{id}
+    resource: label
+    operation: get
+
+errors:
+  # A request that was wrong, in the same array shape a carrier's refusal
+  # arrives in. source is the only thing that tells them apart.
+  parameter_missing:
+    status: 400
+    code: invalid_field_value
+    message: The postal_code field is required.
+    fields:
+      # Inside the entry, beside the message and the code, which is where a
+      # named error's fields go for a list envelope.
+      error_source: shipengine
+      error_type: validation
+
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: The API key is invalid.
+
+  resource_missing:
+    status: 404
+    code: not_found
+    message: The resource you requested could not be found.
+
+  rate_limit:
+    status: 429
+    code: rate_limit_exceeded
+    message: You have exceeded the rate limit.
+    headers:
+      # Seconds to wait. ShipEngine sends the ordinary header here, which is
+      # worth having beside ShipStation's -- the same company, and the two
+      # APIs report their limits differently.
+      Retry-After: "2"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    shipment:
+      - id: se-100001
+        carrier_id: car_1knseddGBrseWTiw
+        service_code: usps_priority_mail
+        shipment_status: pending
+        ship_to:
+          name: A Recipient
+          postal_code: "78756"
+          country_code: US
+        ship_from:
+          name: A Sender
+          postal_code: "78756"
+          country_code: US
+        packages:
+          - weight:
+              value: 1
+              unit: ounce
+        created_at: "2026-02-01T09:15:00.000Z"
+    rate:
+      - id: se-200001
+        shipment_id: se-100001
+        # Completed. Two carriers quoted and one refused, and this word does
+        # not know the difference.
+        status: completed
+        rates:
+          - rate_id: se-300001
+            carrier_id: car_1knseddGBrseWTiw
+            carrier_code: stamps_com
+            service_code: usps_priority_mail
+            # Four amounts, and the total a customer should see is in none of
+            # them on their own.
+            shipping_amount:
+              amount: 7.35
+              currency: usd
+            insurance_amount:
+              amount: 0
+              currency: usd
+            confirmation_amount:
+              amount: 0.25
+              currency: usd
+            other_amount:
+              amount: 0
+              currency: usd
+            delivery_days: 2
+          - rate_id: se-300002
+            carrier_id: car_2knseddGBrseWTiw
+            carrier_code: ups
+            service_code: ups_ground
+            shipping_amount:
+              amount: 12.10
+              currency: usd
+            insurance_amount:
+              amount: 0
+              currency: usd
+            confirmation_amount:
+              amount: 0
+              currency: usd
+            other_amount:
+              amount: 0
+              currency: usd
+            delivery_days: 3
+        # The carrier that refused, in the same body, behind the same 200.
+        errors:
+          - error_source: carrier
+            error_type: business_rules
+            error_code: carrier_not_connected
+            message: FedEx is not connected to this account.
+        created_at: "2026-02-01T09:16:00.000Z"
+    label:
+      - id: se-400001
+        status: completed
+        shipment_id: se-100001
+        # 7.35 shipping plus 0.25 confirmation. Neither field on the rate
+        # carried this number.
+        shipment_cost:
+          amount: 7.60
+          currency: usd
+        insurance_cost:
+          amount: 0
+          currency: usd
+        tracking_number: "9405511899223197428490"
+        carrier_code: stamps_com
+        voided: false
+        label_download:
+          pdf: https://api.shipengine.test/v1/downloads/10/se-400001/label.pdf
+        created_at: "2026-02-01T09:20:00.000Z"
+
+conformance:
+  - name: a rate request half-fails behind a 200
+    source: https://www.shipengine.com/docs/rates/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/rates/se-200001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      # Two hundred. Two carriers quoted, one refused, and the status code
+      # describes neither.
+      status: 200
+      body:
+        rates[0].carrier_code: stamps_com
+        rates[1].carrier_code: ups
+        # The carrier that did not answer, in the same body. A client reading
+        # rates and checking the status sees two options where it asked for
+        # three and nothing says one is missing.
+        errors[0].error_source: carrier
+        errors[0].error_code: carrier_not_connected
+        errors[0].message: FedEx is not connected to this account.
+
+  - name: and calls itself completed anyway
+    source: https://www.shipengine.com/docs/rates/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/rates/se-200001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        # About whether ShipEngine finished asking, not about whether the
+        # answers are complete. A client gating on this ships the short list.
+        status: completed
+
+  - name: the price a customer sees is in none of the fields
+    source: https://www.shipengine.com/docs/rates/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/rates/se-200001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        # Four amounts on one rate. 7.35 plus 0.25 is 7.60, and no field
+        # holds 7.60 -- showing shipping_amount alone undercharges by the
+        # confirmation fee on every parcel.
+        rates[0].shipping_amount.amount: 7.35
+        rates[0].confirmation_amount.amount: 0.25
+        rates[0].insurance_amount.amount: 0
+        rates[0].other_amount.amount: 0
+        rates[0].shipping_amount.currency: usd
+
+  - name: and the label charged the sum of them
+    source: https://www.shipengine.com/docs/labels/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/labels/se-400001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        # 7.60, which appeared nowhere on the rate it was bought from.
+        shipment_cost.amount: 7.60
+        shipment_cost.currency: usd
+        tracking_number: "9405511899223197428490"
+
+  - name: a validation failure uses the same array shape as a carrier refusal
+    source: https://www.shipengine.com/docs/errors/
+    arm: parameter_missing
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1/rates
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+      json:
+        shipment_id: se-100001
+    expect:
+      status: 400
+      body:
+        # The same shape as the carrier error above, and error_source is the
+        # only field that says which kind of thing this is: shipengine here,
+        # carrier there. A handler that switches on error_code alone treats a
+        # malformed request and an unreachable carrier the same way.
+        errors[0].error_source: shipengine
+        errors[0].error_type: validation
+        errors[0].error_code: invalid_field_value
+        errors[0].message: The postal_code field is required.
+
+  - name: identifiers share a prefix across three kinds of thing
+    source: https://www.shipengine.com/docs/shipping/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/shipments/se-100001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        # se- for a shipment, se- for a rate request, se- for a label. The
+        # prefix says ShipEngine rather than what kind of record it is, so
+        # passing one where another belongs is caught by the API and not by
+        # anything before it.
+        shipment_id: se-100001
+        # And a carrier is car_, which is a different scheme again.
+        carrier_id: car_1knseddGBrseWTiw
+        # Pinned here so the seeded state is a claim rather than scenery: the
+        # create case above checks the default, and this checks the fixture
+        # the other cases read.
+        shipment_status: pending
+      absent:
+        - id
+
+  - name: a new shipment starts pending rather than ready
+    source: https://www.shipengine.com/docs/shipping/
+    fixture: small-account
+    request:
+      # Created rather than read, so the declared default is on the wire.
+      # Asserting it on a seeded record proved nothing: the fixture sets the
+      # field, so changing the default broke no case at all.
+      method: POST
+      path: /v1/shipments
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+      json:
+        service_code: usps_priority_mail
+    expect:
+      status: 201
+      body:
+        # pending, not processing and not label_purchased. A shipment exists
+        # long before anything has been bought for it, and a client that
+        # treats a created shipment as ready to hand to a carrier is a step
+        # ahead of itself.
+        shipment_status: pending
+
+  - name: a label is not voided until it is
+    source: https://www.shipengine.com/docs/labels/void/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/labels/se-400001
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        # A voided label keeps its id and its tracking number, so the flag is
+        # the only thing that distinguishes one from a live label.
+        voided: false
+        label_download.pdf: https://api.shipengine.test/v1/downloads/10/se-400001/label.pdf
+
+  - name: a listing counts and pages in ShipEngine's own words
+    source: https://www.shipengine.com/docs/shipping/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/shipments
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 200
+      body:
+        shipments[0].shipment_id: se-100001
+        # total and pages, not count and total_pages, and page is one-based.
+        total: 1
+        page: 1
+        pages: 1
+
+  - name: the credential is its own header
+    source: https://www.shipengine.com/docs/auth/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/shipments
+      headers:
+        # Not Authorization, and not a bearer. A client written for either of
+        # the usual two authenticates as nobody.
+        Authorization: Bearer cauldron_shipengine_key_000000
+    expect:
+      status: 401
+      body:
+        errors[0].error_code: unauthorized
+
+  - name: the rate limit asks for a delay in seconds
+    source: https://www.shipengine.com/docs/rate-limits/
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/shipments
+      headers:
+        API-Key: cauldron_shipengine_key_000000
+    expect:
+      status: 429
+      headers:
+        # An ordinary Retry-After, which is worth having beside ShipStation's
+        # X-Rate-Limit-Reset: the same company ships two APIs that report
+        # their limits differently.
+        Retry-After: "2"
+      body:
+        errors[0].error_code: rate_limit_exceeded
