@@ -461,3 +461,42 @@ func TestDetectShopifyGraphQLOnlyFromTheGraphQLOnlyClient(t *testing.T) {
 		}
 	}
 }
+
+// The SP-API replaced Marketplace Web Service in 2022, and MWS was not an
+// earlier version of it: XML over a signed query string, its own endpoints,
+// its own vocabulary. Packages named after MWS are still installed and still
+// have amazon in the name, so a rule that matched the word would offer a
+// REST emulator to code that speaks none of it.
+func TestDetectAmazonSPFromSellingPartnerClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"jlevers/selling-partner-api": "^6.0"}}`},
+		{"composer.json": `{"require": {"amazon-php/sp-api-sdk": "^7.0"}}`},
+		{"composer.json": `{"require": {"amzn-spapi/sdk": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"amazon-sp-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "amazonsp") {
+			t.Errorf("%v did not detect amazonsp: %+v", manifest, p.Requirements)
+		}
+	}
+}
+
+func TestDetectDoesNotOfferAmazonSPForMWSOrTheAWSSDK(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"amazon-mws": "^0.3.0"}}`},
+		{"package.json": `{"dependencies": {"aws-sdk": "^2.1000.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "amazonsp") {
+			t.Errorf("%v offered the amazonsp Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
