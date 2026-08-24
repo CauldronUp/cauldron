@@ -1,0 +1,652 @@
+# Saleor Recipe for Cauldron
+#
+# Written against Saleor's own repository: the GraphQL schema it publishes at
+# saleor/graphql/schema.graphql, and, for the things a schema cannot say, the
+# Python beside it -- saleor/urls.py for the endpoint and saleor/core/auth.py
+# for the credential. Every field name, type, deprecation reason and quoted
+# sentence below was read out of one of those files.
+#
+# It is not a second Shopify GraphQL Recipe. Two things they share are stated
+# as shared rather than claimed as findings: a connection is edges and node
+# rather than an array, and a refusal arrives with HTTP 200. Both are already
+# modelled in shopifygraphql and neither is why this file exists.
+#
+# What is different is the money.
+#
+# Saleor's Money type carries the same amount twice and the currency once:
+#
+#   Money { currency: String!, amount: Float!,
+#           fractionalAmount: Int!, fractionDigits: Int! }
+#
+# and its TaxedMoney carries three of those plus a currency of its own:
+#
+#   TaxedMoney { currency: String!, gross: Money!, net: Money!, tax: Money! }
+#
+# So an order total names its currency four times and its value eight ways,
+# and the two representations are not equally safe. `amount` is a GraphQL
+# Float, which is an IEEE 754 double; `fractionalAmount` is an Int in the
+# currency's smallest unit, with `fractionDigits` beside it saying how many
+# there are. Three line items at 19.99 sum to 59.969999999999999 through the
+# first field and to 5997 exactly through the second.
+#
+# The field a client reaches for is the unsafe one. It has the obvious name,
+# it is a number rather than an integer count, and it agrees with the safe one
+# on every small figure anybody checks by hand. The disagreement arrives on a
+# basket, in a report, at the end of a month.
+#
+# Six more, each from the same repository:
+#
+#   1. A product has no price. It has pricing.priceRange.start.gross.amount --
+#      five levels down -- because variants differ, so the price is a range
+#      with a lower and an upper bound. Both bounds are nullable, and so is
+#      the range, and so is pricing.
+#   2. Metadata is an array of {key, value} objects, not a map, so
+#      product.metadata.sku is undefined and the lookup is a scan. Saleor also
+#      offers the same data as a map, under a different name -- metafields --
+#      and a staff-only twin of both under privateMetadata.
+#   3. Five fields in the schema are deprecated with the reason "Always
+#      returns `null`". They are still declared, still typed, and answer null
+#      forever, so a client cannot tell "no value" from "never implemented".
+#   4. Every mutation returns its failures twice: an `errors` array and a
+#      deprecated typed alias beside it -- productErrors, orderErrors -- with
+#      the same contents. Reading either works; reading the wrong one on an
+#      older or newer server does not.
+#   5. One credential, three spellings. auth.py reads a header called
+#      Authorization-Bearer with no prefix at all, and failing that reads
+#      Authorization and accepts either JWT or BEARER in front of the token,
+#      compared case-insensitively.
+#   6. The endpoint is /graphql/ with a trailing slash. urls.py anchors the
+#      pattern as ^graphql/$, so the path without it is not that route.
+#
+# Identifiers are base64. from_global_id_or_error's docstring lists the forms
+# it accepts -- "'<type>:<int>' : Internal ID containing object type and ID as
+# integer" and "'<type>:<UUID>'" -- so a product id decodes to Product:12 and
+# an order id to Order: a UUID, and neither is a number a client can compare
+# or sort.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No GraphQL is parsed. A query naming products gets the products fixture
+#     whatever fields it asked for. This reproduces the envelope, the
+#     connection shape, the money and the vocabulary rather than the query
+#     language -- the same bargain the other GraphQL Recipe here makes.
+#   - Only Authorization: Bearer is accepted. The other two spellings are
+#     real and are not served, so a client using JWT or Authorization-Bearer
+#     is refused here and accepted in production. That is the loud direction
+#     of the mistake, which is why it is acceptable to leave standing.
+#   - Nothing is filtered, ordered or paginated. first, after and channel are
+#     accepted and honoured by nothing.
+#   - Channels are the thing a real Saleor request cannot omit and this one
+#     can: pricing depends on the channel a query names, and here it does not.
+#     A single channel's prices are what the fixtures hold.
+#   - Checkout, payment, shipping, attributes, translations and the whole
+#     permission model are absent. Products and orders, read, plus one
+#     mutation to show where failures live.
+#
+# The token below is a fixture and belongs to no shop.
+
+recipe: saleor
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: graphql
+  docs: https://docs.saleor.io/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.saleor.fixture.jwt.000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    # 200 with an errors array, which is GraphQL's shape and is the half this
+    # Recipe shares with the other GraphQL one here.
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      # Beside the array, and null. A refused request still answers with the
+      # data key, holding nothing, so a client that checks for the key rather
+      # than for its contents finds one either way.
+      data: null
+
+resources:
+  product:
+    collection: data.products.edges
+    id:
+      # base64 of "Product:12". Not a number, not sortable, and not the same
+      # string on a server whose primary keys differ.
+      style: opaque
+      field: node.id
+    fields:
+      # The cursor belongs to the edge rather than to the product, which is
+      # the entire reason an edge is a separate object.
+      cursor:
+        type: string
+      name:
+        type: string
+        in: node
+        as: name
+      slug:
+        type: string
+        in: node
+        as: slug
+      # A range, because variants differ, with the money four levels below it.
+      pricing:
+        type: map
+        in: node
+        as: pricing
+      # An array of {key, value}. Not a map, however much it reads like one.
+      metadata:
+        type: list
+        in: node
+        as: metadata
+      # And the same data as a map, under a name a client has to know to ask
+      # for.
+      metafields:
+        type: map
+        in: node
+        as: metafields
+
+  order:
+    collection: data.orders.edges
+    id:
+      # base64 of "Order:" and a UUID, where a product's is base64 of
+      # "Product:" and an integer. One encoding, two kinds of key inside it.
+      style: opaque
+      field: node.id
+    fields:
+      cursor:
+        type: string
+      # A String, and the schema says so: "User-friendly number of an order".
+      # It is not the id and it is not a number either.
+      number:
+        type: string
+        in: node
+        as: number
+      status:
+        type: string
+        in: node
+        as: status
+      # The whole point of this Recipe: currency four times, value eight ways.
+      total:
+        type: map
+        in: node
+        as: total
+      # "The difference between the paid and the order total amount", which
+      # can be negative and is a Money rather than a TaxedMoney.
+      totalBalance:
+        type: map
+        in: node
+        as: totalBalance
+      created:
+        type: string
+        in: node
+        as: created
+      lines:
+        type: list
+        in: node
+        as: lines
+
+routes:
+  # One path for everything, and it ends in a slash. urls.py anchors the
+  # pattern as ^graphql/$.
+  - method: POST
+    path: /graphql/
+    resource: product
+    operation: list
+    selects: products
+    fields:
+      data.products.pageInfo.hasNextPage: false
+      data.products.pageInfo.endCursor: WyJwcm9kdWN0OjEzIl0=
+      # Nullable on the connection, which is worth sending as a number so a
+      # client can see it is there at all.
+      data.products.totalCount: 2
+
+  - method: POST
+    path: /graphql/
+    resource: order
+    operation: list
+    selects: orders
+    fields:
+      data.orders.pageInfo.hasNextPage: false
+      data.orders.pageInfo.endCursor: WyJvcmRlcjoyIl0=
+      data.orders.totalCount: 2
+
+  # A mutation that succeeds, and still carries both error arrays. Empty,
+  # present, and duplicated -- which is the thing to look at.
+  - method: POST
+    path: /graphql/
+    resource: product
+    operation: create
+    selects: productCreate
+    fields:
+      data.productCreate.errors: []
+      # The same list under the deprecated name. "Use `errors` field instead."
+      data.productCreate.productErrors: []
+
+errors:
+  # A refusal on permission grounds, which arrives at 200 like everything else
+  # GraphQL refuses, with the reason inside extensions.
+  permission_denied:
+    status: 200
+    message: "To access this path, you need one of the following permissions: MANAGE_PRODUCTS."
+    fields:
+      # Inside the entry, because that is where a GraphQL error carries its
+      # reason and a request can be refused several ways at once.
+      extensions.exception.code: PermissionDenied
+
+  authentication_error:
+    status: 401
+    message: Signature has expired.
+
+  rate_limit:
+    status: 429
+    message: Request was throttled.
+
+fixtures:
+  empty: {}
+
+  catalogue:
+    product:
+      - id: UHJvZHVjdDoxMg==
+        cursor: WyJwcm9kdWN0OjEyIl0=
+        name: Apple Juice
+        slug: apple-juice
+        # Five levels from the product to a number, and every level nullable.
+        pricing:
+          onSale: false
+          displayGrossPrices: true
+          priceRange:
+            start:
+              currency: EUR
+              gross:
+                currency: EUR
+                amount: 19.99
+                fractionalAmount: 1999
+                fractionDigits: 2
+              net:
+                currency: EUR
+                amount: 16.24
+                fractionalAmount: 1624
+                fractionDigits: 2
+              tax:
+                currency: EUR
+                amount: 3.75
+                fractionalAmount: 375
+                fractionDigits: 2
+            stop:
+              currency: EUR
+              gross:
+                currency: EUR
+                amount: 24.99
+                fractionalAmount: 2499
+                fractionDigits: 2
+              net:
+                currency: EUR
+                amount: 20.32
+                fractionalAmount: 2032
+                fractionDigits: 2
+              tax:
+                currency: EUR
+                amount: 4.67
+                fractionalAmount: 467
+                fractionDigits: 2
+          # Deprecated with the reason "Always returns `null`", and still
+          # here, still typed.
+          priceRangeLocalCurrency: null
+          discountLocalCurrency: null
+        metadata:
+          - key: warehouse
+            value: rotterdam
+          - key: sku
+            value: AJ-1000
+        metafields:
+          warehouse: rotterdam
+          sku: AJ-1000
+      # A product with no channel listing behind it, so the range is null and
+      # so is everything under it. A client that reads
+      # pricing.priceRange.start.gross.amount without four guards throws here
+      # and not on the one above.
+      - id: UHJvZHVjdDoxMw==
+        cursor: WyJwcm9kdWN0OjEzIl0=
+        name: Banana Juice
+        slug: banana-juice
+        pricing:
+          onSale: false
+          displayGrossPrices: true
+          priceRange: null
+          priceRangeLocalCurrency: null
+          discountLocalCurrency: null
+        metadata: []
+        metafields: {}
+    order:
+      # Three lines at 19.99. Summing amount gives 59.969999999999999 and
+      # summing fractionalAmount gives 5997.
+      - id: T3JkZXI6NWQxZTZmMmEtOGIwNC00YzdlLTkxYTMtNmYwZDJiOGU0NTcx
+        cursor: WyJvcmRlcjoxIl0=
+        number: "1023"
+        status: UNFULFILLED
+        created: "2026-02-14T09:41:07.512883+00:00"
+        total:
+          currency: EUR
+          gross:
+            currency: EUR
+            amount: 59.97
+            fractionalAmount: 5997
+            fractionDigits: 2
+          net:
+            currency: EUR
+            amount: 48.72
+            fractionalAmount: 4872
+            fractionDigits: 2
+          tax:
+            currency: EUR
+            amount: 11.25
+            fractionalAmount: 1125
+            fractionDigits: 2
+        totalBalance:
+          currency: EUR
+          amount: 0.0
+          fractionalAmount: 0
+          fractionDigits: 2
+        lines:
+          - id: T3JkZXJMaW5lOjE=
+            productName: Apple Juice
+            quantity: 3
+            unitPrice:
+              currency: EUR
+              gross:
+                currency: EUR
+                amount: 19.99
+                fractionalAmount: 1999
+                fractionDigits: 2
+      # Part paid, so the balance is negative -- the difference between what
+      # has been paid and what is owed, and a Money rather than a TaxedMoney,
+      # so it has no gross and no net.
+      - id: T3JkZXI6N2EyYzllMTQtM2Y2NS00YjgwLWExZDktNTJjZTA3YjNmNmE4
+        cursor: WyJvcmRlcjoyIl0=
+        number: "1024"
+        status: PARTIALLY_FULFILLED
+        created: "2026-02-15T16:02:55.104211+00:00"
+        total:
+          currency: EUR
+          gross:
+            currency: EUR
+            amount: 24.99
+            fractionalAmount: 2499
+            fractionDigits: 2
+          net:
+            currency: EUR
+            amount: 20.32
+            fractionalAmount: 2032
+            fractionDigits: 2
+          tax:
+            currency: EUR
+            amount: 4.67
+            fractionalAmount: 467
+            fractionDigits: 2
+        totalBalance:
+          currency: EUR
+          amount: -10.0
+          fractionalAmount: -1000
+          fractionDigits: 2
+        lines:
+          - id: T3JkZXJMaW5lOjI=
+            productName: Apple Juice
+            quantity: 1
+            unitPrice:
+              currency: EUR
+              gross:
+                currency: EUR
+                amount: 24.99
+                fractionalAmount: 2499
+                fractionDigits: 2
+
+conformance:
+  - name: an order total names its currency four times
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 2) { edges { node { id number total { currency gross { amount fractionalAmount } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Once on the TaxedMoney, and once inside each of gross, net and tax.
+        "data.orders.edges[0].node.total.currency": EUR
+        "data.orders.edges[0].node.total.gross.currency": EUR
+        "data.orders.edges[0].node.total.net.currency": EUR
+        "data.orders.edges[0].node.total.tax.currency": EUR
+
+  - name: and the same amount twice, only one of which is safe to add up
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 2) { edges { node { total { gross { amount fractionalAmount fractionDigits } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Three lines of 19.99. Summed as Floats that is 59.969999999999999;
+        # summed as Ints it is 5997, and fractionDigits is the only thing
+        # that says where the point goes.
+        "data.orders.edges[0].node.total.gross.amount": 59.97
+        "data.orders.edges[0].node.total.gross.fractionalAmount": 5997
+        "data.orders.edges[0].node.total.gross.fractionDigits": 2
+        "data.orders.edges[0].node.lines[0].unitPrice.gross.amount": 19.99
+        "data.orders.edges[0].node.lines[0].unitPrice.gross.fractionalAmount": 1999
+
+  - name: a product has no price on it
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ products(first: 2, channel: \"default-channel\") { edges { node { id name pricing { priceRange { start { gross { amount } } } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Five levels from the product to a number, because variants differ
+        # and the answer is a range rather than a price.
+        "data.products.edges[0].node.pricing.priceRange.start.gross.amount": 19.99
+        "data.products.edges[0].node.pricing.priceRange.stop.gross.amount": 24.99
+      absent:
+        # And nothing shorter. There is no amount and no price sitting on
+        # pricing itself, so there is no single number to read: a caller has
+        # to decide which bound of the range it means before it has a figure
+        # at all.
+        - "data.products.edges[0].node.pricing.amount"
+        - "data.products.edges[0].node.pricing.price"
+
+  - name: and the range is null when nothing is listed
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ products(first: 2) { edges { node { id pricing { priceRange { start { gross { amount } } } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Every level of that path is nullable, and this is the product where
+        # it matters: one guard short and the client throws on the second row
+        # of a listing that worked on the first.
+        "data.products.edges[1].node.name": Banana Juice
+        "data.products.edges[1].node.pricing.priceRange": null
+
+  - name: two fields are deprecated because they always return null
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ products(first: 1) { edges { node { pricing { priceRangeLocalCurrency { start { gross { amount } } } discountLocalCurrency { gross { amount } } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Declared, typed, and null forever. The schema's own deprecation
+        # reason is the sentence "Always returns `null`", so a client cannot
+        # tell an absent value from a feature that was never built.
+        "data.products.edges[0].node.pricing.priceRangeLocalCurrency": null
+        "data.products.edges[0].node.pricing.discountLocalCurrency": null
+
+  - name: metadata is an array and a lookup is a scan
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ products(first: 1) { edges { node { metadata { key value } metafields } } } }"
+    expect:
+      status: 200
+      body:
+        # Objects with a key and a value, in an array, so product.metadata.sku
+        # is undefined and finding the sku means walking the list.
+        "data.products.edges[0].node.metadata[1].key": sku
+        "data.products.edges[0].node.metadata[1].value": AJ-1000
+        # And the same two entries as a map, under a name a client has to
+        # know to ask for.
+        "data.products.edges[0].node.metafields.sku": AJ-1000
+        "data.products.edges[0].node.metafields.warehouse": rotterdam
+
+  - name: a mutation reports its failures twice
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "mutation { productCreate(input: {name: \"Cherry Juice\"}) { errors { field message } productErrors { field message } product { id } } }"
+    expect:
+      status: 200
+      body:
+        # Both arrays, both empty, both present. The second is deprecated with
+        # the reason "Use `errors` field instead", and both are still served,
+        # so a client can read either and be right for now.
+        "data.productCreate.errors": []
+        "data.productCreate.productErrors": []
+
+  - name: an identifier is base64 and what it decodes to differs by type
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/core/utils/__init__.py
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 1) { edges { node { id number } } } }"
+    expect:
+      status: 200
+      body:
+        # base64 of "Order:" and a UUID. A product's is base64 of "Product:"
+        # and an integer, so one decoder handles both and neither result is
+        # comparable with the other.
+        "data.orders.edges[0].node.id": T3JkZXI6NWQxZTZmMmEtOGIwNC00YzdlLTkxYTMtNmYwZDJiOGU0NTcx
+        # And the number a person quotes, which is a String and is neither
+        # the id nor an integer.
+        "data.orders.edges[0].node.number": "1023"
+
+  - name: the balance is a plainer kind of money and can be negative
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 2) { edges { node { number totalBalance { amount fractionalAmount } } } } }"
+    expect:
+      status: 200
+      body:
+        # A Money rather than a TaxedMoney, so there is no gross and no net to
+        # read -- code that unwraps every money field the same way finds
+        # undefined here.
+        "data.orders.edges[1].node.totalBalance.amount": -10.0
+        "data.orders.edges[1].node.totalBalance.fractionalAmount": -1000
+      absent:
+        - "data.orders.edges[1].node.totalBalance.gross"
+        - "data.orders.edges[1].node.totalBalance.net"
+
+  - name: a refusal is a 200 with the reason inside extensions
+    source: https://github.com/saleor/saleor/blob/main/saleor/graphql/schema.graphql
+    fixture: catalogue
+    arm: permission_denied
+    request:
+      method: POST
+      path: /graphql/
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 1) { edges { node { id } } } }"
+    expect:
+      # The half this Recipe shares with the other GraphQL one here, and it is
+      # stated rather than claimed: response.ok is true for a request that
+      # returned nothing.
+      status: 200
+      body:
+        "errors[0].extensions.exception.code": PermissionDenied
+        data: null
+      matches:
+        "errors[0].message": MANAGE_PRODUCTS
+
+  - name: the endpoint ends in a slash
+    source: https://github.com/saleor/saleor/blob/main/saleor/urls.py
+    fixture: catalogue
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Authorization: Bearer cauldron.saleor.fixture.jwt.000000
+        Content-Type: application/json
+      json:
+        query: "{ orders(first: 1) { edges { node { id } } } }"
+    expect:
+      # urls.py anchors the pattern as ^graphql/$, so this is not that route.
+      # Django would answer a redirect and a client that follows one with a
+      # POST can lose the body; here it is simply not found, which is the
+      # same lesson arrived at more bluntly.
+      status: 404

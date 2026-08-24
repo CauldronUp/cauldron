@@ -411,6 +411,7 @@ the header says so.
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | ~~Medusa~~ | Shipped, Storefront API, and written against the published OpenAPI description at 2.19.0 rather than from memory. A field name without a + replaces the entire default set, so ?fields=id returns an order with one field and no error |
+| ~~Saleor~~ | Shipped, written against Saleor's own repository -- the schema, plus the Python beside it for the endpoint and the credential. Not a second Shopify GraphQL Recipe: the connection shape and the 200-on-refusal are stated as shared. What differs is the money, which arrives four ways in one object -- amount as a Float and fractionalAmount as an Int, with fractionDigits saying where the point goes -- so the field with the obvious name is the one that cannot be added up |
 | ~~VTEX~~ | Shipped, written against the OpenAPI description VTEX publishes for its Orders API. One purchase is not one order: when several sellers fulfil a basket each gets its own order ID and they share an order group ID, so code that stores "the order id" stores one seller's share. Also: the listing stopped returning line items in 2018 and the schema still lists them, the same total is totalValue in a row and value on the order, an order can carry a named roundingError, and the API answers two different error envelopes |
 | ~~commercetools~~ | Shipped, written against the RAML reference commercetools publishes and its own error-code table. The headline is the contract a test suite cannot test: every resource carries a version, every update is a POST of {version, actions}, and a write quoting the wrong one is refused with the right one in the reply. Code that ignores it passes everything and silently overwrites in production. Also: a product holds two complete copies of itself, and centAmount is the smallest indivisible unit, which for JPY is the yen |
 | ~~Shopware~~ | Shipped, written against Shopware's own source rather than a description of it. One provider disagreeing with itself: /store-api/product and /store-api/product-listing/{categoryId} are both listings of products in one API and share no paging rule at all -- page against p, 100 against 24, a 400 against a silent trim, the page length against the real count. The default total is the size of the page you are holding, because counting costs a query the framework will not run uninvited |
@@ -946,7 +947,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**115 more listings across 67 Recipes declare no paging at all**, and the
+**117 more listings across 68 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

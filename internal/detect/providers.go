@@ -70,6 +70,28 @@ func providers() []provider {
 			},
 		},
 		{
+			// Four packages under one scope and only two of them talk to the
+			// API. @saleor/sdk is the client and @saleor/auth-sdk is the half
+			// of it that gets a token, so both belong here.
+			//
+			// npm "saleor" is the CLI -- its own readme leads with a
+			// saleor-cli logo -- and a command-line tool creates and deploys
+			// projects rather than calling a storefront. @saleor/macaw-ui is
+			// "Saleor's UI component library", which is React components and
+			// no HTTP at all.
+			//
+			// @saleor/app-sdk is the interesting exclusion. It is for
+			// building Saleor Apps: code that Saleor calls rather than code
+			// that calls Saleor, built around webhook manifests, request
+			// verification and the app's own registration handshake. An app
+			// does eventually query the API, but it does so with a token
+			// Saleor hands it during install, through whatever client it
+			// chooses -- so the dependency says "this is an extension" rather
+			// than "this makes these requests".
+			recipe: "saleor",
+			npm:    []string{"@saleor/sdk", "@saleor/auth-sdk"},
+		},
+		{
 			// VTEX is the first provider here with no widely installed
 			// external client, and the reason is worth recording rather than
 			// working around.

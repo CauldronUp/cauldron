@@ -1236,3 +1236,46 @@ func TestDetectVtexFromExternalClientsAndNotFromTheIoToolchain(t *testing.T) {
 		}
 	}
 }
+
+// Saleor publishes four packages under one scope and only two of them make
+// requests to the API this Recipe describes.
+//
+// @saleor/sdk is the client and @saleor/auth-sdk is the half that gets a
+// token. npm "saleor" is the CLI, which creates and deploys projects.
+// @saleor/macaw-ui is a React component library.
+//
+// @saleor/app-sdk is the exclusion worth stating: it is for building Saleor
+// Apps, which is code Saleor calls rather than code that calls Saleor. An app
+// does query the API eventually, with a token handed to it at install time
+// and through whatever client it picks, so the dependency says "this is an
+// extension" rather than "this makes these requests".
+func TestDetectSaleorFromItsClientAndNotItsCliOrAppFramework(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@saleor/sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@saleor/auth-sdk": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "saleor") {
+			t.Errorf("%v did not detect saleor: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"devDependencies": {"saleor": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"@saleor/app-sdk": "^0.50.0"}}`},
+		{"package.json": `{"dependencies": {"@saleor/macaw-ui": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "saleor") {
+			t.Errorf("%v offered the saleor Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
