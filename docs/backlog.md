@@ -411,6 +411,7 @@ the header says so.
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | ~~Medusa~~ | Shipped, Storefront API, and written against the published OpenAPI description at 2.19.0 rather than from memory. A field name without a + replaces the entire default set, so ?fields=id returns an order with one field and no error |
+| ~~Ecwid~~ | Shipped, written against the documentation Ecwid publishes as source in its own GitHub organisation. The order list leaves out a whole category and does not say so: "If no filters are set in the URL, API will return all orders except for unfinished orders." Every number in the response agrees with every other and the set is short. Also: acceptMarketing is a boolean where null means yes, discount is everything except the coupon discount, and paymentMessage is cleared when the payment lands |
 | ~~Royal Mail~~ | Shipped, written against the Swagger document Royal Mail serves from its own API host. Deleting an order can cost money, and the description says so: cancelled label information goes to Revenue Protection, and a cancelled label found on a parcel is charged with a handling fee. The path parameter is a list of up to a hundred identifiers separated by semicolons, where references must be quoted and percent-encoded -- and the document's own example is a reference full of semicolons |
 | ~~Apideck~~ | Shipped, written against the OpenAPI document Apideck publishes, including its x-apideck-gotchas extension. The first unified API here -- one shape in front of Shopify, Walmart, TikTok, Wix and the rest -- and the seams are the subject: a 200 can carry meta.warnings holding somebody else's 429, present only when a step degraded. Also: a valid request can be unsupported by the connector, every response names which shop answered, and a unified field can be reported by one provider and inferred by another |
 | ~~Voucherify~~ | Shipped, written against the OpenAPI document Voucherify publishes and generates its own SDKs from. Promotions are the first of their kind here, and the headline is what the domain does to the word failed: a failed redemption is a stored object, listed and counted like any other, with the reason in a field rather than a status code. Also: result and status are two verdicts on one object and status has a value result cannot express, a null quantity means unlimited, and the envelope names the key that holds its own data |
@@ -1373,7 +1374,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty-four Recipes send at least one identifier as a number now, and each
+Thirty-five Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

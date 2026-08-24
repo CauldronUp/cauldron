@@ -1648,3 +1648,48 @@ func TestDetectGumroadClientsAndNotItsLoginProviders(t *testing.T) {
 		}
 	}
 }
+
+// Ecwid's two exclusions are shapes already recorded here, arriving together
+// on one small provider.
+//
+// mugnate/oauth2-ecwid is a login provider for the PHP League -- signing in
+// with an Ecwid account rather than calling the store API, which is what
+// socialiteproviders/gumroad was.
+//
+// And npm's bare "ecwid" describes itself as "ecwid" and lists no repository,
+// which is the state the backlog records against Marqeta: a package of that
+// name exists and cannot be verified, so it is left alone rather than guessed
+// at.
+func TestDetectEcwidClientsAndNotItsLoginProviderOrTheUnverifiableName(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"dspacelabs/ecwid": "^1.0"}}`},
+		{"composer.json": `{"require": {"dspacelabs/ecwid-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"strappberry/ecwid-api-wrapper": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"ecwid-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "ecwid") {
+			t.Errorf("%v did not detect ecwid: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Logging in with Ecwid, not calling it.
+		{"composer.json": `{"require": {"mugnate/oauth2-ecwid": "^1.0"}}`},
+		// And the name nobody can verify.
+		{"package.json": `{"dependencies": {"ecwid": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "ecwid") {
+			t.Errorf("%v offered the ecwid Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
