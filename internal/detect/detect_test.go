@@ -669,3 +669,46 @@ func TestDetectDHLFromTheRestClientsOnly(t *testing.T) {
 		}
 	}
 }
+
+// "recharge" is one of the most overloaded words on either registry, and this
+// is the case where a substring rule would be wrong in four different ways at
+// once. The unscoped npm package is a React static site generator. Packagist's
+// matches are an EV charging SDK, an electricity meter service and a
+// Zimbabwean airtime top-up library. Subscription billing is what the word
+// means fourth or fifth.
+//
+// The storefront client is excluded for the reason DHL Parcel is: it really is
+// Recharge, and it is a different API. It talks to the customer portal with a
+// session token, and this Recipe models the admin API behind a store key.
+func TestDetectRechargeFromTheSubscriptionClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"huel-global/recharge": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"recharge-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "recharge") {
+			t.Errorf("%v did not detect recharge: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"recharge": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@rechargeapps/storefront-client": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"shell/ev-recharge-sdk": "^1.0"}}`},
+		{"composer.json": `{"require": {"tinosoft/hot-recharge": "^1.0"}}`},
+		{"composer.json": `{"require": {"recharge-meter/recharge-meter-service": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "recharge") {
+			t.Errorf("%v offered the recharge Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
