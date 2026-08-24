@@ -70,6 +70,26 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss here is a different company rather than a
+			// different word. voucherly/voucherly-php-sdk belongs to
+			// Voucherly, an Italian payments business, and the name differs
+			// from Voucherify by two letters -- so a prefix or substring rule
+			// matches it and a reader skims past it. It is excluded by name.
+			//
+			// fastwebmedia/laravel-vouchering is the ordinary kind: a
+			// vouchering system for Laravel that has nothing to do with this
+			// provider, matching on the word rather than the vendor.
+			//
+			// rspective/voucherify is mapped although the vendor prefix is
+			// not the product name: rspective is Voucherify's parent company,
+			// and the package's own description is "Voucherify promotion
+			// engine REST API". Half a million installs of exactly these
+			// requests.
+			recipe:   "voucherify",
+			composer: []string{"rspective/voucherify"},
+			npm:      []string{"@voucherify/sdk", "voucherify"},
+		},
+		{
 			// The vendor-prefix rule fails hardest here, and it is worth
 			// recording how hard. Four packages under the akeneo namespace
 			// have seven-figure install counts and only one of them is a
