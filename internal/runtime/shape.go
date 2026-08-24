@@ -461,7 +461,21 @@ func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, idAs, resource stri
 		payload = []store.Record{record}
 	}
 
-	return withFields(map[string]any{key: payload}, success)
+	// A dotted name nests, the same way it does for a list envelope, for an
+	// error envelope and for the constants in withFields below.
+	//
+	// This was the one of the four that did not, and it failed quietly: a
+	// Recipe wrapping a single record under data.tracking got a body with one
+	// key that had a dot in its name, which is a shape no provider sends. The
+	// Recipe validated, the sandbox answered 200, and only a conformance case
+	// asserting the nested path noticed. AfterShip is the first Recipe to
+	// need it -- its listing is data.trackings and its single record is
+	// data.tracking -- and no shipped Recipe had a dotted resource key, so
+	// nothing that exists changes shape.
+	wrapped := map[string]any{}
+	setPath(wrapped, key, payload)
+
+	return withFields(wrapped, success)
 }
 
 // withFields stamps a provider's constant envelope fields onto a body. A dotted

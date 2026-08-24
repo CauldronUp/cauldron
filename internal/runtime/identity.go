@@ -15,7 +15,7 @@ import (
 // the path; RPC-shaped ones like Slack put it in the query string or the body,
 // which the Recipe declares with id_from.
 func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]string) (string, bool) {
-	return s.resolve(matched, s.rawIdentifier(matched, r, vars))
+	return s.resolve(matched, vars, s.rawIdentifier(matched, r, vars))
 }
 
 // resolve turns the value a route addresses a record by into the record's own
@@ -25,13 +25,29 @@ func (s *Sandbox) identifier(matched route, r *http.Request, vars map[string]str
 // not-found path reports it. That is the right answer for the failure this
 // mostly models: a receipt handle from an earlier receive is stale, and SQS
 // answers a delete with it by refusing.
-func (s *Sandbox) resolve(matched route, value string) (string, bool) {
+func (s *Sandbox) resolve(matched route, vars map[string]string, value string) (string, bool) {
 	field := matched.spec.LookupBy
 	if field == "" || value == "" {
 		return value, true
 	}
 
-	page, err := s.store.ListWhere(matched.spec.Resource, map[string]any{field: value}, "", 0)
+	// Within the route's scope, not across the whole collection.
+	//
+	// A natural key is only as unique as the thing that owns it, which is
+	// what a scope is for. AfterShip keys a tracking by carrier and number
+	// together because carriers mint numbers in their own namespaces and they
+	// collide: the same number really does exist under usps and under fedex,
+	// on two different parcels. Resolving the number globally picked
+	// whichever record the store returned first and then let the scope filter
+	// reject it, so one carrier answered and the other 404'd -- and which one
+	// worked depended on fixture order rather than on the request.
+	where := map[string]any{field: value}
+
+	for name, scopeValue := range s.scopeVars(matched, vars) {
+		where[name] = scopeValue
+	}
+
+	page, err := s.store.ListWhere(matched.spec.Resource, where, "", 0)
 	if err == nil && len(page.Records) > 0 {
 		return fmt.Sprint(page.Records[0]["id"]), true
 	}

@@ -534,3 +534,38 @@ func TestDetectEasyPostFromTheCarrierClientsOnly(t *testing.T) {
 		}
 	}
 }
+
+// aftership/ on Packagist holds both API clients and Magento storefront
+// extensions. A shop installing the extension talks to Magento; AfterShip
+// talks to AfterShip. A vendor-prefix rule would offer a tracking emulator to
+// a shop that never calls one.
+func TestDetectAfterShipFromTheSDKsAndNotTheStorefrontExtension(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"aftership/aftership-php-sdk": "^6.0"}}`},
+		{"composer.json": `{"require": {"aftership/tracking-sdk": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"aftership": "^7.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "aftership") {
+			t.Errorf("%v did not detect aftership: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"aftership/aftership-apps-magento2": "^1.0"}}`},
+		{"composer.json": `{"require": {"mrmonsters/magento2-aftership": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "aftership") {
+			t.Errorf("%v offered the aftership Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
