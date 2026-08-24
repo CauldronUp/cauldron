@@ -53,6 +53,20 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// One vendor, two protocols, and the names do not say which is
+			// which. avalara/avatax describes itself as the AvaTax SOAP client
+			// and avalara/avataxclient is the REST v2 one -- checked in their
+			// manifests, where the first has no HTTP dependency at all and the
+			// second pulls in Guzzle. This Recipe models REST v2.
+			//
+			// avatax-magento is a Magento module rather than a client, and
+			// avalara-for-communications is a different Avalara product with a
+			// different API, so neither is mapped here.
+			recipe:   "avalara",
+			composer: []string{"avalara/avataxclient"},
+			npm:      []string{"avatax"},
+		},
+		{
 			// The most-installed package under the lemonsqueezy vendor name is
 			// a UI component library, not a client -- plain-ui-components has
 			// twice the installs of the Laravel package that actually talks

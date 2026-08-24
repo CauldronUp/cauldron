@@ -777,3 +777,45 @@ func TestDetectDoesNotOfferToastForToastNotificationLibraries(t *testing.T) {
 		}
 	}
 }
+
+// One vendor, two protocols, and the names do not say which is which.
+// avalara/avatax describes itself as the AvaTax SOAP client and
+// avalara/avataxclient is the REST v2 one -- checked in their manifests,
+// where the first has no HTTP dependency at all and the second pulls in
+// Guzzle. This Recipe models REST v2, so a SOAP client pointed at it gets a
+// 404 on its endpoint.
+//
+// The other two exclusions are the shapes already seen elsewhere:
+// avatax-magento is a storefront module rather than a client, like
+// aftership-apps-magento2, and avalara-for-communications is a different
+// Avalara product with its own API, like DHL Parcel.
+func TestDetectAvalaraFromTheRestClientOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"avalara/avataxclient": "^24.0"}}`},
+		{"package.json": `{"dependencies": {"avatax": "^24.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "avalara") {
+			t.Errorf("%v did not detect avalara: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"avalara/avatax": "^1.0"}}`},
+		{"composer.json": `{"require": {"avalara/avatax-magento": "^1.0"}}`},
+		{"composer.json": `{"require": {"phoneburner/avalara-for-communications-php-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "avalara") {
+			t.Errorf("%v offered the avalara Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}

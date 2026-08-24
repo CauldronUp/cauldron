@@ -1,0 +1,518 @@
+# Avalara AvaTax Recipe for Cauldron
+#
+# A tax quote and a tax record are the same call with one word different.
+#
+# POST /transactions/create with type SalesOrder works out what the tax would
+# be and records nothing. The same call with type SalesInvoice records a
+# transaction that Avalara will file. Both return a totalTax that looks
+# identical, both succeed, and an integration that quotes with SalesOrder and
+# never sends the invoice collects tax from customers all year and files
+# nothing -- which is discovered by a state, not by a test.
+#
+# There are two switches, not one. A SalesInvoice is still not filed unless
+# it is committed, and commit defaults to false, so a transaction can be the
+# right type and still sit in Saved forever. Getting one of the two right is
+# the common case and it looks exactly like getting both right.
+#
+# Six things worth modelling exactly:
+#
+#   1. The document type decides whether anything is recorded. SalesOrder is
+#      a quote and leaves status Temporary; SalesInvoice is a record.
+#   2. commit decides whether a record is filed. Default false, so a
+#      SalesInvoice sits in Saved until something commits it, and Saved is
+#      not filed.
+#   3. Tax is a breakdown, not a rate. One address can fall in a state, a
+#      county, a city and a special district, each with its own rate, and
+#      totalTax is their sum. Reconciling a total against a single rate does
+#      not come out, and the rate that would make it come out does not exist.
+#   4. The address that comes back is not the address you sent. Avalara
+#      resolves it -- a corrected city, a ZIP+4 where you sent five digits --
+#      so storing the response's address as the customer's changes what they
+#      typed.
+#   5. The document code is yours and it has to be unique. Sending the same
+#      code twice does not make a second transaction, so a retry after a
+#      timeout is safe and a code reused across two real orders silently
+#      merges them.
+#   6. Money is a number, and the tax figure carries more decimal places than
+#      a currency does. 2.3805 rather than 2.38, because a rate times a line
+#      is not a round number until somebody rounds it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No tax is calculated. The jurisdiction breakdown in the fixture is a
+#     fixture, and working out which jurisdictions an address falls in is the
+#     entire product. This Recipe reproduces the shape of an answer and the
+#     consequences of the two switches, not the arithmetic.
+#   - Committing is not modelled as a transition. A committed transaction and
+#     an uncommitted one are two fixtures rather than one record that moved,
+#     so the endpoint that commits is absent.
+#   - Exemption certificates, nexus, filing calendars and the returns API are
+#     absent, and they are most of AvaTax.
+#
+# The credentials below are fixtures, not secrets. They belong to no account.
+
+recipe: avalara
+capability: tax
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.avalara.com/api-reference/avatax/rest/v2/
+
+auth:
+  # Basic, with the account id as the username and the licence key as the
+  # password. Only the account id is compared here; see the note in the
+  # conformance case at the end.
+  scheme: basic
+  credential: username
+  keys:
+    - "2000000000"
+
+responses:
+  list:
+    style: wrapped
+    key: value
+    count_field: "@recordsetCount"
+  resource:
+    style: bare
+  error:
+    # Nested under error, with a details array inside that carrying the part
+    # worth reading.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+
+resources:
+  transaction:
+    id:
+      style: numeric
+      type: number
+    fields:
+      # Yours. Unique per company, so sending it twice returns the first
+      # transaction rather than making a second.
+      code:
+        type: string
+        required: true
+      companyCode:
+        type: string
+      # SalesOrder is a quote. SalesInvoice is a record. One word, same
+      # endpoint, same response shape.
+      type:
+        type: string
+        default: SalesOrder
+      # Temporary for a quote, Saved for an uncommitted record, Committed for
+      # one that will be filed. Only the last is filed.
+      status:
+        type: string
+        default: Temporary
+      date:
+        type: string
+      customerCode:
+        type: string
+      totalAmount:
+        type: number
+      # More decimal places than a currency has, because a rate times a line
+      # is not round until somebody rounds it.
+      totalTax:
+        type: number
+      totalTaxable:
+        type: number
+      # Whether Avalara will file this. False on a quote and on an
+      # uncommitted invoice alike, which is why the two switches look the
+      # same from here.
+      locked:
+        type: boolean
+        default: false
+      # The jurisdictions this fell in, each with its own rate. totalTax is
+      # their sum and no single rate produces it.
+      #
+      # Declared a list, and no case can check that word: list and map put
+      # identical bytes on the wire for a value that arrives already shaped,
+      # so changing it here breaks nothing and it was the one mutation of
+      # twenty-three that survived. The cases pin the shape -- an array, read
+      # by index, with the jurisdiction type inside each element -- which is
+      # what client code depends on. Saying so is better than implying a
+      # check that does not exist.
+      summary:
+        type: list
+      # What Avalara resolved the addresses to, which is not always what was
+      # sent.
+      addresses:
+        type: list
+
+routes:
+  - method: POST
+    path: /api/v2/transactions/create
+    resource: transaction
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v2/companies/{companyCode}/transactions/{id}
+    resource: transaction
+    operation: get
+
+  - method: GET
+    path: /api/v2/companies/{companyCode}/transactions
+    resource: transaction
+    operation: list
+
+errors:
+  authentication_error:
+    status: 401
+    code: AuthenticationIncomplete
+    message: Authentication Incomplete.
+    fields:
+      error:
+        target: HttpRequestHeaders
+        details:
+          - severity: Error
+            number: 34
+            description: You must provide an Authorization header of the type Basic or Bearer to authenticate correctly.
+
+  resource_missing:
+    status: 404
+    code: EntityNotFoundError
+    message: Object or record not found.
+    fields:
+      error:
+        target: HttpRequest
+        details:
+          - severity: Error
+            number: 2
+            description: The transaction was not found.
+
+  parameter_missing:
+    status: 400
+    code: MissingAddress
+    message: Address is not valid.
+    fields:
+      error:
+        target: HttpRequestBody
+        details:
+          - severity: Error
+            number: 300
+            description: The ShipTo address is required to determine which jurisdictions apply.
+
+  rate_limit:
+    status: 429
+    code: RateLimitExceeded
+    message: Rate limit exceeded.
+
+fixtures:
+  empty: {}
+
+  one-company:
+    transaction:
+      # A quote. Nothing is recorded, nothing will be filed, and the tax
+      # figure is exactly what the invoice below would produce.
+      - id: "1000000001"
+        code: ORDER-1041-QUOTE
+        companyCode: CAULDRON
+        type: SalesOrder
+        status: Temporary
+        date: "2026-02-01"
+        customerCode: CUST-500001
+        totalAmount: 100.00
+        totalTaxable: 100.00
+        totalTax: 8.8750
+        locked: false
+        summary:
+          # Four jurisdictions on one address. No single rate produces the
+          # total.
+          - country: US
+            region: CA
+            jurisType: State
+            jurisName: CALIFORNIA
+            taxName: CA STATE TAX
+            rate: 0.0600
+            tax: 6.0000
+          - country: US
+            region: CA
+            jurisType: County
+            jurisName: LOS ANGELES
+            taxName: CA COUNTY TAX
+            rate: 0.0025
+            tax: 0.2500
+          - country: US
+            region: CA
+            jurisType: City
+            jurisName: SANTA MONICA
+            taxName: CA CITY TAX
+            rate: 0.0100
+            tax: 1.0000
+          - country: US
+            region: CA
+            jurisType: Special
+            jurisName: LOS ANGELES COUNTY DISTRICT TAX SP
+            taxName: CA SPECIAL TAX
+            rate: 0.0162
+            tax: 1.6250
+        addresses:
+          - boundaryLevel: Zip9
+            line1: 1234 Main Street
+            # Corrected. The request said Santa Monica and 90401; this is
+            # what Avalara resolved it to, and storing it as the customer's
+            # address changes what they typed.
+            city: SANTA MONICA
+            region: CA
+            postalCode: "90401-1006"
+            country: US
+      # The same sale, recorded and committed. Same tax, and this one will be
+      # filed.
+      - id: "1000000002"
+        code: ORDER-1041
+        companyCode: CAULDRON
+        type: SalesInvoice
+        status: Committed
+        date: "2026-02-01"
+        customerCode: CUST-500001
+        totalAmount: 100.00
+        totalTaxable: 100.00
+        totalTax: 8.8750
+        locked: true
+        summary:
+          - country: US
+            region: CA
+            jurisType: State
+            jurisName: CALIFORNIA
+            taxName: CA STATE TAX
+            rate: 0.0600
+            tax: 6.0000
+        addresses:
+          - boundaryLevel: Zip9
+            line1: 1234 Main Street
+            city: SANTA MONICA
+            region: CA
+            postalCode: "90401-1006"
+            country: US
+      # Recorded and never committed. The type is right, the second switch is
+      # not, and this sits in Saved forever without being filed.
+      - id: "1000000003"
+        code: ORDER-1042
+        companyCode: CAULDRON
+        type: SalesInvoice
+        status: Saved
+        date: "2026-02-02"
+        customerCode: CUST-500002
+        totalAmount: 250.00
+        totalTaxable: 250.00
+        totalTax: 22.1875
+        locked: false
+        summary:
+          - country: US
+            region: CA
+            jurisType: State
+            jurisName: CALIFORNIA
+            taxName: CA STATE TAX
+            rate: 0.0600
+            tax: 15.0000
+        addresses:
+          - boundaryLevel: Zip9
+            line1: 5 Ocean Avenue
+            city: SANTA MONICA
+            region: CA
+            postalCode: "90401-2210"
+            country: US
+
+conformance:
+  - name: a quote records nothing
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CreateTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000001
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # A SalesOrder. The tax figure is real and the transaction is not --
+        # status Temporary means nothing was recorded and nothing will be
+        # filed.
+        type: SalesOrder
+        status: Temporary
+        totalTax: 8.8750
+        locked: false
+
+  - name: and the recorded sale carries the same tax
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CreateTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000002
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # The same number, from the same call with one word changed. Nothing
+        # in the tax figure distinguishes a quote from a record, so a client
+        # comparing totals sees two identical answers and no reason to look
+        # further.
+        totalTax: 8.8750
+        type: SalesInvoice
+        status: Committed
+        locked: true
+
+  - name: the second switch is the one that files
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CommitTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000003
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # The right type and the wrong status. commit defaults to false, so
+        # this was recorded and will not be filed, and it looks like a
+        # success in every way a client checks.
+        type: SalesInvoice
+        status: Saved
+        locked: false
+        totalTax: 22.1875
+
+  - name: tax is a breakdown and no single rate produces the total
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CreateTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000001
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # Four jurisdictions on one address: state, county, city and a
+        # special district. 6.00 + 0.25 + 1.00 + 1.625 is 8.875, and the
+        # rates are 0.06, 0.0025, 0.01 and 0.0162 -- there is no single rate
+        # that produces the total, so a reconciliation built on one does not
+        # come out and cannot be made to.
+        summary[0].jurisType: State
+        summary[0].rate: 0.0600
+        summary[1].jurisType: County
+        summary[2].jurisType: City
+        summary[3].jurisType: Special
+        summary[3].tax: 1.6250
+        totalTax: 8.8750
+
+  - name: the tax figure carries more decimals than the currency
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CreateTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000003
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # 22.1875, not 22.19. A rate times a line is not round until somebody
+        # rounds it, and where that rounding happens decides whether the
+        # invoice and the filing agree.
+        totalTax: 22.1875
+        totalAmount: 250
+
+  - name: the address that comes back is not the one that was sent
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Addresses/Resolve/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000001
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # Resolved to Zip9. The request carried five digits and this has
+        # nine, and the city is upper-cased, so storing the response as the
+        # customer's address changes what they typed -- and comparing the two
+        # to detect a change reports one on every order.
+        addresses[0].postalCode: "90401-1006"
+        addresses[0].boundaryLevel: Zip9
+        addresses[0].city: SANTA MONICA
+
+  - name: the document code is the caller's and identifies the transaction
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/CreateTransaction/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions/1000000002
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # Yours, and unique per company. Sending it again does not make a
+        # second transaction, so a retry after a timeout is safe -- and a
+        # code reused across two real orders silently merges them.
+        code: ORDER-1041
+        companyCode: CAULDRON
+        # And the quote for the same sale used a different code on purpose,
+        # because a quote and a record sharing one would collide.
+        customerCode: CUST-500001
+
+  - name: a listing counts with a name that begins with an at sign
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/methods/Transactions/ListTransactionsByCompany/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 200
+      body:
+        # value, not data or results, and the count is "@recordsetCount" --
+        # a key starting with an at sign, which is awkward in every language
+        # that lets you write response.field and impossible in some.
+        value[0].code: ORDER-1041-QUOTE
+        "@recordsetCount": 3
+
+  - name: a failure carries its detail two levels down
+    source: https://developer.avalara.com/api-reference/avatax/rest/v2/
+    arm: parameter_missing
+    fixture: one-company
+    request:
+      method: POST
+      path: /api/v2/transactions/create
+      headers:
+        Authorization: Basic MjAwMDAwMDAwMDpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+      json:
+        type: SalesInvoice
+        companyCode: CAULDRON
+    expect:
+      status: 400
+      body:
+        # The message is a category and the description is the sentence worth
+        # showing anybody, and it is inside an array inside the error.
+        error.code: MissingAddress
+        error.message: Address is not valid.
+        error.details[0].description: The ShipTo address is required to determine which jurisdictions apply.
+        error.details[0].severity: Error
+        error.details[0].number: 300
+      absent:
+        - message
+        - code
+
+  - name: the account id is the username half of the credential
+    source: https://developer.avalara.com/avatax/authentication-in-avatax/
+    fixture: one-company
+    request:
+      method: GET
+      path: /api/v2/companies/CAULDRON/transactions
+      headers:
+        # An account id that is not this account's, with the right licence
+        # key beside it. Only the username half is compared here, which is
+        # what Cauldron does with a Basic credential -- a request carrying
+        # the right account and a wrong licence key passes and would not in
+        # production.
+        Authorization: Basic OTk5OTk5OTk5OTpjYXVsZHJvbl9hdmFsYXJhX2xpY2VuY2U=
+    expect:
+      status: 401
+      body:
+        error.code: AuthenticationIncomplete
+        error.details[0].number: 34

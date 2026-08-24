@@ -39,7 +39,12 @@ far: at-least-once delivery, a message that comes back after a visibility
 timeout, and a dead-letter queue are behaviours no fake reproduces by accident.
 
 **XML is the blocker for several of these.** S3, SNS and Azure Blob answer in
-XML, not JSON, and so do UPS, FedEx, USPS and Avalara further down. Cauldron
+XML, not JSON, and so do UPS, FedEx and USPS further down. Avalara was on
+that list and should not have been: its AvaTax v2 API is REST and JSON, and
+the XML one is the SOAP API it replaced. Both still ship as PHP packages under
+the same vendor -- avalara/avatax is the SOAP client and avalara/avataxclient is
+the REST one -- which is probably how the two got conflated. The other three
+have not been re-checked and may have moved too. Cauldron
 serves JSON, so those need either XML response support in the format or an
 honest exclusion. That decision is worth making once, deliberately, rather than
 one Recipe at a time. The AWS services that use the JSON protocol — SQS,
@@ -173,7 +178,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Provider | Why |
 |---|---|
 | ~~TaxJar~~ | Shipped. Decimal rates, present-and-zero jurisdictions, nexus |
-| Avalara | Sales tax calculations and filings |
+| ~~Avalara~~ | Shipped, AvaTax REST v2. A quote and a record are the same call with one word different, and only one of them is ever filed |
 | Stripe Tax | Probably a specialised extension of the Stripe Recipe |
 | FreshBooks | Invoices, clients, expenses |
 | Sage | Accounting, contacts, invoices |
@@ -887,7 +892,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**112 more listings across 64 Recipes declare no paging at all**, and the
+**113 more listings across 65 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1273,7 +1278,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty-one Recipes send at least one identifier as a number now, and each
+Thirty-two Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
