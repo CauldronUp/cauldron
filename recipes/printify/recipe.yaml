@@ -1,0 +1,471 @@
+# Printify Recipe for Cauldron
+#
+# Written against Printify's own OpenAPI description, fetched from
+# developers.printify.com. Every figure and field name below was read out of
+# that document rather than remembered, including the example response its
+# authors published.
+#
+# The wholesale-and-retail split is not the reason this Recipe exists. That is
+# the Printful Recipe's headline, already shipped, and repeating it would add
+# a name rather than a shape. What differs here is where the two halves live.
+#
+# Printful puts costs and retail_costs side by side on the order. Printify
+# puts the retail total on the order -- total_price -- and puts what you owe
+# only on the line items, as cost and shipping_cost. There is no total_cost
+# anywhere on an order. So the margin is not a subtraction between two fields;
+# it is a subtraction between one field and the sum of a nested array, and an
+# order with two line items from two different print providers has two costs
+# to add before the question can be asked at all.
+#
+# Six things worth modelling exactly:
+#
+#   1. An order has no cost. total_price is retail; cost lives on each line
+#      item and nowhere else.
+#   2. The page size is capped at ten. The description says "default: 10,
+#      maximum: 10", so a client asking for a hundred is answered with ten
+#      and not told -- and a loop that stops when it receives fewer than it
+#      asked for stops on the first page.
+#   3. Paging is a Laravel paginator: twelve fields, including absolute URLs
+#      for the first, last, next and previous pages, and a from and a to that
+#      are record positions rather than pages.
+#   4. Timestamps use a space where ISO 8601 uses a T --
+#      "2017-04-18 13:24:28+00:00" -- so a parser expecting RFC 3339 rejects
+#      a string that looks like a date and reads like one.
+#   5. A line item has its own status and its own print_provider_id, so one
+#      order can be split across providers and be fulfilled in parts while
+#      the order's own status says something coarser.
+#   6. Money is integer cents. Printful sends the same quantities as decimal
+#      strings, so a shared money helper for the two print-on-demand
+#      providers in this repository has to be told which is which.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Sending an order to production is a separate endpoint and is not
+#     modelled, so a draft here stays a draft. That is the same gap the
+#     Printful Recipe carries.
+#   - The paginator's URLs are fixtures rather than URLs that resolve. Their
+#     shape is the claim; following one reaches nothing.
+#   - Products, print providers, shipping calculation, webhooks and the
+#     catalogue are absent. Only orders are modelled.
+#
+# The token below is a fixture, not a secret. It belongs to no shop.
+
+recipe: printify
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.printify.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.printify.token.0000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    count_field: total
+    limit_field: per_page
+    page_field: current_page
+    pages_field: last_page
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      # A Mongo-shaped identifier, and a string.
+      style: hex
+      length: 24
+    fields:
+      app_order_id:
+        type: string
+      # Retail. What the customer paid, in cents. There is no field beside it
+      # for what the shop owes.
+      total_price:
+        type: integer
+      total_shipping:
+        type: integer
+      total_tax:
+        type: integer
+        default: 0
+      # pending, on-hold, checking-quality, quality-declined, quality-approved,
+      # ready-for-production, sending-to-production, in-production, canceled,
+      # fulfilled, partially-fulfilled, payment-not-received, callback-received,
+      # has-issues.
+      status:
+        type: string
+        default: pending
+      # Where the cost lives, and the only place it does.
+      line_items:
+        type: list
+      address_to:
+        type: map
+      metadata:
+        type: map
+      shipping_method:
+        type: integer
+        default: 1
+      is_printify_express:
+        type: boolean
+        default: false
+      # A space rather than a T, which is what the published example shows.
+      created_at:
+        type: string
+      sent_to_production_at:
+        type: string
+        null_when_unset: true
+      fulfilled_at:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v1/shops/{shop_id}/orders.json
+    resource: order
+    operation: list
+    pagination:
+      style: page
+      # Ten by default, and ten at most, because the description says both.
+      # The cap is what makes asking for a hundred quiet rather than an
+      # error.
+      limit: 10
+      max_limit: 10
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+    fields:
+      # The rest of the Laravel paginator, which is a lot of fields for a
+      # page of ten records.
+      first_page_url: https://api.printify.test/v1/shops/9000/orders.json?page=1
+      last_page_url: https://api.printify.test/v1/shops/9000/orders.json?page=1
+      next_page_url: null
+      prev_page_url: null
+      path: https://api.printify.test/v1/shops/9000/orders.json
+      from: 1
+      to: 2
+
+  - method: GET
+    path: /v1/shops/{shop_id}/orders/{id}.json
+    resource: order
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    code: 401
+    message: Unauthenticated.
+
+  resource_missing:
+    status: 404
+    code: 404
+    message: The requested resource was not found.
+
+  parameter_missing:
+    status: 422
+    code: 422
+    message: The given data was invalid.
+
+  rate_limit:
+    status: 429
+    code: 429
+    message: Too Many Attempts.
+
+fixtures:
+  empty: {}
+
+  one-shop:
+    order:
+      # Two line items from two different print providers, fulfilled. The
+      # retail total is on the order; what the shop owes is only in the array.
+      - id: 5a6e03bd2f7d8055768923c8
+        app_order_id: "215014.44"
+        total_price: 4400
+        total_shipping: 800
+        total_tax: 0
+        status: fulfilled
+        shipping_method: 1
+        is_printify_express: false
+        address_to:
+          first_name: Jane
+          last_name: Smith
+          city: Retie
+          country: BE
+        line_items:
+          - product_id: 5b05842f3921c9547531758d
+            variant_id: 17887
+            quantity: 1
+            # What Printify charges the shop for this item.
+            cost: 1050
+            shipping_cost: 400
+            # Which provider makes it. Two items, two providers.
+            print_provider_id: 5
+            status: fulfilled
+            metadata:
+              title: 18K gold plated necklace
+              # What the customer paid for this item.
+              price: 2200
+              sku: "168699843"
+          - product_id: 5b05842f3921c9547531758e
+            variant_id: 17888
+            quantity: 1
+            cost: 1400
+            shipping_cost: 400
+            print_provider_id: 12
+            status: fulfilled
+            metadata:
+              title: Enamel mug
+              price: 2200
+              sku: "168699844"
+        metadata:
+          order_type: external
+          shop_order_id: 1370762297
+          shop_order_label: "1370762297"
+        created_at: "2026-02-01 09:15:00+00:00"
+        sent_to_production_at: "2026-02-01 10:00:00+00:00"
+        fulfilled_at: "2026-02-03 14:12:00+00:00"
+      # Partly fulfilled: one item done, one still in production, and the
+      # order's own status is a coarser word than either.
+      - id: 6b7f14ce3a8e9166879034d9
+        app_order_id: "215014.45"
+        total_price: 4400
+        total_shipping: 800
+        total_tax: 0
+        status: partially-fulfilled
+        shipping_method: 1
+        is_printify_express: false
+        address_to:
+          first_name: John
+          last_name: Doe
+          city: Lyon
+          country: FR
+        line_items:
+          - product_id: 5b05842f3921c9547531758d
+            variant_id: 17887
+            quantity: 1
+            cost: 1050
+            shipping_cost: 400
+            print_provider_id: 5
+            status: fulfilled
+            metadata:
+              title: 18K gold plated necklace
+              price: 2200
+              sku: "168699843"
+          - product_id: 5b05842f3921c9547531758e
+            variant_id: 17888
+            quantity: 1
+            cost: 1400
+            shipping_cost: 400
+            print_provider_id: 12
+            status: in-production
+            metadata:
+              title: Enamel mug
+              price: 2200
+              sku: "168699844"
+        metadata:
+          order_type: external
+          shop_order_id: 1370762298
+          shop_order_label: "1370762298"
+        created_at: "2026-02-02 11:00:00+00:00"
+        sent_to_production_at: "2026-02-02 11:40:00+00:00"
+
+conformance:
+  - name: an order has no cost on it anywhere
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/5a6e03bd2f7d8055768923c8.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # Retail, in cents, on the order.
+        total_price: 4400
+        total_shipping: 800
+        # And what the shop owes is only here, one item at a time: 1050 and
+        # 1400. The margin is a field minus the sum of an array, not a
+        # subtraction between two fields the way Printful's is.
+        line_items[0].cost: 1050
+        line_items[1].cost: 1400
+      absent:
+        # There is no total_cost, and no other name for it either. A report
+        # that wants the shop's cost has to walk the line items.
+        - total_cost
+        - costs
+        - cost
+
+  - name: the retail price is on the line item as well
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/5a6e03bd2f7d8055768923c8.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # Under metadata, beside the title and the sku, while the cost sits
+        # on the line item itself. Two prices for one item, one level apart.
+        line_items[0].metadata.price: 2200
+        line_items[0].cost: 1050
+        line_items[0].metadata.title: 18K gold plated necklace
+
+  - name: one order can span two print providers
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/5a6e03bd2f7d8055768923c8.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # Printify is a marketplace of factories, so the two halves of one
+        # parcel can be made in two places, at two costs, and shipped
+        # separately.
+        line_items[0].print_provider_id: 5
+        line_items[1].print_provider_id: 12
+        line_items[0].shipping_cost: 400
+        line_items[1].shipping_cost: 400
+
+  - name: a line item has its own status
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/6b7f14ce3a8e9166879034d9.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # One item made, one still being made, and the order's own word is
+        # coarser than either. Code that reads the order status and stops
+        # cannot tell which half the customer is waiting for.
+        status: partially-fulfilled
+        line_items[0].status: fulfilled
+        line_items[1].status: in-production
+
+  - name: timestamps use a space rather than a T
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/5a6e03bd2f7d8055768923c8.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # Not RFC 3339. It carries an offset, it looks like a date and it
+        # reads like one, and a parser that insists on the T rejects it --
+        # which is the published example's own format, not an invention here.
+        created_at: "2026-02-01 09:15:00+00:00"
+        fulfilled_at: "2026-02-03 14:12:00+00:00"
+
+  - name: an unfulfilled order has a null rather than a missing date
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/6b7f14ce3a8e9166879034d9.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # Sent to production, not finished. The date that says when it
+        # finished is present and empty.
+        sent_to_production_at: "2026-02-02 11:40:00+00:00"
+        fulfilled_at: null
+
+  - name: the page size is capped at ten
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders.json?limit=100
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # The description says default 10, maximum 10. A client asking for a
+        # hundred is answered with ten and not told, so a loop that stops
+        # when it gets fewer than it asked for stops on the first page --
+        # and a shop with four hundred orders reports ten.
+        per_page: 10
+        total: 2
+        current_page: 1
+
+  - name: paging is a Laravel paginator with twelve fields
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        data[0].id: 5a6e03bd2f7d8055768923c8
+        # Positions rather than pages, beside absolute URLs for the pages
+        # either side. A lot of fields for a page of ten records, and the
+        # ones a client usually wants -- total and last_page -- are two of
+        # twelve.
+        from: 1
+        to: 2
+        last_page: 1
+        path: https://api.printify.test/v1/shops/9000/orders.json
+      absent:
+        # The next page is null rather than absent when there is not one,
+        # so a loop testing for presence never terminates.
+        - next_page_url.href
+
+  - name: money is integer cents
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders/5a6e03bd2f7d8055768923c8.json
+      headers:
+        Authorization: Bearer cauldron.printify.token.0000
+    expect:
+      status: 200
+      body:
+        # 4400 is forty-four, not four thousand four hundred. The other
+        # print-on-demand Recipe in this repository sends the same
+        # quantities as decimal strings, so a money helper shared between
+        # them has to be told which it is holding.
+        total_price: 4400
+        total_tax: 0
+        line_items[0].metadata.price: 2200
+
+  - name: a bad token is refused
+    source: https://developers.printify.com/
+    fixture: one-shop
+    request:
+      method: GET
+      path: /v1/shops/9000/orders.json
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      status: 401
+      body:
+        error: Unauthenticated.
+        code: 401

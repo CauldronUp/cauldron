@@ -391,6 +391,15 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 		limit = from.int(name, limit)
 	}
 
+	// And the provider's own ceiling, for the ones that have one. A capped
+	// page size is answered with less rather than refused, which is the
+	// quieter of the two: a loop that stops when it receives fewer records
+	// than it asked for stops on the first page, and the shop looks empty
+	// rather than broken.
+	if max := matched.spec.Pagination.MaxLimit; max > 0 && limit > max {
+		limit = max
+	}
+
 	// The declared style decides what the position parameter means. It was
 	// never read, so 149 shipped routes declaring offset or page numbering were
 	// paged as though they were cursor based, which meant not paged at all: the

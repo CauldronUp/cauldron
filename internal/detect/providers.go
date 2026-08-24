@@ -53,6 +53,23 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// The npm package called printify is a print-CSS helper -- "easy
+			// HTML print formatting" -- and has nothing to do with the
+			// print-on-demand company. The word means putting ink on paper
+			// before it means putting ink on a t-shirt.
+			//
+			// The PHP clients are small and several, none official, which is
+			// not a reason to leave them out: the bar is whether a dependency
+			// identifies the provider.
+			recipe: "printify",
+			composer: []string{
+				"jacob-hyde/printify",
+				"garissman/printify",
+				"ahsan/printify-laravel",
+				"8fold/php-printify-sdk",
+			},
+		},
+		{
 			// A new reason to exclude something: @medusajs/medusa is not a
 			// client, it is the commerce engine. A project depending on it is
 			// the store rather than a caller of one, and emulating the thing

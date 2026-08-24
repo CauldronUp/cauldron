@@ -1037,3 +1037,44 @@ func TestDetectMedusaFromTheClientAndNotTheEngine(t *testing.T) {
 		t.Errorf("the engine offered the medusa Recipe: %+v", p.Requirements)
 	}
 }
+
+// The npm package called printify is a print-CSS helper -- "easy HTML print
+// formatting" -- and has nothing to do with the print-on-demand company. The
+// word means putting ink on paper before it means putting ink on a t-shirt.
+//
+// A test also asserts printify does not offer the printful Recipe. The two
+// are the same category and their Recipes model different shapes: Printful
+// puts cost and retail side by side on the order, Printify puts cost only on
+// the line items.
+func TestDetectPrintifyFromThePhpSdksOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"jacob-hyde/printify": "^1.0"}}`},
+		{"composer.json": `{"require": {"garissman/printify": "^1.0"}}`},
+		{"composer.json": `{"require": {"ahsan/printify-laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"8fold/php-printify-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "printify") {
+			t.Errorf("%v did not detect printify: %+v", manifest, p.Requirements)
+		}
+
+		if p.Has(KindRecipe, "printful") {
+			t.Errorf("%v offered the printful Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"printify": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "printify") {
+		t.Errorf("a print-CSS helper offered the printify Recipe: %+v", p.Requirements)
+	}
+}
