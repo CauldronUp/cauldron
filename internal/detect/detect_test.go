@@ -819,3 +819,39 @@ func TestDetectAvalaraFromTheRestClientOnly(t *testing.T) {
 		}
 	}
 }
+
+// The fourth time in this table that the most-installed package for a
+// provider is the wrong protocol -- after eBay's Trading SDKs, DHL's own SOAP
+// client and avalara/avatax. php-fedex-api-wrapper has over a million
+// installs and wraps the SOAP web services this REST API replaced, while the
+// REST wrappers have tens of thousands between them.
+//
+// That is the pattern worth naming: when a provider moves from SOAP or XML to
+// REST, the old client keeps its install base for years, so popularity is
+// evidence of age rather than of correctness.
+func TestDetectFedExFromTheRestWrappersOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"whatarmy/fedex-rest": "^1.0"}}`},
+		{"composer.json": `{"require": {"shipstream/fedex-rest-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "fedex") {
+			t.Errorf("%v did not detect fedex: %+v", manifest, p.Requirements)
+		}
+	}
+
+	p, err := Detect(writeProject(t, map[string]string{
+		"composer.json": `{"require": {"jeremy-dunn/php-fedex-api-wrapper": "^1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "fedex") {
+		t.Errorf("the SOAP wrapper offered the fedex Recipe: %+v", p.Requirements)
+	}
+}

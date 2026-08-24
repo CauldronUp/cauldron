@@ -511,7 +511,18 @@ func setPath(body map[string]any, path string, value any) {
 
 	if !nested {
 		if name, indexes := splitIndex(head); len(indexes) > 0 {
-			if object, ok := value.(map[string]any); ok {
+			// asObject rather than a bare assertion, for the same reason the
+			// descend below uses it: a store.Record is a named map[string]any
+			// and does not match the unnamed one. A record placed at an
+			// indexed leaf skipped this branch entirely and fell through to
+			// the assignment underneath, so an envelope key of
+			// output.completeTrackResults[0] produced a key literally spelled
+			// "completeTrackResults[0]".
+			//
+			// That is the same shape of failure the comment further down
+			// records, and this is the third place it has had to be fixed.
+			// The pattern is the assertion, not the callers.
+			if object, ok := asObject(value); ok {
 				target := descendIndexed(body, name, indexes)
 				for key, nestedValue := range object {
 					setPath(target, key, nestedValue)

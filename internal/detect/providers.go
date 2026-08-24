@@ -53,6 +53,18 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// The most-installed FedEx package is the wrong protocol, for the
+			// fourth time in this table -- after eBay's Trading SDKs, DHL's own
+			// SOAP client and avalara/avatax. php-fedex-api-wrapper has over a
+			// million installs and wraps the SOAP web services this REST API
+			// replaced.
+			//
+			// Both mapped packages say REST in their own descriptions. No npm
+			// client was found under any obvious name.
+			recipe:   "fedex",
+			composer: []string{"whatarmy/fedex-rest", "shipstream/fedex-rest-sdk"},
+		},
+		{
 			// One vendor, two protocols, and the names do not say which is
 			// which. avalara/avatax describes itself as the AvaTax SOAP client
 			// and avalara/avataxclient is the REST v2 one -- checked in their
