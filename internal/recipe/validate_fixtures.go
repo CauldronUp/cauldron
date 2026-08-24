@@ -49,6 +49,19 @@ func (r *Recipe) validateFixtures(add func(string, ...any)) {
 			for i, record := range r.Fixtures[fixtureName][resourceName] {
 				// The identifier, which is not among the declared fields and
 				// so is checked on its own.
+				//
+				// A fixture seeds the identifier under "id" whatever the
+				// provider calls it on the wire: id.field renames the field
+				// in the response, not the key a fixture is written with.
+				// Looking it up under the wire name alone found nothing for
+				// every resource that renames it, so the check below quietly
+				// did nothing for 94 of them -- Twilio's sid, Asana's gid,
+				// Calendly's uri, every one. That is the exact failure this
+				// check was written to catch, and it was disabled for more
+				// than half the resources it applies to.
+				//
+				// The wire name is still tried first, so a fixture written
+				// the other way keeps working.
 				idField := resource.ID.Field
 				if idField == "" || idField == "-" {
 					idField = "id"
@@ -58,7 +71,12 @@ func (r *Recipe) validateFixtures(add func(string, ...any)) {
 				// with anything a client can see, so its shape is free.
 				// Cohere keys embeddings e1 and e2 to find them again and
 				// emits neither.
-				if seeded, present := record[idField]; present && resource.ID.Field != "-" {
+				seeded, present := record[idField]
+				if !present {
+					seeded, present = record["id"]
+				}
+
+				if present && resource.ID.Field != "-" {
 					if why, ok := seededID(resource.ID, seeded); !ok {
 						add("fixture %q record %d of %q seeds an id that %s, so seeded records and created ones would not have the same shape",
 							fixtureName, i, resourceName, why)

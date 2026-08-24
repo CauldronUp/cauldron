@@ -40,7 +40,24 @@ type ID struct {
 	// Empty means prefixed.
 	Style  string `yaml:"style"`
 	Prefix string `yaml:"prefix"`
-	Length int    `yaml:"length"`
+	// OtherPrefixes are prefixes a record may legitimately carry that this
+	// Recipe does not mint, for providers whose identifiers do not all have
+	// one shape.
+	//
+	// Auth0 is the reason. A user_id encodes the connection the user came
+	// from: auth0|abc is a database user, google-oauth2|123 signed in with
+	// Google, samlp|... came from an enterprise connection. Code that parses
+	// the identifier assuming auth0| breaks on the first social login, which
+	// is the first thing the Auth0 Recipe says. Its fixture holds a Google
+	// user on purpose.
+	//
+	// Without this the fixture and the declaration have to disagree, and the
+	// only ways to settle it are both lies: drop the social user, which
+	// deletes the trap, or drop the prefix, which claims Auth0 mints bare
+	// strings. Minting still uses Prefix -- there is one shape a new record
+	// takes -- and these are the others a real account already contains.
+	OtherPrefixes []string `yaml:"other_prefixes"`
+	Length        int      `yaml:"length"`
 	// Field is the property the provider returns the identifier in. Empty means
 	// "id". Twilio calls it "sid" everywhere, and code that reads response.id
 	// against Twilio gets nothing at all. A dotted name nests, which is how
