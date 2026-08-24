@@ -53,6 +53,21 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Lightspeed is four unrelated products sharing a brand, not two.
+			// R-Series is retail, K-Series is restaurants, X-Series is the
+			// former Vend, and eCom is the former SEOshop -- four APIs, four
+			// credentials, four vocabularies. This Recipe is R-Series, so only
+			// the R-Series client is mapped and the other three are excluded by
+			// name rather than by hoping a prefix rule sorts them out.
+			//
+			// The two nearest misses are not Lightspeed at all: the unscoped npm
+			// package is the speed of light as a constant, and Packagist's
+			// most-installed match is a Magento performance module that borrowed
+			// the word.
+			recipe:   "lightspeed",
+			composer: []string{"timothydc/laravel-lightspeed-retail-api"},
+		},
+		{
 			// On Packagist, "clover" is a code-coverage report format. It is
 			// what PHPUnit emits, so nette/tester, phpunit-coverage-check and
 			// half a dozen others carry the word and have tens of millions of
