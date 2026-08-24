@@ -427,7 +427,7 @@ the header says so.
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
 | ~~Lemon Squeezy~~ | Shipped, and see the row below — the merchant-of-record half is FastSpring's and is repeated rather than new. What is new: licence keys, store-scoped identifiers, and totals in two currencies at once |
 | Gumroad | Assess — products and sales |
-| Polar | Assess — subscriptions and benefits |
+| ~~Polar~~ | Shipped, benefits rather than subscriptions -- the merchant-of-record half is FastSpring's and is not repeated. Paying for a thing and receiving it are two different records, and the second can fail on its own: granting a benefit means calling Discord or GitHub for the customer, so a BenefitGrant carries two booleans and an error "if the benefit grant failed with an unrecoverable error". Four states, not two, and the listing mixes them because is_granted is an opt-in filter |
 | ~~Orb~~ | Shipped. An invoice is not final until the period closes |
 | Metronome | Assess — usage events and their deduplication window |
 | ~~Lago~~ | Shipped, written against the OpenAPI document Lago publishes. An event whose code names no active billable metric is accepted and, in the document's own word, ignored: the request succeeds, the event is stored and returned, and no fee is ever produced. The self-hosted/cloud difference this row predicted is in the schema -- lago_id is "not guaranteed to be a UUID; on organizations using the ClickHouse events store it is a composite string". Also: the schema and its own description disagree about whether the timestamp is ISO or Unix seconds, and a field named cents holds '1234.56' |

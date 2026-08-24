@@ -70,6 +70,25 @@ func providers() []provider {
 			},
 		},
 		{
+			// Prefix containment, which Lago met first with Lagoon and which
+			// is now common enough to be a shape rather than a coincidence.
+			// "polar" is the start of "polaris" and of "polarising", and both
+			// of those out-install the real client on Packagist:
+			// eduard9969/blade-polaris-icons is Shopify's design system at
+			// eighty-nine thousand, and polarising/bcrypt is a password
+			// hashing library at sixty-eight.
+			//
+			// The Shopify one is worth naming twice over. A prefix rule would
+			// offer a payments emulator to a project using Shopify's icons,
+			// while Shopify itself has two Recipes here -- so the wrong
+			// answer would be wrong about the vendor as well as the domain.
+			//
+			// npm's polar is the ordinary sort: an express boilerplate.
+			recipe:   "polar",
+			composer: []string{"polar-sh/sdk", "danestves/laravel-polar"},
+			npm:      []string{"@polar-sh/sdk", "@polar-sh/nextjs"},
+		},
+		{
 			// A fresh shape of near miss: this one is a substring of a
 			// bigger project's name. Lagoon is amazee.io's open-source
 			// Kubernetes application delivery platform, and "lago" is inside
