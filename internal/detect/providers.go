@@ -53,6 +53,14 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Three unrelated vendors publish a package called ship-station on
+			// Packagist and all three are real API wrappers, so the vendor
+			// prefix carries no information here and each has to be named.
+			recipe:   "shipstation",
+			composer: []string{"campo/laravel-shipstation", "dissolve/ship-station", "zack6849/ship-station"},
+			npm:      []string{"node-shipstation"},
+		},
+		{
 			// aftership-apps-magento2 is a Magento storefront extension rather
 			// than a client: a shop installing it talks to Magento, and
 			// AfterShip talks to AfterShip. Naming the two SDKs explicitly

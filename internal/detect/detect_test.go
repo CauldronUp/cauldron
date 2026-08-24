@@ -569,3 +569,25 @@ func TestDetectAfterShipFromTheSDKsAndNotTheStorefrontExtension(t *testing.T) {
 		}
 	}
 }
+
+// Three unrelated vendors publish a package called ship-station on Packagist
+// and all three are real ShipStation API wrappers, so the vendor half of the
+// name carries no information and each one has to be listed. There is no
+// unscoped npm package called shipstation at all.
+func TestDetectShipStationFromEveryVendorsWrapper(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"campo/laravel-shipstation": "^2.0"}}`},
+		{"composer.json": `{"require": {"dissolve/ship-station": "^1.0"}}`},
+		{"composer.json": `{"require": {"zack6849/ship-station": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"node-shipstation": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "shipstation") {
+			t.Errorf("%v did not detect shipstation: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -1,0 +1,495 @@
+# ShipStation Recipe for Cauldron
+#
+# Every date ShipStation sends is missing its timezone. Not "in UTC without a
+# Z" -- missing. 2026-02-01T09:15:00.0000000, seven fractional digits and no
+# offset at all, and the instant it refers to is in the account's own
+# timezone, which the API never states.
+#
+# Every date library in wide use parses that as UTC or as local time
+# depending on which one it is, and both are guesses. A shipment that left at
+# nine in the morning becomes one that left at one in the afternoon, ship-by
+# deadlines land on the wrong side of midnight, and a daily report cuts the
+# day in the wrong place. Nothing errors, and the numbers are close enough to
+# right that nobody checks.
+#
+# Six things worth modelling exactly:
+#
+#   1. Dates have no timezone and seven fractional digits. Parsing one as
+#      UTC is wrong by however many hours the account is offset, always in
+#      the same direction, silently.
+#   2. An order carries three identifiers and they belong to three different
+#      people. orderId is ShipStation's integer, orderNumber is what the
+#      seller calls it, and orderKey is what the store that pushed it calls
+#      it. Reconciliation keyed on the wrong one merges or splits orders.
+#   3. Creating an order is an upsert. POST /orders/createorder with an
+#      orderKey that already exists updates that order instead, so a retry
+#      after a timeout is safe and a duplicate orderKey silently overwrites
+#      a different order.
+#   4. The rate limit is forty requests a minute, which is low enough that an
+#      ordinary catalogue sync hits it, and X-Rate-Limit-Reset is the number
+#      of seconds until the window resets rather than the time it resets at.
+#      Read as a timestamp it is January 1970.
+#   5. Paging is one-based and reports pages as well as total, so a loop
+#      counting from zero re-reads the first page forever and one sizing
+#      itself from total divided by pageSize disagrees with pages by one
+#      whenever the division is exact.
+#   6. Money is a number here, unquoted, where BigCommerce's orders and
+#      eBay's everything send strings. There is no convention across these
+#      APIs and every one has to be checked.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - createorder is modelled as an ordinary create. The upsert behaviour --
+#     an existing orderKey updating rather than inserting -- is the thing
+#     worth reproducing and the format has no way to say "create, or update
+#     if this body field matches an existing record". A duplicate orderKey
+#     here makes a second order.
+#   - Nothing is filtered. orderStatus, storeId, createDateStart and the
+#     rest are accepted and honoured by nothing, so a listing is always the
+#     whole set.
+#   - Both halves of the credential are real -- ShipStation wants an API key
+#     as the username and an API secret as the password, and a request
+#     carrying only the key is refused. Cauldron compares one half of a Basic
+#     credential and ignores the other, so this Recipe checks the key and
+#     accepts any secret, including none. A client that never configured its
+#     secret passes here and is refused in production.
+#   - Labels, rates and carriers are absent. Only orders and shipments are
+#     modelled, and a shipment here is a record rather than the result of
+#     buying anything.
+#
+# The key and secret below are fixtures, not secrets. They belong to no
+# account.
+
+recipe: shipstation
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.shipstation.com/docs/api/
+
+auth:
+  # The key is the username and the secret is the password. Only the key is
+  # compared here; see the fidelity note above for what that costs.
+  scheme: basic
+  credential: username
+  keys:
+    - cauldron_shipstation_key
+
+responses:
+  list:
+    style: wrapped
+    key: orders
+    count_field: total
+    page_field: page
+    pages_field: pages
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: Message
+    code_field: "-"
+    type_field: ExceptionType
+
+resources:
+  order:
+    id:
+      # ShipStation's own, an integer, and the one the API addresses orders
+      # by. Not the one anybody quotes.
+      style: numeric
+      type: number
+      field: orderId
+    fields:
+      # What the seller calls it. A string, often with a prefix, and the one
+      # that appears on the packing slip.
+      orderNumber:
+        type: string
+        required: true
+      # What the store that pushed the order calls it. The join key back to
+      # Shopify or Amazon, and the one an upsert is keyed on.
+      orderKey:
+        type: string
+      # awaiting_payment, awaiting_shipment, shipped, on_hold, cancelled.
+      orderStatus:
+        type: string
+        default: awaiting_shipment
+      # No timezone, seven fractional digits. Not stamped, because a stamped
+      # value would be RFC 3339 and would quietly be the one shape
+      # ShipStation never sends.
+      orderDate:
+        type: string
+      # The deadline. Getting this wrong by a timezone is the difference
+      # between shipping on time and not.
+      shipByDate:
+        type: string
+        null_when_unset: true
+      # A number here, unlike the strings several other commerce APIs send.
+      orderTotal:
+        type: number
+      amountPaid:
+        type: number
+      customerEmail:
+        type: string
+      billTo:
+        type: map
+      shipTo:
+        type: map
+      # Which connected store the order came from. Two stores can push the
+      # same orderNumber.
+      advancedOptions:
+        type: map
+
+  shipment:
+    id:
+      style: numeric
+      type: number
+      field: shipmentId
+    fields:
+      orderId:
+        type: integer
+      orderNumber:
+        type: string
+      # No timezone here either.
+      createDate:
+        type: string
+      shipDate:
+        type: string
+      trackingNumber:
+        type: string
+      carrierCode:
+        type: string
+      serviceCode:
+        type: string
+      # What the label cost, as a number.
+      shipmentCost:
+        type: number
+      # Voided shipments stay in the listing. A report summing shipmentCost
+      # without checking this bills for labels that were refunded.
+      voided:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /orders
+    resource: order
+    operation: list
+    pagination:
+      # One-based, and the answer reports pages as well as total.
+      style: page
+      limit: 100
+      limit_param: pageSize
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /orders/{id}
+    resource: order
+    operation: get
+
+  - method: POST
+    path: /orders/createorder
+    resource: order
+    operation: create
+
+  - method: GET
+    path: /shipments
+    resource: shipment
+    operation: list
+    list:
+      # The collection key follows the resource, so a client with one paging
+      # helper has to be told which key to read on each endpoint.
+      style: wrapped
+      key: shipments
+      count_field: total
+      page_field: page
+      pages_field: pages
+    pagination:
+      style: page
+      limit: 100
+      limit_param: pageSize
+      cursor_param: page
+      first_page: 1
+
+errors:
+  # Forty requests a minute. Low enough that an ordinary catalogue sync hits
+  # it, and the header that says when to try again is a duration rather than
+  # a time.
+  rate_limit:
+    status: 429
+    message: Too Many Requests
+    headers:
+      X-Rate-Limit-Limit: "40"
+      X-Rate-Limit-Remaining: "0"
+      # Seconds until the window resets. Read as a Unix timestamp this is
+      # the first minute of 1970.
+      X-Rate-Limit-Reset: "34"
+
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    type: UnauthorizedException
+
+  resource_missing:
+    status: 404
+    message: The resource you requested could not be found.
+    type: ResourceNotFoundException
+
+  parameter_missing:
+    status: 400
+    message: The request could not be understood by the server.
+    type: BadRequestException
+
+fixtures:
+  empty: {}
+
+  small-account:
+    order:
+      - id: "100000001"
+        orderNumber: "SO-1041"
+        orderKey: shopify-5010101010
+        orderStatus: awaiting_shipment
+        # Nine fifteen in the morning, in a timezone the API never names.
+        orderDate: "2026-02-01T09:15:00.0000000"
+        shipByDate: "2026-02-03T00:00:00.0000000"
+        orderTotal: 102.45
+        amountPaid: 102.45
+        customerEmail: buyer@example.com
+        shipTo:
+          name: A Recipient
+          city: San Francisco
+          postalCode: "94104"
+          country: US
+        advancedOptions:
+          storeId: 55
+      # A different store, a different order, the same orderNumber. Two
+      # sellers can call their orders the same thing and ShipStation does not
+      # mind.
+      - id: "100000002"
+        orderNumber: "SO-1041"
+        orderKey: amazon-111-2223334
+        orderStatus: awaiting_payment
+        orderDate: "2026-02-02T14:40:00.0000000"
+        orderTotal: 44.00
+        amountPaid: 0
+        customerEmail: other@example.com
+        shipTo:
+          name: Another Recipient
+          city: Portland
+          postalCode: "97205"
+          country: US
+        advancedOptions:
+          storeId: 56
+    shipment:
+      - id: "900000001"
+        orderId: 100000001
+        orderNumber: "SO-1041"
+        createDate: "2026-02-02T11:02:00.0000000"
+        shipDate: "2026-02-02T00:00:00.0000000"
+        trackingNumber: "9400111899223197428490"
+        carrierCode: stamps_com
+        serviceCode: usps_priority_mail
+        shipmentCost: 7.35
+        voided: false
+      # Voided, and still in the listing. A report summing shipmentCost
+      # without checking this bills for a label that was refunded.
+      - id: "900000002"
+        orderId: 100000002
+        orderNumber: "SO-1041"
+        createDate: "2026-02-02T11:30:00.0000000"
+        shipDate: "2026-02-02T00:00:00.0000000"
+        trackingNumber: "9400111899223197428491"
+        carrierCode: stamps_com
+        serviceCode: usps_first_class
+        shipmentCost: 4.10
+        voided: true
+
+conformance:
+  - name: a date carries no timezone at all
+    source: https://www.shipstation.com/docs/api/requirements/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders/100000001
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Seven fractional digits, no Z, no offset. The instant is in the
+        # account's timezone and the API never says which. Parsed as UTC this
+        # is wrong by however many hours the account is offset, always in the
+        # same direction, and nothing errors.
+        orderDate: "2026-02-01T09:15:00.0000000"
+        # And the deadline has the same problem, where being wrong by hours
+        # is the difference between shipping on time and not.
+        shipByDate: "2026-02-03T00:00:00.0000000"
+
+  - name: an order carries three identifiers for three different people
+    source: https://www.shipstation.com/docs/api/orders/get-order/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders/100000001
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # ShipStation's, a number, and the only one the API addresses orders
+        # by.
+        orderId: 100000001
+        # The seller's, a string, and the one on the packing slip.
+        orderNumber: "SO-1041"
+        # The store's, and the join key back to where the order came from.
+        orderKey: shopify-5010101010
+      absent:
+        # There is no plain id anywhere on a ShipStation order.
+        - id
+
+  - name: two stores can push the same order number
+    source: https://www.shipstation.com/docs/api/orders/list-orders/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Same orderNumber, different orders, different stores. Reconciling
+        # on orderNumber merges two real orders into one.
+        orders[0].orderNumber: "SO-1041"
+        orders[1].orderNumber: "SO-1041"
+        orders[0].advancedOptions.storeId: 55
+        orders[1].advancedOptions.storeId: 56
+        total: 2
+
+  - name: paging counts from one and reports pages as well as total
+    source: https://www.shipstation.com/docs/api/orders/list-orders/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders?pageSize=1&page=2
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # The second order, because pages are one-based. A loop counting from
+        # zero re-reads the first page forever.
+        orders[0].orderId: 100000002
+        page: 2
+        pages: 2
+        total: 2
+
+  - name: a voided shipment stays in the listing
+    source: https://www.shipstation.com/docs/api/shipments/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Both, and the second one was refunded. A report summing
+        # shipmentCost without checking voided bills for a label that no
+        # longer exists.
+        shipments[0].voided: false
+        shipments[1].voided: true
+        shipments[1].shipmentCost: 4.10
+        total: 2
+      absent:
+        # The collection key follows the resource, so the orders key is not
+        # here and one paging helper has to be told which to read.
+        - orders
+
+  - name: money is a number here rather than a string
+    source: https://www.shipstation.com/docs/api/orders/get-order/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders/100000001
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # Unquoted, unlike BigCommerce's orders and eBay's everything. There
+        # is no convention across these APIs and every one has to be checked.
+        orderTotal: 102.45
+        amountPaid: 102.45
+
+  - name: an unpaid order has a total and no payment
+    source: https://www.shipstation.com/docs/api/orders/list-orders/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders/100000002
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 200
+      body:
+        # awaiting_payment, so the order exists and the money has not
+        # arrived. Summing orderTotal across a day counts this one.
+        orderStatus: awaiting_payment
+        orderTotal: 44
+        amountPaid: 0
+
+  - name: the rate limit reset is a duration and not a time
+    source: https://www.shipstation.com/docs/api/requirements/
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 429
+      headers:
+        # Forty a minute, none left, and thirty-four seconds until the window
+        # resets. Read as a Unix timestamp this is the first minute of 1970.
+        X-Rate-Limit-Limit: "40"
+        X-Rate-Limit-Remaining: "0"
+        X-Rate-Limit-Reset: "34"
+
+  - name: a failure names its exception type in capitals
+    source: https://www.shipstation.com/docs/api/requirements/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders/999999999
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc2hpcHN0YXRpb25fa2V5OmNhdWxkcm9uX3NoaXBzdGF0aW9uX3NlY3JldA==
+    expect:
+      status: 404
+      body:
+        # Message with a capital M, beside an ExceptionType, on an API whose
+        # every other field is camelCase.
+        Message: The resource you requested could not be found.
+        ExceptionType: ResourceNotFoundException
+      absent:
+        - message
+        - error
+
+  - name: a wrong key is refused
+    source: https://www.shipstation.com/docs/api/requirements/
+    fixture: small-account
+    request:
+      method: GET
+      path: /orders
+      headers:
+        # A key that is not the account's, with the right secret beside it.
+        # The secret is not what is checked -- see the fidelity note at the
+        # top for why a request carrying only a key passes here and would not
+        # in production.
+        Authorization: Basic bm90X3RoZV9rZXk6Y2F1bGRyb25fc2hpcHN0YXRpb25fc2VjcmV0
+    expect:
+      status: 401
+      body:
+        ExceptionType: UnauthorizedException

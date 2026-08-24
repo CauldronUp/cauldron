@@ -73,7 +73,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 | Provider | Why |
 |---|---|
-| ShipStation | Shipments, labels, carriers, tracking |
+| ~~ShipStation~~ | Shipped. Every date is missing its timezone, and the instant is in an account timezone the API never states |
 | ~~EasyPost~~ | Shipped. A rate is a value you were given, not a price you can look up; an address can be stored and undeliverable |
 | ShipEngine | Rates, labels, tracking, carrier errors |
 | ~~AfterShip~~ | Shipped. A tracking number does not identify a parcel; Delivered is not terminal |
@@ -1272,7 +1272,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Twenty-nine Recipes send at least one identifier as a number now, and each
+Thirty Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
