@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -120,7 +121,7 @@ func compilePath(path string) []segment {
 // over /v1/customers/{id} regardless of declaration order. Providers routinely
 // have both, and matching on declaration order alone is a subtle trap.
 func (r *router) match(method, path string) (route, map[string]string, bool) {
-	return r.matchSelecting(method, path, "", nil)
+	return r.matchSelecting(method, path, "", nil, nil)
 }
 
 // matchSelecting is match with the request's GraphQL query in hand, so routes
@@ -129,7 +130,7 @@ func (r *router) match(method, path string) (route, map[string]string, bool) {
 // A route declaring selects matches only when the query mentions that word,
 // and beats an equally-scoring route that declares nothing, so a Recipe can
 // have several selecting routes and one fallback for everything else.
-func (r *router) matchSelecting(method, path, query string, headers http.Header) (route, map[string]string, bool) {
+func (r *router) matchSelecting(method, path, query string, params url.Values, headers http.Header) (route, map[string]string, bool) {
 	parts := splitPath(path)
 
 	var (
@@ -169,6 +170,18 @@ func (r *router) matchSelecting(method, path, query string, headers http.Header)
 			score += 1000
 		}
 
+		// And the same again for the APIs where asking for more changes the
+		// shape rather than the endpoint. Clover's ?expand=lineItems and
+		// Asana's opt_fields both work this way: one path, two shapes, and the
+		// compact one is what a client gets for forgetting.
+		if len(candidate.spec.MatchesQuery) > 0 {
+			if !asksFor(params, candidate.spec.MatchesQuery) {
+				continue
+			}
+
+			score += 1000
+		}
+
 		if score > bestScore {
 			best, bestVars, bestScore, found = candidate, vars, score, true
 		}
@@ -191,7 +204,7 @@ func (r *router) allowedMethods(path string) []string {
 		// methods a path supports. Counting it turned an unmodelled GraphQL
 		// query into 405 with Allow: POST, which tells a client to change
 		// the method it already got right. Not being modelled is a 404.
-		if candidate.spec.Selects != "" || len(candidate.spec.MatchesHeader) > 0 {
+		if candidate.spec.Selects != "" || len(candidate.spec.MatchesHeader) > 0 || len(candidate.spec.MatchesQuery) > 0 {
 			continue
 		}
 
@@ -289,4 +302,36 @@ func carries(headers http.Header, want map[string]string) bool {
 	}
 
 	return true
+}
+
+// asksFor reports whether the request's query carries every parameter a route
+// declares, with the declared value among that parameter's comma-separated
+// members.
+//
+// Membership rather than equality, because that is what the providers send:
+// ?expand=lineItems,payments asks for two things in one parameter, and a
+// route selecting either should answer it. A parameter with a single value is
+// the one-member case of the same rule, so nothing needs to say which it is.
+func asksFor(params url.Values, want map[string]string) bool {
+	for name, value := range want {
+		if !among(params[name], value) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// among reports whether want appears as a comma-separated member of any of
+// the supplied values.
+func among(values []string, want string) bool {
+	for _, value := range values {
+		for _, member := range strings.Split(value, ",") {
+			if strings.TrimSpace(member) == want {
+				return true
+			}
+		}
+	}
+
+	return false
 }

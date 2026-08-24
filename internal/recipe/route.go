@@ -179,6 +179,27 @@ type Route struct {
 	// equally-scoring route that declares nothing, so a Recipe can have a
 	// fallback for the operations it does not model.
 	MatchesHeader map[string]string `yaml:"matches_header"`
+	// MatchesQuery names query parameters whose values pick this route, for
+	// the APIs where asking for more changes the shape of what comes back.
+	//
+	// Clover is the reason it exists. An order carries no line items unless
+	// the request asks for them with ?expand=lineItems, so the same path
+	// answers two different shapes and the compact one looks like an order
+	// with nothing in it. Asana does the same with opt_fields, and its Recipe
+	// says in as many words that Cauldron could not express it.
+	//
+	// A declared value matches when it appears among the comma-separated
+	// members of the parameter, because that is what both providers send:
+	// ?expand=lineItems,payments asks for two things and a route selecting
+	// either one should answer. Equality is the single-member case of the
+	// same rule.
+	//
+	// It is the third spelling of one idea -- selects reads the body,
+	// matches_header reads a header, this reads the query string -- and a
+	// route declaring any of them beats an equally-scoring route that
+	// declares nothing, so a Recipe can have a compact fallback and an
+	// expanded route above it.
+	MatchesQuery map[string]string `yaml:"matches_query"`
 	// List overrides the Recipe-wide list envelope for this route.
 	//
 	// A provider's listings do not always share a shape. Clerk's users and

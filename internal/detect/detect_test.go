@@ -892,3 +892,44 @@ func TestDetectEasyshipFromItsClients(t *testing.T) {
 		t.Errorf("easyship offered the easypost Recipe: %+v", p.Requirements)
 	}
 }
+
+// The worst collision in this table, and the reason there is no PHP mapping
+// for Clover at all: on Packagist the word is a code-coverage report format.
+// It is what PHPUnit emits, so nette/tester, phpunit-coverage-check and
+// several others carry it and have tens of millions of installs between
+// them. Mapping any of them would offer a card-payments emulator to every
+// project that measures its own test coverage.
+//
+// The unscoped npm package is a toy language, and remote-pay-cloud is
+// Clover's own device SDK -- it drives a card terminal over a socket and
+// never calls the REST API this Recipe models, which is the DHL Parcel
+// exclusion again.
+func TestDetectCloverFromTheEcommerceSdkOnly(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"clover-ecomm-sdk": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "clover") {
+		t.Errorf("clover-ecomm-sdk did not detect clover: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require-dev": {"nette/tester": "^2.0"}}`},
+		{"composer.json": `{"require": {"rregeer/phpunit-coverage-check": "^0.3"}}`},
+		{"composer.json": `{"require": {"jaschilz/php-coverage-badger": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"clover": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"remote-pay-cloud": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "clover") {
+			t.Errorf("%v offered the clover Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}

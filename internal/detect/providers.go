@@ -53,6 +53,20 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// On Packagist, "clover" is a code-coverage report format. It is
+			// what PHPUnit emits, so nette/tester, phpunit-coverage-check and
+			// half a dozen others carry the word and have tens of millions of
+			// installs between them -- and not one of them is the payments
+			// company. There is no PHP mapping here for that reason.
+			//
+			// The unscoped npm package is a toy language. remote-pay-cloud is
+			// Clover's, and is the device SDK rather than a REST client: it
+			// drives a card terminal over a socket and never calls the API
+			// this Recipe models.
+			recipe: "clover",
+			npm:    []string{"clover-ecomm-sdk"},
+		},
+		{
 			// Small on both registries -- the PHP clients are one author's and
 			// have four figures of installs between them -- but unambiguous,
 			// which is the bar. Nothing else on either registry is called
