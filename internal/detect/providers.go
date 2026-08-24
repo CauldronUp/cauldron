@@ -70,6 +70,41 @@ func providers() []provider {
 			},
 		},
 		{
+			// The vendor-prefix rule fails hardest here, and it is worth
+			// recording how hard. Four packages under the akeneo namespace
+			// have seven-figure install counts and only one of them is a
+			// client: akeneo/php-coupling-detector is an architecture linter
+			// at 1.1 million, akeneo/batch-bundle is part of the PIM's own
+			// Symfony stack at 1.06 million, and
+			// akeneo/phpspec-skip-example-extension is a test-framework
+			// extension at 997 thousand. akeneo-labs/spreadsheet-parser reads
+			// XLSX files.
+			//
+			// This is etsy/phan and allegro/php-protobuf a third time, and
+			// three instances is enough to say the shape rather than the
+			// example: a vendor that publishes prolifically makes its own
+			// prefix a poor filter, because the packages carrying its name
+			// are mostly not about its product.
+			//
+			// akeneo/pim-community-dev and -standard are excluded for the
+			// other reason. They are the PIM, so a project holding them
+			// serves this API rather than calls it.
+			//
+			// What is left are the client and the connectors that use it:
+			// Akeneo's own Adobe Commerce connector, two Sylius plugins, a
+			// Laravel client and a Magento bundle. All of them make these
+			// requests on somebody's catalogue.
+			recipe: "akeneo",
+			composer: []string{
+				"akeneo/api-php-client",
+				"akeneo/module-magento2-connector-community",
+				"webgriffe/sylius-akeneo-plugin",
+				"synolia/sylius-akeneo-plugin",
+				"justbetter/laravel-akeneo-client",
+				"justbetter/magento2-akeneo-bundle",
+			},
+		},
+		{
 			// Two exclusions, and the collection has seen both shapes before
 			// at smaller scale.
 			//

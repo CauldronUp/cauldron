@@ -1328,3 +1328,58 @@ func TestDetectAllegroFromRestClientsAndNotProtobufOrSoap(t *testing.T) {
 		}
 	}
 }
+
+// Akeneo is where the vendor-prefix rule fails hardest.
+//
+// Four packages under the akeneo namespace have seven-figure install counts
+// and only one of them is a client. akeneo/php-coupling-detector is an
+// architecture linter at 1.1 million; akeneo/batch-bundle is part of the
+// PIM's own Symfony stack at 1.06 million;
+// akeneo/phpspec-skip-example-extension is a test-framework extension at 997
+// thousand. None of the three has anything to do with the API.
+//
+// akeneo/pim-community-dev is excluded for the other reason: it is the PIM,
+// so a project holding it serves this API rather than calls it.
+//
+// Three vendors now -- Etsy, Allegro, Akeneo -- have had their own prefix
+// carry packages about something else entirely, which is enough to treat it
+// as a shape rather than a run of coincidences.
+func TestDetectAkeneoFromClientsAndNotTheVendorsOtherLibraries(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"akeneo/api-php-client": "^7.0"}}`},
+		{"composer.json": `{"require": {"akeneo/module-magento2-connector-community": "^100.0"}}`},
+		{"composer.json": `{"require": {"webgriffe/sylius-akeneo-plugin": "^2.0"}}`},
+		{"composer.json": `{"require": {"synolia/sylius-akeneo-plugin": "^4.0"}}`},
+		{"composer.json": `{"require": {"justbetter/laravel-akeneo-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"justbetter/magento2-akeneo-bundle": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "akeneo") {
+			t.Errorf("%v did not detect akeneo: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own libraries, none of them about the API.
+		{"composer.json": `{"require-dev": {"akeneo/php-coupling-detector": "^0.5"}}`},
+		{"composer.json": `{"require-dev": {"akeneo/phpspec-skip-example-extension": "^5.0"}}`},
+		{"composer.json": `{"require": {"akeneo/batch-bundle": "^7.0"}}`},
+		{"composer.json": `{"require": {"akeneo-labs/spreadsheet-parser": "^1.0"}}`},
+		// And the PIM itself.
+		{"composer.json": `{"require": {"akeneo/pim-community-dev": "^7.0"}}`},
+		{"composer.json": `{"require": {"akeneo/pim-community-standard": "^7.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "akeneo") {
+			t.Errorf("%v offered the akeneo Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
