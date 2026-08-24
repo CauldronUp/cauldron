@@ -410,6 +410,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
+| ~~Medusa~~ | Shipped, Storefront API, and written against the published OpenAPI description at 2.19.0 rather than from memory. A field name without a + replaces the entire default set, so ?fields=id returns an order with one field and no error |
 | ~~Printful~~ | Shipped. Print-on-demand was not on this list at all, and neither is Printify, Wix, Squarespace, PrestaShop, Faire, Ecwid or Shopware -- a category gap rather than a provider gap. One order carries costs and retail_costs, wholesale and retail, with identical field names inside both and sometimes two currencies |
 | ~~Lightspeed~~ | Shipped, R-Series. The row said two unrelated products and there are four: R-Series is retail, K-Series is restaurants, X-Series is the former Vend and eCom is the former SEOshop, each with its own API and credential. The Recipe says which one it is in its first line, and detection maps the R-Series client alone |
 | ~~Clover~~ | Shipped. An order comes back with no items in it unless the request asked to expand them, and forgetting is answered rather than refused |

@@ -1006,3 +1006,34 @@ func TestDetectPrintfulFromTheApiClientsOnly(t *testing.T) {
 		t.Errorf("a translation CMS offered the printful Recipe: %+v", p.Requirements)
 	}
 }
+
+// A different reason to exclude something than any other row in this table.
+// @medusajs/medusa is not a client of the API -- it is the commerce engine
+// that serves it. A project depending on it is the store rather than a caller
+// of one, and offering it an emulator of itself is not useful: that project's
+// tests want a database, not a fake of the thing they are running.
+//
+// @medusajs/js-sdk is the client, and it is the only mapping.
+func TestDetectMedusaFromTheClientAndNotTheEngine(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@medusajs/js-sdk": "^2.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "medusa") {
+		t.Errorf("the SDK did not detect medusa: %+v", p.Requirements)
+	}
+
+	p, err = Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@medusajs/medusa": "^2.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "medusa") {
+		t.Errorf("the engine offered the medusa Recipe: %+v", p.Requirements)
+	}
+}
