@@ -53,6 +53,16 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// aftership-apps-magento2 is a Magento storefront extension rather
+			// than a client: a shop installing it talks to Magento, and
+			// AfterShip talks to AfterShip. Naming the two SDKs explicitly
+			// keeps a vendor-prefix rule from offering a tracking emulator to
+			// a shop that never calls one.
+			recipe:   "aftership",
+			composer: []string{"aftership/aftership-php-sdk", "aftership/tracking-sdk"},
+			npm:      []string{"aftership"},
+		},
+		{
 			// The unscoped npm package called easypost is not this EasyPost.
 			// It reads POST bodies from form submissions in Node, has nothing
 			// to do with shipping, and is exactly the sort of name collision

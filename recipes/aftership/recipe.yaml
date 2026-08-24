@@ -1,0 +1,443 @@
+# AfterShip Recipe for Cauldron
+#
+# A tracking number does not identify a parcel. Carriers mint numbers in their
+# own namespaces and they collide, so AfterShip keys a tracking by carrier and
+# number together -- the slug and the number, both, in the path. Code that
+# stores the number alone and looks it up later is looking up something that
+# may belong to a different carrier, and the answer is a real tracking for a
+# real parcel that is not yours.
+#
+# Six things worth modelling exactly:
+#
+#   1. The key is composite. /trackings/{slug}/{tracking_number}, and the slug
+#      is the carrier. The same number under the wrong slug is a 404, not a
+#      redirect and not a best guess.
+#   2. The envelope key changes with cardinality. A listing is
+#      data.trackings and one tracking is data.tracking -- plural and
+#      singular, in the same API, so a client with one response helper reads
+#      undefined from whichever half it was not written for.
+#   3. Status is two fields and only one of them is safe. tag is the coarse
+#      state from a fixed set; subtag is finer and carries a numeric suffix
+#      like InTransit_001 that AfterShip adds to over time. Branching on
+#      subtag breaks when they add one.
+#   4. Delivered is not terminal. A delivered parcel can move to Exception
+#      afterwards -- refused, returned, damaged -- so code that stops polling
+#      on Delivered stops watching exactly when something goes wrong.
+#   5. Every response carries meta.code beside the HTTP status, and a
+#      successful one says 200 in both places. The duplication invites a
+#      client to check one of them, and the one that is easier to reach is
+#      not the one an HTTP library already handles.
+#   6. Creating a tracking twice is not idempotent. The second call is
+#      refused with 4003, so a retry after a timeout -- where the first call
+#      may well have succeeded -- fails in a way that looks like the tracking
+#      was never created.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Checkpoints do not advance. A real tracking accumulates them as the
+#     carrier scans the parcel, and AfterShip pushes a webhook each time;
+#     here a tracking carries whatever the fixture says, forever.
+#   - AfterShip detects the carrier from the number when the slug is omitted
+#     on create, which is a genuinely useful thing it does and is not
+#     modelled: a create here stores whatever slug it is given.
+#   - The courier list, the last-mile handover between two carriers, and the
+#     estimated delivery model are all absent. Only trackings are modelled.
+#
+# The key below is a fixture, not a secret. It belongs to no account.
+
+recipe: aftership
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+
+auth:
+  scheme: header
+  header: aftership-api-key
+  keys:
+    - cauldron_aftership_key_00000000
+
+responses:
+  list:
+    style: wrapped
+    key: data.trackings
+  resource:
+    # Singular. The listing above is plural, in the same API, so one response
+    # helper cannot read both.
+    style: wrapped
+    key: data.tracking
+  error:
+    style: nested
+    key: meta
+    message_field: message
+    code_field: code
+    # AfterShip's codes really are numbers, and an unset code_type would infer
+    # the same thing from the digits, so this line states the claim rather
+    # than changing the bytes -- removing it was the one mutation of fifteen
+    # that survived. It is here because the inference is a guess that happens
+    # to be right, and Adyen is the counterexample the format keeps this
+    # field for: its "000" is a string and loses its zeros to the same guess.
+    code_type: number
+    type_field: type
+  success:
+    # Beside the data on every successful answer, saying 200 a second time.
+    fields:
+      meta.code: 200
+
+resources:
+  tracking:
+    id:
+      # AfterShip mints its own opaque id alongside the composite key, so
+      # there are two ways to address a tracking and only one of them is the
+      # one anybody has to hand.
+      style: hex
+      length: 32
+    fields:
+      # The carrier. Half the key, and the half people forget to store.
+      slug:
+        type: string
+        required: true
+      tracking_number:
+        type: string
+        required: true
+      # Pending, InfoReceived, InTransit, OutForDelivery, AttemptFail,
+      # Delivered, AvailableForPickup, Exception, Expired. A fixed set, and
+      # the one to branch on.
+      tag:
+        type: string
+        default: Pending
+      # Finer, and open-ended. InTransit_001, Exception_004. AfterShip adds
+      # new ones, so a switch over these has a default branch it will reach.
+      subtag:
+        type: string
+        default: Pending_001
+      subtag_message:
+        type: string
+      # Oldest first, which is the opposite of what a "latest status" reader
+      # usually wants.
+      checkpoints:
+        type: list
+      # Null far more often than not. AfterShip only knows this when the
+      # carrier says so, and most do not.
+      expected_delivery:
+        type: datetime
+        null_when_unset: true
+      # Set the first time the parcel is marked delivered, and not cleared if
+      # it later goes to Exception -- so a tracking can carry a delivery time
+      # and a tag saying it was returned.
+      shipment_delivery_date:
+        type: datetime
+        null_when_unset: true
+      title:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v4/trackings
+    resource: tracking
+    operation: list
+
+  # The composite key. slug is scoped, so a tracking number under the wrong
+  # carrier is not found rather than being guessed at.
+  - method: GET
+    path: /v4/trackings/{slug}/{id}
+    resource: tracking
+    operation: get
+    scope: [slug]
+    lookup_by: tracking_number
+
+  - method: POST
+    path: /v4/trackings
+    resource: tracking
+    operation: create
+    status: 201
+
+  - method: DELETE
+    path: /v4/trackings/{slug}/{id}
+    resource: tracking
+    operation: delete
+    scope: [slug]
+    lookup_by: tracking_number
+
+errors:
+  # Not idempotent. A retry after a timeout, where the first call may well
+  # have succeeded, is refused in a way that reads like the tracking was
+  # never created.
+  tracking_already_exists:
+    status: 400
+    code: "4003"
+    type: BadRequest
+    message: Tracking already exists.
+
+  authentication_error:
+    status: 401
+    code: "401"
+    type: Unauthorized
+    message: Invalid API key.
+
+  resource_missing:
+    status: 404
+    code: "4004"
+    type: NotFound
+    message: The tracking cannot be found.
+
+  parameter_missing:
+    status: 400
+    code: "4001"
+    type: BadRequest
+    message: The value of tracking_number is invalid.
+
+  rate_limit:
+    status: 429
+    code: "429"
+    type: TooManyRequests
+    message: You have exceeded the API call rate limit.
+    headers:
+      # A Unix timestamp in seconds, not a delay. Sleeping for this many
+      # seconds waits until 2027.
+      x-ratelimit-reset: "1772668800"
+      x-ratelimit-remaining: "0"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    tracking:
+      - id: 0000000000000000000000000000ca01
+        slug: usps
+        tracking_number: "9400111899223197428490"
+        tag: InTransit
+        subtag: InTransit_001
+        subtag_message: In Transit
+        title: Cast iron cauldron
+        checkpoints:
+          - tag: InfoReceived
+            subtag: InfoReceived_001
+            message: Shipping Label Created
+            checkpoint_time: "2026-02-01T09:20:00"
+          - tag: InTransit
+            subtag: InTransit_001
+            message: Arrived at Facility
+            checkpoint_time: "2026-02-02T07:05:00"
+        created_at: "2026-02-01T09:15:00Z"
+      # The same number, a different carrier, a different parcel. This is why
+      # the key is composite and why storing the number alone is a bug.
+      - id: 0000000000000000000000000000ca02
+        slug: fedex
+        tracking_number: "9400111899223197428490"
+        tag: Delivered
+        subtag: Delivered_001
+        subtag_message: Delivered
+        title: Brass ladle
+        checkpoints:
+          - tag: Delivered
+            subtag: Delivered_001
+            message: Delivered, Front Door
+            checkpoint_time: "2026-02-03T14:12:00"
+        shipment_delivery_date: "2026-02-03T14:12:00Z"
+        created_at: "2026-02-01T10:00:00Z"
+      # Delivered, and then returned. The delivery date is still set.
+      - id: 0000000000000000000000000000ca03
+        slug: ups
+        tracking_number: "1Z999AA10123456784"
+        tag: Exception
+        subtag: Exception_004
+        subtag_message: Returned to sender
+        title: Linen apron
+        checkpoints:
+          - tag: Delivered
+            subtag: Delivered_001
+            message: Delivered
+            checkpoint_time: "2026-02-03T11:00:00"
+          - tag: Exception
+            subtag: Exception_004
+            message: Refused by recipient, returning
+            checkpoint_time: "2026-02-04T09:30:00"
+        shipment_delivery_date: "2026-02-03T11:00:00Z"
+        created_at: "2026-02-01T11:00:00Z"
+
+conformance:
+  - name: the same tracking number under two carriers is two parcels
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/usps/9400111899223197428490
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # Singular. The listing is data.trackings and this is data.tracking.
+        data.tracking.slug: usps
+        data.tracking.title: Cast iron cauldron
+        data.tracking.tag: InTransit
+
+  - name: and the other carrier answers with the other one
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/fedex/9400111899223197428490
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # Same number, different carrier, different parcel, different status.
+        # Code that stored the number alone and picked a carrier by habit
+        # reports the wrong one and never finds out.
+        data.tracking.slug: fedex
+        data.tracking.title: Brass ladle
+        data.tracking.tag: Delivered
+
+  - name: the wrong carrier is a miss rather than a guess
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/dhl/9400111899223197428490
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 404
+      body:
+        # The failure nests under meta, and the code there is a number that
+        # is not the HTTP status.
+        meta.code: 4004
+        meta.message: The tracking cannot be found.
+        meta.type: NotFound
+
+  - name: a listing is plural where a record is singular
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        data.trackings[0].slug: usps
+      absent:
+        # The singular key, which is what the same client reads on the other
+        # endpoint.
+        - data.tracking
+        - trackings
+
+  - name: delivered is not the end of the story
+    source: https://www.aftership.com/docs/tracking/references/tracking-status
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/ups/1Z999AA10123456784
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # Delivered, then refused. Code that stops polling on Delivered stops
+        # watching exactly when something goes wrong.
+        data.tracking.tag: Exception
+        data.tracking.subtag: Exception_004
+        # And the delivery date is still set, because AfterShip does not
+        # clear it. A report keyed on "has a delivery date" counts this as
+        # delivered.
+        data.tracking.shipment_delivery_date: "2026-02-03T11:00:00Z"
+        data.tracking.checkpoints[0].tag: Delivered
+        data.tracking.checkpoints[1].tag: Exception
+
+  - name: the coarse status is a fixed set and the fine one is not
+    source: https://www.aftership.com/docs/tracking/references/tracking-status
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/usps/9400111899223197428490
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # tag is one of nine words. subtag carries a numeric suffix AfterShip
+        # adds to over time, so a switch over these has a default branch it
+        # will reach.
+        data.tracking.tag: InTransit
+        data.tracking.subtag: InTransit_001
+        data.tracking.subtag_message: In Transit
+
+  - name: expected delivery is null far more often than not
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings/usps/9400111899223197428490
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # Null rather than absent. AfterShip only knows this when the carrier
+        # says so, and most do not, so a delivery estimate shown to a
+        # customer is missing more often than it is present.
+        data.tracking.expected_delivery: null
+
+  - name: a successful answer states its status twice
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 200
+      body:
+        # Beside the data, saying 200 a second time. The duplication invites
+        # a client to check one of them, and the easier one to reach is not
+        # the one an HTTP library already handles.
+        meta.code: 200
+
+  - name: creating the same tracking twice is refused
+    source: https://www.aftership.com/docs/tracking/quickstart/api-quick-start
+    arm: tracking_already_exists
+    fixture: small-account
+    request:
+      method: POST
+      path: /v4/trackings
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+      json:
+        slug: usps
+        tracking_number: "9400111899223197428490"
+    expect:
+      # So a retry after a timeout, where the first call may well have
+      # succeeded, fails in a way that reads like the tracking was never
+      # created.
+      status: 400
+      body:
+        meta.code: 4003
+        meta.message: Tracking already exists.
+
+  - name: the rate limit reset is a timestamp and not a delay
+    source: https://www.aftership.com/docs/tracking/quickstart/rate-limit
+    arm: rate_limit
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/trackings
+      headers:
+        aftership-api-key: cauldron_aftership_key_00000000
+    expect:
+      status: 429
+      headers:
+        # Seconds since the epoch. Slept for as a duration this waits until
+        # 2027.
+        x-ratelimit-reset: "1772668800"
+        x-ratelimit-remaining: "0"
+      body:
+        meta.code: 429
