@@ -706,7 +706,7 @@ func seededID(id ID, value any) (string, bool) {
 		}
 
 	case "", "prefixed":
-		if id.Prefix != "" && !strings.HasPrefix(text, id.Prefix) {
+		if id.Prefix != "" && !strings.HasPrefix(text, id.Prefix) && !hasAnyPrefix(text, id.OtherPrefixes) {
 			return "does not start with " + id.Prefix, false
 		}
 	}
@@ -774,4 +774,15 @@ func listedResources(r *Recipe) []string {
 	}
 
 	return names
+}
+
+// hasAnyPrefix reports whether text starts with any of them.
+func hasAnyPrefix(text string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if prefix != "" && strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
