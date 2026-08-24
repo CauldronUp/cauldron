@@ -167,6 +167,7 @@ func (r *Recipe) Validate() error {
 	for _, declared := range []struct{ what, name string }{
 		{"cursor_field", r.Responses.List.CursorField},
 		{"count_field", r.Responses.List.CountField},
+		{"page_count_field", r.Responses.List.PageCountField},
 		{"has_more_field", r.Responses.List.HasMoreField},
 		{"complete_field", r.Responses.List.CompleteField},
 		{"final_field", r.Responses.List.FinalField},
@@ -213,6 +214,40 @@ func (r *Recipe) Validate() error {
 	// which page you are looking at, which is worse than either field alone.
 	if f := r.Responses.List.FinalField; f != "" && f == r.Responses.List.CursorField {
 		add("responses.list declares cursor_field and final_field as the same name %q, so one key would mean a page token on one page and a sync token on the next", f)
+	}
+
+	// An optimistic lock has to be made of parts that exist: a field the
+	// resource declares, and failures the Recipe describes. A version field
+	// naming nothing would be stamped onto no record and compared against
+	// nothing, so every write would read as stale.
+	for name, resource := range r.Resources {
+		field := resource.VersionField
+
+		if field == "" {
+			if resource.VersionConflict != "" || resource.VersionMissing != "" {
+				add("resources.%s names a version failure and no version_field, so nothing would ever raise it", name)
+			}
+
+			continue
+		}
+
+		if _, ok := resource.Fields[field]; !ok {
+			add("resources.%s declares version_field: %q and has no such field, so there would be no version to compare", name, field)
+		}
+
+		if resource.VersionConflict == "" {
+			add("resources.%s declares version_field: %q and no version_conflict, so a stale write would be accepted", name, field)
+		}
+
+		for _, raise := range []string{resource.VersionConflict, resource.VersionMissing} {
+			if raise == "" {
+				continue
+			}
+
+			if _, ok := r.Errors[raise]; !ok {
+				add("resources.%s names the version failure %q and errors does not define it", name, raise)
+			}
+		}
 	}
 
 	// A refusal has to name a failure the Recipe declares, or the route would
@@ -277,6 +312,13 @@ func (r *Recipe) Validate() error {
 
 		if spec.CountMeans != "lookahead" && spec.CountLookahead > 0 {
 			add("%s declares count_lookahead: %d and count_means is %q, so the window is described and never used", entry.where, spec.CountLookahead, spec.CountMeans)
+		}
+
+		// Two names for two quantities, or one name for one. Declaring the
+		// same name for both would emit a single key holding whichever was
+		// written last, which is the confusion these exist to remove.
+		if spec.PageCountField != "" && spec.PageCountField == spec.CountField {
+			add("%s declares count_field and page_count_field as the same name %q, so one key would have to carry both the total and the page length", entry.where, spec.CountField)
 		}
 
 		// A page count is arithmetic on a total, and these say the total is

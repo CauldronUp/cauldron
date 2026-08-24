@@ -182,6 +182,21 @@ type ListResponse struct {
 	// anything beyond the window, and it is why the number ends in a 1 rather
 	// than landing on a page boundary.
 	CountLookahead int `yaml:"count_lookahead"`
+	// PageCountField names a property carrying how many records are on this
+	// page, for the providers that send that beside the total rather than
+	// instead of it.
+	//
+	// count_means exists because Shopware sends one number and it is
+	// sometimes the page; this exists because commercetools sends both, and
+	// the format could previously say only one of them. Its listings carry
+	// count -- "actual number of results returned" -- next to total, which is
+	// the whole matching set and which its own description warns is an
+	// estimate rather than a strongly consistent figure.
+	//
+	// Naming them apart is the honest half of the same problem. A provider
+	// that sends both has told the caller which is which; the trap is only
+	// there when one name has to carry both meanings.
+	PageCountField string `yaml:"page_count_field"`
 	// PagesField names a property carrying how many pages the whole set makes
 	// at this page size, which is a different quantity from CountField.
 	//
@@ -390,6 +405,7 @@ func (r Recipe) ListFor(route Route) ListResponse {
 	override(&spec.CursorField, route.List.CursorField)
 	override(&spec.CountField, route.List.CountField)
 	override(&spec.CountMeans, route.List.CountMeans)
+	override(&spec.PageCountField, route.List.PageCountField)
 	override(&spec.PageField, route.List.PageField)
 	override(&spec.LimitField, route.List.LimitField)
 	override(&spec.HasMoreField, route.List.HasMoreField)

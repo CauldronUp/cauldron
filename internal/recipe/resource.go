@@ -18,8 +18,41 @@ type Resource struct {
 	// that stored the readable one holds a dangling reference and gets no
 	// error saying so. An emulator accepting only the identifier would reject
 	// half the calls that work against the real API.
-	Alias  string           `yaml:"alias"`
-	Fields map[string]Field `yaml:"fields"`
+	Alias string `yaml:"alias"`
+	// VersionField names a field the provider keeps as an optimistic lock: a
+	// number that moves on every write, which a caller has to quote back
+	// before the provider will accept the next one.
+	//
+	// commercetools is the reason. Every resource it serves carries a
+	// version, every update body is {version, actions} rather than a
+	// document, and writing over a version that is not the current one is
+	// refused with the current one in the reply so the retry can be
+	// scripted. Without a way to say that, a Recipe describing such an API
+	// serves an emulator that takes any write at all -- and the code written
+	// against it passes every test, because a test suite is the one place
+	// where nothing else is writing.
+	//
+	// That is the failure this is for. Ignoring the version is invisible
+	// until two things touch one record at once, and then it is a silent
+	// overwrite rather than an error: the later write wins and the earlier
+	// one is gone, with nothing logged anywhere.
+	VersionField string `yaml:"version_field"`
+	// VersionConflict names the failure a stale write is refused with.
+	VersionConflict string `yaml:"version_conflict"`
+	// VersionMissing names the failure a write carrying no version at all is
+	// refused with, for the providers that require one.
+	//
+	// Separate from VersionConflict because providers separate them, and
+	// commercetools does: a stale version is a 409 that hands back the
+	// current one, and an absent version is a 400 about a required field.
+	// A client that retries on 409 and gives up on 400 needs them to be
+	// different, and folding the two together here would teach it that every
+	// rejected write is worth retrying.
+	//
+	// Empty lets a write with no version through, which is what a provider
+	// that treats the field as optional does.
+	VersionMissing string           `yaml:"version_missing"`
+	Fields         map[string]Field `yaml:"fields"`
 	// Constants are fields the provider always sends with a fixed value, such
 	// as Stripe's object discriminator and livemode flag. Unlike a default they
 	// cannot be overridden by the caller, because the provider does not let you

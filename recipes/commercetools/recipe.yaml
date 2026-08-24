@@ -1,0 +1,737 @@
+# commercetools Recipe for Cauldron
+#
+# Written against commercetools' own API reference, which it publishes as RAML
+# at github.com/commercetools/commercetools-api-reference, and against the
+# status-code table on docs.commercetools.com/api/errors. Every figure and
+# field name below was read out of one of those, including the example
+# response commercetools ships beside the Product type.
+#
+# The reason this Recipe exists is that commercetools will not take a write
+# unless you say what you are writing over.
+#
+# Every resource carries a version. Every update is a POST -- not a PATCH and
+# not a PUT -- whose body is {version, actions} rather than a document. And a
+# write quoting a version that is no longer current is refused, with the
+# current one handed back so the retry can be scripted:
+#
+#     "Object $resourceId has a different version than expected.
+#      Expected: $expectedVersion - Actual: $currentVersion."
+#
+# That is optimistic concurrency, and it is the kind of contract a test suite
+# is structurally unable to test. A suite is the one place where nothing else
+# is writing to the record, so code that quotes a stale version, or no version
+# at all, passes everything. The failure only appears when two things touch
+# one record at once -- and it is not an error when it appears, it is a silent
+# overwrite: the later write wins, the earlier one is gone, and nothing is
+# logged.
+#
+# Cauldron had no way to say any of that until this Recipe, so an emulator of
+# a version-checked API accepted every write. Three settings now describe it,
+# and the reason there are three rather than two is that commercetools
+# separates a stale version from an absent one: the first is a 409 that hands
+# back the current number, the second is a 400 about a required field. A
+# client that retries on one and gives up on the other needs them apart.
+#
+# Five more things worth modelling exactly:
+#
+#   1. A product carries two complete copies of itself. masterData.current is
+#      what is published and masterData.staged is what has been edited, with
+#      hasStagedChanges saying whether they differ. There is no product.name:
+#      the name is at masterData.current.name.en, three levels down and behind
+#      a locale key.
+#   2. Every translatable string is an object keyed by locale rather than a
+#      string. Code doing product.name.trim() throws on a LocalizedString.
+#   3. Money is centAmount plus currencyCode, and centAmount is the smallest
+#      indivisible unit -- which for JPY is the yen itself. The reference says
+#      it outright: "5 JPY is specified as 5". A helper that divides by a
+#      hundred for every currency is wrong by a factor of a hundred for the
+#      currencies that have no minor unit, and fractionDigits beside the
+#      number is the only thing that says so.
+#   4. A listing sends both quantities and names them apart: count is what is
+#      on this page, total is everything matching. total is also, in the
+#      reference's own words, "an estimation that is not strongly consistent",
+#      so it can disagree with what is actually fetchable.
+#   5. offset has a documented maximum of 10000. Deep paging is not slow here,
+#      it is unavailable, and a job that walks a large collection by offset
+#      stops being able to at ten thousand records.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Update actions are accepted and not interpreted. Cauldron applies field
+#     assignments and commercetools takes a list of named operations, so an
+#     update here advances the version and leaves the data as it was. The
+#     version protocol is what this route is for; changeName is not modelled.
+#   - The version conflict carries a fixed currentVersion, because a Recipe's
+#     error bodies are constants. The shape and the code are the claim; the
+#     number in the message is a fixture.
+#   - The limit maximum of 500 and the offset maximum of 10000 are documented
+#     and are declared here as the errors they raise, not enforced. Cauldron
+#     can refuse an oversized page and cannot yet refuse a deep offset.
+#   - An error body here is {errors: [...]} and nothing else. commercetools
+#     also sends a top-level statusCode and a top-level message that is a copy
+#     of errors[0].message -- so a client reading message reports the first of
+#     several failures and drops the rest, which is worth knowing and is not
+#     modelled. A Recipe's envelope constants are the same for every failure
+#     and a status is not, so emitting one would mean labelling a 404 as a
+#     409.
+#   - Product Projections, the search endpoints, carts, customers, discounts,
+#     the OAuth token endpoint and the whole store/channel model are absent.
+#     Products and orders only.
+#
+# The token below is a fixture. commercetools issues real ones from an OAuth
+# client-credentials exchange on a separate host, which is not modelled.
+
+recipe: commercetools
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.commercetools.com/api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_commercetools_fixture_token_0
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # Everything matching, and the reference warns in as many words that it is
+    # an estimate rather than a strongly consistent count.
+    count_field: total
+    # And what is actually in the array, which commercetools names separately
+    # rather than making one field mean both.
+    page_count_field: count
+    limit_field: limit
+    page_field: offset
+  resource:
+    style: bare
+  error:
+    # The array, which is the part every failure has and the part a client has
+    # to loop over. See the gaps at the top for the two top-level fields
+    # beside it that a Recipe cannot vary per failure.
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  product:
+    id:
+      # A dashed UUID, unlike a good many commerce APIs.
+      style: uuid
+    # The optimistic lock. Every write has to quote it and every write moves
+    # it on.
+    version_field: version
+    version_conflict: concurrent_modification
+    version_missing: required_field
+    fields:
+      version:
+        type: integer
+        default: 1
+      key:
+        type: string
+      productType:
+        type: map
+      # Two copies of the product in one payload: what is published, what has
+      # been edited, and a flag saying whether they differ. There is no name
+      # on the product itself.
+      masterData:
+        type: map
+      createdAt:
+        type: string
+      lastModifiedAt:
+        type: string
+
+  order:
+    id:
+      style: uuid
+    version_field: version
+    version_conflict: concurrent_modification
+    version_missing: required_field
+    fields:
+      version:
+        type: integer
+        default: 1
+      orderNumber:
+        type: string
+      # centAmount and currencyCode, with fractionDigits saying how many of
+      # those cents make a unit -- which is nought for the currencies that
+      # have no minor unit at all.
+      totalPrice:
+        type: map
+      taxedPrice:
+        type: map
+      orderState:
+        type: string
+        default: Open
+      paymentState:
+        type: string
+      shipmentState:
+        type: string
+      customerEmail:
+        type: string
+      lineItems:
+        type: list
+      createdAt:
+        type: string
+      lastModifiedAt:
+        type: string
+
+routes:
+  - method: GET
+    path: /{projectKey}/products
+    resource: product
+    operation: list
+    pagination:
+      style: offset
+      # The documented default, with a documented maximum of 500.
+      limit: 20
+      max_limit: 500
+      limit_param: limit
+      cursor_param: offset
+      # An offset counts records from nought, and saying so is what keeps the
+      # echoed offset honest on the first page.
+      first_page: 0
+      over_limit: invalid_input
+
+  # The same listing with the count switched off. withTotal defaults to true
+  # here, which is the opposite of the arrangement Shopware has: asking for
+  # less makes the field disappear rather than making it mean something else.
+  - method: GET
+    path: /{projectKey}/products
+    resource: product
+    operation: list
+    matches_query:
+      withTotal: "false"
+    list:
+      # "-" clears the count field, so total is absent rather than wrong.
+      count_field: "-"
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 500
+      limit_param: limit
+      cursor_param: offset
+      first_page: 0
+      over_limit: invalid_input
+
+  - method: GET
+    path: /{projectKey}/products/{id}
+    resource: product
+    operation: get
+
+  # An update, by POST, carrying the version it expects to replace.
+  - method: POST
+    path: /{projectKey}/products/{id}
+    resource: product
+    operation: update
+
+  - method: GET
+    path: /{projectKey}/orders
+    resource: order
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 500
+      limit_param: limit
+      cursor_param: offset
+      first_page: 0
+      over_limit: invalid_input
+
+  - method: GET
+    path: /{projectKey}/orders/{id}
+    resource: order
+    operation: get
+
+  - method: POST
+    path: /{projectKey}/orders/{id}
+    resource: order
+    operation: update
+
+errors:
+  # 409 Conflict. The reply carries the version the caller should have quoted,
+  # which is what makes the retry scriptable rather than a guess.
+  concurrent_modification:
+    status: 409
+    code: ConcurrentModification
+    message: "Object e7ba4c75-b1bb-483d-94d8-2c4a10f78472 has a different version than expected. Expected: 1 - Actual: 2."
+    fields:
+      currentVersion: 2
+
+  # 400, and deliberately not the 409 above: a write with no version at all is
+  # a malformed request rather than a lost race, and retrying it will not
+  # help.
+  required_field:
+    status: 400
+    code: RequiredField
+    message: "A value is required for field 'version'."
+    fields:
+      field: version
+
+  invalid_input:
+    status: 400
+    code: InvalidInput
+    message: "The value '750' is not valid for field 'limit'. Maximum is 500."
+
+  # The documented ceiling on how far an offset can reach. Declared because it
+  # is real and injectable because Cauldron cannot yet refuse a deep offset on
+  # its own.
+  offset_out_of_range:
+    status: 400
+    code: InvalidInput
+    message: "The value '20000' is not valid for field 'offset'. Maximum is 10000."
+
+  resource_missing:
+    status: 404
+    code: ResourceNotFound
+    message: "The Resource with ID 'missing' was not found."
+
+  authentication_error:
+    status: 401
+    code: invalid_token
+    message: invalid_token
+
+fixtures:
+  empty: {}
+
+  catalogue:
+    product:
+      # Version 2, published, and with the staged copy already ahead of the
+      # current one -- which is the state an editor leaves behind and a
+      # storefront has to know to ignore.
+      - id: e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+        version: 2
+        key: premium-tech-t
+        productType:
+          typeId: product-type
+          id: 24f0a0f8-5e1b-4a2b-9ac7-3b6d0e1f9c4a
+        masterData:
+          published: true
+          # The published copy says one thing.
+          current:
+            name:
+              en: MB PREMIUM TECH T
+              de: MB PREMIUM TECH T
+            slug:
+              en: mb-premium-tech-t1369226795424
+            description:
+              en: Sample description
+            categories:
+              - typeId: category
+                id: cf6d790a-f027-4f46-9a2b-4bc9a31066fb
+            masterVariant:
+              id: 1
+              sku: sku_MB_PREMIUM_TECH_T_variant1_1369226795424
+              prices:
+                - id: 753472a3-ddff-4e0f-a93b-2eb29c90ba54
+                  value:
+                    type: centPrecision
+                    currencyCode: EUR
+                    centAmount: 10000
+                    fractionDigits: 2
+              attributes: []
+            variants: []
+          # And the edited copy says another. Nothing but hasStagedChanges
+          # tells a reader that the two disagree.
+          staged:
+            name:
+              en: MB Premium Tech Tee
+              de: MB Premium Tech Shirt
+            slug:
+              en: mb-premium-tech-t1369226795424
+            description:
+              en: Sample description
+            categories:
+              - typeId: category
+                id: cf6d790a-f027-4f46-9a2b-4bc9a31066fb
+            masterVariant:
+              id: 1
+              sku: sku_MB_PREMIUM_TECH_T_variant1_1369226795424
+              prices:
+                - id: 753472a3-ddff-4e0f-a93b-2eb29c90ba54
+                  value:
+                    type: centPrecision
+                    currencyCode: EUR
+                    centAmount: 11000
+                    fractionDigits: 2
+              attributes: []
+            variants: []
+          hasStagedChanges: true
+        createdAt: "2026-01-14T09:02:11.482Z"
+        lastModifiedAt: "2026-02-03T16:41:55.019Z"
+      # A second product, never edited since publishing, so its two copies
+      # agree and the flag says so.
+      - id: 9c3f5a71-2d84-4e0b-b6a9-1f7c8e05d243
+        version: 1
+        key: classic-mug
+        productType:
+          typeId: product-type
+          id: 24f0a0f8-5e1b-4a2b-9ac7-3b6d0e1f9c4a
+        masterData:
+          published: true
+          current:
+            name:
+              en: Classic Mug
+              de: Klassische Tasse
+            slug:
+              en: classic-mug
+            categories: []
+            masterVariant:
+              id: 1
+              sku: sku_CLASSIC_MUG_1
+              prices:
+                - id: 1a5e9c04-7b2d-4f83-a6c1-90de24b7f358
+                  value:
+                    type: centPrecision
+                    currencyCode: EUR
+                    centAmount: 1250
+                    fractionDigits: 2
+              attributes: []
+            variants: []
+          staged:
+            name:
+              en: Classic Mug
+              de: Klassische Tasse
+            slug:
+              en: classic-mug
+            categories: []
+            masterVariant:
+              id: 1
+              sku: sku_CLASSIC_MUG_1
+              prices:
+                - id: 1a5e9c04-7b2d-4f83-a6c1-90de24b7f358
+                  value:
+                    type: centPrecision
+                    currencyCode: EUR
+                    centAmount: 1250
+                    fractionDigits: 2
+              attributes: []
+            variants: []
+          hasStagedChanges: false
+        createdAt: "2026-01-20T11:15:03.221Z"
+        lastModifiedAt: "2026-01-20T11:15:03.221Z"
+    order:
+      # A euro order: 12500 cents is 125.00, because EUR has two of them.
+      - id: 5b0c8e1a-4f37-42d9-8a06-c7e5194b23df
+        version: 3
+        orderNumber: "2026-000117"
+        customerEmail: jane@example.test
+        orderState: Confirmed
+        paymentState: Paid
+        totalPrice:
+          type: centPrecision
+          currencyCode: EUR
+          centAmount: 12500
+          fractionDigits: 2
+        taxedPrice:
+          totalNet:
+            type: centPrecision
+            currencyCode: EUR
+            centAmount: 10504
+            fractionDigits: 2
+          totalGross:
+            type: centPrecision
+            currencyCode: EUR
+            centAmount: 12500
+            fractionDigits: 2
+        lineItems:
+          - id: 8f2a94c7-1e06-4b53-9d81-6a3f0c2e75b9
+            productId: e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+            quantity: 1
+            name:
+              en: MB PREMIUM TECH T
+        createdAt: "2026-02-09T08:31:44.912Z"
+        lastModifiedAt: "2026-02-10T13:07:22.640Z"
+      # A yen order: the same 12500 is twelve and a half thousand yen, not a
+      # hundred and twenty-five. fractionDigits is nought and it is the only
+      # thing in the payload that says so.
+      - id: 7d1e46b9-08a5-4c72-b3f0-e29d5187ca64
+        version: 1
+        orderNumber: "2026-000118"
+        customerEmail: kenji@example.test
+        orderState: Open
+        totalPrice:
+          type: centPrecision
+          currencyCode: JPY
+          centAmount: 12500
+          fractionDigits: 0
+        lineItems:
+          - id: 3c60fb2d-95a7-41e8-80cd-b47e19f5a206
+            productId: 9c3f5a71-2d84-4e0b-b6a9-1f7c8e05d243
+            quantity: 2
+            name:
+              en: Classic Mug
+        createdAt: "2026-02-11T02:18:56.104Z"
+        lastModifiedAt: "2026-02-11T02:18:56.104Z"
+
+conformance:
+  - name: a write has to say which version it is replacing
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductUpdate.raml
+    fixture: catalogue
+    request:
+      method: POST
+      path: /cauldron-shop/products/e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+        Content-Type: application/json
+      json:
+        version: 2
+        actions:
+          - action: publish
+    expect:
+      status: 200
+      body:
+        # Accepted, and the version moves. Replaying this exact body a second
+        # time is refused by the case below, which is the entire point of the
+        # number.
+        version: 3
+        key: premium-tech-t
+
+  - name: a stale version is refused with the current one in the reply
+    source: https://docs.commercetools.com/api/errors
+    fixture: catalogue
+    request:
+      method: POST
+      path: /cauldron-shop/products/e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+        Content-Type: application/json
+      json:
+        version: 1
+        actions:
+          - action: publish
+    expect:
+      # 409 Conflict, which the error table lists against
+      # ConcurrentModification and nothing else except SearchNotReady.
+      status: 409
+      body:
+        errors[0].code: ConcurrentModification
+        # The number to quote on the retry, so the client does not have to
+        # re-fetch to find it.
+        errors[0].currentVersion: 2
+      matches:
+        errors[0].message: different version than expected
+
+  - name: a write with no version at all is a different failure
+    source: https://docs.commercetools.com/api/errors
+    fixture: catalogue
+    request:
+      method: POST
+      path: /cauldron-shop/products/e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+        Content-Type: application/json
+      json:
+        actions:
+          - action: publish
+    expect:
+      # 400 and RequiredField, not the 409 above. A client that retries on a
+      # conflict and gives up on a malformed request needs these apart, and
+      # folding them together would send it round a loop that cannot succeed.
+      status: 400
+      body:
+        errors[0].code: RequiredField
+        errors[0].field: version
+
+  - name: a product has no name on it
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductCatalogData.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products/e7ba4c75-b1bb-483d-94d8-2c4a10f78472
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # Three levels down and behind a locale key, and there are two of
+        # them: what is published and what has been edited.
+        masterData.current.name.en: MB PREMIUM TECH T
+        masterData.staged.name.en: MB Premium Tech Tee
+        # The only thing that says the two disagree.
+        masterData.hasStagedChanges: true
+        masterData.published: true
+      absent:
+        # Not here, and not anywhere on the product.
+        - name
+        - slug
+        - description
+
+  - name: a translatable string is an object rather than a string
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/common/LocalizedString.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products/9c3f5a71-2d84-4e0b-b6a9-1f7c8e05d243
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # Two locales under one name, so anything calling .trim() on it throws
+        # and anything rendering it prints [object Object].
+        masterData.current.name.en: Classic Mug
+        masterData.current.name.de: Klassische Tasse
+
+  - name: the smallest indivisible unit is not always a hundredth
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/common/Money.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/orders/7d1e46b9-08a5-4c72-b3f0-e29d5187ca64
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # Twelve and a half thousand yen. The euro order below carries the
+        # same 12500 and means a hundred and twenty-five, and the only
+        # difference in the payload is the nought.
+        totalPrice.centAmount: 12500
+        totalPrice.currencyCode: JPY
+        totalPrice.fractionDigits: 0
+
+  - name: and the same number in euros means a hundredth of as much
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/common/Money.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/orders/5b0c8e1a-4f37-42d9-8a06-c7e5194b23df
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        totalPrice.centAmount: 12500
+        totalPrice.currencyCode: EUR
+        totalPrice.fractionDigits: 2
+        # Net and gross both, and both in cents.
+        taxedPrice.totalNet.centAmount: 10504
+
+  - name: a listing names the page and the whole set separately
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products?limit=1
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # count is what came back; total is what matched. Naming them apart is
+        # the honest arrangement, and it is why nothing here has to guess.
+        count: 1
+        total: 2
+        limit: 1
+        offset: 0
+        results[0].key: premium-tech-t
+
+  - name: a listing that names no page size gets twenty
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # The documented default. It is echoed rather than implied, so a
+        # caller can tell what it was given without knowing the reference by
+        # heart -- which is more than the ceiling does, since asking for more
+        # than 500 is refused rather than reported.
+        limit: 20
+        offset: 0
+        count: 2
+        total: 2
+
+  - name: an offset counts records from nought
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products?limit=1&offset=1
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        offset: 1
+        count: 1
+        total: 2
+        results[0].key: classic-mug
+
+  - name: switching the count off removes the field rather than changing it
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products?limit=1&withTotal=false
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 200
+      body:
+        # count is still there, because it costs nothing to know.
+        count: 1
+        limit: 1
+      absent:
+        # And total is gone. A client reading it finds undefined, which is a
+        # far better outcome than finding a number that means something else.
+        - total
+
+  - name: an oversized page is refused rather than trimmed
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products?limit=750
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      status: 400
+      body:
+        errors[0].code: InvalidInput
+      matches:
+        errors[0].message: Maximum is 500
+
+  - name: an offset past ten thousand is the documented end of paging
+    source: https://github.com/commercetools/commercetools-api-reference/blob/main/api-specs/api/types/product/ProductPagedQueryResponse.raml
+    fixture: catalogue
+    arm: offset_out_of_range
+    request:
+      method: GET
+      path: /cauldron-shop/products?limit=20&offset=20000
+      headers:
+        Authorization: Bearer cauldron_commercetools_fixture_token_0
+    expect:
+      # Not a slow query and not an empty page: deep paging by offset is
+      # unavailable, so a job walking a large collection this way stops being
+      # able to at ten thousand records.
+      status: 400
+      body:
+        errors[0].code: InvalidInput
+      matches:
+        errors[0].message: Maximum is 10000
+
+  - name: a bad token is answered without a version of anything
+    source: https://docs.commercetools.com/api/errors
+    fixture: catalogue
+    request:
+      method: GET
+      path: /cauldron-shop/products
+      headers:
+        Authorization: Bearer not_a_real_token
+    expect:
+      status: 401
+      body:
+        errors[0].code: invalid_token

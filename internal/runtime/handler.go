@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -279,6 +281,16 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 
 	if !store.Matches(existing, s.scopeVars(matched, vars)) {
 		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
+	}
+
+	// The optimistic lock, for the providers that keep one. A write that does
+	// not say which version it is replacing, or says the wrong one, is
+	// refused -- and refusing it here is the whole point: code that skips the
+	// check passes every local test, because a test suite is the one place
+	// where nothing else is writing to the same record.
+	if raise, status, ok := s.versionCheck(matched.spec.Resource, existing, changes); !ok {
+		return s.writeRecipeError(w, raise, status, "conflict",
+			"The version sent is not the current version of this record.")
 	}
 
 	updated, err := s.store.Update(matched.spec.Resource, id, changes)
@@ -627,4 +639,79 @@ func (s *Sandbox) writeRouteHeaders(w http.ResponseWriter, matched route, record
 
 		w.Header().Set(name, value)
 	}
+}
+
+// versionCheck enforces a resource's optimistic lock and advances it.
+//
+// Three outcomes, because providers distinguish three: a write carrying the
+// current version is allowed and moves the number on; a write carrying a
+// different one is a conflict; and a write carrying none at all is a separate
+// refusal, since a client that retries on the first should not retry on the
+// second.
+//
+// A resource that declares no version field is unaffected, which is every
+// Recipe written before this one.
+func (s *Sandbox) versionCheck(resource string, existing store.Record, changes map[string]any) (string, int, bool) {
+	spec, ok := s.recipe.Resources[resource]
+	if !ok || spec.VersionField == "" {
+		return "", 0, true
+	}
+
+	field := spec.VersionField
+
+	sent, present := changes[field]
+	if !present {
+		if spec.VersionMissing == "" {
+			return "", 0, true
+		}
+
+		return spec.VersionMissing, http.StatusBadRequest, false
+	}
+
+	current, known := asNumber(existing[field])
+	asked, valid := asNumber(sent)
+
+	if !known || !valid || current != asked {
+		return spec.VersionConflict, http.StatusConflict, false
+	}
+
+	// The write is accepted, and the number moves. A caller that replays the
+	// same body a second time is refused by the branch above, which is what
+	// makes the lock worth having.
+	changes[field] = int(current) + 1
+
+	return "", 0, true
+}
+
+// asNumber reads a version however it happened to arrive. A fixture holds an
+// int, and a request body holds a json.Number -- because decodeJSON uses one
+// deliberately, to keep identifiers above 2^53 exact -- so a comparison that
+// understood only one of the two would call every write stale.
+//
+// That is not a hypothetical. The first version of this compared the two
+// directly and refused a write quoting exactly the right number, which is the
+// failure mode an optimistic lock has to get right before it is worth having:
+// a lock that never opens is not safer than no lock, it is just broken in a
+// direction nobody tests for.
+func asNumber(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		n, err := typed.Float64()
+
+		return n, err == nil
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case string:
+		n, err := strconv.ParseFloat(typed, 64)
+
+		return n, err == nil
+	}
+
+	return 0, false
 }
