@@ -22,7 +22,23 @@ type segment struct {
 type route struct {
 	method   string
 	segments []segment
-	spec     recipe.Route
+	// slash records whether the declared path ends in one, because for some
+	// providers it is part of the path rather than decoration.
+	//
+	// Sixty-one routes across five Recipes -- Sentry, PostHog, GoCardless
+	// Bank Account Data, Uploadcare and now Saleor -- declare a trailing
+	// slash, and every one of them is a Django or Django-shaped API where the
+	// URL pattern is anchored and the slash is required. The router trimmed
+	// it from both sides, so all sixty-one accepted the path without it and
+	// the claim in the Recipe was decoration too.
+	//
+	// The failure that hides is the quiet kind. Django answers a slash-less
+	// path with a 301 to the slash, and a client that follows a redirect
+	// after a POST commonly drops the body -- so the request arrives, empty,
+	// at the right URL, and the server refuses it for a reason that has
+	// nothing to do with the redirect. Locally it worked.
+	slash bool
+	spec  recipe.Route
 }
 
 // router matches requests to routes.
@@ -39,6 +55,7 @@ func newRouter(r *recipe.Recipe) *router {
 		out.routes = append(out.routes, route{
 			method:   strings.ToUpper(spec.Method),
 			segments: compilePath(spec.Path),
+			slash:    len(spec.Path) > 1 && strings.HasSuffix(spec.Path, "/"),
 			spec:     spec,
 		})
 	}
@@ -133,6 +150,10 @@ func (r *router) match(method, path string) (route, map[string]string, bool) {
 func (r *router) matchSelecting(method, path, query string, params url.Values, headers http.Header) (route, map[string]string, bool) {
 	parts := splitPath(path)
 
+	// Whether the caller ended the path in a slash, which for some providers
+	// is part of the path. See route.slash.
+	slash := len(path) > 1 && strings.HasSuffix(path, "/")
+
 	var (
 		best      route
 		bestVars  map[string]string
@@ -142,6 +163,10 @@ func (r *router) matchSelecting(method, path, query string, params url.Values, h
 
 	for _, candidate := range r.routes {
 		if !strings.EqualFold(candidate.method, method) {
+			continue
+		}
+
+		if candidate.slash != slash {
 			continue
 		}
 
@@ -194,6 +219,7 @@ func (r *router) matchSelecting(method, path, query string, params url.Values, h
 // can return 405 with a useful Allow header rather than a bare 404.
 func (r *router) allowedMethods(path string) []string {
 	parts := splitPath(path)
+	slash := len(path) > 1 && strings.HasSuffix(path, "/")
 
 	var out []string
 
@@ -205,6 +231,10 @@ func (r *router) allowedMethods(path string) []string {
 		// query into 405 with Allow: POST, which tells a client to change
 		// the method it already got right. Not being modelled is a 404.
 		if candidate.spec.Selects != "" || len(candidate.spec.MatchesHeader) > 0 || len(candidate.spec.MatchesQuery) > 0 {
+			continue
+		}
+
+		if candidate.slash != slash {
 			continue
 		}
 
