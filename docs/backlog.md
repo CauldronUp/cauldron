@@ -410,6 +410,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
+| ~~Printful~~ | Shipped. Print-on-demand was not on this list at all, and neither is Printify, Wix, Squarespace, PrestaShop, Faire, Ecwid or Shopware -- a category gap rather than a provider gap. One order carries costs and retail_costs, wholesale and retail, with identical field names inside both and sometimes two currencies |
 | ~~Lightspeed~~ | Shipped, R-Series. The row said two unrelated products and there are four: R-Series is retail, K-Series is restaurants, X-Series is the former Vend and eCom is the former SEOshop, each with its own API and credential. The Recipe says which one it is in its first line, and detection maps the R-Series client alone |
 | ~~Clover~~ | Shipped. An order comes back with no items in it unless the request asked to expand them, and forgetting is answered rather than refused |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
@@ -1288,7 +1289,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty-two Recipes send at least one identifier as a number now, and each
+Thirty-three Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
