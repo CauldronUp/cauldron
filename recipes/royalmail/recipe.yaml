@@ -1,0 +1,419 @@
+# Royal Mail Click & Drop Recipe for Cauldron
+#
+# Written against the Swagger 2.0 description Royal Mail serves from its own
+# API host, at api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml.
+# Every quoted sentence, parameter rule and field name below was read out of
+# that document.
+#
+# The tenth shipping provider in this collection and the first British one.
+# The nine before it are American or global; this one is the Post Office, and
+# what it documents is different in kind.
+#
+# Deleting an order here can cost money.
+#
+# The description of DELETE /orders/{orderIdentifiers} says so, and it is
+# worth quoting whole because no other API in this collection says anything
+# like it:
+#
+#   "Please be aware labels generated on orders which are deleted are no
+#   longer valid and must be destroyed.
+#
+#   Cancelled label information is automatically shared with Royal Mail
+#   Revenue Protection, and should a cancelled label be identified on an item
+#   in the Royal Mail Network, you will be charged on your account and an
+#   additional handling fee applied."
+#
+# So the call is reversible in a database and not reversible on a parcel that
+# is already in a van. A cleanup job that deletes stale orders, a retry that
+# deletes and recreates, a test run pointed at the wrong credentials -- each of
+# them invalidates labels that may already be stuck to boxes, and the charge
+# arrives later with a fee on top.
+#
+# Which makes the next thing worse. The path parameter is a list.
+#
+#   "One or several Order Identifiers or Order References separated by
+#   semicolon. Order Identifiers are integer numbers. Order References are
+#   strings - each must be percent-encoded and surrounded by double quotation
+#   marks. The maximum number of identifiers is 100."
+#
+# and the example the document gives is
+#
+#   /orders/"ref";1001;"Reference%3BWith%3BSpecial%3BSymbols!";2345/
+#
+# A hundred orders can be named in one path segment, integers bare and strings
+# quoted, and a reference containing a semicolon has to be percent-encoded or
+# it splits the list. That example exists because references really do contain
+# semicolons. Forget the encoding on a DELETE and the request addresses orders
+# nobody named, and the paragraph above is what happens next.
+#
+# Five more, each from the same document:
+#
+#   1. Fetching one order answers with an array. The path takes a list, so it
+#      returns a list, and it returns one of the same shape whether you asked
+#      for one or a hundred. Code that reads the response as an object finds
+#      undefined.
+#   2. A delete answers 200 with the failures inside it: deletedOrders and
+#      errors, side by side, where each error names the order it belongs to.
+#      A delete that deleted nothing is a 200 with an empty first array.
+#   3. So does a create: successCount, errorsCount, createdOrders and
+#      failedOrders in one body. This collection has now seen that shape from
+#      Voucherify and Apideck as well, so it is noted as recurring rather than
+#      claimed as a finding.
+#   4. Part of the API is reserved for customers of another product.
+#      /orders/full is documented "Reserved for ChannelShipper customers
+#      only" and answers 403 "Feature not available" -- a forbidden that means
+#      you did not buy this, rather than that you lack permission, and no
+#      amount of fixing the credential changes it.
+#   5. There are two identifiers and only one is yours. orderIdentifier is an
+#      integer Royal Mail mints; orderReference is the string you supplied.
+#      Both address the same order on the same path, and only the second can
+#      contain a delimiter.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The semicolon list is described and not served. Cauldron matches one
+#     path segment as one identifier, so /orders/1001 works here and
+#     /orders/1001;1002 does not. The encoding trap is the reason this Recipe
+#     exists and it is prose, not behaviour.
+#   - And because the list is not served, neither is the array it answers
+#     with. Royal Mail returns a list of orders from /orders/{identifiers}
+#     whether one or a hundred were named; this returns the object. That is a
+#     real difference and it is here rather than hidden: code written against
+#     this Recipe reads response.orderIdentifier and has to read
+#     response[0].orderIdentifier against the provider.
+#   - The delete's two arrays are route constants rather than a report on what
+#     was deleted, so they say the right shape and not the right ids.
+#   - Creating orders, labels, manifests and returns are absent. Reading and
+#     deleting only.
+#   - Paging is a continuation token with no total, which is served, but the
+#     token is Cauldron's rather than Royal Mail's.
+#
+# The token below is a fixture and belongs to no account.
+
+recipe: royalmail
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.parcel.royalmail.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-royalmail-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: orders
+    # A continuation token and nothing else. No count, no page number, and no
+    # way to know how far along you are.
+    cursor_field: continuationToken
+  resource:
+    style: bare
+  error:
+    # {code, message, details}, where message is the only required field.
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      # An integer Royal Mail mints. The other identifier, below, is the one
+      # the seller chose.
+      style: numeric
+      # An integer on the wire, not a quoted one. A schema declaring an
+      # integer rejects "1001", and id === 1001 fails against a string.
+      type: number
+      field: orderIdentifier
+    fields:
+      # Yours. A string, and the only one of the two that can contain the
+      # semicolon the path uses as a separator.
+      orderReference:
+        type: string
+      createdOn:
+        type: string
+      orderDate:
+        type: string
+      printedOn:
+        type: string
+      manifestedOn:
+        type: string
+      shippedOn:
+        type: string
+      trackingNumber:
+        type: string
+      packages:
+        type: list
+
+routes:
+  - method: GET
+    path: /api/v1/orders
+    resource: order
+    operation: list
+    pagination:
+      style: cursor
+      # The documented default, with a documented maximum of 100.
+      limit: 25
+      limit_param: pageSize
+      cursor_param: continuationToken
+
+  # Fetching by identifier. Royal Mail answers with an array here because the
+  # path takes a list; see the gaps at the top for why this one does not.
+  - method: GET
+    path: /api/v1/orders/{id}
+    resource: order
+    operation: get
+
+  # Reserved for customers of a different product, and refused for everybody
+  # else with a forbidden that no credential can fix.
+  - method: GET
+    path: /api/v1/orders/full
+    error: channelshipper_only
+
+  - method: DELETE
+    path: /api/v1/orders/{id}
+    resource: order
+    operation: delete
+    # 200 with a body, rather than a 204, and the body carries both halves.
+    deleted_body: empty
+    fields:
+      # Constants, which the note at the top of this file says. The shape is
+      # the claim: what was deleted and what refused to be, side by side.
+      deletedOrders:
+        - orderIdentifier: 1001
+          orderReference: WEB-4471
+      errors: []
+
+errors:
+  # "Forbidden (Feature not available)". Not a permission this account could
+  # be granted -- a product it did not buy.
+  channelshipper_only:
+    status: 403
+    code: FeatureNotAvailable
+    message: Reserved for ChannelShipper customers only.
+    fields:
+      details: Visit channelshipper.com for more information.
+
+  authentication_error:
+    status: 401
+    code: Unauthorized
+    message: Authorization header is missing or invalid.
+
+  resource_missing:
+    status: 404
+    code: NotFound
+    message: Order not found.
+
+  invalid_request:
+    status: 400
+    code: BadRequest
+    message: Request has missing or invalid parameters and cannot be parsed.
+    fields:
+      details: The maximum number of identifiers is 100.
+
+fixtures:
+  empty: {}
+
+  despatch:
+    order:
+      # Printed and shipped: a label exists for this one, which is what makes
+      # the delete warning matter.
+      - id: "1001"
+        orderReference: WEB-4471
+        createdOn: "2026-02-20T09:14:02Z"
+        orderDate: "2026-02-20T08:57:41Z"
+        printedOn: "2026-02-20T11:02:18Z"
+        shippedOn: "2026-02-20T16:40:00Z"
+        trackingNumber: AB123456789GB
+        packages:
+          - weightInGrams: 480
+            packageFormatIdentifier: parcel
+      # Not printed. Deleting this one costs nothing, and nothing in the
+      # payload distinguishes the two except a timestamp.
+      - id: "1002"
+        orderReference: "WEB;4472"
+        createdOn: "2026-02-21T07:31:55Z"
+        orderDate: "2026-02-21T07:12:09Z"
+        packages:
+          - weightInGrams: 120
+            packageFormatIdentifier: largeLetter
+
+conformance:
+  - name: fetching one order answers with an array
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders/1001
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      status: 200
+      body:
+        # The path takes a list of up to a hundred, so it returns a list --
+        # of one. Code that reads this as an object finds undefined on every
+        # field.
+        orderIdentifier: 1001
+        orderReference: WEB-4471
+        trackingNumber: AB123456789GB
+
+  - name: the seller's own reference can contain the path's separator
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders/1002
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      status: 200
+      body:
+        # Identifiers are integers; references are strings the seller chose,
+        # and this one has a semicolon in it. The path separates identifiers
+        # by semicolon, so this reference has to be quoted and percent-encoded
+        # before it can be named -- and the document's own example shows a
+        # reference full of them, which is how you know it happens.
+        orderReference: "WEB;4472"
+        orderIdentifier: 1002
+      absent:
+        # Never printed, so no label exists and nothing is at stake in
+        # deleting it. The only difference between this order and the one
+        # above is which timestamps are present.
+        - printedOn
+        - trackingNumber
+
+  - name: a delete answers with what it did not do as well
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: DELETE
+      path: /api/v1/orders/1001
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      # 200 and a body, where most providers answer a delete with 204 and
+      # nothing. The body carries both halves: what went and what stayed.
+      status: 200
+      body:
+        "deletedOrders[0].orderIdentifier": 1001
+        "deletedOrders[0].orderReference": WEB-4471
+        # Empty here, and the same key would carry a per-order reason if one
+        # of a hundred had refused -- so a delete that deleted nothing is a
+        # 200 with an empty first array.
+        errors: []
+      absent:
+        # And none of Stripe's receipt, which is what most deletes in this
+        # collection answer with. There is no deleted flag and no object
+        # discriminator: the report is the two arrays and nothing else.
+        - deleted
+        - object
+
+  - name: part of the API is for customers of another product
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders/full
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      # "Reserved for ChannelShipper customers only", and the document lists
+      # 403 "Feature not available" against it. A forbidden that means you did
+      # not buy this rather than that you lack permission, so no amount of
+      # fixing the credential changes it -- and the credential is valid here.
+      status: 403
+      body:
+        code: FeatureNotAvailable
+        message: Reserved for ChannelShipper customers only.
+      matches:
+        details: channelshipper.com
+
+  - name: a listing pages by a token and says nothing else
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders?pageSize=1
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      status: 200
+      body:
+        "orders[0].orderIdentifier": 1001
+      matches:
+        # A continuation token and nothing else. No total, no page number, no
+        # count -- so there is no way to show progress and no way to know how
+        # many pages are left until the token stops coming.
+        continuationToken: .
+
+  - name: a request naming no page size gets twenty-five
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      status: 200
+      body:
+        # The documented default. Both orders fit, so no token comes back --
+        # which is the only signal a token-paged listing gives that it is
+        # finished.
+        "orders[0].orderIdentifier": 1001
+        "orders[1].orderIdentifier": 1002
+      absent:
+        - continuationToken
+
+  - name: an unknown order is a 404 rather than an empty array
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: DELETE
+      path: /api/v1/orders/9999
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      status: 404
+      body:
+        code: NotFound
+        message: Order not found.
+
+  - name: a bad token is refused before any of that matters
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    request:
+      method: GET
+      path: /api/v1/orders
+      headers:
+        Authorization: Bearer not-a-real-token
+    expect:
+      status: 401
+      body:
+        code: Unauthorized
+        message: Authorization header is missing or invalid.
+
+  - name: too many identifiers in one path is a 400
+    source: https://api.parcel.royalmail.com/doc/v1/click-and-drop-api-v1.yaml
+    fixture: despatch
+    arm: invalid_request
+    request:
+      method: GET
+      path: /api/v1/orders/1001
+      headers:
+        Authorization: Bearer cauldron-royalmail-fixture-token
+    expect:
+      # "The maximum number of identifiers is 100." A hundred orders can be
+      # named in one path segment, which is a great deal of destruction to fit
+      # in one DELETE.
+      status: 400
+      body:
+        code: BadRequest
+      matches:
+        details: maximum number of identifiers is 100

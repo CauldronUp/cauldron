@@ -411,6 +411,7 @@ the header says so.
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | ~~Medusa~~ | Shipped, Storefront API, and written against the published OpenAPI description at 2.19.0 rather than from memory. A field name without a + replaces the entire default set, so ?fields=id returns an order with one field and no error |
+| ~~Royal Mail~~ | Shipped, written against the Swagger document Royal Mail serves from its own API host. Deleting an order can cost money, and the description says so: cancelled label information goes to Revenue Protection, and a cancelled label found on a parcel is charged with a handling fee. The path parameter is a list of up to a hundred identifiers separated by semicolons, where references must be quoted and percent-encoded -- and the document's own example is a reference full of semicolons |
 | ~~Apideck~~ | Shipped, written against the OpenAPI document Apideck publishes, including its x-apideck-gotchas extension. The first unified API here -- one shape in front of Shopify, Walmart, TikTok, Wix and the rest -- and the seams are the subject: a 200 can carry meta.warnings holding somebody else's 429, present only when a step degraded. Also: a valid request can be unsupported by the connector, every response names which shop answered, and a unified field can be reported by one provider and inferred by another |
 | ~~Voucherify~~ | Shipped, written against the OpenAPI document Voucherify publishes and generates its own SDKs from. Promotions are the first of their kind here, and the headline is what the domain does to the word failed: a failed redemption is a stored object, listed and counted like any other, with the reason in a field rather than a status code. Also: result and status are two verdicts on one object and status has a value result cannot express, a null quantity means unlimited, and the envelope names the key that holds its own data |
 | ~~Akeneo~~ | Shipped, written against the Swagger description Akeneo publishes in its own docs repository, with fixtures built from the worked example beside the product listing. A product has no name: every attribute's value is an array of {locale, scope, data} entries, so one description is four rows in a two-locale two-channel catalogue and reading it means matching both. Also HAL at _embedded.items, a next link the document says never to construct by hand, and prices as unscaled decimal strings |
@@ -1308,6 +1309,7 @@ than a client for its API.
 | RevenueCat | The published packages are the mobile and hybrid SDKs rather than a server client |
 | ShipHero | No official client; the API is GraphQL over raw HTTP |
 | Toast | No client for the POS API on either registry, and the name means a notification popup: tall-toasts alone has over four hundred thousand installs. A mapping on the word would offer a restaurant point-of-sale emulator to every Laravel project that shows a toast when a form saves, so a test guards the decision |
+| Royal Mail | Royal Mail runs three separate APIs on three hosts, and every client package on Packagist targets one of the other two: elliotjreed/royal-mail-tracking is the tracking service, and turtledesign/royalmail-php, zvps/royal-mail-shipping-rest-api-client and mobi-market/royalmail-shipping-v3 are all the Shipping API. Click & Drop has no client of its own, and offering its emulator to a project using a different Royal Mail API would be wrong about the host, the credential and the vocabulary at once, so a test guards the decision |
 | Tradier | A third-party SDK exists and is one person's; worth a look rather than a mapping on sight |
 | Twilio Verify | Part of the main Twilio SDK, which maps to the twilio Recipe rather than this one |
 
@@ -1337,7 +1339,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty-three Recipes send at least one identifier as a number now, and each
+Thirty-four Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
