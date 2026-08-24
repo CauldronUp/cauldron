@@ -591,3 +591,40 @@ func TestDetectShipStationFromEveryVendorsWrapper(t *testing.T) {
 		}
 	}
 }
+
+// The same shape as ShipStation, from the same company: several vendors
+// publish a package called shipengine and all of them are API clients, so the
+// vendor half of the name says who wrote the wrapper rather than what it
+// talks to. ShipEngine's own is one entry among several rather than the only
+// one worth having.
+func TestDetectShipEngineFromEveryVendorsWrapper(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"shipengine/shipengine": "^1.0"}}`},
+		{"composer.json": `{"require": {"always-open/shipengine": "^1.0"}}`},
+		{"composer.json": `{"require": {"jsamhall/shipengine": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"shipengine": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "shipengine") {
+			t.Errorf("%v did not detect shipengine: %+v", manifest, p.Requirements)
+		}
+	}
+
+	// And it is not the ShipStation Recipe, which is a different API from the
+	// same company with a different envelope, a different credential and
+	// dates in a different shape.
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"shipengine": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "shipstation") {
+		t.Errorf("shipengine offered the shipstation Recipe: %+v", p.Requirements)
+	}
+}

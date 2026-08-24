@@ -75,7 +75,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | ~~ShipStation~~ | Shipped. Every date is missing its timezone, and the instant is in an account timezone the API never states |
 | ~~EasyPost~~ | Shipped. A rate is a value you were given, not a price you can look up; an address can be stored and undeliverable |
-| ShipEngine | Rates, labels, tracking, carrier errors |
+| ~~ShipEngine~~ | Shipped. A rate request half-fails behind a 200: some carriers quote, some refuse, both in one body |
 | ~~AfterShip~~ | Shipped. A tracking number does not identify a parcel; Delivered is not terminal |
 | Easyship | Rates, shipments, labels |
 | USPS | Addresses, rates, tracking |
