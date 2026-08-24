@@ -411,7 +411,7 @@ the header says so.
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
-| Clover | Assess — merchants, orders, payments |
+| ~~Clover~~ | Shipped. An order comes back with no items in it unless the request asked to expand them, and forgetting is answered rather than refused |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
 | ~~Lemon Squeezy~~ | Shipped, and see the row below — the merchant-of-record half is FastSpring's and is repeated rather than new. What is new: licence keys, store-scoped identifiers, and totals in two currencies at once |
 | Gumroad | Assess — products and sales |
@@ -902,7 +902,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**114 more listings across 66 Recipes declare no paging at all**, and the
+**115 more listings across 67 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

@@ -43,6 +43,13 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 		for _, name := range sortedKeys(route.MatchesHeader) {
 			key += " " + name + "=" + route.MatchesHeader[name]
 		}
+
+		// And the query parameters, for the same reason again: two routes on
+		// one path telling themselves apart by what the caller asked to expand
+		// are two routes, not a duplicate.
+		for _, name := range sortedKeys(route.MatchesQuery) {
+			key += " ?" + name + "=" + route.MatchesQuery[name]
+		}
 		if seen[key] {
 			add("%s: duplicate route", where)
 		}

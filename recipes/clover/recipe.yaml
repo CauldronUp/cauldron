@@ -1,0 +1,488 @@
+# Clover Recipe for Cauldron
+#
+# An order comes back with no items in it.
+#
+# Clover returns references, not graphs. Ask for an order and you get its
+# total, its state and its dates, and nothing about what was bought --
+# lineItems is simply not there. It arrives only if the request asked for it
+# with ?expand=lineItems, and a request that forgets is not refused. It gets
+# an order that looks empty, and an empty order is a perfectly ordinary thing
+# for a shop to have.
+#
+# So the failure is a report that says a busy Saturday sold nothing in
+# particular, with the right total on it.
+#
+# Six things worth modelling exactly:
+#
+#   1. Nested collections are absent unless expanded. lineItems, payments and
+#      the customer are all references the caller has to ask for, and
+#      forgetting is answered rather than refused.
+#   2. expand takes a comma list, so one request can ask for several and a
+#      client that asks for one gets exactly one -- the others are still
+#      missing and still not an error.
+#   3. Money is integer cents on an API whose sibling fields are not money.
+#      total 4700 is forty-seven dollars, and there is no currency on the
+#      order at all: it is the merchant's, and the merchant is in the path.
+#   4. Dates are Unix milliseconds. createdTime 1770000000000, so a client
+#      that reads it as seconds lands in 1970 and one that hands it to a date
+#      constructor expecting seconds gets a date in the year 57000.
+#   5. Every path carries the merchant, and the token is scoped to it. Two
+#      merchants are two tokens and two paths, so nothing about a single
+#      request says which shop it belongs to except the path itself.
+#   6. A deleted order is still there. Clover soft-deletes, so an order
+#      carries a deleted flag and stays in the listing, and a total summed
+#      without filtering includes voided sales.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - expand is modelled for lineItems and payments and nothing else. A real
+#     Clover expand reaches many levels and many fields, and each one is a
+#     route here, so this reproduces the trap rather than the mechanism.
+#   - And one request reaches one route, so ?expand=lineItems,payments brings
+#     line items and not payments. Cauldron picks a route and answers with
+#     it; it does not compose two. The comma list is matched -- a route
+#     selecting either member answers -- but what comes back is one of them,
+#     where Clover would send both.
+#   - The elements array and its pagination are absent. Clover pages with
+#     offset and limit and reports no total, which means a client cannot know
+#     when to stop except by asking again and getting nothing.
+#   - Inventory, employees, the customer directory and the payment endpoints
+#     are not modelled.
+#
+# The token below is a fixture, not a secret. It belongs to no merchant.
+
+recipe: clover
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://docs.clover.com/dev/reference/order
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.clover.merchant.token
+
+responses:
+  list:
+    style: wrapped
+    key: elements
+  resource:
+    style: bare
+  error:
+    # Flat, and a message is all there is. No code, no type, no field with a
+    # machine-readable anything in it, so the status is the only thing a
+    # client can branch on.
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      # Thirteen upper-case alphanumerics. Cauldron mints lower-case hex of
+      # the same length, which is the alphabet gap noted at the end.
+      style: hex
+      length: 13
+    fields:
+      # Integer cents. There is no currency here: it is the merchant's, and
+      # the merchant is in the path.
+      total:
+        type: integer
+      # open, locked. An open order is a tab still being added to.
+      state:
+        type: string
+        default: open
+      # Unix milliseconds. Read as seconds this is January 1970.
+      createdTime:
+        type: timestamp_ms
+      modifiedTime:
+        type: timestamp_ms
+      # Soft-deleted, and still in the listing.
+      deleted:
+        type: boolean
+        default: false
+      title:
+        type: string
+        null_when_unset: true
+      # Only present when the request asked for it. Declared here because the
+      # expanded route returns it; the compact route trims it away.
+      lineItems:
+        type: map
+      payments:
+        type: map
+
+routes:
+  # The expanded routes come first, and each one declares the parameter that
+  # picks it. A route declaring matches_query beats an equally-scoring route
+  # that declares nothing, so the compact route below is the fallback.
+  - method: GET
+    path: /v3/merchants/{merchantId}/orders/{id}
+    resource: order
+    operation: get
+    matches_query:
+      expand: lineItems
+    # Its own collection and not the other one. Expanding line items brings
+    # line items; payments are still missing and still not an error, which
+    # is the half of the trap that survives a partial fix -- a client that
+    # expanded what it needed last month gets the same silence for what it
+    # needs now.
+    returns:
+      - id
+      - total
+      - state
+      - createdTime
+      - modifiedTime
+      - deleted
+      - title
+      - lineItems
+
+  - method: GET
+    path: /v3/merchants/{merchantId}/orders/{id}
+    resource: order
+    operation: get
+    matches_query:
+      expand: payments
+    returns:
+      - id
+      - total
+      - state
+      - createdTime
+      - modifiedTime
+      - deleted
+      - title
+      - payments
+
+  # The compact one. Everything except the two collections, which is what a
+  # request that forgot to expand gets -- an order with a total and nothing
+  # in it.
+  - method: GET
+    path: /v3/merchants/{merchantId}/orders/{id}
+    resource: order
+    operation: get
+    returns:
+      - id
+      - total
+      - state
+      - createdTime
+      - modifiedTime
+      - deleted
+      - title
+
+  # A create, which is what puts the declared timestamp unit and the opening
+  # state on the wire. Without one both were describing a shape no request
+  # could produce: every case read a seeded record, so changing timestamp_ms
+  # to timestamp broke nothing at all.
+  - method: POST
+    path: /v3/merchants/{merchantId}/orders
+    resource: order
+    operation: create
+
+  - method: GET
+    path: /v3/merchants/{merchantId}/orders
+    resource: order
+    operation: list
+    returns:
+      - id
+      - total
+      - state
+      - createdTime
+      - modifiedTime
+      - deleted
+      - title
+
+errors:
+  authentication_error:
+    status: 401
+    message: 401 Unauthorized
+
+  resource_missing:
+    status: 404
+    message: No such order
+
+  parameter_missing:
+    status: 400
+    message: Bad Request
+
+  rate_limit:
+    status: 429
+    message: Too Many Requests
+
+fixtures:
+  empty: {}
+
+  one-merchant:
+    order:
+      - id: a1b2c3d4e5f60
+        total: 4700
+        state: locked
+        createdTime: 1770000000000
+        modifiedTime: 1770000300000
+        deleted: false
+        title: Table 4
+        lineItems:
+          elements:
+            - id: aaaa1111bbbb2
+              name: Ribeye
+              price: 3400
+              printed: true
+            - id: cccc3333dddd4
+              name: Side salad
+              price: 1300
+              printed: true
+        payments:
+          elements:
+            - id: eeee5555ffff6
+              amount: 4700
+              result: SUCCESS
+      # Voided, and still in the listing. A total summed without filtering
+      # counts this.
+      - id: b2c3d4e5f6a71
+        total: 1900
+        state: locked
+        createdTime: 1770000600000
+        modifiedTime: 1770000900000
+        deleted: true
+        title: Table 2
+        lineItems:
+          elements:
+            - id: 1111aaaa2222b
+              name: Soup
+              price: 1900
+              printed: false
+        payments:
+          elements: []
+
+conformance:
+  - name: an order comes back with no items in it
+    source: https://docs.clover.com/dev/docs/expand-parameters
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      # Not refused. Answered, with the right total and nothing about what
+      # was bought, and an empty order is a perfectly ordinary thing for a
+      # shop to have -- so a report built on this says a busy Saturday sold
+      # nothing in particular.
+      status: 200
+      body:
+        id: a1b2c3d4e5f60
+        total: 4700
+        state: locked
+        # Pinned here because nothing else read it on a single order --
+        # dropping it from this route's fields broke no case, which is the
+        # same unexercised declaration the create above fixes for the
+        # timestamps.
+        deleted: false
+      absent:
+        - lineItems
+        - payments
+
+  - name: and arrives when the request asks for it
+    source: https://docs.clover.com/dev/docs/expand-parameters
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60?expand=lineItems
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        # The same order, the same total, and now it has a steak in it. One
+        # query parameter is the difference between a sale and a number.
+        total: 4700
+        lineItems.elements[0].name: Ribeye
+        lineItems.elements[0].price: 3400
+        lineItems.elements[1].name: Side salad
+
+  - name: asking for one thing does not bring the others
+    source: https://docs.clover.com/dev/docs/expand-parameters
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60?expand=payments
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        payments.elements[0].result: SUCCESS
+        payments.elements[0].amount: 4700
+      absent:
+        # Payments came, line items did not, and nothing says so. A client
+        # that expanded what it needed last month and needs something else
+        # this month gets the same silence as one that expanded nothing.
+        #
+        # This absence is the claim. Asserting only that payments arrived
+        # passed while the route was returning both, which a unit test caught
+        # and this case had not.
+        - lineItems
+
+  - name: expand takes a comma list
+    source: https://docs.clover.com/dev/docs/expand-parameters
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60?expand=lineItems,payments
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        # One parameter, two things asked for, and a route selecting either
+        # member answers it.
+        lineItems.elements[0].name: Ribeye
+      absent:
+        # And only one of them comes back, because one request reaches one
+        # route. Clover would send both; this is the fidelity gap the header
+        # states, and it is asserted here rather than left to be discovered.
+        - payments
+
+  - name: money is integer cents and the order names no currency
+    source: https://docs.clover.com/dev/reference/order
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60?expand=lineItems
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        # 4700 is forty-seven dollars, and 3400 plus 1300 is 4700, so the
+        # arithmetic works and the units are only stated in the
+        # documentation.
+        total: 4700
+        lineItems.elements[0].price: 3400
+        lineItems.elements[1].price: 1300
+      absent:
+        # There is no currency on an order. It is the merchant's, and the
+        # merchant is in the path rather than the body.
+        - currency
+        - currencyCode
+
+  - name: dates are Unix milliseconds
+    source: https://docs.clover.com/dev/reference/order
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        # Thirteen digits. Read as seconds this is January 1970, and handed
+        # to a constructor expecting seconds it lands in the year 57000 --
+        # both of which sort and compare without complaint.
+        createdTime: 1770000000000
+        modifiedTime: 1770000300000
+
+  - name: a deleted order is still in the listing
+    source: https://docs.clover.com/dev/reference/order
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        # Both, and the second is void. Clover soft-deletes, so a total
+        # summed from this listing without filtering counts nineteen dollars
+        # that were given back.
+        elements[0].id: a1b2c3d4e5f60
+        elements[0].deleted: false
+        elements[1].deleted: true
+        elements[1].total: 1900
+
+  - name: and a listing is compact too
+    source: https://docs.clover.com/dev/docs/expand-parameters
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        elements[0].total: 4700
+      absent:
+        # So a client that pages the day's orders and sums their line items
+        # sums nothing at all, across every order, and the totals beside them
+        # look right.
+        - elements[0].lineItems
+        - elements[1].lineItems
+
+  - name: the merchant is in the path and nowhere else
+    source: https://docs.clover.com/dev/docs/api-tokens
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders/a1b2c3d4e5f60
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+    expect:
+      status: 200
+      body:
+        id: a1b2c3d4e5f60
+      absent:
+        # Nothing in the response says which shop this belongs to. Two
+        # merchants are two tokens and two paths, and a record cached without
+        # its path loses the only thing that identified its owner.
+        - merchant
+        - merchantId
+
+  - name: a new order opens with a millisecond timestamp
+    source: https://docs.clover.com/dev/reference/order
+    fixture: one-merchant
+    request:
+      method: POST
+      path: /v3/merchants/CAULDRONMERCH1/orders
+      headers:
+        Authorization: Bearer cauldron.clover.merchant.token
+      json:
+        title: Table 7
+    expect:
+      status: 200
+      body:
+        # An order opens rather than arriving locked: it is a tab still being
+        # added to, and code that treats a created order as a completed sale
+        # is a service ahead of itself.
+        state: open
+        title: Table 7
+        deleted: false
+      matches:
+        # Thirteen digits, which is the claim. Ten would be seconds, and both
+        # sort and compare without complaint -- so this is the only place the
+        # unit is checked rather than described.
+        createdTime: '^[0-9]{13}$'
+        modifiedTime: '^[0-9]{13}$'
+
+  - name: a bad token is refused
+    source: https://docs.clover.com/dev/docs/api-tokens
+    fixture: one-merchant
+    request:
+      method: GET
+      path: /v3/merchants/CAULDRONMERCH1/orders
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      status: 401
+      body:
+        # A sentence under message and nothing else. No code to branch on, so
+        # the status is the only machine-readable part of a Clover failure.
+        message: 401 Unauthorized
+      absent:
+        - code
+        - error
