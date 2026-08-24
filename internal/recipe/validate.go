@@ -349,6 +349,41 @@ func (r *Recipe) Validate() error {
 		add("required_headers declares %s and no conformance case omits it and is refused, so nothing here shows it is enforced rather than merely listed", header)
 	}
 
+	// An identifier pattern is an enforcement claim in the same way, and it
+	// fails in a nastier direction: a pattern that is never exercised looks
+	// exactly like a provider that does not check, because both answer 404 to
+	// everything a case is likely to ask for. The case that proves it is one
+	// addressing the resource with an id the pattern rejects and being
+	// refused for the shape rather than the absence.
+	for _, resourceName := range sortedKeys(r.Resources) {
+		pattern := r.Resources[resourceName].ID.Pattern
+		if pattern == "" {
+			continue
+		}
+
+		shape, err := regexp.Compile(pattern)
+		if err != nil {
+			add("resource %s declares id.pattern %q, which is not a valid regular expression: %v", resourceName, pattern, err)
+
+			continue
+		}
+
+		// Anchoring is the Recipe's job and getting it wrong is silent: an
+		// unanchored ^[0-9a-f]{24} accepts every id that merely begins with
+		// one, so the refusal this exists to model would not happen and every
+		// case would still pass. Laravel's trusted-host regexes are the same
+		// trap and the backlog records them.
+		if !strings.HasPrefix(pattern, "^") || !strings.HasSuffix(pattern, "$") {
+			add("resource %s declares id.pattern %q, which is not anchored at both ends, so it would accept any identifier containing a match", resourceName, pattern)
+		}
+
+		if refusesShape(r.Conformance, shape, routeSegments(r.Routes)) {
+			continue
+		}
+
+		add("resource %s declares id.pattern %q and no conformance case addresses it with an identifier the pattern rejects, so nothing here shows the shape is checked rather than merely declared", resourceName, pattern)
+	}
+
 	// A route naming an event to emit has to name one the Recipe declares, or
 	// the change fires nothing and the only sign is a webhook that never
 	// arrives -- which is indistinguishable from a provider that does not
@@ -773,6 +808,17 @@ func seededID(id ID, value any) (string, bool) {
 
 	if text == "" {
 		return "is empty", false
+	}
+
+	// A pattern the provider checks before it searches. A seeded record whose
+	// id fails it is unreachable by that id in the emulator and would be
+	// refused outright by the provider, so the fixture describes a record
+	// nobody can ask for.
+	if id.Pattern != "" {
+		shape, err := regexp.Compile(id.Pattern)
+		if err == nil && !shape.MatchString(text) {
+			return "does not match the declared id.pattern " + id.Pattern, false
+		}
 	}
 
 	switch id.Style {

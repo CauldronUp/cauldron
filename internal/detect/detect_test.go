@@ -1693,3 +1693,62 @@ func TestDetectEcwidClientsAndNotItsLoginProviderOrTheUnverifiableName(t *testin
 		}
 	}
 }
+
+// Squarespace publishes a great deal of npm and none of it calls the Commerce
+// API.
+//
+// The @squarespace/ scope is template tooling for building Squarespace sites,
+// and @squarespace/core describes itself as "The frontend JS API for
+// Squarespace templates" -- a package with the word API in its description
+// that is not this API. eslint-config-squarespace is the company's own lint
+// rules.
+//
+// unikapps/laravel-socialite-squarespace signs people in rather than talking
+// to the store. beloop/squarespace is a component of an unrelated LMS.
+// @tryghost/mg-squarespace-xml and is-squarespace never make a request at all:
+// one reads an export file to move a site off the platform and the other looks
+// at a page and guesses what built it.
+func TestDetectSquarespaceCommerceClientsAndNotItsTemplateTooling(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"squarespace-node-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"marktera-squarespace": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@corte-so/commerce-squarespace": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@florasync/squarespace-mcp": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "squarespace") {
+			t.Errorf("%v did not detect squarespace: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own template tooling, including the one that calls
+		// itself an API.
+		{"package.json": `{"dependencies": {"@squarespace/core": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@squarespace/template-engine": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@squarespace/toolbelt": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"eslint-config-squarespace": "^1.0.0"}}`},
+		// Moving content between platforms rather than calling the API.
+		{"package.json": `{"dependencies": {"@tryghost/mg-squarespace-xml": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"seed-squarespace": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"is-squarespace": "^1.0.0"}}`},
+		// Logging in with Squarespace, not calling it.
+		{"composer.json": `{"require": {"unikapps/laravel-socialite-squarespace": "^1.0"}}`},
+		// And somebody else's LMS.
+		{"composer.json": `{"require": {"beloop/squarespace": "^1.0"}}`},
+		{"composer.json": `{"require": {"beloop/squarespace-bundle": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "squarespace") {
+			t.Errorf("%v offered the squarespace Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

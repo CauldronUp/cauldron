@@ -6,6 +6,7 @@ package recipe
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
@@ -59,6 +60,65 @@ func sendsParam(cases []Case, param string) bool {
 	}
 
 	return false
+}
+
+// refusesShape reports whether any case addresses a path whose last segment
+// fails the pattern and expects to be refused for it.
+//
+// The last segment rather than a parsed route parameter, because that is where
+// every provider that does this puts the identifier, and because a case is
+// evidence about a request rather than about the routing table. A 400 is what
+// makes it evidence: a case that sends a badly shaped id and expects a 404 is
+// asserting the opposite of the claim.
+//
+// literal names the segments that appear spelled out in the Recipe's own
+// routes, and they are excluded. Without that the rule passed on a Recipe that
+// proved nothing: a collection path ends in "orders", "orders" is not a
+// twenty-four character hexadecimal string, and any 400 on the listing -- a
+// missing header, a bad parameter -- read as evidence that identifiers are
+// checked.
+func refusesShape(cases []Case, shape *regexp.Regexp, literal map[string]bool) bool {
+	for _, c := range cases {
+		if c.Expect.Status != 400 {
+			continue
+		}
+
+		path, _, _ := strings.Cut(c.Request.Path, "?")
+		path = strings.TrimSuffix(path, "/")
+
+		segment := path
+		if index := strings.LastIndex(path, "/"); index >= 0 {
+			segment = path[index+1:]
+		}
+
+		if segment == "" || literal[segment] {
+			continue
+		}
+
+		if !shape.MatchString(segment) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// routeSegments collects every path segment a Recipe spells out, placeholders
+// excluded.
+func routeSegments(routes []Route) map[string]bool {
+	spelled := map[string]bool{}
+
+	for _, route := range routes {
+		for _, segment := range strings.Split(route.Path, "/") {
+			if segment == "" || strings.HasPrefix(segment, "{") {
+				continue
+			}
+
+			spelled[segment] = true
+		}
+	}
+
+	return spelled
 }
 
 // assertsName reports whether any case claims something about a field by name.

@@ -1,0 +1,783 @@
+# Squarespace Commerce Recipe for Cauldron
+#
+# Written against the OpenAPI 3.1.1 document Squarespace publishes and serves
+# its own reference from, at
+# developers.squarespace.com/commerce-apis/latest/schema-processor-version-version-latest.json
+# -- three hundred and forty kilobytes of it -- together with the Orders API
+# overview page, which is where the payment-state table and its notes live.
+#
+# Squarespace was named in this collection's own backlog as part of a category
+# gap rather than a provider gap: the small-business storefront that lives
+# inside somebody else's website. Printify, Shopware and Ecwid have shipped
+# from that list; this is the fourth.
+#
+# One payment state destroys the number that gives it meaning.
+#
+# The payment-state table says it outright:
+#
+#   "REFUNDED -- The order has had refund activity. This covers both full and
+#   partial refunds; a partial refund of any amount sets the order to
+#   REFUNDED. To determine the outstanding balance, compare the order's
+#   refundedTotal with grandTotal."
+#
+# So REFUNDED is not a verdict on an order, it is a note that something
+# happened. A two-pound goodwill refund on a four-hundred-and-eighty-pound
+# order puts it in exactly the state a cancelled-and-returned order is in, and
+# the state is the field every integration switches on. Code that reads it as
+# "this sale was reversed" writes off a sale that was ninety-nine and a half
+# per cent collected, and code that reads it as "already refunded, do not
+# refund again" declines the rest of a real refund. The arithmetic that
+# answers the question is in the sentence -- refundedTotal against grandTotal
+# -- and nothing in the response nudges you toward doing it.
+#
+# Seven more, each from the same two documents:
+#
+#   1. You cannot filter and page at the same time. Of cursor: "Identifies
+#      where the next page of results should begin. Should be the value of
+#      pagination.nextPageCursor from a previous response. Cannot be used with
+#      other parameters." Not "cannot be used with the date range" -- with
+#      other parameters, all of them. So page two of a filtered query is not
+#      expressible: the filter is baked into the cursor by the first request,
+#      and the ordinary pager that keeps its query string and appends
+#      &cursor=... gets a 400 on the second call and none on the first. The
+#      400's own description lists it: "cursor was specified with other
+#      parameters".
+#   2. The date range is all or nothing. modifiedAfter is "Required when
+#      modifiedBefore is passed", and modifiedBefore is "Required when
+#      modifiedAfter is passed". Half a range is a 400 rather than an open
+#      interval, so "everything since Tuesday" has to be spelled with an end
+#      the caller must invent.
+#   3. Asking for an order two ways gets refused two ways. GET
+#      /1.0/commerce/orders/{id} answers 404 "The requested Order was not
+#      found" for an id that could exist and does not, and 400 "The id is not
+#      in the expected format" for one that could not exist at all. An
+#      application whose retry and alerting branch on 404 takes the other
+#      branch for a typo, an id from the wrong provider, or an empty string
+#      that got interpolated into the path.
+#   4. Test orders are in with the real ones. The listing takes six
+#      parameters and none of them is testmode; the field is on the order and
+#      the filtering is the caller's problem. Squarespace's own example
+#      response for the live listing has "testmode": true in it. A revenue
+#      figure summed over this endpoint includes every card a developer ever
+#      pretended to charge.
+#   5. The default listing is a compatibility filter. paymentStates "If not
+#      specified, defaults to NOT_CHARGED, AUTHORIZED, PAID, and REFUNDED",
+#      and the overview says why: it "preserves the response set returned
+#      before Payment Plans existed and keeps existing integrations stable".
+#      The state it leaves out is PARTIALLY_PAID, which is where a Payment
+#      Plan order sits from the moment the deposit is captured until the last
+#      instalment lands -- months, for a plan sold in monthly instalments.
+#      The order is real, the deposit is real money, and the endpoint's
+#      default view does not contain it. This is Ecwid's shape and is stated
+#      as repeated rather than claimed as new.
+#   6. The money field's published type is contradicted by its own published
+#      example. MonetaryAmount.currency is declared as an object with six
+#      properties -- currencyCode, defaultFractionDigits, displayName,
+#      numericCode, numericCodeAsString, symbol -- and the example attached to
+#      that same declaration is the string "USD". Every example response in
+#      the document sends the string. A client generated from this schema gets
+#      an object type for the field and a string on the wire, on every total
+#      of every order.
+#   7. One host, three version prefixes, two spellings. Orders are at
+#      /1.0/commerce/orders, contacts at /v1/contacts, products at
+#      /v2/commerce/products -- all on api.squarespace.com, all in one
+#      document titled "Commerce API" version 2. Code that builds a base URL
+#      once and appends resource paths is right about a third of this API.
+#
+# Two shapes here are already recorded against other providers and are stated
+# as shared rather than offered as findings:
+#
+#   - The webhook is an identifier and nothing else. OrderCreateData is
+#     {orderId} and OrderUpdateData is {orderId, update}: no totals, no line
+#     items, no customer. That is Mollie's bargain and ClickUp's.
+#   - A required User-Agent that describes the calling application, refused
+#     when absent. Basecamp does the same and this Recipe's error is the same
+#     shape.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - paymentStates takes a comma-separated list and this Recipe serves the
+#     combinations the documentation demonstrates -- the default four, and
+#     PARTIALLY_PAID alone or beside PAID -- through a value table rather than
+#     by splitting on the comma. A combination outside the table matches
+#     nothing rather than the union of its parts.
+#   - The two rules about which parameters may travel together -- the cursor
+#     with nothing else, the two dates only with each other -- are stated
+#     above and are not served. Both are refusals keyed on a combination of
+#     parameters rather than on any one value, and this format selects a route
+#     by the values it is given. Declaring them against particular fixture
+#     values would serve one pair of strings and claim a rule, which is worse
+#     than saying plainly that the rule is documented here and enforced only
+#     by Squarespace.
+#   - The fixture is four orders and the page size is fifty, so there is never
+#     a second page: hasNextPage is served and is always false, and
+#     nextPageCursor never appears. What makes the cursor interesting is the
+#     refusal above, and that is the half this Recipe cannot serve.
+#   - The malformed-identifier refusal is documented on the order fetch. This
+#     Recipe applies it wherever an order is addressed by id, on the reading
+#     that the shape of an identifier is a property of the identifier rather
+#     than of one endpoint. The fulfilment route's half is inference, and it
+#     is the only inference in this file.
+#   - Payment Plans have a webhook behaviour this format cannot express and
+#     the backlog records it: "the order.create webhook for a Payment Plan
+#     order fires only when paymentState transitions to PAID (all installments
+#     collected), not when the order is initially placed. No webhook fires for
+#     the deposit or for intermediate installment captures." Nothing in the
+#     public API moves an order's payment state, so there is no request an
+#     emulator could answer with that silence. What is served is the other
+#     half of the same trap: the state the default listing hides.
+#   - Squarespace's signature secret is hexadecimal and its own verification
+#     example decodes it to bytes before signing. Cauldron signs with the
+#     secret as text, so the digest here is reproducible from this emulator
+#     and not by a handler written to Squarespace's example.
+#   - Donations "appear in Squarespace as orders" and are not in this API at
+#     all: "the Orders API does not provide access to donations. Instead,
+#     donation information can be accessed using the Transactions API."
+#     Transactions are not modelled, so neither are donations.
+#   - Products, inventory, contacts, discounts, profiles and store pages are
+#     absent. Orders only.
+#   - inventoryBehavior on a created order "Defaults to SKIP", so pushing an
+#     order in from a third-party channel does not decrement stock unless the
+#     caller asks it to. The create route is modelled; that default is
+#     declared and its consequence is not something a single request shows.
+#
+# The key and the ids below are fixtures and belong to no site.
+
+recipe: squarespace
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://developers.squarespace.com/commerce-apis/orders
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-squarespace-fixture-key
+
+# Squarespace refuses a request that does not say what is making it. The
+# schema marks the header required on every operation and gives
+# YOUR_CUSTOM_APP_DESCRIPTION as its placeholder. Basecamp does the same.
+required_headers:
+  User-Agent: missing_user_agent
+
+responses:
+  list:
+    style: wrapped
+    key: result
+    # Squarespace reports neither a total nor a page count. What the envelope
+    # carries is whether there is more and how to ask for it, which is all a
+    # cursor API owes -- and means a progress bar over this endpoint has
+    # nothing to divide by.
+    has_more_field: pagination.hasNextPage
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: subtype
+    type_field: type
+
+resources:
+  order:
+    id:
+      # A twenty-four character hexadecimal ObjectId, which is what comes out
+      # of the database underneath.
+      style: hex
+      length: 24
+      # And Squarespace checks the shape before it looks anything up: an id
+      # that is not one of these is a 400 rather than a 404.
+      pattern: "^[0-9a-f]{24}$"
+    fields:
+      # "Unique, sequential number for the Order" -- and a string. The number
+      # a customer quotes sorts as text, so "10" comes before "3".
+      orderNumber:
+        type: string
+      createdOn:
+        type: datetime
+      modifiedOn:
+        type: datetime
+      customerEmail:
+        type: string
+      customerId:
+        type: string
+      # The state that covers a two-pound refund and a full one alike.
+      paymentState:
+        type: string
+        default: PAID
+      fulfillmentStatus:
+        type: string
+        default: PENDING
+      # currency is a string on the wire, whatever the schema says it is.
+      grandTotal:
+        type: map
+      subtotal:
+        type: map
+      taxTotal:
+        type: map
+      shippingTotal:
+        type: map
+      discountTotal:
+        type: map
+      # The other half of the arithmetic REFUNDED does not do for you.
+      refundedTotal:
+        type: map
+      lineItems:
+        type: list
+      fulfillments:
+        type: list
+        default: []
+      priceTaxInterpretation:
+        type: string
+        default: EXCLUSIVE
+      channelName:
+        type: string
+      externalOrderReference:
+        type: string
+      # In the same listing as everything else, with no parameter to exclude
+      # it.
+      testmode:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /1.0/commerce/orders
+    resource: order
+    operation: list
+    filters:
+      # "If not specified, defaults to NOT_CHARGED, AUTHORIZED, PAID, and
+      # REFUNDED" -- the set that existed before Payment Plans did. See the
+      # value-table gap at the top of this file.
+      - param: paymentStates
+        field: paymentState
+        default: NOT_CHARGED,AUTHORIZED,PAID,REFUNDED
+        values:
+          NOT_CHARGED,AUTHORIZED,PAID,REFUNDED:
+            - NOT_CHARGED
+            - AUTHORIZED
+            - PAID
+            - REFUNDED
+          PAID,PARTIALLY_PAID:
+            - PAID
+            - PARTIALLY_PAID
+          PARTIALLY_PAID:
+            - PARTIALLY_PAID
+      - param: fulfillmentStatus
+        field: fulfillmentStatus
+    pagination:
+      style: cursor
+      cursor_param: cursor
+      # "up to 50 Orders ordered by their modification date". There is no
+      # parameter to ask for fewer or more: the page size is Squarespace's.
+      limit: 50
+      limit_param: "-"
+
+  - method: POST
+    path: /1.0/commerce/orders
+    resource: order
+    operation: create
+    status: 201
+    emits: order.create
+
+  - method: GET
+    path: /1.0/commerce/orders/{id}
+    resource: order
+    operation: get
+
+  # Fulfilling answers 204 with no body, so the caller who wants the updated
+  # order has to fetch it again.
+  - method: POST
+    path: /1.0/commerce/orders/{id}/fulfillments
+    resource: order
+    operation: update
+    status: 204
+    empty_body: true
+    emits_when:
+      # "The order.update webhook continues to fire normally for FULFILLED,
+      # REFUNDED, CANCELED, MARKED_PENDING, and EMAIL_UPDATED events".
+      - event: order.update
+        field: fulfillmentStatus
+
+webhooks:
+  events:
+    - order.create
+    - order.update
+  # An identifier and nothing else, which is Mollie's bargain.
+  payload:
+    id: "{id}"
+    topic: "{event}"
+    createdOn: "{created_iso}"
+    websiteId: 5f3c3d55ac435e1a051f77b3
+    subscriptionsId: 5f3c2155d947844beedda991
+    data:
+      orderId: "{record_id}"
+  signing:
+    scheme: hmac-sha256
+    header: Squarespace-Signature
+    secret: F3F9B981C78E7A6187E42853F6CE2804177E98206164779423B02DEC981ACD6B
+    encoding: hex
+    over: "{body}"
+    value: "{digest}"
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized.
+    fields:
+      type: AUTHORIZATION_ERROR
+      subtype: OAUTH_TOKEN_REQUIRED
+
+  missing_user_agent:
+    status: 400
+    message: The User-Agent header is required.
+    fields:
+      type: INVALID_REQUEST_ERROR
+      subtype: MISSING_ARGUMENT
+
+  resource_missing:
+    status: 404
+    message: The requested Order was not found.
+    fields:
+      type: INVALID_REQUEST_ERROR
+      subtype: INVALID_ARGUMENT
+
+  # The other refusal for the same question. "Bad request. The id is not in
+  # the expected format."
+  id_malformed:
+    status: 400
+    message: The id is not in the expected format.
+    fields:
+      type: INVALID_REQUEST_ERROR
+      subtype: INVALID_ARGUMENT
+
+  invalid_request:
+    status: 400
+    message: >-
+      The cursor parameter contains an invalid value, cursor was specified
+      with other parameters, or modifiedAfter or modifiedBefore was specified
+      without the other parameter.
+    fields:
+      type: INVALID_REQUEST_ERROR
+      subtype: INVALID_ARGUMENT
+
+fixtures:
+  empty: {}
+
+  site:
+    order:
+      # Paid in full, unfulfilled, and the ordinary case.
+      - id: 585d498fdee9f31a60284a37
+        orderNumber: "3"
+        createdOn: "2026-07-14T10:22:41.008Z"
+        modifiedOn: "2026-07-14T10:22:41.008Z"
+        customerEmail: bob@example.com
+        customerId: 585d498fdee9f31a60284a38
+        paymentState: PAID
+        fulfillmentStatus: PENDING
+        grandTotal:
+          currency: GBP
+          value: 480.00
+        subtotal:
+          currency: GBP
+          value: 400.00
+        taxTotal:
+          currency: GBP
+          value: 80.00
+        shippingTotal:
+          currency: GBP
+          value: 0.00
+        discountTotal:
+          currency: GBP
+          value: 0.00
+        refundedTotal:
+          currency: GBP
+          value: 0.00
+        lineItems:
+          - id: 585d4975dee9f31a60284a16
+            productId: 565c8f3da7c8a3cf71d5fd0a
+            productName: Brine kettle
+            quantity: 1
+            sku: SQ3381024
+            lineItemType: PHYSICAL_PRODUCT
+            unitPricePaid:
+              currency: GBP
+              value: 400.00
+        testmode: false
+      # Two pounds fifty back on four hundred and eighty, and the state is
+      # the same word a fully reversed order carries.
+      - id: 6a1f77b3ac435e1a051f3c3d
+        orderNumber: "4"
+        createdOn: "2026-07-15T09:04:12.114Z"
+        modifiedOn: "2026-07-19T16:41:55.002Z"
+        customerEmail: pam@example.com
+        customerId: 585d498fdee9f31a60284a39
+        paymentState: REFUNDED
+        fulfillmentStatus: FULFILLED
+        grandTotal:
+          currency: GBP
+          value: 480.00
+        subtotal:
+          currency: GBP
+          value: 400.00
+        taxTotal:
+          currency: GBP
+          value: 80.00
+        shippingTotal:
+          currency: GBP
+          value: 0.00
+        discountTotal:
+          currency: GBP
+          value: 0.00
+        # The whole difference between this order and a cancelled one, and it
+        # is not in the state.
+        refundedTotal:
+          currency: GBP
+          value: 2.50
+        lineItems:
+          - id: 585d4975dee9f31a60284a17
+            productId: 565c8f3da7c8a3cf71d5fd0b
+            productName: Beet crate
+            quantity: 2
+            sku: SCH-BEET
+            lineItemType: PHYSICAL_PRODUCT
+            unitPricePaid:
+              currency: GBP
+              value: 200.00
+        fulfillments:
+          - carrierName: Royal Mail
+            service: Tracked 48
+            shipDate: "2026-07-16T11:00:00.000Z"
+            trackingNumber: "103932814692659"
+        testmode: false
+      # A Payment Plan mid-collection: the deposit is captured, the
+      # instalments are not, and the default listing does not contain it.
+      - id: 71b0e4c9d3f28a5610cc4d2e
+        orderNumber: "5"
+        createdOn: "2026-07-20T12:00:00.000Z"
+        modifiedOn: "2026-08-20T12:00:00.000Z"
+        customerEmail: dwight@example.com
+        customerId: 585d498fdee9f31a60284a40
+        paymentState: PARTIALLY_PAID
+        fulfillmentStatus: PENDING
+        grandTotal:
+          currency: GBP
+          value: 1200.00
+        subtotal:
+          currency: GBP
+          value: 1000.00
+        taxTotal:
+          currency: GBP
+          value: 200.00
+        shippingTotal:
+          currency: GBP
+          value: 0.00
+        discountTotal:
+          currency: GBP
+          value: 0.00
+        refundedTotal:
+          currency: GBP
+          value: 0.00
+        lineItems:
+          - id: 585d4975dee9f31a60284a18
+            productId: 565c8f3da7c8a3cf71d5fd0c
+            productName: Workshop bench
+            quantity: 1
+            sku: SQ-BENCH-01
+            lineItemType: PHYSICAL_PRODUCT
+            unitPricePaid:
+              currency: GBP
+              value: 1000.00
+        testmode: false
+      # A card nobody was ever charged for, in the same listing as the money.
+      - id: 9c4d2e71b0e4c9d3f28a5610
+        orderNumber: "6"
+        createdOn: "2026-08-01T08:15:30.500Z"
+        modifiedOn: "2026-08-01T08:15:30.500Z"
+        customerEmail: developer@example.com
+        customerId: 585d498fdee9f31a60284a41
+        paymentState: PAID
+        fulfillmentStatus: PENDING
+        grandTotal:
+          currency: GBP
+          value: 9999.00
+        subtotal:
+          currency: GBP
+          value: 9999.00
+        taxTotal:
+          currency: GBP
+          value: 0.00
+        shippingTotal:
+          currency: GBP
+          value: 0.00
+        discountTotal:
+          currency: GBP
+          value: 0.00
+        refundedTotal:
+          currency: GBP
+          value: 0.00
+        lineItems:
+          - id: 585d4975dee9f31a60284a19
+            productId: 565c8f3da7c8a3cf71d5fd0d
+            productName: Test product
+            quantity: 1
+            sku: TEST-SKU
+            lineItemType: PHYSICAL_PRODUCT
+            unitPricePaid:
+              currency: GBP
+              value: 9999.00
+        testmode: true
+
+conformance:
+  - name: a refund of two pounds fifty puts the order in the same state a full one does
+    source: https://developers.squarespace.com/commerce-apis/orders-overview
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders/6a1f77b3ac435e1a051f3c3d
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # "a partial refund of any amount sets the order to REFUNDED". The
+        # state says the same word for two and a half pounds as it would for
+        # four hundred and eighty.
+        paymentState: REFUNDED
+        # And the arithmetic that tells them apart, which the documentation
+        # spells out and the response does not do: "compare the order's
+        # refundedTotal with grandTotal".
+        "refundedTotal.value": 2.50
+        "grandTotal.value": 480.00
+        orderNumber: "4"
+
+  - name: and the fully collected order beside it carries a nought rather than nothing
+    source: https://developers.squarespace.com/commerce-apis/orders-overview
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders/585d498fdee9f31a60284a37
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # The other end of the comparison: a PAID order still sends
+        # refundedTotal, so its presence says nothing and only its value
+        # does.
+        paymentState: PAID
+        "refundedTotal.value": 0.00
+        "grandTotal.value": 480.00
+
+  - name: the money field sends its currency as a string
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders/585d498fdee9f31a60284a37
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # MonetaryAmount.currency is declared as an object with six
+        # properties and every example, including the one attached to that
+        # declaration, sends this.
+        "grandTotal.currency": GBP
+      absent:
+        # Not the six properties the schema promises.
+        - grandTotal.currency.currencyCode
+        - grandTotal.currency.defaultFractionDigits
+        - grandTotal.currency.symbol
+
+  - name: the default listing leaves out the payment plan and keeps the test order
+    source: https://developers.squarespace.com/commerce-apis/orders-overview
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # Three of the four. The default set is the one that existed before
+        # Payment Plans did, so the order collecting instalments is absent --
+        # and the order nobody was ever charged for is present, because
+        # nothing filters on testmode.
+        "result[0].orderNumber": "3"
+        "result[1].orderNumber": "4"
+        "result[2].orderNumber": "6"
+        "result[2].testmode": true
+        "pagination.hasNextPage": false
+      absent:
+        - result[3]
+
+  - name: and the payment plan is there when it is asked for by name
+    source: https://developers.squarespace.com/commerce-apis/orders-overview
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders?paymentStates=PARTIALLY_PAID
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # "To include Payment Plan orders that are mid-collection, pass
+        # PARTIALLY_PAID explicitly". A deposit's worth of real money that
+        # the default view does not mention.
+        "result[0].orderNumber": "5"
+        "result[0].paymentState": PARTIALLY_PAID
+      absent:
+        - result[1]
+
+  - name: an id that could exist and does not is a 404
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders/000000000000000000000000
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 404
+      body:
+        message: The requested Order was not found.
+
+  - name: an id that could not exist at all is a 400
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders/not-an-object-id
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      # "Bad request. The id is not in the expected format." The same
+      # question, refused a different way, and the branch an application takes
+      # for a typo is not the branch it takes for a deleted order.
+      status: 400
+      body:
+        message: The id is not in the expected format.
+        type: INVALID_REQUEST_ERROR
+
+  - name: a request that does not say what is making it is refused
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+    expect:
+      # Required on every operation in the schema, with
+      # YOUR_CUSTOM_APP_DESCRIPTION as the placeholder. Basecamp does the
+      # same, so this is a shared shape rather than a finding.
+      status: 400
+      body:
+        message: The User-Agent header is required.
+        subtype: MISSING_ARGUMENT
+
+  - name: fulfilling an order answers nothing at all
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: POST
+      path: /1.0/commerce/orders/585d498fdee9f31a60284a37/fulfillments
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+      json:
+        fulfillmentStatus: FULFILLED
+        shouldSendNotification: false
+    expect:
+      # "204 No content. The order was successfully fulfilled." The caller
+      # who wants the order back has to go and get it.
+      status: 204
+      no_body: true
+      webhook:
+        event: order.update
+        signature_header: Squarespace-Signature
+        signature: '^[0-9a-f]{64}$'
+        body:
+          # The id, and nothing about the order. Reading the total off the
+          # delivery is not possible against Squarespace and is not possible
+          # here.
+          "data.orderId": 585d498fdee9f31a60284a37
+          topic: order.update
+        absent:
+          - data.grandTotal
+          - grandTotal
+          - paymentState
+
+  - name: the listing reports whether there is more and never how much
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders?paymentStates=PAID,PARTIALLY_PAID
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # Two paid and one collecting. The envelope carries hasNextPage and a
+        # cursor and no count of anything, so there is nothing here to show a
+        # progress bar with.
+        "result[0].orderNumber": "3"
+        "result[1].orderNumber": "5"
+        "result[2].orderNumber": "6"
+        "pagination.hasNextPage": false
+      absent:
+        - pagination.totalCount
+        - pagination.total
+        - result[3]
+
+  - name: the fulfilment filter is the one that behaves like an ordinary filter
+    source: https://developers.squarespace.com/commerce-apis/orders
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders?fulfillmentStatus=FULFILLED
+      headers:
+        Authorization: Bearer cauldron-squarespace-fixture-key
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # "Values may be PENDING, FULFILLED, or CANCELED." One order has
+        # shipped, and this parameter has no default hiding anything -- which
+        # is what makes paymentStates worth pointing at.
+        "result[0].orderNumber": "4"
+        "result[0].fulfillmentStatus": FULFILLED
+      absent:
+        - result[1]
+
+  - name: a key the site does not know is refused before anything else
+    source: https://developers.squarespace.com/commerce-apis/authentication-and-permissions
+    fixture: site
+    request:
+      method: GET
+      path: /1.0/commerce/orders
+      headers:
+        Authorization: Bearer not-this-sites-key
+        User-Agent: cauldron-conformance
+    expect:
+      # AUTHORIZATION_ERROR / OAUTH_TOKEN_REQUIRED, which is the pair the
+      # schema's own StandardErrorPayload enumerates for this.
+      status: 401
+      body:
+        type: AUTHORIZATION_ERROR
+        subtype: OAUTH_TOKEN_REQUIRED

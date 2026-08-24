@@ -123,6 +123,29 @@ type ID struct {
 	// the wire shape of every shipped Recipe at once, and each one has to be
 	// checked against its provider rather than assumed.
 	Type string `yaml:"type"`
+	// Pattern is the shape an identifier has to have for the provider to look
+	// it up at all, as a regular expression anchored by the Recipe.
+	//
+	// Declaring it says the provider checks before it searches, which is a
+	// distinction the collection could not make: every absence was a 404.
+	// Squarespace documents both answers on one route -- 404 "The requested
+	// Order was not found" for an id that could exist and does not, and 400
+	// "The id is not in the expected format" for one that could not -- and
+	// Stripe, Intercom and everything else built on ObjectIds behave the same
+	// way.
+	//
+	// It matters because the two failures are not interchangeable to the code
+	// receiving them. A 404 is a fact about the account: the order was
+	// deleted, or belongs to somebody else, and retrying will not help. A 400
+	// is a fact about the caller: an id from the wrong provider, a truncated
+	// string, an empty variable interpolated into the path. An emulator that
+	// answers 404 to both teaches an application to treat its own bugs as
+	// missing data -- and the test that proves the handler works asks for
+	// "nonexistent", which is exactly the id that does not behave this way.
+	//
+	// Empty means the provider looks up whatever it is given, which is the
+	// majority and stays the default.
+	Pattern string `yaml:"pattern"`
 	// CarriedBy names the field that holds the identifier when the provider
 	// does not send it under a name of its own.
 	//

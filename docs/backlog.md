@@ -411,6 +411,7 @@ the header says so.
 |---|---|
 | ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | ~~Medusa~~ | Shipped, Storefront API, and written against the published OpenAPI description at 2.19.0 rather than from memory. A field name without a + replaces the entire default set, so ?fields=id returns an order with one field and no error |
+| ~~Squarespace~~ | Shipped, written against the OpenAPI 3.1.1 document Squarespace publishes and serves its own reference from. One payment state destroys the number that gives it meaning: "a partial refund of any amount sets the order to REFUNDED", so a two-pound goodwill refund on a four-hundred-and-eighty-pound order sits in the state a fully reversed order sits in, and the documentation's own remedy is arithmetic the response does not do -- "compare the order's refundedTotal with grandTotal". Also: an id that could exist and does not is a 404 while one that could not exist at all is a 400, which is a distinction no Recipe here could make until this one; test orders come back in the same listing as the money with no parameter to exclude them; and MonetaryAmount.currency is declared as an object with six properties and sent as the string "USD" by every example in the same document. Two rules are documented and not served, and the file says so: the cursor may not travel with any other parameter, and the order.create webhook for a Payment Plan fires only when the last instalment lands |
 | ~~Ecwid~~ | Shipped, written against the documentation Ecwid publishes as source in its own GitHub organisation. The order list leaves out a whole category and does not say so: "If no filters are set in the URL, API will return all orders except for unfinished orders." Every number in the response agrees with every other and the set is short. Also: acceptMarketing is a boolean where null means yes, discount is everything except the coupon discount, and paymentMessage is cleared when the payment lands |
 | ~~Royal Mail~~ | Shipped, written against the Swagger document Royal Mail serves from its own API host. Deleting an order can cost money, and the description says so: cancelled label information goes to Revenue Protection, and a cancelled label found on a parcel is charged with a handling fee. The path parameter is a list of up to a hundred identifiers separated by semicolons, where references must be quoted and percent-encoded -- and the document's own example is a reference full of semicolons |
 | ~~Apideck~~ | Shipped, written against the OpenAPI document Apideck publishes, including its x-apideck-gotchas extension. The first unified API here -- one shape in front of Shopify, Walmart, TikTok, Wix and the rest -- and the seams are the subject: a 200 can carry meta.warnings holding somebody else's 429, present only when a step degraded. Also: a valid request can be unsupported by the connector, every response names which shop answered, and a unified field can be reported by one provider and inferred by another |
@@ -3280,3 +3281,60 @@ Also modelled: a trace's `observations` is an array of ids rather than objects,
 and only a `GENERATION` observation carries a model or a cost -- a `SPAN`
 carries null for both, so reading `model` off every observation gets null for
 two kinds out of three.
+
+## Squarespace, and an absence that was two absences
+
+Every Recipe here answered a request for a record that is not there with a 404,
+because an identifier had a shape the emulator **minted** with and no shape it
+**checked** against. Squarespace documents both answers on one route: `GET
+/1.0/commerce/orders/{id}` is 404 "The requested Order was not found" for an
+id that could exist and does not, and 400 "The id is not in the expected
+format" for one that could not exist at all.
+
+The distinction is not decorative, and it does not fail in a direction anybody
+notices. A 404 is a fact about the account -- the order was deleted, or belongs
+to somebody else -- and retrying will not help. A 400 is a fact about the
+caller: an id from the wrong provider, a truncated string, an empty variable
+interpolated into the path. An emulator that collapses them teaches an
+application to log its own bugs as missing data. Worse, the id a test reaches
+for when it wants a miss is `"nonexistent"` -- which is exactly the id that
+does **not** behave the way the test assumes.
+
+`id.pattern` closes it. A resource declaring one is refused before the store is
+consulted, which is the order the providers who do this run it in: the id never
+reached anything that could have looked for it. Three rules keep the
+declaration from being decorative -- the pattern has to be anchored at both
+ends, every fixture id has to match it, and some conformance case has to
+address the resource with an identifier it rejects. Without the third, a
+pattern nothing exercises looks exactly like a provider that does not check,
+because both answer 404 to everything a case is likely to ask for.
+
+Squarespace is the first user. Stripe, Intercom and everything else built on
+ObjectIds behave the same way and are not yet declared, so this is a gap that
+is now expressible rather than a gap that is closed.
+
+## Two Squarespace rules that are documented and not served
+
+Both are refusals keyed on a **combination** of parameters rather than on any
+one value, and route selection here works on the values a request carries.
+
+The cursor may not travel with anything else -- "Cannot be used with other
+parameters", so page two of a filtered query is not expressible and the
+ordinary pager that keeps its query string and appends `&cursor=...` gets a 400
+on its second call and none on its first. And the date range is all or nothing:
+`modifiedAfter` is "Required when `modifiedBefore` is passed" and the reverse,
+so half a range is a refusal rather than an open interval.
+
+Declaring either against particular fixture values would serve one pair of
+strings while claiming a rule. `matches_query` compares values, not
+combinations, and a route that refuses *whenever two parameters appear
+together* is the shape neither it nor `selects` nor `matches_header` can say.
+
+Also documented and not served: the `order.create` webhook for a Payment Plan
+order "fires only when paymentState transitions to PAID (all installments
+collected), not when the order is initially placed", and "No webhook fires for
+the deposit or for intermediate installment captures". Nothing in the public
+API moves an order's payment state, so there is no request an emulator could
+answer with that silence. The other half of the same trap **is** served: the
+default `paymentStates` filter leaves out `PARTIALLY_PAID`, so the order is
+invisible to the listing for as long as the plan is collecting.

@@ -70,6 +70,46 @@ func providers() []provider {
 			},
 		},
 		{
+			// Four exclusions, and the biggest of them is the vendor's own
+			// scope. Everything under @squarespace/ is template tooling for
+			// building Squarespace sites -- template-engine, toolbelt,
+			// server, polyfills, less-ts-cli -- and @squarespace/core calls
+			// itself "The frontend JS API for Squarespace templates", which
+			// is a package with the word API in its description that is not
+			// this API. eslint-config-squarespace is the company's own lint
+			// rules. That is Etsy's phan and Akeneo's three, on a larger
+			// scale: the provider publishes a great deal and none of it
+			// calls the Commerce API.
+			//
+			// unikapps/laravel-socialite-squarespace signs people in rather
+			// than talking to the store, which is what socialiteproviders
+			// /gumroad and mugnate/oauth2-ecwid were.
+			//
+			// beloop/squarespace and beloop/squarespace-bundle are components
+			// of the Beloop LMS that happen to carry the word. They require
+			// beloop/core, beloop/course and beloop/user, and nothing in
+			// either one says Squarespace anywhere else.
+			//
+			// And @tryghost/mg-squarespace-xml, seed-squarespace and
+			// is-squarespace never call the provider at all: the first two
+			// read and write export files to move a site between platforms,
+			// and the third looks at a page and guesses what built it. A
+			// project holding any of them is doing something to Squarespace
+			// content with no API key existing anywhere.
+			//
+			// What is left is four small npm packages and, on Packagist,
+			// nothing whatsoever. Squarespace has no PHP client for its
+			// Commerce API on the registry, which is a fact about the
+			// provider rather than a gap in the search.
+			recipe: "squarespace",
+			npm: []string{
+				"squarespace-node-api",
+				"marktera-squarespace",
+				"@corte-so/commerce-squarespace",
+				"@florasync/squarespace-mcp",
+			},
+		},
+		{
 			// Two exclusions, both shapes already recorded here, arriving
 			// together on one small provider.
 			//

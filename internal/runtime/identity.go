@@ -11,6 +11,28 @@ import (
 	"github.com/CauldronUp/cauldron/internal/recipe"
 )
 
+// misshapen reports whether an identifier fails the shape its resource
+// declares, which is a different failure from naming something that is not
+// there.
+//
+// The order matters: this runs before the lookup, because that is the order
+// the providers who do it run it in. Squarespace answers "The id is not in
+// the expected format" without consulting the account at all, and it has to
+// -- the id never reached anything that could have looked for it.
+//
+// An empty identifier is left alone. A route that addresses nothing is not a
+// route addressing a badly shaped thing, and the not-found path already
+// describes it.
+func (s *Sandbox) misshapen(resource, id string) bool {
+	if id == "" {
+		return false
+	}
+
+	shape, declared := s.idShapes[resource]
+
+	return declared && !shape.MatchString(id)
+}
+
 // identifier resolves the record id for a request. Most providers put it in
 // the path; RPC-shaped ones like Slack put it in the query string or the body,
 // which the Recipe declares with id_from.
