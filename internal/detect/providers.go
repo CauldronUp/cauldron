@@ -70,6 +70,27 @@ func providers() []provider {
 			},
 		},
 		{
+			// A fresh shape of near miss: this one is a substring of a
+			// bigger project's name. Lagoon is amazee.io's open-source
+			// Kubernetes application delivery platform, and "lago" is inside
+			// it -- so uselagoon/lagoon-php-sdk, steveworley/lagoon-php-sdk,
+			// amazeeio/lagoon-logs, salsadigitalauorg/wp_lagoon_logs and
+			// bryangruneberg/laragoon all match a substring rule. A usage
+			// billing emulator offered to every Drupal site deployed on
+			// amazee.io is not a near miss, it is a different industry.
+			//
+			// The npm package called lago is the ordinary sort: a data
+			// structures and algorithms library.
+			//
+			// What is left are two clients. lago-javascript-client is the
+			// official JavaScript one, and g-portal/lago-php-client borrows
+			// Lago's own API blurb for its description, which is a better
+			// signal than its four thousand installs.
+			recipe:   "lago",
+			composer: []string{"g-portal/lago-php-client"},
+			npm:      []string{"lago-javascript-client"},
+		},
+		{
 			// A dependency on Apideck proves the caller uses Apideck and not
 			// which of its unified APIs. One SDK covers ecommerce, CRM,
 			// accounting, HRIS and the rest, so a project holding it may be

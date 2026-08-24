@@ -1507,3 +1507,51 @@ func TestRoyalMailIsMappedToNothingOnPurpose(t *testing.T) {
 		}
 	}
 }
+
+// Lago's near miss is a substring of a bigger project's name, which is a shape
+// none of the others here has.
+//
+// Lagoon is amazee.io's open-source Kubernetes application delivery platform,
+// and "lago" sits inside it. A substring rule matches uselagoon/lagoon-php-sdk,
+// steveworley/lagoon-php-sdk, amazeeio/lagoon-logs,
+// salsadigitalauorg/wp_lagoon_logs and bryangruneberg/laragoon -- and offering
+// a usage-billing emulator to every Drupal site deployed on amazee.io is not a
+// near miss, it is a different industry.
+//
+// The npm package called lago is the ordinary sort: a data structures and
+// algorithms library.
+func TestDetectLagoAndNotLagoon(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"g-portal/lago-php-client": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"lago-javascript-client": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "lago") {
+			t.Errorf("%v did not detect lago: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A different product whose name contains this one.
+		{"composer.json": `{"require": {"uselagoon/lagoon-php-sdk": "^1.0"}}`},
+		{"composer.json": `{"require": {"steveworley/lagoon-php-sdk": "^1.0"}}`},
+		{"composer.json": `{"require": {"amazeeio/lagoon-logs": "^2.0"}}`},
+		{"composer.json": `{"require": {"salsadigitalauorg/wp_lagoon_logs": "^1.0"}}`},
+		{"composer.json": `{"require": {"bryangruneberg/laragoon": "^1.0"}}`},
+		// And an algorithms library that took the word.
+		{"package.json": `{"dependencies": {"lago": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "lago") {
+			t.Errorf("%v offered the lago Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
