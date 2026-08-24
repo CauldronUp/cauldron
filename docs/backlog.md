@@ -394,7 +394,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Toast | Assess — orders, checks, the restaurant's business day not matching the calendar day |
+| ~~Toast~~ | Shipped. businessDate is the day the money belongs to and openedDate is when the order happened, and they differ every night after midnight |
 | Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
 | Clover | Assess — merchants, orders, payments |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
@@ -887,7 +887,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**111 more listings across 63 Recipes declare no paging at all**, and the
+**112 more listings across 64 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1205,7 +1205,7 @@ own when somebody runs `cauldron detect` in a repository that uses it, which is
 the thing the front of the README promises.
 
 The table went from 12 Recipes to 91 in one pass, and from 91 to 147 in
-another. These twenty are left, and every one of them has now been looked for
+another. These twenty-one are left, and every one of them has now been looked for
 rather than remembered -- which is the whole rule: a package name written from
 memory is exactly the guess detection forbids.
 
@@ -1243,6 +1243,7 @@ than a client for its API.
 | Ramp | A package of that name exists with no repository and no description beyond its own name |
 | RevenueCat | The published packages are the mobile and hybrid SDKs rather than a server client |
 | ShipHero | No official client; the API is GraphQL over raw HTTP |
+| Toast | No client for the POS API on either registry, and the name means a notification popup: tall-toasts alone has over four hundred thousand installs. A mapping on the word would offer a restaurant point-of-sale emulator to every Laravel project that shows a toast when a form saves, so a test guards the decision |
 | Tradier | A third-party SDK exists and is one person's; worth a look rather than a mapping on sight |
 | Twilio Verify | Part of the main Twilio SDK, which maps to the twilio Recipe rather than this one |
 

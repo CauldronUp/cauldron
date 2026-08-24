@@ -746,3 +746,34 @@ func TestDetectLemonSqueezyFromTheClientsAndNotTheComponentLibrary(t *testing.T)
 		t.Errorf("a UI component library offered the lemonsqueezy Recipe: %+v", p.Requirements)
 	}
 }
+
+// Nothing maps to the Toast Recipe, and that is the decision rather than an
+// omission.
+//
+// "toast" means a notification popup on both registries. tall-toasts alone
+// has over four hundred thousand installs, toastable and toastbox are the
+// same idea, and the unscoped npm package is a different library again. There
+// is no widely used client for the Toast POS API at all -- integrations are
+// written straight against the REST endpoints -- so there is nothing to map
+// that would not be a collision.
+//
+// This guards the decision rather than a behaviour: a naive mapping on the
+// word would offer a restaurant point-of-sale emulator to every Laravel
+// project that shows a toast when a form saves.
+func TestDetectDoesNotOfferToastForToastNotificationLibraries(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"usernotnull/tall-toasts": "^2.0"}}`},
+		{"composer.json": `{"require": {"acatech/toastable": "^1.0"}}`},
+		{"composer.json": `{"require": {"awesometoast/toastbox": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"toast": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "toast") {
+			t.Errorf("%v offered the toast Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
