@@ -1602,3 +1602,49 @@ func TestDetectPolarAndNotPolarisOrPolarising(t *testing.T) {
 		}
 	}
 }
+
+// Gumroad's exclusion is "sign in with" rather than "talk to".
+//
+// socialiteproviders/gumroad is a Laravel Socialite provider and
+// alofoxx/oauth2-gumroad is the same idea for the PHP League. A project
+// holding either lets people log in with a Gumroad account and may never
+// touch a product or a licence -- the shape Shopware's meteor-admin-sdk and
+// Saleor's app-sdk have.
+//
+// And for once the bare word is the real thing: npm's gumroad describes
+// itself as "API client for Gumroad.", where the same plain name turned out
+// to be an algorithms library for Lago and an express boilerplate for Polar.
+func TestDetectGumroadClientsAndNotItsLoginProviders(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"serenity_technologies/gumroad": "^1.0"}}`},
+		{"composer.json": `{"require": {"serenity_technologies/cashier-gumroad": "^1.0"}}`},
+		{"composer.json": `{"require": {"diskopete/laravel-gumroad": "^1.0"}}`},
+		{"composer.json": `{"require": {"flowframe/laravel-gumroad": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"gumroad": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"gumroad-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "gumroad") {
+			t.Errorf("%v did not detect gumroad: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Logging in with Gumroad, not calling it.
+		{"composer.json": `{"require": {"socialiteproviders/gumroad": "^4.0"}}`},
+		{"composer.json": `{"require": {"alofoxx/oauth2-gumroad": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "gumroad") {
+			t.Errorf("%v offered the gumroad Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

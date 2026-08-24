@@ -1,0 +1,491 @@
+# Gumroad Recipe for Cauldron
+#
+# Written against Gumroad's own source, which is open: antiwork/gumroad, and
+# specifically app/controllers/api/v2/. Every quoted line below is a comment or
+# a statement in that code rather than a description of it. Gumroad was on this
+# project's backlog as "Assess -- products and sales", and reading the
+# controllers turned up something the sales half would not have.
+#
+# Verifying a licence spends one.
+#
+# POST /v2/licenses/verify reads like a question and is an update. The
+# controller settles the default in one line:
+#
+#   params[:increment_uses_count] = ["false", false].exclude?(params[:increment_uses_count])
+#
+# and then acts on it:
+#
+#   def update_license_uses
+#     @license.increment!(:uses) if params[:increment_uses_count]
+#   end
+#
+# So the counter goes up unless the caller explicitly sends false. An
+# application that checks its licence on every launch burns a use on every
+# launch, and a customer with a five-seat key runs out on the fifth start of
+# the same computer. Nothing in the call says "spend"; it says verify.
+#
+# The strongest evidence that this bites people is that Gumroad ships the
+# undo. PUT /v2/licenses/decrement_uses_count exists for no other reason, and
+# it guards against going below zero -- "decrement!(:uses) if @license.uses >
+# 0" -- which is what an endpoint looks like when it is used to repair
+# something that keeps happening.
+#
+# Six more, each from the same source:
+#
+#   1. Not found is a 200, and the code says it should not be. Most v2
+#      endpoints answer failures through error_with_object, which renders
+#      {success: false, message} with no status at all -- so HTTP 200 -- and
+#      the method carries this comment: "TODO we should return status code 404
+#      Not Found when object is not found and 422 Unprocessable Entity when
+#      it's unable to be modified. There's a (small) chance this will break
+#      existing integrations, but should be improved in the next version of
+#      the API."
+#   2. Which makes three failure shapes in one API. The licence endpoints do
+#      send 404 and 500 with {success: false, message}; a bad page key sends
+#      400 with {status, error} -- different keys entirely; and everything
+#      else sends 200 with {success: false, message}. A client cannot unwrap
+#      all three the same way and cannot branch on the status either.
+#   3. A missing parameter answers 500 on purpose. Verifying without
+#      product_id logs "[License Verification Error] product_id missing,
+#      responding with HTTP 500" and renders a helpful sentence inside a
+#      server error. A client that retries 5xx retries forever; one that
+#      treats 5xx as somebody else's problem never fixes the request.
+#   4. And whether that happens depends on when the product was created. The
+#      check is "product.created_at > force_product_id_timestamp", read from
+#      Redis, so the same request succeeds for an old product and fails for a
+#      new one, and the cutoff is not exposed anywhere in the API.
+#   5. Verifying does not tell you which licence it verified.
+#      success_with_license builds its reply as
+#      "{ success: true }.merge(@license.as_json(only: [:uses]))", so the only
+#      licence field in it is the use count. The key is not echoed, so the
+#      answer cannot be correlated with the question except by holding on to
+#      it.
+#   6. The next page URL has your credential removed from it. next_page_url
+#      rebuilds the query with "except('access_token', 'page', 'page_key')",
+#      so a client that follows the link Gumroad hands it is unauthenticated
+#      unless it puts the token back.
+#
+# The page size is not a parameter. RESULTS_PER_PAGE = 10, and the listing
+# fetches eleven rows to find out whether there is a next page before trimming
+# to ten, so ten is what everybody gets.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The increment is not served. Verifying here answers with a use count and
+#     does not raise it, because Cauldron applies field assignments rather
+#     than arithmetic. The count is in the fixture and the reason it moves is
+#     in this comment; what is served is the shape, the default, and the
+#     existence of the endpoint that undoes it.
+#   - The credential is modelled as the query parameter, which is the form the
+#     source proves by stripping it out of next_page_url. Gumroad accepts a
+#     bearer header too, and a client using one is refused here.
+#   - Sales, subscribers, offer codes, variants, custom fields and the rest of
+#     v2 are absent. Products and licences only.
+#
+# The token below is a fixture and belongs to no seller.
+
+recipe: gumroad
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://app.gumroad.com/api
+
+auth:
+  # In the URL, which is worth reproducing precisely because it is a bad idea:
+  # URLs end up in access logs, browser history and error reports. The source
+  # proves this is the form that matters by stripping it out of the paging
+  # link it builds.
+  scheme: query
+  param: access_token
+  keys:
+    - cauldron-gumroad-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: products
+  resource:
+    style: wrapped
+    key: product
+  success:
+    fields:
+      # render_response merges this into every reply, so the flag is on the
+      # successes as well as on all three failure shapes.
+      success: true
+  error:
+    # {success: false, message} -- the shape most of the API uses, at whatever
+    # status the endpoint happens to choose.
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  product:
+    id:
+      # A permalink: short, opaque, and chosen by Gumroad.
+      style: opaque
+    fields:
+      name:
+        type: string
+      # Cents, and the currency beside it.
+      price:
+        type: integer
+      currency:
+        type: string
+        default: usd
+      short_url:
+        type: string
+      published:
+        type: boolean
+        default: true
+      sales_count:
+        type: integer
+        default: 0
+      formatted_price:
+        type: string
+      max_purchase_count:
+        type: integer
+        null_when_unset: true
+
+  license:
+    id:
+      style: opaque
+      # Not published. success_with_license builds its reply as
+      # {success: true}.merge(@license.as_json(only: [:uses])), so the only
+      # licence field that comes back is the use count -- the key you sent is
+      # not echoed, and a client that expects its own input returned finds
+      # nothing.
+      field: "-"
+    fields:
+      # The number POST /verify raises by one unless you tell it not to.
+      uses:
+        type: integer
+        default: 0
+      product_id:
+        type: string
+      disabled:
+        type: boolean
+        default: false
+      purchase:
+        type: map
+
+routes:
+  - method: GET
+    path: /v2/products
+    resource: product
+    operation: list
+    pagination:
+      # RESULTS_PER_PAGE = 10, and there is no parameter for it.
+      style: cursor
+      limit: 10
+      limit_param: "-"
+      cursor_param: page_key
+
+  - method: GET
+    path: /v2/products/{id}
+    resource: product
+    operation: get
+
+  # The question that is an update.
+  - method: POST
+    path: /v2/licenses/verify
+    resource: license
+    operation: get
+    id_from: body:license_key
+    envelope:
+      # Not wrapped in a name: success_with_license merges the licence's own
+      # fields into the reply beside the flag.
+      style: bare
+
+  # And the endpoint that exists to undo it.
+  - method: PUT
+    path: /v2/licenses/decrement_uses_count
+    resource: license
+    operation: get
+    id_from: body:license_key
+    envelope:
+      # Not wrapped in a name: success_with_license merges the licence's own
+      # fields into the reply beside the flag.
+      style: bare
+
+errors:
+  # The one the code's own TODO is about: a failure at 200.
+  not_found_at_two_hundred:
+    status: 200
+    message: The product was not found.
+    fields:
+      success: false
+
+  # A licence that was switched off, which the licence controller does answer
+  # with a real status.
+  license_disabled:
+    status: 404
+    message: This license key has been disabled.
+    fields:
+      success: false
+
+  # A missing parameter, answered as a server error on purpose.
+  product_id_required:
+    status: 500
+    message: "The 'product_id' parameter is required to verify the license for this product."
+    fields:
+      success: false
+
+  # And the third shape: different keys, and a status that matches them.
+  invalid_page_key:
+    status: 400
+    style: flat
+    message_field: error
+    fields:
+      status: 400
+    message: Invalid page_key.
+
+  authentication_error:
+    status: 401
+    message: Unauthorized.
+    fields:
+      success: false
+
+fixtures:
+  empty: {}
+
+  seller:
+    product:
+      - id: pRoDuCt1
+        name: Terminal Colour Schemes
+        price: 1200
+        currency: usd
+        formatted_price: "$12"
+        short_url: https://cauldron.gumroad.test/l/pRoDuCt1
+        published: true
+        sales_count: 431
+      - id: pRoDuCt2
+        name: The Font Pack
+        price: 4900
+        currency: usd
+        formatted_price: "$49"
+        short_url: https://cauldron.gumroad.test/l/pRoDuCt2
+        published: true
+        sales_count: 88
+        max_purchase_count: 100
+    license:
+      # Three uses of a licence somebody bought once. Every one of them was a
+      # launch of the same application on the same computer.
+      - id: 85DA1E5B-4F2E4A17-9E0D3C68-7B1F0A94
+        uses: 3
+        product_id: pRoDuCt1
+        disabled: false
+        purchase:
+          id: 8f2b17c405de4a91b3c69e70d148a2f5
+          email: buyer@example.test
+          refunded: false
+          chargebacked: false
+      - id: 21CF7A03-9B6E4D52-8A1C0F37-64E2D8B5
+        uses: 0
+        product_id: pRoDuCt2
+        disabled: true
+        purchase:
+          id: 3c8f6e214d074b92a5e310bf7d94c268
+          email: other@example.test
+          refunded: false
+          chargebacked: false
+
+conformance:
+  - name: verifying a licence answers with a use count
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/licenses_controller.rb
+    fixture: seller
+    request:
+      method: POST
+      path: /v2/licenses/verify?access_token=cauldron-gumroad-fixture-token
+      headers:
+        Content-Type: application/json
+      json:
+        product_id: pRoDuCt1
+        license_key: 85DA1E5B-4F2E4A17-9E0D3C68-7B1F0A94
+    expect:
+      status: 200
+      body:
+        # Three, and in production this call is what made it three. The
+        # default is set by
+        # params[:increment_uses_count] = ["false", false].exclude?(...)
+        # so the counter rises unless the caller says otherwise.
+        uses: 3
+        success: true
+        "purchase.email": buyer@example.test
+      absent:
+        # The reply is {success, uses, purchase} and nothing else: the key is
+        # not echoed back, so a client cannot correlate the answer with the
+        # question except by having kept it.
+        - license_key
+        - id
+
+  - name: and the API ships an endpoint to undo the verification
+    source: https://github.com/antiwork/gumroad/blob/main/config/routes.rb
+    fixture: seller
+    request:
+      method: PUT
+      path: /v2/licenses/decrement_uses_count?access_token=cauldron-gumroad-fixture-token
+      headers:
+        Content-Type: application/json
+      json:
+        license_key: 85DA1E5B-4F2E4A17-9E0D3C68-7B1F0A94
+    expect:
+      # An endpoint whose only purpose is to take back what verifying did,
+      # guarded so it cannot go below zero. That is what an API looks like
+      # when a side effect surprises people often enough to need a remedy.
+      status: 200
+      body:
+        uses: 3
+        success: true
+
+  - name: a disabled licence is refused with a real status
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/licenses_controller.rb
+    fixture: seller
+    arm: license_disabled
+    request:
+      method: POST
+      path: /v2/licenses/verify?access_token=cauldron-gumroad-fixture-token
+      headers:
+        Content-Type: application/json
+      json:
+        product_id: pRoDuCt2
+        license_key: 21CF7A03-9B6E4D52-8A1C0F37-64E2D8B5
+    expect:
+      # The licence endpoints do use statuses. Everything else does not, which
+      # is the next case.
+      status: 404
+      body:
+        success: false
+        message: This license key has been disabled.
+
+  - name: and a missing product is not found at two hundred
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/base_controller.rb
+    fixture: seller
+    arm: not_found_at_two_hundred
+    request:
+      method: GET
+      path: /v2/products/nope?access_token=cauldron-gumroad-fixture-token
+    expect:
+      # error_with_object renders {success: false, message} with no status, so
+      # Rails sends 200. The method's own TODO says it should be a 404 and
+      # explains why it is not: "There's a (small) chance this will break
+      # existing integrations."
+      #
+      # So response.ok is true, response.status is 200, and the product does
+      # not exist. The only thing that says so is a boolean in the body.
+      status: 200
+      body:
+        success: false
+        message: The product was not found.
+
+  - name: a missing parameter is answered as a server error
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/licenses_controller.rb
+    fixture: seller
+    arm: product_id_required
+    request:
+      method: POST
+      path: /v2/licenses/verify?access_token=cauldron-gumroad-fixture-token
+      headers:
+        Content-Type: application/json
+      json:
+        license_key: 85DA1E5B-4F2E4A17-9E0D3C68-7B1F0A94
+    expect:
+      # 500, deliberately, with the fix written inside it. A client that
+      # retries server errors retries this forever, and one that pages a human
+      # on 5xx pages them about a typo. Whether it fires at all depends on
+      # when the product was created, against a cutoff held in Redis.
+      status: 500
+      body:
+        success: false
+      matches:
+        message: "'product_id' parameter is required"
+
+  - name: and a bad page key uses different keys again
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/links_controller.rb
+    fixture: seller
+    arm: invalid_page_key
+    request:
+      method: GET
+      path: /v2/products?access_token=cauldron-gumroad-fixture-token&page_key=nonsense
+    expect:
+      # error_400 renders {status, error} -- not success, not message. Three
+      # failure shapes in one v2 API, and this is the only one whose body and
+      # status agree with each other.
+      status: 400
+      body:
+        status: 400
+        error: Invalid page_key.
+      absent:
+        - success
+        - message
+
+  - name: a success carries the flag too
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/base_controller.rb
+    fixture: seller
+    request:
+      method: GET
+      path: /v2/products/pRoDuCt1?access_token=cauldron-gumroad-fixture-token
+    expect:
+      status: 200
+      body:
+        # render_response merges {success:} into every reply, so the flag is
+        # the one thing present on all three failure shapes and on the
+        # successes -- and checking it is the only check that works
+        # everywhere.
+        success: true
+        "product.name": Terminal Colour Schemes
+        "product.price": 1200
+
+  - name: the page size is not a parameter
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/links_controller.rb
+    fixture: seller
+    request:
+      method: GET
+      path: /v2/products?access_token=cauldron-gumroad-fixture-token&limit=1
+      headers:
+        Accept: application/json
+    expect:
+      status: 200
+      body:
+        # RESULTS_PER_PAGE = 10 and nothing reads a limit, so asking for one
+        # gets ten -- or in this shop, both. The listing fetches eleven rows
+        # to learn whether a next page exists and then throws the eleventh
+        # away.
+        "products[0].name": Terminal Colour Schemes
+        "products[1].name": The Font Pack
+        success: true
+
+  - name: money is cents beside a string that is not
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/links_controller.rb
+    fixture: seller
+    request:
+      method: GET
+      path: /v2/products/pRoDuCt2?access_token=cauldron-gumroad-fixture-token
+    expect:
+      status: 200
+      body:
+        # price is an integer number of cents and formatted_price is prose. A
+        # report that sums the second gets "$49$12"; one that sums the first
+        # and forgets to divide reports the shop's revenue in pennies.
+        "product.price": 4900
+        "product.formatted_price": "$49"
+        "product.currency": usd
+
+  - name: the credential travels in the URL
+    source: https://github.com/antiwork/gumroad/blob/main/app/controllers/api/v2/base_controller.rb
+    fixture: seller
+    request:
+      method: GET
+      path: /v2/products
+    expect:
+      # No access_token, no answer. It goes in the query string, which is why
+      # next_page_url takes it back out again -- "except('access_token',
+      # 'page', 'page_key')" -- and why a client that follows the link
+      # Gumroad hands it is unauthenticated.
+      status: 401
+      body:
+        success: false
+        message: Unauthorized.

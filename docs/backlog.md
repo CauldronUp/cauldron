@@ -426,7 +426,7 @@ the header says so.
 | ~~Clover~~ | Shipped. An order comes back with no items in it unless the request asked to expand them, and forgetting is answered rather than refused |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
 | ~~Lemon Squeezy~~ | Shipped, and see the row below — the merchant-of-record half is FastSpring's and is repeated rather than new. What is new: licence keys, store-scoped identifiers, and totals in two currencies at once |
-| Gumroad | Assess — products and sales |
+| ~~Gumroad~~ | Shipped, written against Gumroad's own source, which is open. Not the sales half: verifying a licence spends one. POST /v2/licenses/verify defaults increment_uses_count to true, so an app that checks its licence on every launch burns a use every launch -- and the API ships PUT /decrement_uses_count to undo it. Also: not-found is a 200 and the code's own TODO says it should not be, there are three failure shapes in one v2 API, and a missing product_id answers 500 on purpose |
 | ~~Polar~~ | Shipped, benefits rather than subscriptions -- the merchant-of-record half is FastSpring's and is not repeated. Paying for a thing and receiving it are two different records, and the second can fail on its own: granting a benefit means calling Discord or GitHub for the customer, so a BenefitGrant carries two booleans and an error "if the benefit grant failed with an unrecoverable error". Four states, not two, and the listing mixes them because is_granted is an opt-in filter |
 | ~~Orb~~ | Shipped. An invoice is not final until the period closes |
 | Metronome | Assess — usage events and their deduplication window |
