@@ -53,6 +53,17 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// A new reason to exclude something: @medusajs/medusa is not a
+			// client, it is the commerce engine. A project depending on it is
+			// the store rather than a caller of one, and emulating the thing
+			// you are running is not useful -- the store's own tests want a
+			// database, not a fake of itself.
+			//
+			// @medusajs/js-sdk is the client, and it is the only mapping.
+			recipe: "medusa",
+			npm:    []string{"@medusajs/js-sdk"},
+		},
+		{
 			// printful/php-gettext-cms is Printful's, and it is a translation
 			// management backend rather than an API client -- the same shape
 			// as etsy/phan, and with a six-figure install count of its own. A
