@@ -601,7 +601,7 @@ func asObject(value any) (map[string]any, bool) {
 
 // listBody shapes a page according to the declared list style, which is the
 // Recipe's unless the route overrode it.
-func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, path, nextURL string) any {
+func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int, resource, path, nextURL string) any {
 	page.Records = s.presentAll(resource, page.Records)
 
 	// Chargebee wraps every item under the resource's own name, so a client
@@ -728,7 +728,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, resource, 
 		}
 
 		if spec.CountField != "" {
-			setPath(body, spec.CountField, s.countValue(spec, page.Total))
+			setPath(body, spec.CountField, s.countValue(spec, countTotal(spec, page, limit)))
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)
@@ -872,4 +872,33 @@ func (s *Sandbox) declaredOnly(resource string, record store.Record) store.Recor
 	}
 
 	return kept
+}
+
+// countTotal is the number the count field carries, which is not always how
+// many records matched.
+//
+// Three quantities travel under the same name and a fixture small enough to
+// fit on one page makes all three agree, so this is the one place the
+// difference is decided rather than a property of the data.
+func countTotal(spec recipe.ListResponse, page store.Page, limit int) int {
+	switch spec.CountMeans {
+	case "page":
+		// The length of the page in front of you, which is what Shopware
+		// reports unless a request asks it to count. Not a mistake on its
+		// part: counting is a second query and it does not run one uninvited.
+		return len(page.Records)
+	case "lookahead":
+		// A bounded count. The provider reads a few pages past this one and
+		// reports what it found, so the number is real up to the window and
+		// stops there. The extra row is the sentinel that says the window is
+		// not the end.
+		bound := limit*spec.CountLookahead + 1
+		if page.Total < bound {
+			return page.Total
+		}
+
+		return bound
+	default:
+		return page.Total
+	}
 }

@@ -215,6 +215,79 @@ func (r *Recipe) Validate() error {
 		add("responses.list declares cursor_field and final_field as the same name %q, so one key would mean a page token on one page and a sync token on the next", f)
 	}
 
+	// A refusal has to name a failure the Recipe declares, or the route would
+	// answer a 400 with a body nothing here describes.
+	for _, route := range r.Routes {
+		raise := route.Pagination.OverLimit
+		if raise == "" {
+			continue
+		}
+
+		where := fmt.Sprintf("%s %s", route.Method, route.Path)
+
+		if route.Pagination.MaxLimit <= 0 {
+			add("%s declares over_limit: %q and no max_limit, so there is no size for it to be over", where, raise)
+		}
+
+		if _, ok := r.Errors[raise]; !ok {
+			add("%s declares over_limit: %q and errors does not define it, so an oversized page would answer with a failure this Recipe never describes", where, raise)
+		}
+	}
+
+	// What the count field counts, for the Recipe as a whole and for every
+	// route that overrides the envelope.
+	//
+	// Checked here rather than left to the runtime because every one of these
+	// mistakes is invisible in a small fixture. Three records on one page
+	// report three whether the number means the page, the total or a
+	// lookahead window, so a Recipe can name the wrong one, serve the wrong
+	// one, and pass every case it has.
+	counted := []struct {
+		where string
+		spec  ListResponse
+	}{{"responses.list", r.Responses.List}}
+
+	for _, route := range r.Routes {
+		if route.List == nil {
+			continue
+		}
+
+		counted = append(counted, struct {
+			where string
+			spec  ListResponse
+		}{fmt.Sprintf("%s %s", route.Method, route.Path), r.ListFor(route)})
+	}
+
+	for _, entry := range counted {
+		spec := entry.spec
+
+		switch spec.CountMeans {
+		case "", "page", "lookahead":
+		default:
+			add("%s declares count_means: %q, which is none of page, lookahead or empty", entry.where, spec.CountMeans)
+		}
+
+		if spec.CountMeans != "" && spec.CountField == "" {
+			add("%s declares count_means: %q and no count_field, so there is nothing for it to describe", entry.where, spec.CountMeans)
+		}
+
+		if spec.CountMeans == "lookahead" && spec.CountLookahead <= 0 {
+			add("%s declares count_means: lookahead and no count_lookahead, so the window has no size and the count would be one row", entry.where)
+		}
+
+		if spec.CountMeans != "lookahead" && spec.CountLookahead > 0 {
+			add("%s declares count_lookahead: %d and count_means is %q, so the window is described and never used", entry.where, spec.CountLookahead, spec.CountMeans)
+		}
+
+		// A page count is arithmetic on a total, and these say the total is
+		// not one. Emitting both would divide a page length by a page size
+		// and answer 1 for every collection there is.
+		if spec.CountMeans != "" && spec.PagesField != "" {
+			add("%s declares count_means: %q beside pages_field %q, and the page count is computed from the whole matching set rather than from that",
+				entry.where, spec.CountMeans, spec.PagesField)
+		}
+	}
+
 	// A required header is an enforcement claim, and the only thing that
 	// proves it is a case that leaves the header off and is refused.
 	//

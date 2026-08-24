@@ -145,6 +145,43 @@ type ListResponse struct {
 	// which is not the same as how many are on this page. Zendesk sends one and
 	// a pagination UI cannot be built without it.
 	CountField string `yaml:"count_field"`
+	// CountMeans says what the count field counts, for the providers where it
+	// is not how many records matched.
+	//
+	// Empty is the whole matching set, which is what every Recipe before this
+	// assumed and what nearly every provider sends. Two other quantities
+	// arrive under the same name:
+	//
+	// "page" is the length of the page in front of you. Shopware sends this
+	// by default, from a field called total, because computing a real total
+	// costs a second query and it does not run one unless asked. So a shop
+	// with four hundred products answers a ten-record page with total: 10 --
+	// a number that is not wrong about anything except the question it looks
+	// like it is answering. A client that stops when it has read total
+	// records reads one page; a client that divides total by the page size
+	// finds one page; and neither errors, because ten really is a number of
+	// products.
+	//
+	// "lookahead" is a bounded count: the provider fetches a few pages past
+	// this one, counts what it found, and stops. Shopware's next-pages mode
+	// reads limit * 6 + 1 rows and reports how many came back, so the same
+	// four hundred products report 61. That is neither the page nor the
+	// total, and it is the most misleading of the three, because it is large
+	// enough to look real.
+	//
+	// The distinction cannot be left to the fixture. A fixture small enough
+	// to fit on one page makes all three modes agree, which is exactly why a
+	// Recipe can describe one and serve another and no case notices.
+	CountMeans string `yaml:"count_means"`
+	// CountLookahead is how many pages a lookahead count reaches, including
+	// the one being served. Shopware's is six.
+	//
+	// The count is limit * CountLookahead + 1 where the collection is larger
+	// than that, and the real total where it is not. The extra row is the
+	// provider's sentinel: its presence is how the shop knows there is
+	// anything beyond the window, and it is why the number ends in a 1 rather
+	// than landing on a page boundary.
+	CountLookahead int `yaml:"count_lookahead"`
 	// PagesField names a property carrying how many pages the whole set makes
 	// at this page size, which is a different quantity from CountField.
 	//
@@ -352,6 +389,7 @@ func (r Recipe) ListFor(route Route) ListResponse {
 	override(&spec.Key, route.List.Key)
 	override(&spec.CursorField, route.List.CursorField)
 	override(&spec.CountField, route.List.CountField)
+	override(&spec.CountMeans, route.List.CountMeans)
 	override(&spec.PageField, route.List.PageField)
 	override(&spec.LimitField, route.List.LimitField)
 	override(&spec.HasMoreField, route.List.HasMoreField)
@@ -365,6 +403,10 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	if route.List.PrevLink {
 		spec.PrevLink = true
+	}
+
+	if route.List.CountLookahead > 0 {
+		spec.CountLookahead = route.List.CountLookahead
 	}
 
 	if route.List.CountAsString {

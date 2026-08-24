@@ -397,6 +397,15 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// than it asked for stops on the first page, and the shop looks empty
 	// rather than broken.
 	if max := matched.spec.Pagination.MaxLimit; max > 0 && limit > max {
+		// Unless the provider refuses instead, which is the other half of the
+		// same rule and the louder half. A refusal is a bug the caller finds
+		// on the first oversized request; a trim is one they find when a
+		// report comes back short.
+		if raise := matched.spec.Pagination.OverLimit; raise != "" {
+			return s.writeRecipeError(w, raise, 400, "invalid_request",
+				"The page size asked for is larger than this endpoint serves.")
+		}
+
 		limit = max
 	}
 
@@ -481,7 +490,7 @@ func (s *Sandbox) list(w http.ResponseWriter, r *http.Request, matched route, va
 	// wrong.
 	list := s.recipe.ListFor(matched.spec)
 
-	body := s.listBody(list, page, matched.spec.Resource, r.URL.Path,
+	body := s.listBody(list, page, limit, matched.spec.Resource, r.URL.Path,
 		nextPageURL(r, matched.spec.Pagination, page.NextCursor))
 
 	// What this request actually served, for the providers that report it.

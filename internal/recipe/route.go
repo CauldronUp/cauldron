@@ -321,6 +321,27 @@ type Pagination struct {
 	// Zero means the provider serves whatever is asked for, which is what
 	// every Recipe written before this assumed.
 	MaxLimit int `yaml:"max_limit"`
+	// OverLimit names the failure a route answers with when the caller asks
+	// for a bigger page than MaxLimit, for the providers that refuse instead
+	// of trimming.
+	//
+	// Both answers are common and they are not interchangeable. Printify
+	// trims: ask for a hundred, receive ten, hear nothing. Shopware's entity
+	// route refuses: ask for two hundred and fifty, receive
+	// FRAMEWORK__QUERY_LIMIT_EXCEEDED and a 400 naming the ceiling. A client
+	// written against one is broken against the other in opposite
+	// directions -- one silently under-reads a collection, the other throws
+	// on a request it thought was fine.
+	//
+	// Shopware is also why this belongs on the route rather than the Recipe.
+	// It does both, on two listings of the same resource: /store-api/product
+	// refuses and /store-api/product-listing/{categoryId} trims at the same
+	// hundred, because the second is the storefront's own listing and runs
+	// through a processor that calls min() on its way past.
+	//
+	// Empty keeps the trimming behaviour, which is what every Recipe written
+	// before this assumed.
+	OverLimit string `yaml:"over_limit"`
 	// LimitParam names the query parameter carrying the page size, for the
 	// providers that do not call it "limit". Google Calendar calls it
 	// maxResults, GitHub calls it per_page, Salesforce does not accept one at
