@@ -1,0 +1,501 @@
+# Metronome Recipe for Cauldron
+#
+# Written against the OpenAPI 3.0.1 document Metronome publishes at
+# docs.metronome.com/openapi.json -- 1.3 megabytes, 130 paths -- and quoted
+# from the prose Metronome writes into the ingest and event-search operations
+# themselves.
+#
+# The backlog asked for this one by name: "Metronome -- Assess: usage events
+# and their deduplication window". The window is real and it is thirty-four
+# days. What it turns out to be part of is larger.
+#
+# The endpoint that decides what a customer is charged answers 200 and
+# nothing else.
+#
+# POST /v1/ingest carries every billable event in the system, and its whole
+# published response is:
+#
+#   "200: Success"
+#
+# No schema. No body. No per-event result. And in the same operation's own
+# description:
+#
+#   "Duplicate events are automatically detected and ignored (34-day
+#   deduplication window)"
+#
+# So an event that was counted and an event that was silently thrown away
+# produce the identical answer: 200, empty. There is nothing in the response
+# to compare, log, or alert on. A retry after a network wobble, a backfill
+# that overlaps a live stream, a heartbeat with a deterministic id -- each is
+# either billed or discarded, and the API says the same thing about both.
+#
+# Metronome knows. The event-search operation names the failure in its own
+# words: "Silent revenue loss occurs when events are dropped, delayed, or fail
+# to match billable metrics due to: upstream system failures, event format
+# changes, misconfigured billable metrics."
+#
+# And the endpoint that could tell you is the one you are told not to use:
+#
+#   "Important: This endpoint is heavily rate limited and designed for
+#   sampling workflows only. Do not use this endpoint to check every event in
+#   your system. Instead, implement a sampling strategy to randomly validate
+#   a subset of events for observability purposes."
+#
+# So the only observability over a billing pipeline is a sample. Whether any
+# particular invoice is right is not a question this API will answer.
+#
+# Five more, each from the same document:
+#
+#   1. The deduplication window is thirty-four days, and Metronome says why
+#      that is unusual: "significantly longer than typical 12-hour windows --
+#      enabling robust backfill scenarios without duplicate billing." The
+#      same sentence describes the trap. A corrected event re-sent under the
+#      transaction id it was first sent with is a duplicate for a month, so
+#      the fix for a wrong number is silently discarded and the wrong number
+#      stands.
+#   2. Backdating is not staging. "Historical events can be backdated up to
+#      34 days and will immediately impact live customer spend." An event
+#      dated three weeks ago changes what a customer owes now, with no
+#      confirmation and no review step.
+#   3. An event can be accepted and belong to nobody. matched_customer is
+#      "The customer the event was matched to if a match was found", and an
+#      event whose customer_id matches no customer and no ingest alias is
+#      still a 200. It is stored, it is searchable, and it bills nothing.
+#      matched_billable_metrics is the same story one level down: an event
+#      that matched a customer but no metric is revenue that was measured and
+#      never charged for.
+#   4. One field, two kinds of identifier. customer_id is either "the UUID
+#      returned when creating a customer" or an ingest alias -- "your system's
+#      identifier (email, account number, etc.)" -- and nothing in the value
+#      says which, so a typo in an alias is indistinguishable from a customer
+#      who has not been created yet.
+#   5. There is nothing to branch on when something fails. Metronome's whole
+#      error schema is {"message": string}, required and alone: no code, no
+#      type, no field. Every retry decision this API supports is a decision
+#      about a sentence.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - POST /v1/ingest takes a top-level JSON array of one to a hundred
+#     events. This format's requests are objects, so the case here posts no
+#     body at all and pins what the endpoint answers rather than what it
+#     accepts. The response is the claim -- 200 with nothing in it, whatever
+#     you send -- and the request shape is stated here instead of being
+#     misrepresented by a case.
+#   - POST /v1/events/search takes {"transactionIds": [...]} and returns the
+#     matching events. The filter is a list inside a body and is not
+#     modelled, so the search here answers with the whole seeded set. The
+#     claims rest on what a searched event carries -- is_duplicate,
+#     matched_customer, matched_billable_metrics -- and those are served.
+#   - The dedup window and the backdating limit are both thirty-four days and
+#     both are properties of a pipeline rather than of a request. No route
+#     can demonstrate them; the fixture shows the state they produce, which
+#     is a stored duplicate that was never billed.
+#   - is_duplicate defaults to false, which is right -- a freshly ingested
+#     event is not a duplicate -- and no case here exercises it, because the
+#     only route that would is ingest and ingest answers with nothing. A case
+#     is one request, so the round trip that would show it cannot be written.
+#     The default is kept rather than dropped: an event searched after being
+#     ingested should carry the flag, and omitting it would be the worse of
+#     the two infidelities.
+#   - Contracts, rate cards, commits, credits, invoices, alerts, billable
+#     metric definitions and the other hundred-odd paths are absent. Events
+#     and customers only.
+#
+# The token and the ids below are fixtures and belong to no account.
+
+recipe: metronome
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.metronome.com/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-metronome-fixture-token
+
+responses:
+  list:
+    # The event search answers a bare array. The customer listing does not,
+    # and says so on its own route.
+    style: bare
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # A sentence, and nothing to branch on. Metronome's Error schema is
+    # {"message": string} with message required and no other property.
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  event:
+    id:
+      style: uuid
+    fields:
+      # The idempotency key, and the thing the thirty-four day window is
+      # keyed on.
+      transaction_id:
+        type: string
+      # A Metronome customer UUID or one of that customer's ingest aliases,
+      # with nothing in the value to say which.
+      customer_id:
+        type: string
+      event_type:
+        type: string
+      timestamp:
+        type: datetime
+      properties:
+        type: map
+      # What the pipeline decided, visible only here.
+      is_duplicate:
+        type: boolean
+        default: false
+      processed_at:
+        type: datetime
+      # Absent when the event matched nobody, which is a 200 all the same.
+      matched_customer:
+        type: map
+      # And empty when it matched a customer but no metric, which is usage
+      # measured and never charged for.
+      matched_billable_metrics:
+        type: list
+        default: []
+
+  customer:
+    id:
+      style: uuid
+    fields:
+      # The identifier in your system, which is not the identifier here.
+      external_id:
+        type: string
+      name:
+        type: string
+      # Every other name this customer answers to on an ingest event.
+      ingest_aliases:
+        type: list
+        default: []
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      custom_fields:
+        type: map
+
+routes:
+  # Everything a customer is charged for goes through here, and it answers
+  # with nothing at all.
+  - method: POST
+    path: /v1/ingest
+    resource: event
+    operation: create
+    empty_body: true
+
+  # The endpoint that could tell you what happened, and is documented as not
+  # being for that.
+  - method: POST
+    path: /v1/events/search
+    resource: event
+    operation: list
+
+  - method: GET
+    path: /v1/customers
+    resource: customer
+    operation: list
+    list:
+      # Not the bare array the event search sends.
+      style: wrapped
+      key: data
+      # Present and null on the last page, rather than absent: Metronome's
+      # schema marks next_page required and nullable, and its own example
+      # sends null.
+      cursor_field: next_page
+      cursor_null: true
+    pagination:
+      style: cursor
+      cursor_param: next_page
+      limit_param: limit
+      limit: 100
+
+  - method: POST
+    path: /v1/customers
+    resource: customer
+    operation: create
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized.
+
+  resource_missing:
+    status: 404
+    message: Not found.
+
+  invalid_request:
+    status: 400
+    message: Request was invalid.
+
+  conflict:
+    status: 409
+    message: A customer with that ingest alias already exists.
+
+fixtures:
+  empty: {}
+
+  account:
+    customer:
+      - id: 98765432-10fe-cba9-8765-432109876543
+        external_id: team@example.com
+        name: Acme Corp
+        ingest_aliases:
+          - team@example.com
+        created_at: "2026-01-04T09:00:00.000Z"
+        updated_at: "2026-01-04T09:00:00.000Z"
+        custom_fields:
+          x_account_id: KyVnHhSBWl7eY2bl
+
+    event:
+      # Counted. Matched a customer, matched a metric, and billed.
+      - id: 123e4567-e89b-12d3-a456-426614174000
+        transaction_id: 2026-08-01T00:00:00Z_cluster42
+        customer_id: team@example.com
+        event_type: heartbeat
+        timestamp: "2026-08-01T00:00:00.000Z"
+        properties:
+          cluster_id: "42"
+          cpu_seconds: 60
+          region: Europe
+        processed_at: "2026-08-01T00:00:05.000Z"
+        is_duplicate: false
+        matched_customer:
+          id: 98765432-10fe-cba9-8765-432109876543
+          name: Acme Corp
+        matched_billable_metrics:
+          - id: 8deed800-1b7a-495d-a207-6c52bac54dc9
+            name: CPU Hours
+      # Sent again a fortnight later, under the same transaction id, and
+      # discarded. The ingest that carried it answered exactly what the one
+      # above answered.
+      - id: 7f2c9a15-3b48-4e6d-90a1-c5e0b3487d12
+        transaction_id: 2026-08-01T00:00:00Z_cluster42
+        customer_id: team@example.com
+        event_type: heartbeat
+        timestamp: "2026-08-01T00:00:00.000Z"
+        properties:
+          cluster_id: "42"
+          cpu_seconds: 60
+          region: Europe
+        processed_at: "2026-08-15T11:32:41.000Z"
+        is_duplicate: true
+        matched_customer:
+          id: 98765432-10fe-cba9-8765-432109876543
+          name: Acme Corp
+        matched_billable_metrics:
+          - id: 8deed800-1b7a-495d-a207-6c52bac54dc9
+            name: CPU Hours
+      # Accepted, stored, and belonging to nobody: the alias has a typo in
+      # it, and nothing anywhere said so.
+      - id: b1d4e872-6c03-4f59-a7e2-9058fd317b46
+        transaction_id: 2026-08-02T00:00:00Z_cluster42
+        customer_id: team@exmaple.com
+        event_type: heartbeat
+        timestamp: "2026-08-02T00:00:00.000Z"
+        properties:
+          cluster_id: "42"
+          cpu_seconds: 3600
+          region: Europe
+        processed_at: "2026-08-02T00:00:04.000Z"
+        is_duplicate: false
+      # Matched a customer and no metric, which is an hour of somebody's
+      # cluster measured and never charged for.
+      - id: 4a90c7e3-1f26-4b85-8d0c-e73215af6b94
+        transaction_id: 2026-08-03T00:00:00Z_gpu7
+        customer_id: 98765432-10fe-cba9-8765-432109876543
+        event_type: gpu_seconds
+        timestamp: "2026-08-03T00:00:00.000Z"
+        properties:
+          cluster_id: "7"
+          gpu_seconds: 3600
+        processed_at: "2026-08-03T00:00:06.000Z"
+        is_duplicate: false
+        matched_customer:
+          id: 98765432-10fe-cba9-8765-432109876543
+          name: Acme Corp
+
+conformance:
+  - name: the endpoint that bills everybody answers with nothing at all
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/ingest
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+    expect:
+      # "200: Success", and that is the whole published response. A client
+      # calling .json() on it has nothing to parse, and a client looking for
+      # a per-event result has nothing to look at. See the gap at the top of
+      # this file for why this case sends no body.
+      status: 200
+      no_body: true
+
+  - name: a duplicate that was thrown away is only visible in the search
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/events/search
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+      json:
+        transactionIds:
+          - 2026-08-01T00:00:00Z_cluster42
+    expect:
+      status: 200
+      body:
+        # Two events, one transaction id. The first was billed and the second
+        # was "automatically detected and ignored", a fortnight later, inside
+        # the thirty-four day window -- and the ingest call that carried it
+        # answered exactly what the ingest call that carried the first one
+        # answered.
+        "[0].transaction_id": 2026-08-01T00:00:00Z_cluster42
+        "[0].is_duplicate": false
+        "[1].transaction_id": 2026-08-01T00:00:00Z_cluster42
+        "[1].is_duplicate": true
+        "[1].processed_at": "2026-08-15T11:32:41.000Z"
+
+  - name: an event can be accepted and belong to nobody
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/events/search
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+      json:
+        transactionIds:
+          - 2026-08-02T00:00:00Z_cluster42
+    expect:
+      status: 200
+      body:
+        # An hour of cluster time, ingested successfully, against an alias
+        # with two letters transposed. "The customer the event was matched to
+        # if a match was found" -- and none was.
+        "[2].transaction_id": 2026-08-02T00:00:00Z_cluster42
+        "[2].customer_id": team@exmaple.com
+        "[2].is_duplicate": false
+      absent:
+        # No customer, and therefore no invoice this hour will ever appear
+        # on. Nothing about the ingest said so.
+        - "[2].matched_customer"
+
+  - name: and it can belong to somebody and still bill nothing
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/events/search
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+      json:
+        transactionIds:
+          - 2026-08-03T00:00:00Z_gpu7
+    expect:
+      status: 200
+      body:
+        # The customer matched. The metric did not, because nobody has
+        # configured one for gpu_seconds. This is the third of the three
+        # causes Metronome names for silent revenue loss, and the only sign
+        # of it is an empty array in an endpoint you are told to sample.
+        "[3].event_type": gpu_seconds
+        "[3].matched_customer.name": Acme Corp
+        "[3].matched_billable_metrics": []
+
+  - name: a counted event names the metric it was counted against
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/events/search
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+      json:
+        transactionIds:
+          - 2026-08-01T00:00:00Z_cluster42
+    expect:
+      status: 200
+      body:
+        # The other end of both distinctions above, so each is pinned at both
+        # ends: a matched customer beside the unmatched one, and a matched
+        # metric beside the empty list.
+        "[0].matched_customer.id": 98765432-10fe-cba9-8765-432109876543
+        "[0].matched_billable_metrics[0].name": CPU Hours
+        "[0].processed_at": "2026-08-01T00:00:05.000Z"
+
+  - name: the search answers a bare array and the customers do not
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/customers
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+    expect:
+      status: 200
+      body:
+        # {data, next_page} here, and a top-level array on the event search.
+        # Two listings, one API, and code that reads .data off the search
+        # finds undefined.
+        "data[0].name": Acme Corp
+        "data[0].external_id": team@example.com
+        "data[0].ingest_aliases[0]": team@example.com
+        # Present and null on the last page rather than absent, so a loop
+        # testing for the key never ends and one testing the value does.
+        next_page: null
+
+  - name: an event names its customer two ways and never says which
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: POST
+      path: /v1/events/search
+      headers:
+        Authorization: Bearer cauldron-metronome-fixture-token
+      json:
+        transactionIds:
+          - 2026-08-03T00:00:00Z_gpu7
+    expect:
+      status: 200
+      body:
+        # One event carries the customer's UUID and another carries an ingest
+        # alias, in the same field, with nothing in either value to say which
+        # kind it is.
+        "[3].customer_id": 98765432-10fe-cba9-8765-432109876543
+        "[0].customer_id": team@example.com
+
+  - name: a failure is a sentence with nothing to branch on
+    source: https://docs.metronome.com/api
+    fixture: account
+    request:
+      method: GET
+      path: /v1/customers
+      headers:
+        Authorization: Bearer not-this-accounts-token
+    expect:
+      status: 401
+      body:
+        message: Unauthorized.
+      absent:
+        # Metronome's whole Error schema is {"message": string}. There is no
+        # code and no type, so every retry decision this API supports is a
+        # decision about prose.
+        - code
+        - type
+        - error

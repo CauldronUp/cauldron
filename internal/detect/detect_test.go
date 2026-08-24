@@ -1830,3 +1830,66 @@ func TestDetectWixCommerceClientsAndNotTheInstallerToolsetOrTheDesignSystem(t *t
 		}
 	}
 }
+
+// Metronome's name is an everyday object, which produces more collisions than
+// any shape recorded here so far.
+//
+// @dougflip/metronome, expo-precision-metronome, strumming-metronome and
+// react-native-metronome-module are all what the word means: things that click
+// in time. Wix was a homonym for a build toolset; this is a homonym for a piece
+// of hardware.
+//
+// metronome-contracts and metronome-wallet-core belong to a different company
+// with the same name -- the Metronome ERC-20 token. The bare npm "metronome" is
+// a Node application framework, which is the shape Lago and Polar both met.
+//
+// And the closest miss is diego-ninja/laravel-metronome, "a metric aggregator
+// and processor for Laravel": a metric aggregator named metronome that is not
+// the metering provider named Metronome.
+func TestDetectMetronomeSDKAndNotTheInstrumentOrTheToken(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@metronome/sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@metronome/mcp": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "metronome") {
+			t.Errorf("%v did not detect metronome: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The instrument.
+		{"package.json": `{"dependencies": {"@dougflip/metronome": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"expo-precision-metronome": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"strumming-metronome": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"react-native-metronome-module": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@pickupmusic/metronome": "^1.0.0"}}`},
+		// A different company with the same name.
+		{"package.json": `{"dependencies": {"metronome-contracts": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"metronome-wallet-core": "^1.0.0"}}`},
+		// Somebody's design system, and a weather-visualisation timer.
+		{"package.json": `{"dependencies": {"@b12/metronome": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@opengeoweb/metronome": "^1.0.0"}}`},
+		// The bare name, which is a Node application framework.
+		{"package.json": `{"dependencies": {"metronome": "^1.0.0"}}`},
+		// And four PHP packages, none of them this API -- including a metric
+		// aggregator that is not the metering provider.
+		{"composer.json": `{"require": {"diego-ninja/laravel-metronome": "^1.0"}}`},
+		{"composer.json": `{"require": {"rwslinkman/metronome": "^1.0"}}`},
+		{"composer.json": `{"require": {"satunnaisuus/metronome-bundle": "^1.0"}}`},
+		{"composer.json": `{"require": {"rvxlab/laravel-metronome": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "metronome") {
+			t.Errorf("%v offered the metronome Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

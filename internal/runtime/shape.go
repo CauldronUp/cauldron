@@ -705,6 +705,8 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 
 		if spec.CursorField != "" && page.NextCursor != "" {
 			setPath(body, spec.CursorField, cursorValue(spec, page.NextCursor, nextURL))
+		} else if spec.CursorField != "" && spec.CursorNull {
+			setPath(body, spec.CursorField, nil)
 		}
 
 		// Salesforce's done is has_more with the sense reversed, and false is
@@ -757,6 +759,8 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// project exists to prevent.
 		if spec.CursorField != "" && page.NextCursor != "" {
 			setPath(body, spec.CursorField, cursorValue(spec, page.NextCursor, nextURL))
+		} else if spec.CursorField != "" && spec.CursorNull {
+			setPath(body, spec.CursorField, nil)
 		}
 
 		body = withFields(body, s.recipe.Responses.Success.Fields)
