@@ -398,7 +398,7 @@ the header says so.
 | Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
 | Clover | Assess — merchants, orders, payments |
 | ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
-| Lemon Squeezy | Assess — orders, subscriptions, the merchant-of-record tax handling |
+| ~~Lemon Squeezy~~ | Shipped, and see the row below — the merchant-of-record half is FastSpring's and is repeated rather than new. What is new: licence keys, store-scoped identifiers, and totals in two currencies at once |
 | Gumroad | Assess — products and sales |
 | Polar | Assess — subscriptions and benefits |
 | ~~Orb~~ | Shipped. An invoice is not final until the period closes |
@@ -959,7 +959,7 @@ transfers alone, and say so in the header.
 | ~~Orb~~ | Shipped. A draft is a running total, a closed period can still be amended, and money is a decimal string |
 | Metronome | Usage events are deduplicated inside a window, so sending the same event twice is sometimes one event and sometimes two |
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
-| Lemon Squeezy | Merchant of record, so the tax is theirs and the order total is not what arrives. That is FastSpring's headline, shipped this cycle, and a second Recipe saying it would add a name rather than a shape. Worth doing only for what differs: the licence-key API and the store-scoped identifiers |
+| ~~Lemon Squeezy~~ | Shipped on those terms, and the objection was right: four of the traps a first draft led with — merchant-of-record tax, amounts twice as number and display string, cancelled-but-still-running, test and live sharing an API — are all FastSpring's and are now stated as repeated rather than claimed as the reason. What the Recipe exists for is what this row asked for: licence keys, where the activation count runs out while the subscription stays healthy, and store-scoped identifiers. Two things beyond it: totals in two currencies on one record, and a partial refund whose refunded boolean is false. One request went unmet — licence activation is public and authenticated by the key itself, and Cauldron authenticates a Recipe rather than a route, so only the store-key half is modelled |
 | ~~RevenueCat~~ | Shipped. There is no `is_active` field and RevenueCat's own guidance is to read one -- it is an SDK property, so the moment the question moves to a server somebody writes the comparison by hand and the advice stops applying. Four active entitlements in the fixture, active for four different reasons: cancelled, lifetime (`expires_date: null`, which every naive comparison reads as expired), failing to pay inside a grace period, and somebody else's family purchase on a trial. Entitlements are keyed by your names and subscriptions by the stores', and the endpoint is a GET that creates: 200 found, 201 invented |
 | ~~Recharge~~ | Shipped, as the narrower thing this row described. The cross-system drift still needs both systems and a Recipe still holds one, so what shipped is what was suggested here: a subscription that is ACTIVE while its charge has reached MAX_RETRIES_REACHED, and external ids that are Shopify's numbers held as strings. A charge also carries the Shopify order id beside its own, which shows the two numbers for one payment without needing Shopify running -- it shows they differ, not that they drift |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |

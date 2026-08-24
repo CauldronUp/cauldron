@@ -242,9 +242,20 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
-	writeJSON(w, http.StatusOK, s.resourceBody(s.recipe.EnvelopeFor(matched.spec), matched.spec.IDAs, matched.spec.Resource, trim(matched.spec, record)))
-
-	return http.StatusOK
+	// Through writeRecord rather than building the body here, which is what
+	// this used to do.
+	//
+	// The duplication was the bug: writeRecord applies the route's declared
+	// constants and this did not, so fields: on a get route was accepted by
+	// the validator, written into a Recipe, and then silently dropped. No
+	// shipped Recipe declared any -- which is why it went unnoticed -- and
+	// Lemon Squeezy is the first to need them, because JSON:API puts a type
+	// beside every single record and that is a constant per route.
+	//
+	// It is the same shape as the fix a few lines above, where a route's
+	// constants were dropped on every response that is not wrapped. Removing
+	// the second copy is better than patching it.
+	return s.writeRecord(w, matched, record)
 }
 
 func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, vars map[string]string) int {

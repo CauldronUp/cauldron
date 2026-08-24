@@ -525,7 +525,7 @@ func setPath(body map[string]any, path string, value any) {
 		// Intercom's pages object carries both a declared type and a computed
 		// next cursor, and whichever landed second used to erase the other.
 		if object, ok := value.(map[string]any); ok {
-			if existing, ok := body[head].(map[string]any); ok {
+			if existing, ok := asObject(body[head]); ok {
 				for key, nestedValue := range object {
 					setPath(existing, key, nestedValue)
 				}
@@ -553,13 +553,39 @@ func setPath(body map[string]any, path string, value any) {
 		return
 	}
 
-	child, ok := body[head].(map[string]any)
+	child, ok := asObject(body[head])
 	if !ok {
 		child = map[string]any{}
 		body[head] = child
 	}
 
 	setPath(child, rest, value)
+}
+
+// asObject reads a map out of a body whichever of its two spellings it is
+// stored under.
+//
+// store.Record is a named map[string]any, and a type assertion to the unnamed
+// one does not match it. setPath asserted the unnamed one alone, so descending
+// into a value that happened to be a record failed -- and the failure was not
+// a no-op: the branch below it replaced the record with a fresh empty map, so
+// a constant declared at data.type erased the record sitting at data.
+//
+// Nothing shipped hit it, because a Recipe reaches this only by declaring a
+// constant inside its own envelope key, and Lemon Squeezy is the first: JSON:API
+// puts a type beside every record, at data.type, with the record itself at
+// data. The runtime already knew about this exact trap one layer up -- the
+// handler switches on both spellings before applying a route's constants --
+// and this is the same trap one layer down.
+func asObject(value any) (map[string]any, bool) {
+	switch object := value.(type) {
+	case map[string]any:
+		return object, true
+	case store.Record:
+		return object, true
+	}
+
+	return nil, false
 }
 
 // listBody shapes a page according to the declared list style, which is the

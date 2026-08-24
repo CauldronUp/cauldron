@@ -53,6 +53,17 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// The most-installed package under the lemonsqueezy vendor name is
+			// a UI component library, not a client -- plain-ui-components has
+			// twice the installs of the Laravel package that actually talks
+			// to the API. Same shape as etsy/phan: the vendor publishes more
+			// than its SDK, and a prefix rule would offer a commerce emulator
+			// to a project that only borrowed some Blade components.
+			recipe:   "lemonsqueezy",
+			composer: []string{"lemonsqueezy/laravel", "seisigmasrl/lemonsqueezy-php"},
+			npm:      []string{"@lemonsqueezy/lemonsqueezy.js"},
+		},
+		{
 			// "recharge" is one of the most overloaded words on either
 			// registry. The unscoped npm package is a React static site
 			// generator; Packagist's matches are an EV charging SDK, an

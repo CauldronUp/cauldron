@@ -712,3 +712,37 @@ func TestDetectRechargeFromTheSubscriptionClientsOnly(t *testing.T) {
 		}
 	}
 }
+
+// The most-installed package under the lemonsqueezy vendor name is a UI
+// component library, not a client: plain-ui-components has roughly twice the
+// installs of the Laravel package that actually talks to the API. It is the
+// same shape as etsy/phan -- a vendor publishing more than its SDK -- and a
+// prefix rule would offer a commerce emulator to a project that only borrowed
+// some Blade components.
+func TestDetectLemonSqueezyFromTheClientsAndNotTheComponentLibrary(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"lemonsqueezy/laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"seisigmasrl/lemonsqueezy-php": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@lemonsqueezy/lemonsqueezy.js": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "lemonsqueezy") {
+			t.Errorf("%v did not detect lemonsqueezy: %+v", manifest, p.Requirements)
+		}
+	}
+
+	p, err := Detect(writeProject(t, map[string]string{
+		"composer.json": `{"require": {"lemonsqueezy/plain-ui-components": "^1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "lemonsqueezy") {
+		t.Errorf("a UI component library offered the lemonsqueezy Recipe: %+v", p.Requirements)
+	}
+}
