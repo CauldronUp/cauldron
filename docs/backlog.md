@@ -93,7 +93,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~ShipEngine~~ | Shipped. A rate request half-fails behind a 200: some carriers quote, some refuse, both in one body |
 | ~~AfterShip~~ | Shipped. A tracking number does not identify a parcel; Delivered is not terminal |
 | ~~Easyship~~ | Shipped, rating. The cheapest rate is cheapest because the customer pays the duty on the doorstep |
-| USPS | Addresses, rates, tracking |
+| USPS | Addresses, rates, tracking. Blocked on evidence rather than on interest -- see "A description of requests is not a description" below |
 | UPS | Rating, labels, tracking |
 | ~~FedEx~~ | Shipped, tracking. An unknown tracking number answers 200 with the error two arrays deep, because one call can ask about thirty parcels |
 | ~~DHL~~ | Shipped, Express tracking. The UTC offset is a field beside the timestamp rather than inside it |
@@ -467,6 +467,40 @@ did before any of this existed, which is honest: a word nothing read was
 never verified, and a claim nobody checked is worse than silence. Restoring
 one is a matter of reading that provider's description and declaring its
 names, and the validator will insist.
+
+### A description of requests is not a description
+
+Two providers were assessed this round and both were declined for the same
+reason, which is worth naming so the next attempt does not spend the hour
+again: **they publish a machine-readable description of their requests and
+none of their responses.**
+
+Katana publishes a real OpenAPI 3.0 document at
+`api.katanamrp.com/v1/openapi.json` -- a hundred and twenty-two paths, request
+bodies fully typed. Every response in it reads
+
+```json
+"200": {"description": "Return value of InventoryController.getInventories"}
+```
+
+with no schema at all. It is a NestJS gateway spec, and the generator wrote
+down what the controllers accept and nothing about what they return.
+
+USPS publishes a Postman collection in its own GitHub organisation, at
+`USPS/api-examples`, covering ninety-odd requests across twenty-five folders --
+addresses, prices, labels, tracking, the lot. Every single one has zero saved
+example responses. The rest of the repository is a PDF, a `.docx` and an
+`.xlsx` of error codes.
+
+A Recipe built on either would be a Recipe whose every field name was invented,
+which is the guessing this project exists to refuse. Both are worth revisiting
+if a response-bearing description appears; neither is worth writing from what
+is published today.
+
+The distinction matters more than it sounds. A request schema tells you what a
+client may send, and a client already knows that -- it is the thing writing the
+request. What a client cannot know, and what an emulator exists to supply, is
+what comes back.
 
 ### What is left, and why it is stuck
 
