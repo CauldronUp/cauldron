@@ -232,6 +232,11 @@ func (s *Sandbox) get(w http.ResponseWriter, r *http.Request, matched route, var
 		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
 	}
 
+	if s.misshapen(matched.spec.Resource, id) {
+		return s.writeRecipeError(w, "id_malformed", 400, "id_malformed",
+			"The identifier is not in the expected format: "+id+".", id)
+	}
+
 	record, err := s.store.GetBy(matched.spec.Resource, id, s.recipe.Resources[matched.spec.Resource].Alias)
 	if err != nil {
 		return s.notFound(w, err, matched.spec.Resource, id, matched.spec.NotFound)
@@ -264,6 +269,11 @@ func (s *Sandbox) update(w http.ResponseWriter, r *http.Request, matched route, 
 	id, addressable := s.identifier(matched, r, vars)
 	if !addressable {
 		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
+	}
+
+	if s.misshapen(matched.spec.Resource, id) {
+		return s.writeRecipeError(w, "id_malformed", 400, "id_malformed",
+			"The identifier is not in the expected format: "+id+".", id)
 	}
 
 	changes, err := decodeBody(r)
@@ -308,6 +318,11 @@ func (s *Sandbox) delete(w http.ResponseWriter, r *http.Request, matched route, 
 	id, addressable := s.identifier(matched, r, vars)
 	if !addressable {
 		return s.notFound(w, store.ErrNotFound, matched.spec.Resource, id, matched.spec.NotFound)
+	}
+
+	if s.misshapen(matched.spec.Resource, id) {
+		return s.writeRecipeError(w, "id_malformed", 400, "id_malformed",
+			"The identifier is not in the expected format: "+id+".", id)
 	}
 
 	record, err := s.store.Get(matched.spec.Resource, id)

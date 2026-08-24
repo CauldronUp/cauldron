@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,11 @@ type Sandbox struct {
 	mu       sync.RWMutex
 	fixture  string
 	webhooks *webhookQueue
+
+	// idShapes holds the compiled form of each resource's declared identifier
+	// pattern, by resource name. Absent means the provider looks up whatever
+	// it is given, which is most of them.
+	idShapes map[string]*regexp.Regexp
 }
 
 // New builds a sandbox from a validated Recipe.
@@ -80,6 +86,26 @@ func New(r *recipe.Recipe, opts Options) (*Sandbox, error) {
 
 	for name, resource := range r.Resources {
 		s.store.DeclareStyle(name, resource.ID.Style, resource.ID.Prefix, resource.ID.Length)
+
+		if resource.ID.Pattern == "" {
+			continue
+		}
+
+		// Validate has already refused a pattern that will not compile, so
+		// reaching this is a Recipe loaded past it rather than a Recipe
+		// mistake. Refusing here rather than ignoring it keeps the failure
+		// loud: a pattern silently dropped would answer 404 to a malformed
+		// id, which is the exact behaviour declaring one exists to change.
+		shape, err := regexp.Compile(resource.ID.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: resource %s: id.pattern: %w", name, err)
+		}
+
+		if s.idShapes == nil {
+			s.idShapes = map[string]*regexp.Regexp{}
+		}
+
+		s.idShapes[name] = shape
 	}
 
 	return s, nil

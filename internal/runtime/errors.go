@@ -64,6 +64,7 @@ func (s *Sandbox) notFound(w http.ResponseWriter, err error, resource, id, overr
 var builtinFallbacks = map[string]string{
 	"unknown_route":      "resource_missing",
 	"method_not_allowed": "resource_missing",
+	"id_malformed":       "invalid_request",
 	"conflict":           "invalid_request",
 	"invalid_request":    "parameter_missing",
 }
