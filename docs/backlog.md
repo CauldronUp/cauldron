@@ -74,7 +74,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Provider | Why |
 |---|---|
 | ShipStation | Shipments, labels, carriers, tracking |
-| EasyPost | Rates, shipments, labels, trackers |
+| ~~EasyPost~~ | Shipped. A rate is a value you were given, not a price you can look up; an address can be stored and undeliverable |
 | ShipEngine | Rates, labels, tracking, carrier errors |
 | AfterShip | Tracking states, checkpoints, carrier behaviour |
 | Easyship | Rates, shipments, labels |
@@ -887,7 +887,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**106 more listings across 59 Recipes declare no paging at all**, and the
+**107 more listings across 60 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

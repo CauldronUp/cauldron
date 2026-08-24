@@ -53,6 +53,16 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// The unscoped npm package called easypost is not this EasyPost.
+			// It reads POST bodies from form submissions in Node, has nothing
+			// to do with shipping, and is exactly the sort of name collision
+			// a substring rule would hand a shipping emulator to. The scoped
+			// @easypost/api is the carrier client.
+			recipe:   "easypost",
+			composer: []string{"easypost/easypost-php"},
+			npm:      []string{"@easypost/api"},
+		},
+		{
 			// The SP-API replaced Marketplace Web Service, and MWS was a
 			// different API entirely -- XML over a signed query string, with
 			// its own endpoints and its own vocabulary. Packages named after
