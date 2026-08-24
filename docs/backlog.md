@@ -3339,3 +3339,45 @@ API moves an order's payment state, so there is no request an emulator could
 answer with that silence. The other half of the same trap **is** served: the
 default `paymentStates` filter leaves out `PARTIALLY_PAID`, so the order is
 invisible to the listing for as long as the plan is collecting.
+
+## Four commerce providers checked and not written: three unreadable, one unservable
+
+The commerce and billing section is nearly worked through. What is left was
+checked against the bar this project has been holding -- only write a Recipe
+when the vendor publishes a **response-bearing** description -- and none of the
+four clears it. The reasons differ and are worth keeping, because three of them
+could change and one cannot.
+
+**Faire.** `faire.github.io/external-api-v2-docs`, the address this collection
+recorded, now serves a meta-refresh to `developers.faire.com/docs`, and that
+page is a client-rendered application: the only scripts are
+`cdn.faire.com/static/js/external-developers.*.js` and a cookie banner. No
+OpenAPI at any conventional path, and the GitHub organisation has no docs
+repository -- its twenty public repos are Kotlin and JavaScript tooling
+(`mjml-react`, `yawn`, `faire-detekt-rules`), which is the shape Squarespace
+and Wix both have: a provider publishing a great deal, none of it a client.
+
+**Maxio**, the former Chargify. `developers.maxio.com` answers 121 bytes to
+every path including `/openapi.json`. `maxio-com/ab-api-docs` is gone. The
+generated `ab-java-sdk` carries a `.codegenignore`, which says a spec exists
+somewhere, and does not carry the spec. Reconstructing response shapes from
+generated Java model classes is reconstruction rather than reading, which is
+the distinction the Katana row drew.
+
+**Zuora.** The documented spec address, `developer.zuora.com/api-references
+/api/spec/openapi.yaml`, is a 404 that answers with 229 kilobytes of
+application shell. Same failure as Maxio, and the row's original objection --
+"very large, and the object model predates REST conventions" -- still stands
+behind it.
+
+**PrestaShop is different, and its reason will not change.** The evidence is
+not the problem: the webservice lives in the open-source tree and can be read.
+The problem is that the interesting thing about it is not servable here. The
+API answers **XML** unless a request asks for JSON with `output_format=JSON`,
+so the headline -- a REST API whose default representation is not the one
+every client assumes -- is a claim about a content type this emulator does not
+produce. A Recipe could serve PrestaShop's JSON half faithfully and would have
+to leave out the only reason to write it.
+
+Three of these unblock the moment a spec becomes reachable. The fourth would
+need Cauldron to serve XML, which is a larger decision than one Recipe.
