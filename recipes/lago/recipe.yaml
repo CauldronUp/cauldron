@@ -1,0 +1,472 @@
+# Lago Recipe for Cauldron
+#
+# Written against the OpenAPI 3.1 description Lago publishes at
+# getlago/lago-openapi, version 1.51.0. Every quoted sentence, field name and
+# example below was read out of that document.
+#
+# Lago is usage-based billing: you send events, it counts them against
+# billable metrics, and invoices come out the other end. It was on this
+# project's own backlog with a note that said "self-hosted and cloud behaving
+# differently", and the document confirms that in a place nobody would look --
+# see the second point below.
+#
+# The reason this Recipe exists is what happens to an event nobody can bill.
+#
+# The code field is what ties an event to a billable metric, and its
+# description says what happens when it does not tie: "It is essential that
+# this code matches the `code` property of one of your active billable
+# metrics. If the provided code does not correspond to any active billable
+# metric, it will be ignored during the process."
+#
+# Ignored. Not refused, not flagged, not queued for review. The request is
+# accepted, the event is stored, the API answers with the event and the bad
+# code echoed back inside it -- and no fee is ever produced. A typo in a
+# metric code, a metric renamed on the Lago side, a staging code shipped to
+# production: each of them is a month of usage that was received and not
+# billed, and every signal a client has says it worked.
+#
+# Six more, each from the same document:
+#
+#   1. The identifier's format depends on which datastore your Lago runs.
+#      lago_id is described as "an opaque identifier and is not guaranteed to
+#      be a UUID; on organizations using the ClickHouse events store it is a
+#      composite string." So a client that validates it as a UUID -- or
+#      stores it in a uuid column -- works against one deployment and fails
+#      against another, and both are Lago.
+#   2. The schema and its own description disagree about the timestamp. The
+#      field is declared type string, format date-time, with the example
+#      '2022-04-29T08:59:51.123Z'. Its description says it "captures the Unix
+#      timestamp in seconds". Both are documented, they are not the same
+#      thing, and a client following either one can point at the document.
+#   3. A field named cents holds a value with a decimal point in it.
+#      precise_total_amount_cents is a string and its example is '1234.56',
+#      so the suffix that usually means "there is no fractional part" here
+#      means the opposite.
+#   4. The URL takes your identifiers, not Lago's. Customers are addressed at
+#      /customers/{external_customer_id} and wallets at
+#      /customers/{external_customer_id}/wallets/{code}, so the primary key in
+#      the path is the one your system chose. The Lago-side lago_id is in
+#      every payload and is not what the path accepts.
+#   5. An event is addressed by its transaction_id, which is also its
+#      idempotency key: "It is crucial for ensuring idempotency, meaning that
+#      each event can be uniquely identified and processed without causing any
+#      unintended side effects." One string is both the deduplication token
+#      and the address.
+#   6. The envelope key is the resource name, singular for one and plural for
+#      many: {"event": {...}} against {"events": [...], "meta": {...}}. Code
+#      that unwraps a fetch and a listing the same way unwraps neither.
+#
+# One thing is shared with Recipes already here and is stated rather than
+# claimed: the 401 body carries status and error and no code, while every
+# other failure carries all three, so a client switching on code finds
+# undefined exactly when it is being told to fix its credentials. Allegro and
+# VTEX both have a version of that.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The ignoring cannot be served, because it happens after the response. An
+#     event with an unknown code is accepted here and echoed back, which is
+#     the misleading half and the half that matters; the fee that never
+#     appears is downstream of anything this emulator does.
+#   - A create here mints its own transaction_id rather than keeping the one
+#     the caller sent, because Cauldron reads a created record's identifier
+#     under the name id and Lago sends it under transaction_id. Fetching by
+#     transaction_id works, which is the half that shows the identifier is the
+#     caller's string; the echo on a create is Cauldron's.
+#   - Only one of the two timestamp readings can be served. The fixtures use
+#     the ISO form the schema declares and the example shows, and the
+#     description's Unix seconds are recorded above rather than served.
+#   - Billable metrics, subscriptions, invoices, wallets, coupons, credit
+#     notes and the whole plan model are absent. Events and customers only.
+#
+# The key below is a fixture and belongs to no organisation.
+
+recipe: lago
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.getlago.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_lago_fixture_key_000000
+
+responses:
+  list:
+    style: wrapped
+    key: events
+    count_field: meta.total_count
+    pages_field: meta.total_pages
+    page_field: meta.current_page
+  resource:
+    # Singular, and named for the resource. A listing is the plural of the
+    # same word with a meta beside it.
+    style: wrapped
+    key: event
+  error:
+    # {status, error, code} -- except on a 401, which sends the first two.
+    style: flat
+    message_field: error
+    code_field: code
+    type_field: "-"
+    status_field: status
+
+resources:
+  event:
+    id:
+      # The transaction id is the address and the idempotency key at once.
+      style: opaque
+      field: transaction_id
+    fields:
+      # Lago's own identifier, and the one whose format depends on which
+      # events store the organisation runs.
+      lago_id:
+        type: string
+      # The metric this event is meant to count against. A code that matches
+      # nothing is accepted and ignored.
+      code:
+        type: string
+      # Declared as a date-time and described as Unix seconds. The fixtures
+      # use the declared form.
+      timestamp:
+        type: string
+      external_subscription_id:
+        type: string
+      lago_customer_id:
+        type: string
+        null_when_unset: true
+      # A string, with a decimal point, in a field named cents.
+      precise_total_amount_cents:
+        type: string
+        null_when_unset: true
+      properties:
+        type: map
+
+  customer:
+    id:
+      # Yours. The path takes this and not the lago_id below it.
+      style: opaque
+      field: external_id
+    fields:
+      lago_id:
+        type: string
+      name:
+        type: string
+      email:
+        type: string
+      currency:
+        type: string
+        default: USD
+      country:
+        type: string
+      created_at:
+        type: string
+
+routes:
+  # Sending usage. The response is the event, wrapped in its own name.
+  - method: POST
+    path: /api/v1/events
+    resource: event
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /api/v1/events
+    resource: event
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  # By transaction id, which is the same string the idempotency check uses.
+  - method: GET
+    path: /api/v1/events/{id}
+    resource: event
+    operation: get
+
+  - method: GET
+    path: /api/v1/customers
+    resource: customer
+    operation: list
+    list:
+      key: customers
+    envelope:
+      key: customer
+    pagination:
+      style: page
+      limit: 20
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  # By your identifier, not Lago's.
+  - method: GET
+    path: /api/v1/customers/{id}
+    resource: customer
+    operation: get
+    envelope:
+      key: customer
+
+errors:
+  # The one failure that does not carry a code, while every other one does.
+  authentication_error:
+    status: 401
+    code_field: "-"
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    code: object_not_found
+    message: Not Found
+
+  unprocessable:
+    status: 422
+    code: validation_errors
+    message: Unprocessable entity
+    fields:
+      error_details:
+        external_customer_id:
+          - value_is_mandatory
+
+fixtures:
+  empty: {}
+
+  usage:
+    event:
+      # An event that will be billed: its code names a metric that exists.
+      - id: tx_2026_02_22_0001
+        lago_id: 1a901a90-1a90-1a90-1a90-1a901a901a90
+        code: storage
+        timestamp: "2026-02-22T08:59:51.123Z"
+        external_subscription_id: sub_hooli_prod
+        lago_customer_id: 5f2c1b7d-8e34-4a06-9c51-2d7be0f4a913
+        properties:
+          gb: 128
+      # An event whose code names nothing. It was accepted, it is stored, it
+      # is returned by the API, and it will never appear on an invoice --
+      # which is the whole reason this file exists.
+      - id: tx_2026_02_22_0002
+        lago_id: 2b012b01-2b01-2b01-2b01-2b012b012b01
+        code: stroage
+        timestamp: "2026-02-22T09:04:12.480Z"
+        external_subscription_id: sub_hooli_prod
+        lago_customer_id: 5f2c1b7d-8e34-4a06-9c51-2d7be0f4a913
+        properties:
+          gb: 512
+      # And one from an organisation whose events live in ClickHouse, where
+      # the identifier is not a UUID at all.
+      - id: tx_2026_02_22_0003
+        lago_id: "1a901a90-1a90-1a90-1a90-1a901a901a90/2026-02-22T09:11:03Z/9127"
+        code: api_calls
+        timestamp: "2026-02-22T09:11:03.002Z"
+        external_subscription_id: sub_hooli_prod
+        lago_customer_id: 5f2c1b7d-8e34-4a06-9c51-2d7be0f4a913
+        precise_total_amount_cents: "1234.56"
+        properties:
+          calls: 9127
+    customer:
+      - id: hooli_1234
+        lago_id: 5f2c1b7d-8e34-4a06-9c51-2d7be0f4a913
+        name: Hooli
+        email: billing@hooli.test
+        currency: USD
+        country: US
+        created_at: "2026-01-08T10:22:31Z"
+
+conformance:
+  - name: an event whose code names nothing is accepted
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: POST
+      path: /api/v1/events
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+        Content-Type: application/json
+      json:
+        transaction_id: tx_2026_02_22_0009
+        code: not_a_real_metric
+        external_subscription_id: sub_hooli_prod
+        properties:
+          gb: 64
+    expect:
+      # 200, and the bad code comes back inside the event. "If the provided
+      # code does not correspond to any active billable metric, it will be
+      # ignored during the process" -- so this response is a receipt for
+      # usage that will never be billed.
+      status: 200
+      body:
+        # The bad code, echoed back inside the event that was accepted for it.
+        "event.code": not_a_real_metric
+        "event.external_subscription_id": sub_hooli_prod
+        "event.properties.gb": 64
+
+  - name: and the stored one reads exactly like the billable one
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events/tx_2026_02_22_0002
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # A typo -- stroage for storage -- and nothing in the payload marks
+        # it. Same shape, same fields, same subscription as the event above
+        # it in the listing, and one of the two will be invoiced.
+        "event.code": stroage
+        "event.transaction_id": tx_2026_02_22_0002
+        "event.properties.gb": 512
+
+  - name: the identifier is not always a uuid
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events/tx_2026_02_22_0003
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # "not guaranteed to be a UUID; on organizations using the ClickHouse
+        # events store it is a composite string". A client that parses it, or
+        # stores it in a uuid column, works against one Lago and fails against
+        # another.
+        "event.lago_id": "1a901a90-1a90-1a90-1a90-1a901a901a90/2026-02-22T09:11:03Z/9127"
+      matches:
+        # And the ordinary case, which is what everybody tests against.
+        "event.transaction_id": ^tx_
+
+  - name: a field named cents holds a decimal point
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events/tx_2026_02_22_0003
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # A string, and the schema's own example is '1234.56'. The suffix that
+        # usually promises an integer here promises the opposite, so parsing
+        # it as one truncates the fraction the field exists to carry.
+        "event.precise_total_amount_cents": "1234.56"
+
+  - name: the path takes your identifier and the body carries theirs
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/customers/hooli_1234
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # Addressed by external_id, which your system chose, and answering
+        # with a lago_id that the same path will not accept. Two keys, and
+        # only one of them opens the door.
+        "customer.external_id": hooli_1234
+        "customer.lago_id": 5f2c1b7d-8e34-4a06-9c51-2d7be0f4a913
+        "customer.name": Hooli
+
+  - name: the envelope is the resource name, singular here and plural there
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events?per_page=2
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # events, with a meta beside it. The fetch above answered event, with
+        # nothing beside it -- so code that unwraps one the way it unwraps the
+        # other unwraps neither.
+        "events[0].transaction_id": tx_2026_02_22_0001
+        "meta.current_page": 1
+        "meta.total_count": 3
+        "meta.total_pages": 2
+      absent:
+        - event
+
+  - name: and the customers listing uses its own word again
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/customers
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        # Not data, not items, not results -- customers, because that is what
+        # they are. A generic client needs a table of names.
+        "customers[0].external_id": hooli_1234
+        "meta.total_count": 1
+      absent:
+        - events
+        - data
+
+  - name: a request naming no page size gets twenty
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 200
+      body:
+        "meta.total_count": 3
+        "meta.total_pages": 1
+        "meta.current_page": 1
+        "events[2].code": api_calls
+
+  - name: the failure that tells you to fix your credentials has no code
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events
+      headers:
+        Authorization: Bearer not-a-real-key
+    expect:
+      # Every other failure carries status, error and code. This one carries
+      # the first two, so a client switching on code finds undefined exactly
+      # when it is being told the credential is wrong.
+      status: 401
+      body:
+        status: 401
+        error: Unauthorized
+      absent:
+        - code
+
+  - name: and an unknown record does carry one
+    source: https://github.com/getlago/lago-openapi/blob/main/openapi.yaml
+    fixture: usage
+    request:
+      method: GET
+      path: /api/v1/events/tx_does_not_exist
+      headers:
+        Authorization: Bearer cauldron_lago_fixture_key_000000
+    expect:
+      status: 404
+      body:
+        status: 404
+        error: Not Found
+        code: object_not_found
