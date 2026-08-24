@@ -1,0 +1,448 @@
+# Toast Recipe for Cauldron
+#
+# A restaurant's day does not end at midnight. Service runs past it, so an
+# order rung in at one in the morning on Saturday belongs to Friday's
+# business day, and Friday's takings include it. Toast says so with
+# businessDate, which sits beside openedDate on every order and disagrees
+# with it for a few hours every night.
+#
+# A report grouped by the calendar date in openedDate splits every late night
+# across two days: the last hour of Friday's service is counted on Saturday,
+# and Saturday's own late hour moves to Sunday. Every day is wrong and the
+# total is right, which is the shape of the bug that survives longest --
+# nothing fails to reconcile at the month end.
+#
+# And businessDate is not a date. It is the integer 20260201, so it sorts and
+# compares correctly and parses as a date in nothing.
+#
+# Six things worth modelling exactly:
+#
+#   1. businessDate is the day the money belongs to, openedDate is when the
+#      order happened, and they differ after midnight. The first is an
+#      integer in YYYYMMDD and the second is a timestamp.
+#   2. An order has no total. Money lives on the checks, a check is one
+#      bill, and a table that splits three ways is one order with three
+#      checks. Anything summing orders has to walk two levels first.
+#   3. A voided item is still there. Toast keeps it with voided true and a
+#      voidDate, so a total that sums selections without filtering charges
+#      for the steak somebody sent back.
+#   4. The restaurant is a header, not a path segment.
+#      Toast-Restaurant-External-ID decides which restaurant answers, so two
+#      requests to the same URL return two different restaurants' orders and
+#      the URL is no record of which.
+#   5. Every reference is an object, not an id. A menu item on a check is
+#      {guid, entityType}, so selection.item.guid rather than
+#      selection.itemGuid, and code that stores the reference stores a
+#      wrapper.
+#   6. Money is a number in dollars. 23.80, not 2380 and not "23.80", where
+#      most of this repository's commerce APIs send one of the other two.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - businessDate is a fixture value rather than something derived. A real
+#     one comes from the restaurant's configured close-out hour, which is the
+#     part that decides where the boundary falls, and none of that is here.
+#   - The orders endpoint is modelled and the bulk one is not. Toast's
+#     ordersBulk takes a business date and a page and is how anybody actually
+#     pulls a day, and its paging is its own shape.
+#   - Menus, labour, cash management and the configuration API are absent.
+#   - Only the header decides the restaurant here, and nothing checks that
+#     the credential is allowed to read it. A real integration is scoped to
+#     the restaurants that granted it access.
+#
+# The token below is a fixture, not a secret. It belongs to no restaurant.
+
+recipe: toast
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://doc.toasttab.com/openapi/orders
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_toast_access_token_00
+
+# Which restaurant answers. Not in the path, so two requests to the same URL
+# return two different restaurants' orders and nothing in the URL says which.
+required_headers:
+  Toast-Restaurant-External-ID: missing_restaurant
+
+responses:
+  list:
+    # A bare array. No envelope, no count, no paging metadata in the body.
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      style: uuid
+      field: guid
+    fields:
+      # The day the money belongs to, as an integer. 20260201. It sorts, it
+      # compares, and it parses as a date in nothing.
+      businessDate:
+        type: integer
+      # When the order actually happened. After midnight this is a different
+      # day from the one above.
+      openedDate:
+        type: datetime
+      # When it was closed out, which is later again and is null while the
+      # table is still sitting there.
+      closedDate:
+        type: datetime
+        null_when_unset: true
+      # Null until every check on it is paid. A partly paid order has money
+      # in it and no paidDate.
+      paidDate:
+        type: datetime
+        null_when_unset: true
+      # DINE_IN, TAKE_OUT, DELIVERY.
+      diningOption:
+        type: map
+      # Where the money is. An order has no total of its own.
+      checks:
+        type: list
+      # Voided at the order level, which is separate from any item being
+      # voided inside it.
+      voided:
+        type: boolean
+        default: false
+      deleted:
+        type: boolean
+        default: false
+
+routes:
+  - method: GET
+    path: /orders/v2/orders
+    resource: order
+    operation: list
+
+  - method: GET
+    path: /orders/v2/orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  missing_restaurant:
+    status: 400
+    code: "10009"
+    message: The Toast-Restaurant-External-ID header is required.
+
+  authentication_error:
+    status: 401
+    code: "10010"
+    message: The access token is invalid or has expired.
+
+  resource_missing:
+    status: 404
+    code: "10004"
+    message: The requested order could not be found.
+
+  parameter_missing:
+    status: 400
+    code: "10003"
+    message: A required parameter is missing.
+
+  rate_limit:
+    status: 429
+    code: "10015"
+    message: Too many requests.
+
+fixtures:
+  empty: {}
+
+  one-service:
+    order:
+      # Rung in at ten past one in the morning on the second of February, and
+      # it belongs to the first. Every report grouped on openedDate puts this
+      # money on the wrong day.
+      - id: 3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+        businessDate: 20260201
+        openedDate: "2026-02-02T01:10:00.000+0000"
+        closedDate: "2026-02-02T01:55:00.000+0000"
+        paidDate: "2026-02-02T01:52:00.000+0000"
+        diningOption:
+          guid: 9a8b7c6d-5e4f-4302-9110-fedcba987654
+          entityType: DiningOption
+        voided: false
+        deleted: false
+        checks:
+          # One table, split two ways. Two checks, two payments, and the
+          # order carries no total of its own.
+          - guid: 11112222-3333-4444-5555-666677778888
+            displayNumber: "1"
+            amount: 42.50
+            totalAmount: 47.00
+            selections:
+              - guid: aaaa1111-2222-4333-8444-555566667777
+                displayName: Ribeye
+                quantity: 1
+                price: 34.00
+                voided: false
+                item:
+                  guid: item1111-2222-4333-8444-555566667777
+                  entityType: MenuItem
+              # Sent back. Still here, with a void date, and it is not
+              # subtracted from anything above.
+              - guid: bbbb1111-2222-4333-8444-555566667777
+                displayName: Oysters
+                quantity: 6
+                price: 18.00
+                voided: true
+                voidDate: "2026-02-02T01:30:00.000+0000"
+                item:
+                  guid: item2222-2222-4333-8444-555566667777
+                  entityType: MenuItem
+            payments:
+              - guid: pay11111-2222-4333-8444-555566667777
+                amount: 47.00
+                type: CREDIT
+          - guid: 99990000-1111-4222-8333-444455556666
+            displayNumber: "2"
+            amount: 28.00
+            totalAmount: 31.00
+            selections:
+              - guid: cccc1111-2222-4333-8444-555566667777
+                displayName: Sea bass
+                quantity: 1
+                price: 28.00
+                voided: false
+                item:
+                  guid: item3333-2222-4333-8444-555566667777
+                  entityType: MenuItem
+            payments:
+              - guid: pay22222-2222-4333-8444-555566667777
+                amount: 31.00
+                type: CASH
+      # An ordinary evening order on the same business day, still open.
+      - id: 4e3b2c5d-6f70-4a81-92a3-b4c5d6e7f809
+        businessDate: 20260201
+        openedDate: "2026-02-01T19:40:00.000+0000"
+        diningOption:
+          guid: 9a8b7c6d-5e4f-4302-9110-fedcba987654
+          entityType: DiningOption
+        voided: false
+        deleted: false
+        checks:
+          - guid: 77778888-9999-4000-8111-222233334444
+            displayNumber: "1"
+            amount: 64.00
+            totalAmount: 70.40
+            selections:
+              - guid: dddd1111-2222-4333-8444-555566667777
+                displayName: Tasting menu
+                quantity: 2
+                price: 32.00
+                voided: false
+                item:
+                  guid: item4444-2222-4333-8444-555566667777
+                  entityType: MenuItem
+            payments: []
+
+conformance:
+  - name: the business day is not the calendar day
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # Rung in at ten past one on the second, and the money belongs to the
+        # first. A report grouped on the calendar date in openedDate counts
+        # this on the wrong day, and so does every other late order, so every
+        # day is wrong and the month still reconciles.
+        businessDate: 20260201
+        openedDate: "2026-02-02T01:10:00.000+0000"
+
+  - name: and the business day is an integer rather than a date
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/4e3b2c5d-6f70-4a81-92a3-b4c5d6e7f809
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # 20260201, not "2026-02-01" and not a date. It sorts and compares
+        # correctly, which is why it is easy to use for months without
+        # noticing that nothing can parse it.
+        businessDate: 20260201
+
+  - name: an order has no total and the money is two levels down
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # One table, split two ways. Anything summing orders has to walk into
+        # checks first, and then decide between amount and totalAmount --
+        # which differ by the tax.
+        checks[0].amount: 42.50
+        checks[0].totalAmount: 47.00
+        checks[1].amount: 28.00
+        checks[1].totalAmount: 31.00
+      absent:
+        # There is no total on the order. The three names a client reaches
+        # for first are all missing.
+        - amount
+        - totalAmount
+        - total
+
+  - name: a voided item is still on the check
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # Sent back, still listed, still carrying a price. A total that sums
+        # selections without filtering charges for the oysters nobody ate --
+        # and the check's own amount already excludes them, so the two
+        # answers differ and only one is right.
+        checks[0].selections[1].displayName: Oysters
+        checks[0].selections[1].voided: true
+        checks[0].selections[1].price: 18.00
+        checks[0].selections[1].voidDate: "2026-02-02T01:30:00.000+0000"
+        # 34.00 for the ribeye alone, not 52.00.
+        checks[0].amount: 42.50
+
+  - name: a reference is an object rather than an id
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # selection.item.guid, not selection.itemGuid, and the wrapper says
+        # what kind of thing it points at. Code that stores the reference
+        # stores an object, and code that compares one to a bare guid string
+        # never matches.
+        checks[0].selections[0].item.guid: item1111-2222-4333-8444-555566667777
+        checks[0].selections[0].item.entityType: MenuItem
+        diningOption.entityType: DiningOption
+
+  - name: money is a number in dollars
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # 47.00, not 4700 and not "47.00". Most of the commerce APIs in this
+        # repository send one of the other two, so a shared money helper has
+        # to be told which this is.
+        checks[0].payments[0].amount: 47.00
+        checks[0].payments[0].type: CREDIT
+
+  - name: an open order has no paid date and no closed date
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders/4e3b2c5d-6f70-4a81-92a3-b4c5d6e7f809
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # Still sitting there. Null rather than absent, and a report that
+        # keys revenue on paidDate leaves out every table currently eating.
+        paidDate: null
+        closedDate: null
+        # And the check has money on it already.
+        checks[0].amount: 64.00
+        checks[0].payments: []
+
+  - name: the restaurant is a header and not part of the URL
+    source: https://doc.toasttab.com/docs/authentication
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+    expect:
+      # Without it there is nothing to answer about. Two requests to this
+      # same URL with two different values return two restaurants' orders,
+      # and the URL is no record of which was asked for -- so a log, a cache
+      # key or a replayed request built from the path alone is ambiguous.
+      status: 400
+      body:
+        code: 10009
+        message: The Toast-Restaurant-External-ID header is required.
+
+  - name: a listing is a bare array
+    source: https://doc.toasttab.com/openapi/orders
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders
+      headers:
+        Authorization: Bearer cauldron_toast_access_token_00
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 200
+      body:
+        # No envelope, no count, no paging metadata. A client that reads
+        # response.data or response.orders finds undefined.
+        '[0].guid': 3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8
+        '[1].businessDate': 20260201
+      absent:
+        - data
+        - orders
+
+  - name: a bad token is refused before any restaurant is read
+    source: https://doc.toasttab.com/docs/authentication
+    fixture: one-service
+    request:
+      method: GET
+      path: /orders/v2/orders
+      headers:
+        Authorization: Bearer not_the_token
+        Toast-Restaurant-External-ID: 5c1e1f2a-3b4c-4d5e-9f80-91a2b3c4d5e6
+    expect:
+      status: 401
+      body:
+        code: 10010
