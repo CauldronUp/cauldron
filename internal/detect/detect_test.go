@@ -1279,3 +1279,52 @@ func TestDetectSaleorFromItsClientAndNotItsCliOrAppFramework(t *testing.T) {
 		}
 	}
 }
+
+// Allegro's two exclusions are shapes this collection has recorded before,
+// arriving together and with larger numbers than usual.
+//
+// allegro/php-protobuf is the most-installed match at seventy-six thousand,
+// is published from github.com/allegro/php-protobuf by the same company, and
+// is Google's Protocol Buffers for PHP. The vendor prefix is genuine and the
+// package has nothing to do with the marketplace.
+//
+// The npm package called allegro describes itself as an "Allegro.pl WebAPI
+// client", lists soap among its keywords and depends on soap-js. It is a
+// client for the legacy SOAP interface rather than the REST API this Recipe
+// models -- the same shape as eBay's Trading SDKs and DHL's own SOAP client.
+func TestDetectAllegroFromRestClientsAndNotProtobufOrSoap(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"imper86/php-allegro-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"wiatrogon/allegro-rest-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"asocial-media/allegro-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"sebastianpozoga/php-allegroapi": "^1.0"}}`},
+		{"composer.json": `{"require": {"ircykk/allegro-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"zoondo/allegro-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"macopedia/magento2-allegro": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "allegro") {
+			t.Errorf("%v did not detect allegro: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own unrelated library, and the top match by installs.
+		{"composer.json": `{"require": {"allegro/php-protobuf": "^0.13"}}`},
+		// And a client for the protocol this API replaced.
+		{"package.json": `{"dependencies": {"allegro": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "allegro") {
+			t.Errorf("%v offered the allegro Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

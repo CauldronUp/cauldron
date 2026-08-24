@@ -1,0 +1,626 @@
+# Allegro Recipe for Cauldron
+#
+# Written against the OpenAPI 3.0 description Allegro publishes at
+# developer.allegro.pl/swagger.yaml -- a megabyte and a half of it, covering a
+# hundred and seventy-two paths. Every enum value, status code, field name and
+# quoted sentence below was read out of that document.
+#
+# The reason this Recipe exists is that an Allegro order exists before it is
+# paid, and its data can still change afterwards.
+#
+# The endpoint is not called orders. It is /order/checkout-forms, and the name
+# is the warning: what you are listing is a form somebody is in the middle of
+# filling in. Allegro's own descriptions of the four states say it plainly:
+#
+#   BOUGHT                -- "purchase without checkout form filled in"
+#   FILLED_IN             -- "checkout form filled in but payment is not
+#                            completed yet so data could still change"
+#   READY_FOR_PROCESSING  -- "payment completed. Purchase is ready for
+#                            processing"
+#   CANCELLED             -- "purchase cancelled by buyer"
+#
+# So a row appears in the listing before the buyer has entered an address, and
+# the address that appears next is not final. Only the third state means the
+# money arrived. An integration that treats "a new order appeared" as "pick,
+# pack and ship" ships against a delivery address the buyer can still edit,
+# for an order that may never be paid -- and nothing errors, because nothing
+# went wrong.
+#
+# Eight more, each from the same document:
+#
+#   1. There are two status fields and they are different machines. status is
+#      the buyer's progress through checkout; fulfillment.status is the
+#      seller's own -- NEW, PROCESSING, READY_FOR_SHIPMENT, READY_FOR_PICKUP,
+#      SENT, PICKED_UP, CANCELLED, SUSPENDED, RETURNED. Both can say
+#      CANCELLED and they do not mean the same thing.
+#   2. The seller's status is not entirely the seller's. The description says
+#      RETURNED "cannot be set by the seller" and moves on its own, and SENT
+#      moves on its own too when a tracking number is added and a setting in
+#      the sales centre is enabled -- a setting this API does not expose. So
+#      the same write produces a different status in two accounts.
+#   3. The API version is in the Accept header, not the URL.
+#      application/vnd.allegro.public.v1+json appears on seven hundred and
+#      three operations and application/vnd.allegro.beta.v1+json on
+#      fifty-eight more, so parts of one API are on a beta media type. A
+#      request that asks for application/json is answered 406 Not Acceptable,
+#      which the document lists as a response.
+#   4. Money is a decimal string, and the schema says why: "The amount
+#      provided in a string format to avoid rounding errors." An amount is
+#      "123.45" with the currency beside it as an ISO 4217 code.
+#   5. A limit or offset outside its range is 422 rather than a clamp or a
+#      400. The document's own wording: "Returned when limit or offset value
+#      is outside an acceptable range."
+#   6. Every checkout form carries a revision -- a short hash, '819b5836' in
+#      the example -- which is how a seller notices the buyer edited
+#      something. Nothing else in the payload says a form has moved.
+#   7. Every failure carries two messages. message is "directed to the
+#      developer of the program" and "will always be in English";
+#      userMessage "can be presented directly to your user", contains no
+#      technical information, and is translated from the Accept-Language
+#      header. A client that shows the first to a shopper shows English
+#      debugging prose, and one that logs the second logs a sentence whose
+#      language depends on the request.
+#   8. Except on a 401, which is not that shape at all. AuthError is
+#      {error, error_description} -- an OAuth2 body rather than Allegro's own
+#      -- so the unwrapping every other failure needs finds nothing there and
+#      a client reports the reason as undefined.
+#
+# The two counts are named apart, count for what came back and totalCount for
+# "Number of all objects of requested status(es) available (regardless of the
+# provided limit and offset)". That is the same honest arrangement
+# commercetools has and is stated as shared rather than claimed here.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The 406 is served by a fallback route, so any Accept other than the
+#     vendor media type gets it, including a request that sends no Accept at
+#     all. Allegro's behaviour for a missing Accept is not documented, so this
+#     refuses something that may well work. That is the loud direction of the
+#     mistake.
+#   - The 422 for an out-of-range limit is declared and injectable rather than
+#     raised: Cauldron can refuse a page larger than a ceiling and cannot yet
+#     refuse an offset.
+#   - Two true declarations here cannot be fully checked, because Allegro's
+#     envelope echoes neither of them back. It sends checkoutForms, count and
+#     totalCount and no limit and no offset, so the documented default page
+#     size of a hundred is only observable through count -- which pins it as
+#     at least the size of the fixture and no more than that -- and the
+#     documented offset origin of nought is not observable at all. Both are
+#     read out of the document; neither is something a case here can hold to
+#     account, and saying so is better than leaving an unchecked claim to look
+#     like a checked one.
+#   - Nothing here changes state. Fulfillment updates, shipments, invoices,
+#     refunds, returns and the whole offer and category model are absent.
+#     Reading checkout forms only.
+#   - Allegro's writes are commands with a processing status of their own,
+#     which is a shape worth modelling and is not modelled here.
+#
+# The token below is a fixture and belongs to no seller.
+
+recipe: allegro
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.allegro.pl/documentation
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.allegro.fixture.token.000
+
+responses:
+  list:
+    style: wrapped
+    key: checkoutForms
+    # Everything matching the filter, whatever the page.
+    count_field: totalCount
+    # And what came back, which Allegro names separately rather than making
+    # one field mean both.
+    page_count_field: count
+  resource:
+    style: bare
+  error:
+    # ErrorsHolder: {errors: [{code, message, userMessage, details, path}]}.
+    # One request can fail several ways, so the failures arrive as an array
+    # whether or not there is more than one of them.
+    style: list
+    key: errors
+    # "A message directed to the developer of the program. This message will
+    # always be in English."
+    message_field: message
+    code_field: code
+    code_type: string
+    type_field: "-"
+
+resources:
+  checkoutform:
+    id:
+      # A UUID, which is what the document's examples show.
+      style: uuid
+    fields:
+      # The buyer's progress through checkout, and the field that says whether
+      # any money has arrived.
+      status:
+        type: string
+        default: BOUGHT
+      # The seller's own machine, in a different object, with a different
+      # vocabulary. Absent until there is something to fulfil.
+      fulfillment:
+        type: map
+      # Absent while the form is still being filled in.
+      delivery:
+        type: map
+      payment:
+        type: map
+      buyer:
+        type: map
+      lineItems:
+        type: list
+      # totalToPay, and nothing else. A decimal string with a currency.
+      summary:
+        type: map
+      marketplace:
+        type: map
+      messageToSeller:
+        type: string
+        null_when_unset: true
+      # The short hash that moves when the form does.
+      revision:
+        type: string
+      updatedAt:
+        type: string
+
+routes:
+  # The listing, for a client that asked for the version it wants.
+  - method: GET
+    path: /order/checkout-forms
+    resource: checkoutform
+    operation: list
+    matches_header:
+      Accept: application/vnd.allegro.public.v1+json
+    filters:
+      # No default. Allegro filters nothing unless asked, which means the
+      # first page of a seller's orders contains rows that are not orders
+      # yet.
+      - param: status
+        field: status
+    pagination:
+      style: offset
+      # The documented default, which is also the documented maximum.
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+      # An offset counts records from nought.
+      first_page: 0
+      over_limit: out_of_range
+
+  # And the same path for a client that asked for anything else.
+  - method: GET
+    path: /order/checkout-forms
+    error: not_acceptable
+
+  - method: GET
+    path: /order/checkout-forms/{id}
+    resource: checkoutform
+    operation: get
+    matches_header:
+      Accept: application/vnd.allegro.public.v1+json
+
+  - method: GET
+    path: /order/checkout-forms/{id}
+    error: not_acceptable
+
+errors:
+  # The version negotiation failing, which is what a client written against
+  # any other REST API gets on its first request. Code, message and example
+  # are the document's own.
+  not_acceptable:
+    status: 406
+    code: NotAcceptableException
+    message: Not acceptable representation requested. Please check 'Accept' request header
+    fields:
+      # The second message, which is the one to show a person. "It will not
+      # contain any technical information. This message is translated based on
+      # the value of the Accept-Language header."
+      userMessage: The request contains incorrect data. Contact the author of the application.
+      details: ""
+      path: ""
+
+  # "Returned when limit or offset value is outside an acceptable range" --
+  # not a clamp, and not the 400 that the same endpoint uses for an illegal
+  # parameter value.
+  out_of_range:
+    status: 422
+    code: InvalidRangeException
+    message: Provided limit or offset value is outside an acceptable range.
+    fields:
+      userMessage: The request contains incorrect data. Contact the author of the application.
+
+  # And the one failure that is not that shape at all. AuthError is
+  # {error, error_description} -- an OAuth2 body rather than Allegro's own --
+  # so a client that unwraps errors[0].message reads undefined on a 401 and
+  # reports the reason as "undefined".
+  authentication_error:
+    status: 401
+    style: flat
+    key: "-"
+    message_field: error_description
+    code_field: error
+    code: unauthorized
+    message: Full authentication is required to access this resource
+
+  resource_missing:
+    status: 404
+    code: NotFoundException
+    message: Checkout form not found.
+    fields:
+      userMessage: The requested resource could not be found.
+
+fixtures:
+  empty: {}
+
+  # One seller's list, in three states. Two of the three are not orders in any
+  # sense a warehouse would recognise, and all three are in the listing.
+  seller:
+    checkoutform:
+      # Bought, and nothing else. No address, no payment, no fulfilment -- the
+      # buyer has clicked buy and stopped there.
+      - id: 9dbd7b47-3b0f-4b8f-9c7f-1d3a5c02f6ea
+        status: BOUGHT
+        revision: 819b5836
+        updatedAt: "2026-02-17T09:12:44.133Z"
+        buyer:
+          id: b7c1a29d
+          login: kupujacy_1
+          email: kupujacy_1@allegromail.pl
+          guest: false
+        lineItems:
+          - id: 1e0c6a83-4d2b-4f19-9a05-7c8e2b6f0d41
+            offer:
+              id: "12345678901"
+              name: Kubek termiczny 500 ml
+            quantity: 2
+            price:
+              amount: "64.99"
+              currency: PLN
+        summary:
+          totalToPay:
+            amount: "129.98"
+            currency: PLN
+        marketplace:
+          id: allegro-pl
+      # Filled in. There is an address now, and the document says in as many
+      # words that it can still change.
+      - id: 3f5a1c96-8e40-4b23-a7d6-05b9e2c47f18
+        status: FILLED_IN
+        revision: a41c7de2
+        updatedAt: "2026-02-17T10:48:02.907Z"
+        buyer:
+          id: c48f0e15
+          login: kupujacy_2
+          email: kupujacy_2@allegromail.pl
+          guest: false
+        delivery:
+          address:
+            firstName: Anna
+            lastName: Kowalska
+            street: Krucza 14/3
+            city: Warszawa
+            zipCode: 00-548
+            countryCode: PL
+          method:
+            id: 8f2b17c4-05de-4a91-b3c6-9e70d148a2f5
+            name: Kurier InPost
+          cost:
+            amount: "14.99"
+            currency: PLN
+        lineItems:
+          - id: 2b7d4e10-6c93-4f85-8a21-0d6f3b9e5c47
+            offer:
+              id: "12345678902"
+              name: Plecak turystyczny 30 l
+            quantity: 1
+            price:
+              amount: "189.00"
+              currency: PLN
+        summary:
+          totalToPay:
+            amount: "203.99"
+            currency: PLN
+        marketplace:
+          id: allegro-pl
+      # Paid. Only now is there anything to pick, and the seller's own status
+      # machine starts here, at NEW.
+      - id: 6c2e8f31-9a54-4d07-b1e8-42f0a7d3c956
+        status: READY_FOR_PROCESSING
+        revision: 5c9e0f77
+        updatedAt: "2026-02-17T11:05:36.214Z"
+        buyer:
+          id: d90b3f27
+          login: kupujacy_3
+          email: kupujacy_3@allegromail.pl
+          guest: true
+        payment:
+          id: 7a1d5b0c-2e64-4938-8f5a-c37b09e6d142
+          type: ONLINE
+          provider: PAYU
+          finishedAt: "2026-02-17T11:05:31.880Z"
+          paidAmount:
+            amount: "97.50"
+            currency: PLN
+        delivery:
+          address:
+            firstName: Piotr
+            lastName: Nowak
+            street: Dluga 7
+            city: Krakow
+            zipCode: 31-147
+            countryCode: PL
+          method:
+            id: 4e8c2a75-1f30-4b6d-9c02-8a51d7f4b39e
+            name: Paczkomaty InPost
+          cost:
+            amount: "12.50"
+            currency: PLN
+        fulfillment:
+          status: NEW
+          shipmentSummary:
+            lineItemsSent: NONE
+          provider:
+            id: SELLER
+        lineItems:
+          - id: 8d3f0b62-7e14-4c95-a028-5f6b1d9c3e70
+            offer:
+              id: "12345678903"
+              name: Lampka biurkowa LED
+            quantity: 1
+            price:
+              amount: "85.00"
+              currency: PLN
+        summary:
+          totalToPay:
+            amount: "97.50"
+            currency: PLN
+        marketplace:
+          id: allegro-pl
+
+conformance:
+  - name: an order appears before the buyer has given an address
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?limit=1
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # BOUGHT, which the document defines as "purchase without checkout
+        # form filled in". It is in the seller's list and there is nowhere to
+        # send it.
+        "checkoutForms[0].status": BOUGHT
+        "checkoutForms[0].summary.totalToPay.amount": "129.98"
+      absent:
+        - "checkoutForms[0].delivery"
+        - "checkoutForms[0].payment"
+        - "checkoutForms[0].fulfillment"
+
+  - name: and the address that appears next can still change
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms/3f5a1c96-8e40-4b23-a7d6-05b9e2c47f18
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # FILLED_IN: "checkout form filled in but payment is not completed yet
+        # so data could still change". There is an address, and printing a
+        # label from it is a bet.
+        status: FILLED_IN
+        "delivery.address.city": Warszawa
+        # The only thing that moves when the buyer edits the form.
+        revision: a41c7de2
+      absent:
+        # Still no money, and still nothing for a warehouse to do.
+        - payment
+        - fulfillment
+
+  - name: only the third state means the money arrived
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?status=READY_FOR_PROCESSING
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # One of the three, and the filter is opt in: a listing with no status
+        # asks for everything, so the default view of a seller's orders is
+        # mostly things that are not orders yet.
+        count: 1
+        "checkoutForms[0].status": READY_FOR_PROCESSING
+        "checkoutForms[0].payment.paidAmount.amount": "97.50"
+
+  - name: there are two status fields and they are different machines
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms/6c2e8f31-9a54-4d07-b1e8-42f0a7d3c956
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # The buyer's, at the end of its run.
+        status: READY_FOR_PROCESSING
+        # And the seller's, at the start of its own -- a different vocabulary
+        # in a different object. Both can say CANCELLED and neither means the
+        # other's cancellation. RETURNED, further along, is one the seller
+        # cannot set at all: the document says it "cannot be set by the
+        # seller" and moves on its own.
+        "fulfillment.status": NEW
+        "fulfillment.shipmentSummary.lineItemsSent": NONE
+        "fulfillment.provider.id": SELLER
+
+  - name: money is a decimal string with the currency beside it
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms/6c2e8f31-9a54-4d07-b1e8-42f0a7d3c956
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # "The amount provided in a string format to avoid rounding errors",
+        # which is the schema's own reason. Parsing it as a float undoes the
+        # care, and comparing it as a string to 97.5 fails.
+        "summary.totalToPay.amount": "97.50"
+        "summary.totalToPay.currency": PLN
+        "delivery.cost.amount": "12.50"
+        "lineItems[0].price.amount": "85.00"
+
+  - name: the version travels in the Accept header
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?limit=1
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      # Seven hundred and three operations declare this media type and
+      # fifty-eight more declare a beta one, so the version is a property of
+      # the request rather than of the URL.
+      status: 200
+      body:
+        count: 1
+
+  - name: and asking for plain JSON is refused
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?limit=1
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/json
+    expect:
+      # 406, which the document lists as a response on this endpoint. A client
+      # written against any other REST API sends application/json and never
+      # gets past its first request -- which is the loud kind of failure, and
+      # the reason it is worth serving rather than smoothing over.
+      status: 406
+      body:
+        # The document's own example code, and a message written for whoever
+        # is debugging rather than for whoever is shopping.
+        "errors[0].code": NotAcceptableException
+        # The other message, which is the one to show a person and which the
+        # Accept-Language header translates. A client that logs this and
+        # displays the one above has them the wrong way round.
+        "errors[0].userMessage": The request contains incorrect data. Contact the author of the application.
+      matches:
+        "errors[0].message": Please check 'Accept' request header
+
+  - name: the two counts are named apart
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?limit=1&offset=1
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # count is "number of returned objects"; totalCount is "Number of all
+        # objects of requested status(es) available (regardless of the
+        # provided limit and offset)".
+        count: 1
+        totalCount: 3
+        "checkoutForms[0].status": FILLED_IN
+
+  - name: a request naming no page size gets a hundred
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      status: 200
+      body:
+        # The documented default, which is also the documented maximum, so a
+        # hundred is both the most and the usual.
+        #
+        # count is the only view of it. Three records come back, which proves
+        # the default is at least three and cannot prove it is a hundred --
+        # Allegro's envelope carries no limit to compare against. A default
+        # set too low is caught here; one set too high is not, and the note at
+        # the top of this file says so rather than leaving the gap silent.
+        count: 3
+        totalCount: 3
+
+  - name: a page larger than the maximum is refused
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms?limit=250
+      headers:
+        Authorization: Bearer cauldron.allegro.fixture.token.000
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      # 422, and the document says why: "Returned when limit or offset value
+      # is outside an acceptable range". Not a clamp, and not the 400 the same
+      # endpoint uses for an illegal parameter value -- so a client that
+      # branches on 400 for bad input takes neither branch.
+      status: 422
+      body:
+        "errors[0].code": InvalidRangeException
+      matches:
+        "errors[0].message": outside an acceptable range
+
+  - name: and a bad token is not that shape at all
+    source: https://developer.allegro.pl/swagger.yaml
+    fixture: seller
+    request:
+      method: GET
+      path: /order/checkout-forms
+      headers:
+        Authorization: Bearer not-a-real-token
+        Accept: application/vnd.allegro.public.v1+json
+    expect:
+      # AuthError is {error, error_description}: an OAuth2 body rather than
+      # Allegro's own. One API, two envelopes, and the boundary is
+      # authentication.
+      status: 401
+      body:
+        error: unauthorized
+        error_description: Full authentication is required to access this resource
+      absent:
+        # No errors array, so the unwrapping every other failure needs finds
+        # nothing here and a client reports the reason as undefined.
+        - errors
