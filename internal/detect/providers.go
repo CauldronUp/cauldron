@@ -70,6 +70,42 @@ func providers() []provider {
 			},
 		},
 		{
+			// Two exclusions, and the collection has seen both shapes before
+			// at smaller scale.
+			//
+			// allegro/php-protobuf is the most-installed match by a wide
+			// margin -- seventy-six thousand -- and it is Google's Protocol
+			// Buffers for PHP, published from github.com/allegro/php-protobuf
+			// by the same company's engineering organisation. The vendor
+			// prefix is real and the package has nothing to do with the
+			// marketplace, which is etsy/phan and printful/php-gettext-cms
+			// again with a bigger number on it.
+			//
+			// The npm package called allegro is the other kind. Its
+			// description says "Allegro.pl WebAPI client", its keywords
+			// include soap, and it depends on soap-js: it is a client for the
+			// legacy SOAP interface, not for the REST API this Recipe
+			// describes. That is the pattern eBay's Trading SDKs, DHL's own
+			// SOAP client and avalara/avatax already established -- when a
+			// provider moves protocol the old client keeps its name and its
+			// install base, so popularity is evidence of age rather than of
+			// correctness.
+			//
+			// asocial-media/allegro-api is mapped although it covers both
+			// interfaces, because a project holding it does make these
+			// requests.
+			recipe: "allegro",
+			composer: []string{
+				"imper86/php-allegro-api",
+				"wiatrogon/allegro-rest-api",
+				"asocial-media/allegro-api",
+				"sebastianpozoga/php-allegroapi",
+				"ircykk/allegro-api",
+				"zoondo/allegro-api",
+				"macopedia/magento2-allegro",
+			},
+		},
+		{
 			// Four packages under one scope and only two of them talk to the
 			// API. @saleor/sdk is the client and @saleor/auth-sdk is the half
 			// of it that gets a token, so both belong here.
