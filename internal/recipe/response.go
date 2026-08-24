@@ -121,6 +121,22 @@ type ListResponse struct {
 	// A dotted name nests, so Slack's response_metadata.next_cursor is
 	// expressible without a second mechanism.
 	CursorField string `yaml:"cursor_field"`
+	// CursorNull sends the cursor field as null on the last page rather than
+	// leaving it out.
+	//
+	// Absent and null are different on the wire, and for a paging loop the
+	// difference decides whether it terminates. Metronome's customer listing
+	// declares next_page required and nullable and its own example shows
+	// "next_page": null on the last page; Notion's next_cursor has the same
+	// shape. A loop written as `while (body.next_page !== undefined)` stops
+	// against a provider that omits the key and runs for ever against one
+	// that nulls it, and a loop written the other way round fails in exactly
+	// the opposite circumstances.
+	//
+	// Omitting stays the default, for the same reason CursorField is opt in
+	// at all: sending a field the provider does not send is the more
+	// dangerous of the two mistakes.
+	CursorNull bool `yaml:"cursor_null"`
 	// CursorURL says the cursor field carries an address rather than a token,
 	// and which kind: "absolute" for a whole URL, "path" for the path and
 	// query alone.
@@ -431,6 +447,10 @@ func (r Recipe) ListFor(route Route) ListResponse {
 
 	if route.List.OmitWhenEmpty {
 		spec.OmitWhenEmpty = true
+	}
+
+	if route.List.CursorNull {
+		spec.CursorNull = true
 	}
 
 	return spec

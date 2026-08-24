@@ -70,6 +70,41 @@ func providers() []provider {
 			},
 		},
 		{
+			// The name is an everyday object, and that is most of the
+			// problem. @dougflip/metronome, expo-precision-metronome,
+			// strumming-metronome, react-native-metronome-module,
+			// @pickupmusic/metronome, brgndy-react-metronome,
+			// @forestream/metronome and com.sonosthesia.metronome are all
+			// what the word means: things that click in time. Wix was a
+			// homonym for a build toolset and this is a homonym for a piece
+			// of hardware, which is commoner and produces more collisions.
+			//
+			// Then a different company with the same name: metronome
+			// -contracts, metronome-wallet-core and metronome-wallet-ui-logic
+			// are the Metronome ERC-20 token and its Ethereum wallet. Nothing
+			// in a manifest distinguishes one Metronome from the other except
+			// the scope.
+			//
+			// The bare npm "metronome" is a Node application framework, which
+			// is the shape Lago and Polar both met.
+			//
+			// And the closest miss of the lot is diego-ninja/laravel
+			// -metronome, "a metric aggregator and processor for Laravel" --
+			// a metric aggregator named metronome that is not the metering
+			// provider named Metronome. rwslinkman/metronome is a Symfony
+			// test utility, satunnaisuus/metronome-bundle is an admin panel
+			// constructor and rvxlab/laravel-metronome runs the scheduler on
+			// an event loop. Packagist has no client for this API at all.
+			//
+			// What is left is the scope, and it is the busiest client in this
+			// file: @metronome/sdk is installed over a million times a month.
+			recipe: "metronome",
+			npm: []string{
+				"@metronome/sdk",
+				"@metronome/mcp",
+			},
+		},
+		{
 			// The busiest exclusion list here, and the reason is that "wix"
 			// is three different things on two registries.
 			//
