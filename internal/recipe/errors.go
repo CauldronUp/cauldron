@@ -66,8 +66,8 @@ type Error struct {
 	// detail -- {"type", "title", "status", "traceId"} -- which has no code
 	// anywhere in it. A client switching on a code has nothing to switch on,
 	// and that is the thing worth serving.
-	CodeField    string            `yaml:"code_field"`
-	Headers      map[string]string `yaml:"headers"`
+	CodeField string            `yaml:"code_field"`
+	Headers   map[string]string `yaml:"headers"`
 	// Fields are extra body properties this failure carries, merged over the
 	// Recipe-wide ones. Dropbox describes each failure with its own nested
 	// union, so a single set of constants would make every error claim to be
