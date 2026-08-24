@@ -81,7 +81,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | USPS | Addresses, rates, tracking |
 | UPS | Rating, labels, tracking |
 | FedEx | Rating, shipping, tracking |
-| DHL | Shipment lifecycle and international customs states |
+| ~~DHL~~ | Shipped, Express tracking. The UTC offset is a field beside the timestamp rather than inside it |
 
 ## Productivity and identity
 
@@ -887,7 +887,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**108 more listings across 61 Recipes declare no paging at all**, and the
+**109 more listings across 62 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

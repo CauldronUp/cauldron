@@ -1,0 +1,421 @@
+# DHL Recipe for Cauldron
+#
+# DHL tells you when something happened and, separately, what time zone it
+# happened in. The timestamp is "2026-02-01T09:15:00" with no offset on it,
+# and the offset is a field beside it: GMTOffset "+01:00". Neither half is an
+# instant on its own, and the timestamp looks complete enough that most code
+# never reads the other one.
+#
+# That is a different mistake from ShipStation's, which is worth having both
+# of in this repository. ShipStation omits the zone entirely, so you have to
+# know it out of band. DHL hands it over and puts it somewhere a date parser
+# will not look. Reading the timestamp alone is wrong by the offset, and the
+# offset varies per event, because a parcel moves between countries -- so the
+# error is not even constant across one shipment's own history.
+#
+# Six things worth modelling exactly:
+#
+#   1. The timestamp carries no zone and the zone is a sibling field. Parsing
+#      the timestamp alone is wrong by up to a day either way, and the offset
+#      differs between events on the same shipment.
+#   2. A tracking number that matches nothing is a 404 with a problem
+#      document, not a 200 with an empty array. Code that reads
+#      shipments[0] after checking only that the request succeeded throws
+#      rather than reporting "not found".
+#   3. The failure is RFC 7807 problem+json, and status inside it is a
+#      string. So response.status is the number 404 and body.status is the
+#      text "404", in the same exchange, and comparing them without
+#      converting fails.
+#   4. Events carry a two-letter typeCode and a description. The code is the
+#      stable one -- PU, DF, OK -- and the description is prose that changes
+#      with the locale the request asked for. Matching on the description
+#      works until somebody sets a language header.
+#   5. A piece has its own events and the shipment's events are not their
+#      union. A multi-piece shipment can have one box delivered and one in
+#      transit, and the shipment-level status describes neither exactly.
+#   6. An international shipment is dutiable, and customs is a state a
+#      domestic-only integration never sees in testing. A parcel can sit in
+#      customs for days with nothing wrong and no new events.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - DHL Express and DHL eCommerce and DHL Parcel are different APIs with
+#     different credentials and different shapes. This models the Express
+#     MyDHL tracking shape, which is the one most integrations start with,
+#     and says nothing about the others.
+#   - Rating, shipment creation and label generation are absent. Only
+#     tracking is modelled, so the dutiable and customs fields here are read
+#     rather than set.
+#   - Cauldron compares one half of a Basic credential, so this Recipe checks
+#     the API key and accepts any secret. A client that never configured its
+#     secret passes here and is refused in production.
+#   - Events do not advance. A real shipment accumulates them; here it
+#     carries whatever the fixture says.
+#
+# The key below is a fixture, not a secret. It belongs to no account.
+
+recipe: dhl
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.dhl.com/api-reference/shipment-tracking
+
+auth:
+  scheme: basic
+  credential: username
+  keys:
+    - cauldron_dhl_api_key_0000
+
+responses:
+  list:
+    style: wrapped
+    key: shipments
+  resource:
+    style: bare
+  error:
+    # RFC 7807. A problem document rather than an error object, so the fields
+    # are title, detail, instance and status rather than message and code.
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  shipment:
+    id:
+      # A DHL waybill is ten digits and must not be parsed as a number: it is
+      # printed, quoted and compared as text, and a leading zero is real.
+      style: digits
+      length: 10
+      field: id
+    fields:
+      # pre-transit, transit, delivered, failure, unknown. Coarse, and it
+      # describes the shipment rather than any one piece of it.
+      status:
+        type: map
+      origin:
+        type: map
+      destination:
+        type: map
+      # Shipment-level history. Not the union of the pieces' events below,
+      # which is the thing worth knowing.
+      events:
+        type: list
+      # Each box, with its own events. A shipment can have one delivered and
+      # one still moving.
+      details:
+        type: map
+      # True for anything crossing a customs border, and the reason a parcel
+      # can sit still for days with nothing wrong.
+      estimatedTimeOfDelivery:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /track/shipments
+    resource: shipment
+    operation: list
+
+  - method: GET
+    path: /track/shipments/{id}
+    resource: shipment
+    operation: get
+
+errors:
+  # Not an empty array. A tracking number that matches nothing is a 404 with
+  # a problem document, so code that reads shipments[0] after checking the
+  # request succeeded throws rather than reporting "not found".
+  resource_missing:
+    status: 404
+    message: No shipment with the given tracking number was found.
+    fields:
+      title: No result found
+      # A string, in a body whose HTTP status is the number. Comparing the
+      # two without converting fails.
+      status: "404"
+      instance: /track/shipments
+
+  authentication_error:
+    status: 401
+    message: The authorization token is invalid or expired.
+    fields:
+      title: Unauthorized
+      status: "401"
+      instance: /track/shipments
+
+  parameter_missing:
+    status: 400
+    message: The trackingNumber parameter is required.
+    fields:
+      title: Bad request
+      status: "400"
+      instance: /track/shipments
+
+  rate_limit:
+    status: 429
+    message: Too many requests.
+    fields:
+      title: Too many requests
+      status: "429"
+      instance: /track/shipments
+
+fixtures:
+  empty: {}
+
+  one-shipment:
+    shipment:
+      - id: "1234567890"
+        status:
+          # Coarse. The pieces below disagree with each other and this word
+          # describes neither of them exactly.
+          statusCode: transit
+          status: In transit
+          description: Processed at LEIPZIG - GERMANY
+        origin:
+          address:
+            countryCode: GB
+            addressLocality: LONDON - UK
+        destination:
+          address:
+            countryCode: DE
+            addressLocality: BERLIN - GERMANY
+        estimatedTimeOfDelivery: "2026-02-05T00:00:00"
+        events:
+          - timestamp: "2026-02-01T09:15:00"
+            # The zone, beside the timestamp rather than inside it. Nine
+            # fifteen in London.
+            GMTOffset: "+00:00"
+            typeCode: PU
+            description: Shipment picked up
+            location:
+              address:
+                addressLocality: LONDON - UK
+          - timestamp: "2026-02-02T22:40:00"
+            # A different offset on the same shipment, because the parcel
+            # crossed a border. The error from ignoring this is not even
+            # constant across one shipment's history.
+            GMTOffset: "+01:00"
+            typeCode: DF
+            description: Departed Facility in LEIPZIG - GERMANY
+            location:
+              address:
+                addressLocality: LEIPZIG - GERMANY
+          - timestamp: "2026-02-03T06:05:00"
+            GMTOffset: "+01:00"
+            typeCode: CC
+            # Customs. A parcel can sit here for days with nothing wrong and
+            # no new events, which a domestic-only integration never sees.
+            description: Clearance processing complete at BERLIN - GERMANY
+            location:
+              address:
+                addressLocality: BERLIN - GERMANY
+        details:
+          # Two boxes, one delivered and one still moving. The shipment-level
+          # status above says "transit" and describes neither exactly.
+          pieces:
+            - number: 1
+              description: Piece 1
+              events:
+                - timestamp: "2026-02-03T11:20:00"
+                  GMTOffset: "+01:00"
+                  typeCode: OK
+                  description: Delivered
+            - number: 2
+              description: Piece 2
+              events:
+                - timestamp: "2026-02-03T06:05:00"
+                  GMTOffset: "+01:00"
+                  typeCode: DF
+                  description: Departed Facility in BERLIN - GERMANY
+
+conformance:
+  - name: the offset is a field beside the timestamp
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # No Z and no offset on the timestamp itself. A date parser reads
+        # this as UTC or as local and is wrong either way.
+        events[0].timestamp: "2026-02-01T09:15:00"
+        # The half that makes it an instant, in a field a date parser will
+        # not look at.
+        events[0].GMTOffset: "+00:00"
+
+  - name: and it changes between events on one shipment
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # The parcel crossed a border, so the offset moved with it. Ignoring
+        # the field is not a constant error across one shipment's history --
+        # it is an hour on some events and nothing on others, which is worse,
+        # because the ordering can come out wrong.
+        events[1].GMTOffset: "+01:00"
+        events[1].timestamp: "2026-02-02T22:40:00"
+
+  - name: the stable part of an event is its two-letter code
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # PU picked up, DF departed facility, CC customs clearance. These do
+        # not change.
+        events[0].typeCode: PU
+        events[1].typeCode: DF
+        events[2].typeCode: CC
+        # The description is prose, and it changes with the locale the
+        # request asked for. Matching on it works until somebody sets a
+        # language header.
+        events[0].description: Shipment picked up
+
+  - name: a piece has its own events and the shipment does not hold them
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # One box delivered, one still moving, and the shipment-level status
+        # says "transit" and describes neither exactly. A customer told
+        # "in transit" is holding one of these already.
+        details.pieces[0].events[0].typeCode: OK
+        details.pieces[1].events[0].typeCode: DF
+        status.statusCode: transit
+      absent:
+        # The delivery of piece one is not in the shipment's own events, so
+        # the union a client wants has to be assembled from two places.
+        - events[3]
+
+  - name: a shipment crossing a border passes through customs
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # GB to DE, so there is a customs event in the history. A parcel can
+        # sit at this step for days with nothing wrong and no new events,
+        # which a domestic-only integration never sees in testing and reads
+        # as a stalled shipment.
+        origin.address.countryCode: GB
+        destination.address.countryCode: DE
+        events[2].typeCode: CC
+
+  - name: a waybill is digits and not a number
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments/1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # Ten digits as text. It is printed, quoted down the phone and
+        # compared as a string, and parsing it as a number loses a leading
+        # zero on the ones that have them.
+        id: "1234567890"
+
+  - name: a listing wraps the shipment in an array
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments?trackingNumber=1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 200
+      body:
+        # Even for one tracking number, which is why shipments[0] is the
+        # habit that breaks on the not-found case below.
+        shipments[0].id: "1234567890"
+
+  - name: nothing found is a 404 rather than an empty array
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    arm: resource_missing
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments?trackingNumber=0000000000
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      # Not a 200 with shipments: []. Code that reads shipments[0] after
+      # checking only that the request succeeded throws here rather than
+      # reporting that the parcel is unknown.
+      status: 404
+      body:
+        title: No result found
+        detail: No shipment with the given tracking number was found.
+      absent:
+        - shipments
+
+  - name: the status in the body is a string and the one on the wire is not
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    arm: resource_missing
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments?trackingNumber=0000000000
+      headers:
+        Authorization: Basic Y2F1bGRyb25fZGhsX2FwaV9rZXlfMDAwMDpjYXVsZHJvbl9kaGxfc2VjcmV0
+    expect:
+      status: 404
+      body:
+        # The text "404", in an exchange whose HTTP status is the number 404.
+        # Comparing body.status to response.status without converting is
+        # false for every failure DHL sends.
+        status: "404"
+        instance: /track/shipments
+      absent:
+        # A problem document has no message and no code. A client written for
+        # either finds nothing.
+        - message
+        - code
+        - error
+
+  - name: a bad key is refused with a problem document too
+    source: https://developer.dhl.com/api-reference/shipment-tracking
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /track/shipments?trackingNumber=1234567890
+      headers:
+        Authorization: Basic bm90X3RoZV9rZXk6Y2F1bGRyb25fZGhsX3NlY3JldA==
+    expect:
+      status: 401
+      body:
+        title: Unauthorized
+        status: "401"
+        detail: The authorization token is invalid or expired.
