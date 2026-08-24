@@ -53,6 +53,16 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// Small on both registries -- the PHP clients are one author's and
+			// have four figures of installs between them -- but unambiguous,
+			// which is the bar. Nothing else on either registry is called
+			// easyship, so this is the rare provider whose name carries the
+			// information its packages do.
+			recipe:   "easyship",
+			composer: []string{"jrebs/easyship-php", "jrebs/easyship-laravel", "tigusigalpa/easyship-php"},
+			npm:      []string{"easyship"},
+		},
+		{
 			// The most-installed FedEx package is the wrong protocol, for the
 			// fourth time in this table -- after eBay's Trading SDKs, DHL's own
 			// SOAP client and avalara/avatax. php-fedex-api-wrapper has over a
