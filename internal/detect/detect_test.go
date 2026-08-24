@@ -855,3 +855,40 @@ func TestDetectFedExFromTheRestWrappersOnly(t *testing.T) {
 		t.Errorf("the SOAP wrapper offered the fedex Recipe: %+v", p.Requirements)
 	}
 }
+
+// The rare provider whose name carries the information its packages do.
+// Nothing else on either registry is called easyship, so there is no
+// collision to avoid and no protocol split to pick a side of -- unlike
+// easypost, recharge, toast and fedex, which needed all three. The clients
+// are small, which is not a reason to leave them out: the bar is whether a
+// dependency identifies the provider, not how many people use it.
+func TestDetectEasyshipFromItsClients(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"jrebs/easyship-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"jrebs/easyship-laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"tigusigalpa/easyship-php": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"easyship": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "easyship") {
+			t.Errorf("%v did not detect easyship: %+v", manifest, p.Requirements)
+		}
+	}
+
+	// And it is not easypost, whose name is one letter away and whose Recipe
+	// models a different carrier aggregator entirely.
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"easyship": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "easypost") {
+		t.Errorf("easyship offered the easypost Recipe: %+v", p.Requirements)
+	}
+}

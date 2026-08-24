@@ -92,7 +92,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~EasyPost~~ | Shipped. A rate is a value you were given, not a price you can look up; an address can be stored and undeliverable |
 | ~~ShipEngine~~ | Shipped. A rate request half-fails behind a 200: some carriers quote, some refuse, both in one body |
 | ~~AfterShip~~ | Shipped. A tracking number does not identify a parcel; Delivered is not terminal |
-| Easyship | Rates, shipments, labels |
+| ~~Easyship~~ | Shipped, rating. The cheapest rate is cheapest because the customer pays the duty on the doorstep |
 | USPS | Addresses, rates, tracking |
 | UPS | Rating, labels, tracking |
 | ~~FedEx~~ | Shipped, tracking. An unknown tracking number answers 200 with the error two arrays deep, because one call can ask about thirty parcels |
