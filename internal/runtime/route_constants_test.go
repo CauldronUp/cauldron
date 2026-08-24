@@ -87,3 +87,71 @@ func TestARoutesConstantsSurviveIntoASingleRecordsEnvelope(t *testing.T) {
 		t.Errorf("jsonapi = %#v, want version 1.0 beside the data", body["jsonapi"])
 	}
 }
+
+// The third place the same assertion had to be fixed, and the one that says
+// the pattern is the assertion rather than any caller.
+//
+// setPath handles an indexed segment so that a Recipe can put a record at
+// output.completeTrackResults[0], which is where FedEx puts one: an array per
+// tracking number asked about, each holding an array of the shipments that
+// number matched. The branch that does it asserted map[string]any on the
+// value, and a record is a store.Record, so a record placed at an indexed
+// leaf skipped the branch entirely and fell through to the plain assignment
+// underneath -- producing a key literally spelled "completeTrackResults[0]",
+// brackets and all. A shape no provider sends, produced in silence.
+//
+// The comment beside that branch already records the same failure happening
+// for a declared constant, and calls it the fourth time a key like that had
+// been written. This is the fifth, from the same root cause.
+func TestARecordMayBePlacedAtAnIndexedLeaf(t *testing.T) {
+	r, err := recipe.Open("fedex")
+	if err != nil {
+		t.Fatalf("open fedex: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("one-account"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/track/v1/trackingnumbers/794832185981", nil)
+	req.Header.Set("Authorization", "Bearer l7cauldronfedexaccesstoken0000")
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	output, ok := body["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want an object", body["output"])
+	}
+
+	if _, literal := output["completeTrackResults[0]"]; literal {
+		t.Fatal(`the body carries a key literally spelled "completeTrackResults[0]"`)
+	}
+
+	results, ok := output["completeTrackResults"].([]any)
+	if !ok || len(results) == 0 {
+		t.Fatalf("output.completeTrackResults = %#v, want a non-empty array", output["completeTrackResults"])
+	}
+
+	first, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("output.completeTrackResults[0] = %#v, want the record in it", results[0])
+	}
+
+	if first["trackingNumber"] != "794832185981" {
+		t.Errorf("output.completeTrackResults[0].trackingNumber = %v, want the record", first["trackingNumber"])
+	}
+}

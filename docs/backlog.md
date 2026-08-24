@@ -39,12 +39,22 @@ far: at-least-once delivery, a message that comes back after a visibility
 timeout, and a dead-letter queue are behaviours no fake reproduces by accident.
 
 **XML is the blocker for several of these.** S3, SNS and Azure Blob answer in
-XML, not JSON, and so do UPS, FedEx and USPS further down. Avalara was on
-that list and should not have been: its AvaTax v2 API is REST and JSON, and
-the XML one is the SOAP API it replaced. Both still ship as PHP packages under
-the same vendor -- avalara/avatax is the SOAP client and avalara/avataxclient is
-the REST one -- which is probably how the two got conflated. The other three
-have not been re-checked and may have moved too. Cauldron
+XML, not JSON, and so do UPS, FedEx and USPS further down. Avalara and FedEx were on
+that list and should not have been. AvaTax v2 is REST and JSON and the XML one
+is the SOAP API it replaced; FedEx's developer platform is REST and JSON too,
+and both now ship as Recipes.
+
+The pattern that hid it: the old and new clients live side by side, and the
+old one is usually the more installed. avalara/avatax is the SOAP client and
+avalara/avataxclient is the REST one; php-fedex-api-wrapper wraps the SOAP web
+services and has over a million installs, while the REST wrappers have tens of
+thousands.
+
+UPS and USPS were checked at the same time and the note still holds for them,
+on this evidence: the widely used PHP client for UPS requires ext-simplexml,
+and the USPS ones wrap Web Tools, which is the XML API. Both vendors do
+document newer JSON APIs, so the ecosystem rather than the vendor is what was
+measured here, and that is worth re-checking rather than trusting. Cauldron
 serves JSON, so those need either XML response support in the format or an
 honest exclusion. That decision is worth making once, deliberately, rather than
 one Recipe at a time. The AWS services that use the JSON protocol — SQS,
@@ -85,7 +95,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Easyship | Rates, shipments, labels |
 | USPS | Addresses, rates, tracking |
 | UPS | Rating, labels, tracking |
-| FedEx | Rating, shipping, tracking |
+| ~~FedEx~~ | Shipped, tracking. An unknown tracking number answers 200 with the error two arrays deep, because one call can ask about thirty parcels |
 | ~~DHL~~ | Shipped, Express tracking. The UTC offset is a field beside the timestamp rather than inside it |
 
 ## Productivity and identity
@@ -892,7 +902,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**113 more listings across 65 Recipes declare no paging at all**, and the
+**114 more listings across 66 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

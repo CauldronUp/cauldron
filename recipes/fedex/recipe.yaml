@@ -1,0 +1,392 @@
+# FedEx Recipe for Cauldron
+#
+# A tracking number that does not exist answers 200.
+#
+# FedEx lets you ask about thirty parcels in one call, so a failure cannot be
+# the status of the response -- some of the thirty are fine. The failure is
+# per parcel, inside the body, and a request for one unknown number is the
+# same shape as a request for thirty where one is unknown: a successful call
+# carrying an error object two arrays deep. Code that checks the status and
+# reads the first result gets an object with no status in it and no exception
+# anywhere.
+#
+# And it is two arrays deep. output.completeTrackResults[0].trackResults[0]
+# is the record -- an array of the numbers you asked about, each holding an
+# array of the results for that number, because one number can match more
+# than one shipment. Almost every client hardcodes [0][0] and is right until
+# a duplicated number arrives.
+#
+# Six things worth modelling exactly:
+#
+#   1. An unknown tracking number is a 200 with an error inside it, because
+#      the call succeeded and the parcel is what failed.
+#   2. The record is under two arrays. completeTrackResults is per number,
+#      trackResults is per match, and both are usually one long.
+#   3. A date is found by searching an array for a type. dateAndTimes holds
+#      {type, dateTime} entries, so "when was it delivered" means finding
+#      ACTUAL_DELIVERY among them, and a parcel that has not arrived has an
+#      ESTIMATED_DELIVERY in the same array and the same shape.
+#   4. The status comes three ways. code is the machine one, derivedCode is
+#      finer, and statusByLocale is prose that changes with the locale --
+#      and it is the one that reads like an answer.
+#   5. Weight is a string with a unit beside it. {"value": "10.0", "unit":
+#      "LB"}, so adding two weights concatenates and a shipment in kilograms
+#      compares equal to nothing.
+#   6. The token expires in an hour and there is no refresh. FedEx issues an
+#      access token from client credentials and expects a new one when it
+#      runs out, so an integration that fetches once at boot works for an
+#      hour after every deploy.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The token endpoint is not modelled, so the expiry above is described
+#     and not reproduced. This Recipe accepts its fixture token forever, and
+#     an integration that never refreshes passes here and stops after an hour
+#     in production.
+#   - Only tracking is modelled. Rating, shipping, address validation and the
+#     pickup APIs are absent, and a label has a different shape again.
+#   - Asking about several numbers at once is the reason the envelope is what
+#     it is, and it is not reproduced: a request here answers about one
+#     parcel, so completeTrackResults is always one long. The second array is
+#     the one that matters and both are modelled.
+#
+# The token below is a fixture, not a secret. It belongs to no account.
+
+recipe: fedex
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - l7cauldronfedexaccesstoken0000
+
+responses:
+  list:
+    # The resource names output.completeTrackResults as its collection, which
+    # is what the runtime reads, so a key here would be inert.
+    style: wrapped
+  resource:
+    # A single record sits where one would sit in a listing: inside output,
+    # inside the array of numbers asked about. Declared once here rather than
+    # overridden on the route, because only one route returns a single record
+    # and a Recipe-wide declaration nothing reads is the failure this project
+    # is about -- the route override made this line inert, and dropping the
+    # envelope entirely broke no case at all.
+    style: wrapped
+    key: output.completeTrackResults[0]
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+
+resources:
+  # One entry per tracking number asked about. The results for that number
+  # are inside it, because a number can match more than one shipment.
+  trackingResult:
+    collection: output.completeTrackResults
+    id:
+      style: digits
+      length: 12
+      field: trackingNumber
+    fields:
+      # Per match. Usually one long, and the reason [0][0] is everywhere.
+      trackResults:
+        type: list
+
+routes:
+  - method: POST
+    path: /track/v1/trackingnumbers
+    resource: trackingResult
+    operation: list
+
+  - method: GET
+    path: /track/v1/trackingnumbers/{id}
+    resource: trackingResult
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    code: NOT.AUTHORIZED.ERROR
+    message: Access token expired. Please provide a valid token.
+
+  parameter_missing:
+    status: 400
+    code: TRACKING.TRACKINGNUMBER.EMPTY
+    message: Please provide tracking number.
+
+  rate_limit:
+    status: 429
+    code: QUOTA.EXCEEDED
+    message: The maximum number of requests has been exceeded.
+
+  resource_missing:
+    status: 404
+    code: NOT.FOUND
+    message: The resource could not be found.
+
+fixtures:
+  empty: {}
+
+  one-account:
+    trackingResult:
+      - id: "794832185981"
+        trackResults:
+          - trackingNumberInfo:
+              trackingNumber: "794832185981"
+              carrierCode: FDXE
+            # Three ways of saying the same thing, and only two of them are
+            # safe to branch on.
+            latestStatusDetail:
+              code: DL
+              derivedCode: DL
+              statusByLocale: Delivered
+              description: Delivered
+            dateAndTimes:
+              # Found by type, not by position. "When was it delivered" means
+              # searching this array for ACTUAL_DELIVERY.
+              - type: SHIP
+                dateTime: "2026-02-01T09:15:00-06:00"
+              - type: ACTUAL_PICKUP
+                dateTime: "2026-02-01T17:40:00-06:00"
+              - type: ACTUAL_DELIVERY
+                dateTime: "2026-02-03T11:20:00-06:00"
+            shipmentDetails:
+              weight:
+                # A string, with the unit beside it. Adding two of these
+                # concatenates, and a shipment in kilograms compares equal to
+                # nothing.
+                value: "10.0"
+                unit: LB
+            scanEvents:
+              - date: "2026-02-03T11:20:00-06:00"
+                eventType: DL
+                eventDescription: Delivered
+              - date: "2026-02-02T07:05:00-06:00"
+                eventType: AR
+                eventDescription: Arrived at FedEx location
+      # In transit, so the same array holds an estimate rather than an actual
+      # and nothing about the shape says which.
+      - id: "794832185982"
+        trackResults:
+          - trackingNumberInfo:
+              trackingNumber: "794832185982"
+              carrierCode: FDXG
+            latestStatusDetail:
+              code: IT
+              derivedCode: DP
+              statusByLocale: In transit
+              description: Departed FedEx location
+            dateAndTimes:
+              - type: SHIP
+                dateTime: "2026-02-02T10:00:00-06:00"
+              - type: ESTIMATED_DELIVERY
+                dateTime: "2026-02-05T20:00:00-06:00"
+            shipmentDetails:
+              weight:
+                value: "2.5"
+                unit: KG
+            scanEvents:
+              - date: "2026-02-02T18:30:00-06:00"
+                eventType: DP
+                eventDescription: Departed FedEx location
+      # A number FedEx has never seen. The call succeeds and the parcel is
+      # what failed, so the error is here rather than in the status.
+      - id: "999999999999"
+        trackResults:
+          - trackingNumberInfo:
+              trackingNumber: "999999999999"
+            error:
+              code: TRACKING.TRACKINGNUMBER.NOTFOUND
+              message: Tracking number cannot be found. Please correct the tracking number and try again.
+
+conformance:
+  - name: an unknown tracking number answers 200
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/999999999999
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      # The call succeeded. The parcel is what failed, because a request can
+      # ask about thirty numbers and a status code cannot describe thirty
+      # answers.
+      status: 200
+      body:
+        output.completeTrackResults[0].trackResults[0].error.code: TRACKING.TRACKINGNUMBER.NOTFOUND
+        output.completeTrackResults[0].trackResults[0].error.message: Tracking number cannot be found. Please correct the tracking number and try again.
+      absent:
+        # No top-level errors array, so a client that checks the status and
+        # then checks errors has checked neither of the places this appears.
+        - errors
+        # And no status on the result at all, so code reading
+        # latestStatusDetail.code gets undefined rather than a failure.
+        - output.completeTrackResults[0].trackResults[0].latestStatusDetail
+
+  - name: the record is under two arrays
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185981
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # completeTrackResults is per number asked about; trackResults is per
+        # shipment that number matched. Both are usually one long, which is
+        # why almost every client hardcodes [0][0] and is right until a
+        # duplicated number arrives.
+        output.completeTrackResults[0].trackingNumber: "794832185981"
+        output.completeTrackResults[0].trackResults[0].trackingNumberInfo.carrierCode: FDXE
+
+  - name: a delivery date is found by searching for a type
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185981
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # Third in the array, and its position is not the point -- the type
+        # is. A client reading dateAndTimes[0] here gets the ship date and
+        # reports the parcel as delivered two days early.
+        output.completeTrackResults[0].trackResults[0].dateAndTimes[0].type: SHIP
+        output.completeTrackResults[0].trackResults[0].dateAndTimes[2].type: ACTUAL_DELIVERY
+        output.completeTrackResults[0].trackResults[0].dateAndTimes[2].dateTime: "2026-02-03T11:20:00-06:00"
+
+  - name: and an undelivered parcel holds an estimate in the same array
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185982
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # Same array, same shape, and the only difference is the word in
+        # type. Code that searches for a date and takes the last entry gets
+        # an estimate here and an actual on the parcel above, with nothing to
+        # say which it has.
+        output.completeTrackResults[0].trackResults[0].dateAndTimes[1].type: ESTIMATED_DELIVERY
+        output.completeTrackResults[0].trackResults[0].dateAndTimes[1].dateTime: "2026-02-05T20:00:00-06:00"
+
+  - name: the status comes three ways and one of them is prose
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185982
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # code is the coarse machine one and derivedCode is finer, and they
+        # disagree here on purpose: IT means in transit and DP means departed
+        # a facility, which is a kind of in transit.
+        output.completeTrackResults[0].trackResults[0].latestStatusDetail.code: IT
+        output.completeTrackResults[0].trackResults[0].latestStatusDetail.derivedCode: DP
+        # And this is the one that reads like an answer, which is why it gets
+        # matched on. It changes with the locale the request asked for.
+        output.completeTrackResults[0].trackResults[0].latestStatusDetail.statusByLocale: In transit
+
+  - name: weight is a string with its unit beside it
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185981
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # Quoted, so adding two concatenates.
+        output.completeTrackResults[0].trackResults[0].shipmentDetails.weight.value: "10.0"
+        output.completeTrackResults[0].trackResults[0].shipmentDetails.weight.unit: LB
+
+  - name: and the unit changes between parcels
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185982
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # Kilograms on this one and pounds on the last, in one account, so a
+        # total weight summed without reading the unit is meaningless and
+        # nothing errors.
+        output.completeTrackResults[0].trackResults[0].shipmentDetails.weight.value: "2.5"
+        output.completeTrackResults[0].trackResults[0].shipmentDetails.weight.unit: KG
+
+  - name: scan events are newest first
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185981
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+    expect:
+      status: 200
+      body:
+        # The opposite of AfterShip's checkpoints and DHL's events, which are
+        # oldest first. Three carriers in this repository, three orderings to
+        # remember, and none of them says so on the field.
+        output.completeTrackResults[0].trackResults[0].scanEvents[0].eventType: DL
+        output.completeTrackResults[0].trackResults[0].scanEvents[1].eventType: AR
+
+  - name: a listing carries one entry per number asked about
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: POST
+      path: /track/v1/trackingnumbers
+      headers:
+        Authorization: Bearer l7cauldronfedexaccesstoken0000
+      json:
+        includeDetailedScans: true
+    expect:
+      status: 200
+      body:
+        # And one of the three is a failure, sitting in the same array as the
+        # two that worked. That is the whole reason the shape is what it is.
+        output.completeTrackResults[0].trackingNumber: "794832185981"
+        output.completeTrackResults[2].trackResults[0].error.code: TRACKING.TRACKINGNUMBER.NOTFOUND
+
+  - name: an expired token is refused at the top level
+    source: https://developer.fedex.com/api/en-us/catalog/track/v1/docs.html
+    fixture: one-account
+    request:
+      method: GET
+      path: /track/v1/trackingnumbers/794832185981
+      headers:
+        Authorization: Bearer not_the_token
+    expect:
+      # A credential failure is the request failing, so this one is a status
+      # and an errors array -- unlike the per-parcel failure above, which is
+      # neither.
+      status: 401
+      body:
+        errors[0].code: NOT.AUTHORIZED.ERROR
+        errors[0].message: Access token expired. Please provide a valid token.
