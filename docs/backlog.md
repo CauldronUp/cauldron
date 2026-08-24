@@ -397,7 +397,7 @@ the header says so.
 | Toast | Assess — orders, checks, the restaurant's business day not matching the calendar day |
 | Lightspeed | Assess — the Retail and Restaurant APIs are unrelated products sharing a brand |
 | Clover | Assess — merchants, orders, payments |
-| Recharge | Assess — subscriptions on top of Shopify, so two sources of truth for one order |
+| ~~Recharge~~ | Shipped. Two sources of truth for one order: a charge and the Shopify order it produced carry different ids |
 | Lemon Squeezy | Assess — orders, subscriptions, the merchant-of-record tax handling |
 | Gumroad | Assess — products and sales |
 | Polar | Assess — subscriptions and benefits |
@@ -887,7 +887,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**109 more listings across 62 Recipes declare no paging at all**, and the
+**111 more listings across 63 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -961,7 +961,7 @@ transfers alone, and say so in the header.
 | Lago | Open source, and self-hosted behaves differently from cloud. Assess whether that difference is modellable or a reason not to |
 | Lemon Squeezy | Merchant of record, so the tax is theirs and the order total is not what arrives. That is FastSpring's headline, shipped this cycle, and a second Recipe saying it would add a name rather than a shape. Worth doing only for what differs: the licence-key API and the store-scoped identifiers |
 | ~~RevenueCat~~ | Shipped. There is no `is_active` field and RevenueCat's own guidance is to read one -- it is an SDK property, so the moment the question moves to a server somebody writes the comparison by hand and the advice stops applying. Four active entitlements in the fixture, active for four different reasons: cancelled, lifetime (`expires_date: null`, which every naive comparison reads as expired), failing to pay inside a grace period, and somebody else's family purchase on a trial. Entitlements are keyed by your names and subscriptions by the stores', and the endpoint is a GET that creates: 200 found, 201 invented |
-| Recharge | Still open, and deprioritised for a reason worth writing down: the drift is between Recharge and Shopify, so telling the story needs both systems and a Recipe can only hold one. What a single Recipe could carry is narrower -- a subscription that is ACTIVE while its charges have reached MAX_RETRIES_REACHED, and external ids that are Shopify's numbers held as strings |
+| ~~Recharge~~ | Shipped, as the narrower thing this row described. The cross-system drift still needs both systems and a Recipe still holds one, so what shipped is what was suggested here: a subscription that is ACTIVE while its charge has reached MAX_RETRIES_REACHED, and external ids that are Shopify's numbers held as strings. A charge also carries the Shopify order id beside its own, which shows the two numbers for one payment without needing Shopify running -- it shows they differ, not that they drift |
 | Maxio | Assess — the former Chargify, beside Chargebee and Recurly |
 
 ### Payroll, people and hiring
@@ -1272,7 +1272,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty Recipes send at least one identifier as a number now, and each
+Thirty-one Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

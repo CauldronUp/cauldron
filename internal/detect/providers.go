@@ -53,6 +53,22 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// "recharge" is one of the most overloaded words on either
+			// registry. The unscoped npm package is a React static site
+			// generator; Packagist's matches are an EV charging SDK, an
+			// electricity meter service and a Zimbabwean airtime top-up
+			// library. Subscription billing is what the word means fourth or
+			// fifth, so nothing here can be inferred from the name.
+			//
+			// @rechargeapps/storefront-client is left out for the reason DHL
+			// Parcel is: it is Recharge, and it is a different API. The
+			// storefront client talks to the customer portal with a session
+			// token, and this Recipe models the admin API behind a store key.
+			recipe:   "recharge",
+			composer: []string{"huel-global/recharge"},
+			npm:      []string{"recharge-api"},
+		},
+		{
 			// DHL's own SDK is the wrong one for this Recipe. dhl/sdk-api-express
 			// requires ext-soap; this Recipe models the REST tracking API, and
 			// a SOAP client pointed at it gets a 404 on its endpoint. So does

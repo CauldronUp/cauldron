@@ -1,0 +1,512 @@
+# Recharge Recipe for Cauldron
+#
+# Recharge sells subscriptions on top of Shopify, which means one order exists
+# twice. Recharge bills a charge, Shopify records an order, and the two carry
+# different identifiers for the same money. Reconciliation keyed on the wrong
+# one silently loses every subscription order or double-counts every one of
+# them, depending on which direction the join runs.
+#
+# It is not a mistake anybody makes from reading one API. Both objects are
+# called an order somewhere, both have an id, and the field that links them --
+# shopify_order_id -- is a number sitting quietly beside Recharge's own.
+#
+# Six things worth modelling exactly:
+#
+#   1. A charge carries three identifiers: its own, the Shopify order it
+#      produced, and the subscription it came from. Joining Recharge to
+#      Shopify on the wrong one finds nothing and reports zero revenue from
+#      subscriptions.
+#   2. The API version is a header, and it changes the response. Omitting
+#      X-Recharge-Version does not fail -- it uses whatever the store's
+#      default is, which an admin can change without telling anybody, so an
+#      integration can break without a deploy.
+#   3. Money is a string. "19.99", quoted, on every amount, so totals
+#      concatenate rather than add.
+#   4. next_charge_scheduled_at is a date with no time and no zone. It is
+#      the store's local date, so a job that runs at midnight UTC and reads
+#      it as a timestamp charges a day early or late depending on which side
+#      of the meridian the store is.
+#   5. Statuses are upper case and they are not the same words Shopify uses.
+#      ACTIVE, CANCELLED, EXPIRED on a subscription; SUCCESS, ERROR, QUEUED,
+#      REFUNDED on a charge. Comparing either to a Shopify status fails on
+#      case before it fails on vocabulary.
+#   6. A cancelled subscription keeps its charges and its history. The
+#      cancellation is a field on the subscription, not the deletion of one,
+#      so a listing that filters on nothing still returns customers who left.
+#
+# And one more, which is the reason this Recipe is narrower than it looks: a
+# subscription stays ACTIVE while its charges fail. Recharge retries a
+# declined card several times before giving up, and the subscription's status
+# says nothing about it -- so a report counting ACTIVE subscribers counts
+# people whose money stopped arriving weeks ago, and the only way to see it is
+# to read the charges beside them.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The version header is enforced as required here. Recharge falls back to
+#     the store's default when it is absent, which is the worse behaviour and
+#     the one worth reproducing, and required_headers can only refuse. So
+#     this Recipe is stricter than Recharge and a client that never sets the
+#     header fails here and works -- for now -- in production.
+#   - The two versions really do answer differently, and only one shape is
+#     modelled. 2021-11 is the one here.
+#   - Nothing charges. A real subscription produces a charge on a schedule
+#     and the charge produces a Shopify order; here all three are fixtures
+#     that already exist.
+#
+# The token below is a fixture, not a secret. It belongs to no store.
+
+recipe: recharge
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: "2021-11"
+  docs: https://developer.rechargepayments.com/2021-11
+
+auth:
+  # Its own header. Not Authorization and not a bearer, so a client written
+  # for either authenticates as nobody.
+  scheme: header
+  header: X-Recharge-Access-Token
+  keys:
+    - sk_test_cauldron_recharge_0000
+
+# The header that decides what shape comes back. See the fidelity note above:
+# Recharge falls back to the store's default rather than refusing, and this
+# Recipe refuses, which is stricter than the provider and deliberately so.
+required_headers:
+  X-Recharge-Version: missing_version
+
+responses:
+  list:
+    style: wrapped
+    key: subscriptions
+  resource:
+    style: wrapped
+    key: subscription
+  error:
+    style: flat
+    message_field: errors
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  subscription:
+    id:
+      style: numeric
+      type: number
+    fields:
+      # Recharge's own customer, which is not the Shopify customer either.
+      customer_id:
+        type: integer
+      # ACTIVE, CANCELLED, EXPIRED. Upper case, and not Shopify's words.
+      status:
+        type: string
+        default: ACTIVE
+      # A string. Totals concatenate rather than add.
+      price:
+        type: string
+      quantity:
+        type: integer
+        default: 1
+      product_title:
+        type: string
+      # A date, with no time and no zone: the store's local date. A job
+      # running at midnight UTC and reading this as a timestamp charges a day
+      # early or late depending on which side of the meridian the store is.
+      next_charge_scheduled_at:
+        type: string
+        null_when_unset: true
+      # Set when somebody leaves, and the subscription stays in the listing
+      # afterwards. Cancellation is a field, not a deletion.
+      cancelled_at:
+        type: datetime
+        null_when_unset: true
+      cancellation_reason:
+        type: string
+        null_when_unset: true
+      # Shopify's product and variant, so a catalogue join needs these and
+      # not the Recharge ids beside them.
+      external_product_id:
+        type: map
+      created_at:
+        type: datetime
+
+  charge:
+    id:
+      style: numeric
+      type: number
+    fields:
+      # The subscription this charge came from.
+      subscription_id:
+        type: integer
+      customer_id:
+        type: integer
+      # SUCCESS, ERROR, QUEUED, REFUNDED, SKIPPED. Upper case again.
+      status:
+        type: string
+        default: QUEUED
+      # How many times Recharge has retried a declined card. The subscription
+      # it belongs to stays ACTIVE throughout, so this number is the only
+      # place a failing customer is visible.
+      retry_date:
+        type: string
+        null_when_unset: true
+      error_type:
+        type: string
+        null_when_unset: true
+      total_price:
+        type: string
+      # The other half of the same money. This is the Shopify order the
+      # charge produced, and it is the only link between the two systems.
+      external_order_id:
+        type: map
+      scheduled_at:
+        type: string
+      processed_at:
+        type: datetime
+        null_when_unset: true
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /subscriptions
+    resource: subscription
+    operation: list
+
+  - method: GET
+    path: /subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  - method: GET
+    path: /charges
+    resource: charge
+    operation: list
+    list:
+      style: wrapped
+      key: charges
+    envelope:
+      style: wrapped
+      key: charge
+
+  - method: GET
+    path: /charges/{id}
+    resource: charge
+    operation: get
+    envelope:
+      style: wrapped
+      key: charge
+
+errors:
+  # The version header, absent. Recharge would fall back to the store's
+  # default; this refuses, which is stricter than the provider and stated as
+  # such at the top of the file.
+  missing_version:
+    status: 400
+    message: The X-Recharge-Version header is required.
+
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: Not Found
+
+  parameter_missing:
+    status: 422
+    message: Unprocessable Entity
+
+  rate_limit:
+    status: 429
+    message: Too Many Requests
+    headers:
+      # Recharge counts in a leaky bucket and says so: used out of capacity.
+      # Not a remaining count and not a reset time, so neither of the two
+      # habits a client already has reads this correctly.
+      X-Recharge-Limit: "40/40"
+
+fixtures:
+  empty: {}
+
+  small-store:
+    subscription:
+      - id: "600001"
+        customer_id: 500001
+        status: ACTIVE
+        price: "19.99"
+        quantity: 1
+        product_title: Monthly cauldron polish
+        # The store's local date. No time, no zone.
+        next_charge_scheduled_at: "2026-03-01"
+        external_product_id:
+          ecommerce: "1010101010"
+        created_at: "2026-01-01T09:00:00Z"
+      # Cancelled, and still here. Cancellation is a field rather than a
+      # deletion, so a listing that filters on nothing returns customers who
+      # left months ago.
+      - id: "600002"
+        customer_id: 500002
+        status: CANCELLED
+        price: "24.50"
+        quantity: 2
+        product_title: Quarterly ladle service
+        next_charge_scheduled_at: null
+        cancelled_at: "2026-02-10T14:22:00Z"
+        cancellation_reason: Too expensive
+        external_product_id:
+          ecommerce: "1020202020"
+        created_at: "2025-11-01T09:00:00Z"
+    charge:
+      - id: "700001"
+        subscription_id: 600001
+        customer_id: 500001
+        status: SUCCESS
+        total_price: "19.99"
+        # The Shopify order this charge produced. A different number for the
+        # same money, and the only thing linking the two systems.
+        external_order_id:
+          ecommerce: "5010101010"
+        scheduled_at: "2026-02-01"
+        processed_at: "2026-02-01T09:05:00Z"
+        created_at: "2026-02-01T09:00:00Z"
+      # The third charge, on the ACTIVE subscription above, and it has been
+      # failing since February. Recharge has retried it and the subscription
+      # is still ACTIVE, so a report counting active subscribers counts this
+      # customer as paying.
+      - id: "700003"
+        subscription_id: 600001
+        customer_id: 500001
+        status: ERROR
+        total_price: "19.99"
+        retry_date: "2026-02-15"
+        error_type: MAX_RETRIES_REACHED
+        scheduled_at: "2026-02-08"
+        created_at: "2026-02-08T09:00:00Z"
+      # Queued, so it has no Shopify order yet. A join from Shopify back to
+      # Recharge cannot see this one at all.
+      - id: "700002"
+        subscription_id: 600001
+        customer_id: 500001
+        status: QUEUED
+        total_price: "19.99"
+        scheduled_at: "2026-03-01"
+        created_at: "2026-02-01T09:05:00Z"
+
+conformance:
+  - name: a charge carries the Shopify order it produced
+    source: https://developer.rechargepayments.com/2021-11/charges
+    fixture: small-store
+    request:
+      method: GET
+      path: /charges/700001
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # Recharge's own id for the charge.
+        charge.id: 700001
+        # And Shopify's, for the same money. Joining the two systems on
+        # charge.id finds nothing in Shopify and reports zero revenue from
+        # subscriptions.
+        charge.external_order_id.ecommerce: "5010101010"
+        # And the subscription it came from, which is a third number again.
+        charge.subscription_id: 600001
+        # Upper case here too, and a different vocabulary from the
+        # subscription's: SUCCESS rather than ACTIVE, on the same store.
+        charge.status: SUCCESS
+
+  - name: a queued charge has no Shopify order at all
+    source: https://developer.rechargepayments.com/2021-11/charges
+    fixture: small-store
+    request:
+      method: GET
+      path: /charges/700002
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        charge.status: QUEUED
+        # Two ways of saying "not yet" in one record. processed_at is present
+        # and null; external_order_id below is absent entirely. Code that
+        # branches on presence and code that branches on truthiness disagree
+        # about this charge, and both are reading the same object.
+        charge.processed_at: null
+      absent:
+        # So a join running from Shopify back to Recharge cannot see this
+        # charge, and one running the other way finds a charge with nothing
+        # on the other end. Neither is an error.
+        - charge.external_order_id
+
+  - name: the version header is not optional here
+    source: https://developer.rechargepayments.com/2021-11/versioning
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+    expect:
+      # Recharge would answer with whatever the store's default version is,
+      # which an admin can change without telling anybody. This Recipe
+      # refuses instead, which is stricter than the provider and said so at
+      # the top of the file.
+      status: 400
+      body:
+        errors: The X-Recharge-Version header is required.
+
+  - name: money is a string on every amount
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/600001
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # Quoted. Two of these added in JavaScript concatenate and the result
+        # stringifies again on the way out without complaint.
+        subscription.price: "19.99"
+
+  - name: the next charge date has no time and no zone
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/600001
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # The store's local date. A job running at midnight UTC and reading
+        # this as a timestamp charges a day early or late depending on which
+        # side of the meridian the store is, and the error is invisible until
+        # a customer complains about the date on their statement.
+        subscription.next_charge_scheduled_at: "2026-03-01"
+
+  - name: statuses are upper case and not Shopify's words
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/600001
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # ACTIVE, not active and not Shopify's paid or fulfilled. Comparing
+        # either to a Shopify status fails on case before it fails on
+        # vocabulary.
+        subscription.status: ACTIVE
+
+  - name: a cancelled subscription is still in the listing
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # Both, and the second one left in February. Cancellation is a field
+        # rather than a deletion, so a report counting subscribers from this
+        # listing counts people who are gone.
+        subscriptions[0].status: ACTIVE
+        subscriptions[1].status: CANCELLED
+        subscriptions[1].cancelled_at: "2026-02-10T14:22:00Z"
+        subscriptions[1].cancellation_reason: Too expensive
+
+  - name: and it carries a null next charge rather than none
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/600002
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # Null rather than absent, which are different on the wire. Code
+        # branching on presence sees a next charge date that is there and
+        # empty.
+        subscription.next_charge_scheduled_at: null
+        subscription.status: CANCELLED
+
+  - name: the catalogue join runs through Shopify's product id
+    source: https://developer.rechargepayments.com/2021-11/subscriptions
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions/600001
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # external_product_id.ecommerce, not a Recharge product id, because
+        # the catalogue lives in Shopify and Recharge only refers to it.
+        subscription.external_product_id.ecommerce: "1010101010"
+
+  - name: a subscription stays ACTIVE while its money is failing
+    source: https://developer.rechargepayments.com/2021-11/charges
+    fixture: small-store
+    request:
+      method: GET
+      path: /charges/700003
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 200
+      body:
+        # The card was declined, Recharge retried until it gave up, and the
+        # subscription this belongs to still says ACTIVE. Nothing on the
+        # subscription changes, so a report counting active subscribers
+        # counts this customer as paying and the only way to see otherwise is
+        # to read the charges beside them.
+        charge.status: ERROR
+        charge.error_type: MAX_RETRIES_REACHED
+        charge.subscription_id: 600001
+      absent:
+        # And it produced no Shopify order, so the drift between the two
+        # systems here is not an id mismatch -- it is an order that exists in
+        # neither.
+        - charge.external_order_id
+
+  - name: the rate limit is a bucket reading rather than a count
+    source: https://developer.rechargepayments.com/2021-11/rate-limits
+    arm: rate_limit
+    fixture: small-store
+    request:
+      method: GET
+      path: /subscriptions
+      headers:
+        X-Recharge-Access-Token: sk_test_cauldron_recharge_0000
+        X-Recharge-Version: "2021-11"
+    expect:
+      status: 429
+      headers:
+        # Used out of capacity, in one header, as text. Not a remaining count
+        # and not a reset time, so neither of the two habits a client already
+        # has reads this correctly without splitting it first.
+        X-Recharge-Limit: "40/40"
