@@ -53,6 +53,20 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// DHL's own SDK is the wrong one for this Recipe. dhl/sdk-api-express
+			// requires ext-soap; this Recipe models the REST tracking API, and
+			// a SOAP client pointed at it gets a 404 on its endpoint. So does
+			// dreipunktnull/dhl-express, and alfallouji/dhl_api and
+			// mtcmedia/dhl-api speak the older XML services.
+			//
+			// dhlparcel-php-api is excluded for a different reason: DHL Parcel
+			// is a separate API from DHL Express with its own credentials and
+			// its own shapes, and this Recipe says in as many words that it
+			// models Express and nothing else.
+			recipe:   "dhl",
+			composer: []string{"sonnenglas/mydhl-php-sdk", "korbeil/dhl-express-php-api"},
+		},
+		{
 			// Four vendors publish a package called shipengine on Packagist,
 			// including ShipEngine's own, and all four are API clients. Same
 			// shape as ship-station below: the vendor half of the name says

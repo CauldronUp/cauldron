@@ -628,3 +628,44 @@ func TestDetectShipEngineFromEveryVendorsWrapper(t *testing.T) {
 		t.Errorf("shipengine offered the shipstation Recipe: %+v", p.Requirements)
 	}
 }
+
+// DHL's own SDK is the wrong one for this Recipe, which is the case worth
+// asserting. dhl/sdk-api-express requires ext-soap -- checked in its manifest
+// rather than guessed from its name -- and this Recipe models the REST
+// tracking API, so a SOAP client pointed at it gets a 404 on its endpoint.
+//
+// dhlparcel-php-api is excluded for a different reason again: DHL Parcel is a
+// separate API from DHL Express with its own credentials and shapes, and this
+// Recipe says in as many words that it models Express and nothing else.
+// Detecting it would offer an emulator that serves none of its endpoints.
+func TestDetectDHLFromTheRestClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"sonnenglas/mydhl-php-sdk": "^1.0"}}`},
+		{"composer.json": `{"require": {"korbeil/dhl-express-php-api": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "dhl") {
+			t.Errorf("%v did not detect dhl: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"dhl/sdk-api-express": "^1.0"}}`},
+		{"composer.json": `{"require": {"dreipunktnull/dhl-express": "^1.0"}}`},
+		{"composer.json": `{"require": {"alfallouji/dhl_api": "^1.0"}}`},
+		{"composer.json": `{"require": {"mvdnbrk/dhlparcel-php-api": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "dhl") {
+			t.Errorf("%v offered the dhl Recipe and should not have: %+v", manifest, p.Requirements)
+		}
+	}
+}
