@@ -62,7 +62,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 | Provider | Why |
 |---|---|
-| Shopify GraphQL Admin API | Separate from the REST Shopify Recipe, not a replacement |
+| ~~Shopify GraphQL Admin API~~ | Shipped. Separate from the REST Recipe, not a replacement. Answers 200 when it refuses, and in three different shapes |
 | ~~BigCommerce~~ | Shipped. Two APIs in one store: V3 wraps, V2 does not; a price is a number and the order total is a string |
 | ~~Magento / Adobe Commerce~~ | Shipped. searchCriteria brackets; a product is addressed by sku and an order by entity_id; error messages are templates |
 | ~~Etsy~~ | Shipped. Two credentials on every call; money is an integer over a divisor; an order is a receipt |
@@ -887,7 +887,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**102 more listings across 57 Recipes declare no paging at all**, and the
+**104 more listings across 58 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

@@ -1,0 +1,491 @@
+# Shopify GraphQL Admin API Recipe for Cauldron
+#
+# Separate from the shopify Recipe, which is REST, and not a replacement for
+# it. Shopify froze the REST Admin API for new apps, so anything written now
+# talks GraphQL, and the two do not resemble each other: different envelope,
+# different identifiers, different rate limiting, and a different answer to
+# the question "did that work".
+#
+# That last one is the reason this Recipe exists. GraphQL answers 200 when it
+# refuses, so `if (response.ok)` is true for a request that did nothing, and
+# a client that checks the status code and stops there ships a silent failure.
+#
+# Six things worth modelling exactly:
+#
+#   1. Failures arrive in three different shapes on one API.
+#      A throttled request is 200 with {"errors": [{message, extensions}]}.
+#      A bad token is 401 with {"errors": "a bare string"} -- the same key,
+#      holding a string rather than an array. And a mutation refused on
+#      business grounds is 200 with no top-level errors at all: the failure
+#      is nested under the mutation's own name in userErrors.
+#   2. errors[0].message therefore reads the sentence on a throttle and reads
+#      the character "[" on a bad token, because indexing a string in
+#      JavaScript succeeds. .message on that is undefined. Nothing throws.
+#   3. A successful mutation still carries userErrors, empty. A client that
+#      checks the status, then checks top-level errors, and then stops has
+#      checked neither of the two places a business refusal appears.
+#   4. Identifiers are global and they are URLs:
+#      gid://shopify/Product/1234567890. The numeric id from the REST API is
+#      the last segment and is not interchangeable with it -- passing 1234567890
+#      where a gid belongs fails, and passing a Product gid where an Order gid
+#      belongs fails differently.
+#   5. A connection is edges and node, not an array. data.products is an
+#      object; data.products.edges is the array; the record is at
+#      edges[i].node. Code that maps over data.products gets nothing.
+#   6. Rate limiting is a cost budget, not a request count. Every successful
+#      response carries extensions.cost.throttleStatus with points available
+#      and a restore rate, and a query costs what its shape costs. Sleeping
+#      one second between requests does not help if one query costs a
+#      thousand points.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No GraphQL is parsed. A query naming products gets the products fixture
+#     whatever fields it asked for, so this reproduces the envelope, the
+#     connection shape, the identifiers and the vocabulary rather than the
+#     query language. Asking for a field that does not exist is answered
+#     rather than refused.
+#   - Nothing is filtered, ordered or paginated. first, after and query are
+#     accepted and honoured by nothing, so the page is always the whole list
+#     and pageInfo says so.
+#   - The cost figures below are constants. A real actualQueryCost depends on
+#     the query, which is exactly the thing this Recipe does not read, so the
+#     numbers demonstrate the shape and the units rather than the arithmetic.
+#     A client that backs off when currentlyAvailable is low will see the
+#     shape it expects; one that predicts its own cost cannot be tested here.
+#
+# The token below is a fixture, not a secret. It belongs to no shop.
+
+recipe: shopifygraphql
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: graphql
+  docs: https://shopify.dev/docs/api/admin-graphql
+
+auth:
+  # Not Authorization, and not a bearer. A client written for any bearer API
+  # authenticates as nobody.
+  scheme: header
+  header: X-Shopify-Access-Token
+  keys:
+    - shpat_cauldron00000000000000000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  # The throttle shape: an array of objects under errors. Two of the three
+  # failure shapes below override this, because one API answering three ways
+  # is the thing worth modelling.
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+  success:
+    # On every successful response, which is where a client learns how much
+    # budget it has left. Points, not requests.
+    fields:
+      extensions.cost.requestedQueryCost: 12
+      extensions.cost.actualQueryCost: 8
+      extensions.cost.throttleStatus.maximumAvailable: 2000
+      extensions.cost.throttleStatus.currentlyAvailable: 1992
+      extensions.cost.throttleStatus.restoreRate: 100
+
+resources:
+  product:
+    collection: data.products.edges
+    id:
+      # A URL, not a number. The REST id is the last segment and the two are
+      # not interchangeable.
+      style: prefixed
+      prefix: "gid://shopify/Product/"
+      field: node.id
+    fields:
+      # The cursor belongs to the edge, not to the product, which is the
+      # whole reason an edge exists as a separate thing.
+      cursor:
+        type: string
+      title:
+        type: string
+        in: node
+        as: title
+      handle:
+        type: string
+        in: node
+        as: handle
+      # ACTIVE, ARCHIVED or DRAFT, in capitals, because GraphQL enums are.
+      # A new product is DRAFT and is not on the storefront.
+      status:
+        type: string
+        in: node
+        as: status
+      # Money is an object and the amount is a string:
+      # {amount: "89.95", currencyCode: "GBP"}.
+      price:
+        type: map
+        in: node
+        as: priceRangeV2
+      totalInventory:
+        type: integer
+        in: node
+        as: totalInventory
+
+  order:
+    collection: data.orders.edges
+    id:
+      style: prefixed
+      prefix: "gid://shopify/Order/"
+      field: node.id
+    fields:
+      cursor:
+        type: string
+      # The number a customer sees, which is a string with a prefix and is
+      # not the gid and is not the numeric id either. Three identifiers.
+      name:
+        type: string
+        in: node
+        as: name
+      displayFinancialStatus:
+        type: string
+        in: node
+        as: displayFinancialStatus
+      displayFulfillmentStatus:
+        type: string
+        in: node
+        as: displayFulfillmentStatus
+      totalPrice:
+        type: map
+        in: node
+        as: totalPriceSet
+
+routes:
+  # One path, one method, for everything. The route is chosen by the root
+  # field the query names.
+  - method: POST
+    path: /admin/api/2026-01/graphql.json
+    resource: product
+    operation: list
+    selects: products
+    fields:
+      # Beside the edges, not inside them. A client that reads hasNextPage off
+      # an edge finds undefined and stops paging after one page.
+      data.products.pageInfo.hasNextPage: false
+      data.products.pageInfo.endCursor: eyJsYXN0X2lkIjoxMDN9
+
+  - method: POST
+    path: /admin/api/2026-01/graphql.json
+    resource: order
+    operation: list
+    selects: orders
+    fields:
+      data.orders.pageInfo.hasNextPage: false
+      data.orders.pageInfo.endCursor: eyJsYXN0X2lkIjo1MDF9
+
+  # A mutation that succeeds, and still carries userErrors. Empty, and
+  # present, which is the point: a client has to look.
+  - method: POST
+    path: /admin/api/2026-01/graphql.json
+    resource: product
+    operation: create
+    selects: productCreate
+    fields:
+      data.productCreate.userErrors: []
+
+errors:
+  # Shape one. 200, and an array of objects, because the request was
+  # understood and the shop has no budget left. response.ok is true.
+  throttled:
+    status: 200
+    message: Throttled
+    fields:
+      extensions.code: THROTTLED
+      extensions.documentation: https://shopify.dev/api/usage/rate-limits
+
+  # Shape two. 401, and the same key holding a bare string rather than an
+  # array. errors[0].message reads "[" here and the sentence on the throttle
+  # above, and neither reading throws.
+  authentication_error:
+    status: 401
+    style: flat
+    message_field: errors
+    message: "[API] Invalid API key or access token (unrecognized login or wrong password)"
+
+  # Shape three. 200, no top-level errors at all, and the refusal nested
+  # under the mutation's own name. A client that checked the status and then
+  # checked errors has checked neither of the places this appears.
+  user_error:
+    status: 200
+    key: data.productCreate.userErrors
+    message: Title can't be blank
+    fields:
+      # An array, because a GraphQL field path can be several segments deep.
+      # Not a string, so joining it for a form key needs a join.
+      field:
+        - input
+        - title
+
+  # A real GraphQL validation failure, which Shopify answers 200 for as well.
+  invalid_field:
+    status: 200
+    message: "Field 'titel' doesn't exist on type 'Product'"
+    fields:
+      extensions.code: undefinedField
+
+fixtures:
+  empty: {}
+
+  small-shop:
+    product:
+      - id: "gid://shopify/Product/1010101010"
+        cursor: eyJsYXN0X2lkIjoxMDF9
+        title: Cast iron cauldron
+        handle: cast-iron-cauldron
+        status: ACTIVE
+        price:
+          minVariantPrice:
+            amount: "89.95"
+            currencyCode: GBP
+        totalInventory: 4
+      - id: "gid://shopify/Product/1020202020"
+        cursor: eyJsYXN0X2lkIjoxMDJ9
+        title: Brass ladle
+        handle: brass-ladle
+        status: ACTIVE
+        price:
+          minVariantPrice:
+            amount: "12.50"
+            currencyCode: GBP
+        totalInventory: 11
+      - id: "gid://shopify/Product/1030303030"
+        cursor: eyJsYXN0X2lkIjoxMDN9
+        title: Unfinished draft
+        handle: unfinished-draft
+        # Not on the storefront, and returned by this query all the same.
+        status: DRAFT
+        price:
+          minVariantPrice:
+            amount: "5.00"
+            currencyCode: GBP
+        totalInventory: 1
+    order:
+      - id: "gid://shopify/Order/5010101010"
+        cursor: eyJsYXN0X2lkIjo1MDF9
+        # Three identifiers on one record: the gid, this, and the numeric id
+        # inside the gid.
+        name: "#1001"
+        displayFinancialStatus: PAID
+        displayFulfillmentStatus: UNFULFILLED
+        totalPrice:
+          shopMoney:
+            amount: "102.45"
+            currencyCode: GBP
+
+conformance:
+  - name: a connection is edges and node, not an array
+    source: https://shopify.dev/docs/api/usage/pagination-graphql
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ products(first: 10) { edges { cursor node { id title status } } pageInfo { hasNextPage endCursor } } }"
+    expect:
+      status: 200
+      body:
+        # The record is two levels down. data.products is an object, and
+        # mapping over it gets nothing.
+        data.products.edges[0].node.title: Cast iron cauldron
+        data.products.edges[0].cursor: eyJsYXN0X2lkIjoxMDF9
+        # Beside the edges, not inside one.
+        data.products.pageInfo.hasNextPage: false
+      absent:
+        # The shapes a client reaches for, none of which Shopify sends.
+        - data.products[0]
+        - data.products.nodes
+        - data.products.edges[0].node.cursor
+
+  - name: an identifier is a URL and not a number
+    source: https://shopify.dev/docs/api/usage/gids
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ products(first: 1) { edges { node { id } } } }"
+    expect:
+      status: 200
+      body:
+        # The REST id is the last segment. Passing that bare number where a
+        # gid belongs fails, and the two are not interchangeable in either
+        # direction.
+        data.products.edges[0].node.id: gid://shopify/Product/1010101010
+
+  - name: every successful response carries the cost budget
+    source: https://shopify.dev/docs/api/usage/rate-limits
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ products(first: 10) { edges { node { id } } } }"
+    expect:
+      status: 200
+      body:
+        # Points, not requests. Sleeping a second between calls does nothing
+        # for a query that costs a thousand points.
+        extensions.cost.throttleStatus.maximumAvailable: 2000
+        extensions.cost.throttleStatus.currentlyAvailable: 1992
+        extensions.cost.throttleStatus.restoreRate: 100
+        extensions.cost.actualQueryCost: 8
+
+  - name: money is an object and the amount is a string
+    source: https://shopify.dev/docs/api/admin-graphql/latest/objects/MoneyV2
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ orders(first: 1) { edges { node { totalPriceSet { shopMoney { amount currencyCode } } } } } }"
+    expect:
+      status: 200
+      body:
+        # Quoted, and two levels of wrapper deep. shopMoney and
+        # presentmentMoney are different amounts in different currencies on
+        # the same order.
+        data.orders.edges[0].node.totalPriceSet.shopMoney.amount: "102.45"
+        data.orders.edges[0].node.totalPriceSet.shopMoney.currencyCode: GBP
+
+  - name: an order carries three identifiers and the customer has the third
+    source: https://shopify.dev/docs/api/admin-graphql/latest/objects/Order
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ orders(first: 1) { edges { node { id name displayFinancialStatus displayFulfillmentStatus } } } }"
+    expect:
+      status: 200
+      body:
+        data.orders.edges[0].node.id: gid://shopify/Order/5010101010
+        # What appears on the invoice, with a hash, as a string.
+        data.orders.edges[0].node.name: "#1001"
+        # Two statuses, both in capitals, and paid does not mean shipped.
+        data.orders.edges[0].node.displayFinancialStatus: PAID
+        data.orders.edges[0].node.displayFulfillmentStatus: UNFULFILLED
+
+  - name: a throttled request answers 200 with an errors array
+    source: https://shopify.dev/docs/api/usage/rate-limits
+    arm: throttled
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ products(first: 250) { edges { node { id } } } }"
+    expect:
+      # Two hundred. response.ok is true, res.raise_for_status() passes, and
+      # every status-code check in the client says this worked.
+      status: 200
+      body:
+        errors[0].message: Throttled
+        errors[0].extensions.code: THROTTLED
+
+  - name: and a bad token answers 401 with the same key holding a string
+    source: https://shopify.dev/docs/api/admin-graphql
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_not_the_token
+      json:
+        query: "{ products(first: 10) { edges { node { id } } } }"
+    expect:
+      status: 401
+      body:
+        # A bare string under errors. So errors[0] is the character "[" and
+        # errors[0].message is undefined, on the same key that held objects a
+        # moment ago. Neither reading throws and neither is logged.
+        errors: "[API] Invalid API key or access token (unrecognized login or wrong password)"
+      absent:
+        - errors[0].message
+        - message
+
+  - name: a business refusal has no top-level errors at all
+    source: https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate
+    arm: user_error
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "mutation { productCreate(input: {title: \"\"}) { product { id } userErrors { field message } } }"
+    expect:
+      status: 200
+      body:
+        # Nested under the mutation's own name. A client that checked the
+        # status and then checked errors has checked neither of the two
+        # places this appears.
+        data.productCreate.userErrors[0].message: Title can't be blank
+        # An array, not a string, because a GraphQL field path can be several
+        # segments deep. Joining it for a form key needs a join.
+        data.productCreate.userErrors[0].field[0]: input
+        data.productCreate.userErrors[0].field[1]: title
+      absent:
+        # The third shape: no top-level errors, on a request that failed.
+        - errors
+
+  - name: a successful mutation still carries userErrors
+    source: https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "mutation { productCreate(input: {title: \"Pewter tankard\"}) { product { id title } userErrors { field message } } }"
+    expect:
+      status: 200
+      body:
+        # Empty, and present. The field a client has to check on every
+        # mutation whether or not anything went wrong.
+        data.productCreate.userErrors: []
+
+  - name: a query naming a field that does not exist is also a 200
+    source: https://shopify.dev/docs/api/admin-graphql
+    arm: invalid_field
+    fixture: small-shop
+    request:
+      method: POST
+      path: /admin/api/2026-01/graphql.json
+      headers:
+        X-Shopify-Access-Token: shpat_cauldron00000000000000000000
+      json:
+        query: "{ products(first: 10) { edges { node { titel } } } }"
+    expect:
+      # A typo in a query is a 200. Anything watching status codes in
+      # production sees a healthy integration returning no data.
+      status: 200
+      body:
+        errors[0].message: Field 'titel' doesn't exist on type 'Product'
+        errors[0].extensions.code: undefinedField

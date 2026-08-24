@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
@@ -111,5 +112,72 @@ func TestTheOtherErrorsKeepTheirShape(t *testing.T) {
 
 	if _, ok := body["error"]; !ok {
 		t.Errorf("the override leaked onto another failure: %s", rec.Body)
+	}
+}
+
+// One API, three failure shapes, and Shopify's GraphQL Admin API sends all
+// three. A Recipe that could describe only one of them would be claiming the
+// other two do not happen.
+//
+//	throttled     200 {"errors": [{"message": "Throttled", ...}]}
+//	bad token     401 {"errors": "[API] Invalid API key or access token"}
+//	userErrors    200 {"data": {"productCreate": {"userErrors": [...]}}}
+//
+// The second is the one that costs an afternoon: it is the same key as the
+// first, holding a bare string rather than an array. errors[0].message reads
+// the sentence on a throttle and reads the character "[" on a bad token,
+// because indexing a string in JavaScript succeeds and .message on that is
+// undefined. Nothing throws and nothing is logged.
+//
+// The third has no top-level errors at all, so a client that checks the status
+// and then checks errors has checked neither of the places a business refusal
+// appears.
+//
+// Style was already overridable per error. Key and MessageField are what the
+// second and third shapes need, and without them the errors[0] path and the
+// data.productCreate.userErrors path were both unreachable.
+func TestOneRecipeMayDescribeThreeFailureShapes(t *testing.T) {
+	r, err := recipe.Open("shopifygraphql")
+	if err != nil {
+		t.Fatalf("open shopifygraphql: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	const path = "/admin/api/2026-01/graphql.json"
+
+	// Shape two: the same key, holding a string. Reached by presenting a
+	// credential the Recipe does not accept.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"query":"{ products(first: 1) { edges { node { id } } } }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Shopify-Access-Token", "shpat_not_the_token")
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, rec.Body.String())
+	}
+
+	// A string, not an array. This is the whole distinction: a client that
+	// indexes it gets a character rather than an object, and does not fail.
+	sentence, ok := body["errors"].(string)
+	if !ok {
+		t.Fatalf("errors = %#v, want a bare string", body["errors"])
+	}
+
+	if !strings.HasPrefix(sentence, "[API] Invalid API key") {
+		t.Errorf("errors = %q, want Shopify's sentence", sentence)
+	}
+
+	if _, present := body["message"]; present {
+		t.Error("the sentence belongs under errors, not under message")
 	}
 }
