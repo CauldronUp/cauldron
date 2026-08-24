@@ -1186,3 +1186,53 @@ func TestDetectCommercetoolsAndNotItsOtherApiOrItsFrontend(t *testing.T) {
 		}
 	}
 }
+
+// VTEX has no widely installed external client, and the packages that look
+// like one are the platform's own toolchain.
+//
+// npm "vtex" is the Toolbelt (repository vtex/toolbelt): a command-line tool
+// for building and publishing IO apps, which calls nothing on a shop's
+// behalf. @vtex/api (vtex/node-vtex-api) and @vtex/clients (vtex/io-clients)
+// are the IO runtime's clients, and an app using them runs inside VTEX's
+// infrastructure with a platform token rather than sending
+// X-VTEX-API-AppKey and X-VTEX-API-AppToken -- which is the entire credential
+// this Recipe models.
+//
+// So the mapped packages are the small external ones. That is the honest
+// result rather than a shortfall: a four-figure package making these exact
+// requests is a better signal than a five-figure one making different ones.
+func TestDetectVtexFromExternalClientsAndNotFromTheIoToolchain(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"brandlive/vtex-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"juanfeltrin/vtex-sdk-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"daygarcia/laravel-vtex": "^1.0"}}`},
+		{"composer.json": `{"require": {"grebo87/laravel-vtex-api": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"vtex-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "vtex") {
+			t.Errorf("%v did not detect vtex: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Toolbelt, which is a build tool.
+		{"package.json": `{"devDependencies": {"vtex": "^3.0.0"}}`},
+		// And the IO runtime clients, which authenticate a different way.
+		{"package.json": `{"dependencies": {"@vtex/api": "^7.4.0"}}`},
+		{"package.json": `{"dependencies": {"@vtex/clients": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "vtex") {
+			t.Errorf("%v offered the vtex Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
