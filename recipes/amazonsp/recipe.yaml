@@ -1,0 +1,466 @@
+# Amazon Selling Partner API Recipe for Cauldron
+#
+# The SP-API is very large and this Recipe is not. It models Orders, which is
+# what most integrations start with, and the four things about the API that
+# are true everywhere in it: the envelope, the casing, the rate limit units
+# and the way personal data is withheld.
+#
+# That last one is the reason to model it at all, and it is the quietest
+# failure in this whole repository. Buyer name, buyer email and the shipping
+# address require a Restricted Data Token, which is a second token obtained
+# from a second endpoint and sent in place of the ordinary one. Without it
+# the call does not fail. It returns 200, with an order that looks complete,
+# and the personal fields are simply not there. An integration built and
+# tested against a seller's own sandbox works perfectly and then cannot print
+# a shipping label in production, and nothing in any log says why.
+#
+# Six things worth modelling exactly:
+#
+#   1. An ordinary token and a restricted data token both authenticate. Only
+#      one of them returns BuyerInfo and ShippingAddress, and the other one
+#      omits them silently.
+#   2. Everything is wrapped in payload. response.Orders is undefined and
+#      response.payload.Orders is the array, on every endpoint in the API.
+#   3. The casing changes inside one body. The envelope is lower case --
+#      payload, errors -- and everything inside it is PascalCase:
+#      AmazonOrderId, OrderStatus, NextToken. A client with one naming
+#      convention has to break it here.
+#   4. x-amzn-RateLimit-Limit is a rate, not a remaining count. 0.0055 means
+#      roughly one request every three minutes. Read as "five and a half
+#      requests left" it is wrong by three orders of magnitude, and read as a
+#      count of anything it is wrong in the direction that gets an
+#      application throttled.
+#   5. Money is {CurrencyCode, Amount} and Amount is a string. Two of them
+#      added in JavaScript concatenate.
+#   6. An AmazonOrderId is 123-4567890-1234567: three groups, hyphenated,
+#      not a number, and not safe to strip the hyphens out of.
+#
+# And a Pending order has no OrderTotal and no items. Amazon creates the
+# order before payment is confirmed, so a report that sums OrderTotal across
+# a day's orders adds undefined to a number and gets NaN, or skips them and
+# under-reports.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The token exchange is not modelled. A real integration swaps an LWA
+#     refresh token for an access token, and then swaps that for a restricted
+#     data token scoped to specific order ids, and both endpoints are absent
+#     here. The two tokens below are simply both accepted, so this Recipe
+#     reproduces what the two tokens do rather than how you get them.
+#   - A restricted data token is scoped to the orders it was requested for
+#     and expires in an hour. Here it works on every order forever, so code
+#     that requests one token and reuses it across orders passes here and
+#     fails in production.
+#   - Only Orders is modelled. Reports, Feeds, FBA Inventory, Catalog Items,
+#     Notifications and the rest of the SP-API are not, and Reports in
+#     particular has a completely different shape: you ask for a document,
+#     poll for it, and then fetch a compressed file from S3.
+#   - NextToken is echoed but not honoured. Amazon also refuses a request
+#     that sends NextToken alongside any changed parameter, which is a real
+#     and commonly hit error and is not reproduced.
+#   - An AmazonOrderId is grouped with hyphens and Cauldron's opaque style
+#     mints an ungrouped string, so seeded records carry the real shape and
+#     anything created during a run does not.
+#
+# The tokens below are fixtures, not secrets. They belong to no seller.
+
+recipe: amazonsp
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v0
+  docs: https://developer-docs.amazon.com/sp-api/docs/orders-api-v0-reference
+
+auth:
+  # Both tokens below authenticate. What separates them is what comes back,
+  # not whether the call is allowed, which is the whole trap: an application
+  # holding the wrong one is not refused.
+  scheme: header
+  header: x-amz-access-token
+  keys:
+    # The ordinary one, from the LWA refresh grant.
+    - Atz.IwEBcauldron00000000000000000000
+    # The restricted data token. Same header, same request, different answer.
+    - Atz.rdt.cauldron00000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: payload.Orders
+  resource:
+    style: wrapped
+    key: payload
+  error:
+    # One request can fail several ways at once, so Amazon sends an array.
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+
+resources:
+  order:
+    id:
+      # 123-4567890-1234567. Three groups, hyphenated, and the hyphens are
+      # part of it.
+      style: opaque
+      length: 19
+      field: AmazonOrderId
+    fields:
+      # PascalCase, inside an envelope that is not.
+      PurchaseDate:
+        type: datetime
+      LastUpdateDate:
+        type: datetime
+      # Pending, Unshipped, PartiallyShipped, Shipped, Canceled,
+      # Unfulfillable. A Pending order has no total and no items: Amazon
+      # creates it before payment clears.
+      OrderStatus:
+        type: string
+        default: Pending
+      # AFN is Amazon's warehouse, MFN is the seller's. This decides who
+      # ships, and a seller reading every order as theirs to fulfil ships
+      # things Amazon already shipped.
+      FulfillmentChannel:
+        type: string
+        default: MFN
+      SalesChannel:
+        type: string
+        default: Amazon.com
+      # {CurrencyCode, Amount} with Amount a string. Absent on a Pending
+      # order.
+      OrderTotal:
+        type: map
+      NumberOfItemsShipped:
+        type: integer
+        default: 0
+      NumberOfItemsUnshipped:
+        type: integer
+        default: 0
+      MarketplaceId:
+        type: string
+      # Restricted. Present only behind a restricted data token, and the
+      # email is an alias that forwards -- it is not the buyer's real
+      # address, and mailing it directly outside Amazon's window bounces.
+      BuyerInfo:
+        type: map
+      # Restricted. Without it there is nothing to print a label from.
+      ShippingAddress:
+        type: map
+      IsPrime:
+        type: boolean
+        default: false
+      IsBusinessOrder:
+        type: boolean
+        default: false
+
+routes:
+  # The restricted route, which wins when the token in the header is the
+  # restricted one. It declares no returns, so the whole record comes back.
+  - method: GET
+    path: /orders/v0/orders
+    resource: order
+    operation: list
+    matches_header:
+      x-amz-access-token: Atz.rdt.cauldron00000000000000000000
+
+  # The ordinary route. Same path, same method, and it answers with less.
+  # Everything except the two restricted fields, so the order looks complete
+  # and is missing exactly the parts needed to ship it.
+  - method: GET
+    path: /orders/v0/orders
+    resource: order
+    operation: list
+    returns:
+      # "id", not "AmazonOrderId": the trim runs before the rename, so this
+      # names the field as the Recipe knows it and the response carries it as
+      # Amazon spells it.
+      - id
+      - PurchaseDate
+      - LastUpdateDate
+      - OrderStatus
+      - FulfillmentChannel
+      - SalesChannel
+      - OrderTotal
+      - NumberOfItemsShipped
+      - NumberOfItemsUnshipped
+      - MarketplaceId
+      - IsPrime
+      - IsBusinessOrder
+
+  - method: GET
+    path: /orders/v0/orders/{id}
+    resource: order
+    operation: get
+    matches_header:
+      x-amz-access-token: Atz.rdt.cauldron00000000000000000000
+
+  - method: GET
+    path: /orders/v0/orders/{id}
+    resource: order
+    operation: get
+    returns:
+      # "id", not "AmazonOrderId": the trim runs before the rename, so this
+      # names the field as the Recipe knows it and the response carries it as
+      # Amazon spells it.
+      - id
+      - PurchaseDate
+      - LastUpdateDate
+      - OrderStatus
+      - FulfillmentChannel
+      - SalesChannel
+      - OrderTotal
+      - NumberOfItemsShipped
+      - NumberOfItemsUnshipped
+      - MarketplaceId
+      - IsPrime
+      - IsBusinessOrder
+
+errors:
+  quota_exceeded:
+    status: 429
+    code: QuotaExceeded
+    message: You exceeded your quota for the requested resource.
+    headers:
+      # A rate, in requests per second. 0.0055 is one request every three
+      # minutes. Nothing else in this repository reports its limit this way,
+      # and read as a remaining count it is wrong by three orders of
+      # magnitude in the direction that gets an application throttled again.
+      x-amzn-RateLimit-Limit: "0.0055"
+    fields:
+      details: ""
+
+  authentication_error:
+    status: 403
+    code: Unauthorized
+    message: Access to requested resource is denied.
+    fields:
+      details: ""
+
+  resource_missing:
+    status: 404
+    code: NotFound
+    message: The resource you are looking for does not exist.
+    fields:
+      details: ""
+
+  parameter_missing:
+    status: 400
+    code: InvalidInput
+    message: One or more required parameters missing.
+    fields:
+      details: ""
+
+fixtures:
+  empty: {}
+
+  small-seller:
+    order:
+      - id: 111-2223334-4445556
+        PurchaseDate: "2026-02-01T09:15:00Z"
+        LastUpdateDate: "2026-02-01T10:00:00Z"
+        OrderStatus: Unshipped
+        FulfillmentChannel: MFN
+        SalesChannel: Amazon.co.uk
+        OrderTotal:
+          CurrencyCode: GBP
+          Amount: "89.95"
+        NumberOfItemsShipped: 0
+        NumberOfItemsUnshipped: 1
+        MarketplaceId: A1F83G8C2ARO7P
+        BuyerInfo:
+          # An alias that forwards inside Amazon's window and bounces after
+          # it. Not the buyer's real address, and storing it as one is a
+          # support problem later.
+          BuyerEmail: 8k2m4p7q1r3s5t6@marketplace.amazon.co.uk
+          BuyerName: A Buyer
+        ShippingAddress:
+          Name: A Buyer
+          AddressLine1: 1 Example Street
+          City: London
+          PostalCode: SW1A 1AA
+          CountryCode: GB
+        IsPrime: false
+        IsBusinessOrder: false
+      - id: 111-2223334-4445557
+        PurchaseDate: "2026-02-02T11:00:00Z"
+        LastUpdateDate: "2026-02-02T11:00:00Z"
+        # Created before payment cleared. No total and no items, which is a
+        # real state and not an error.
+        OrderStatus: Pending
+        FulfillmentChannel: AFN
+        SalesChannel: Amazon.co.uk
+        NumberOfItemsShipped: 0
+        NumberOfItemsUnshipped: 0
+        MarketplaceId: A1F83G8C2ARO7P
+        IsPrime: true
+        IsBusinessOrder: false
+
+conformance:
+  - name: an ordinary token returns an order with no buyer and no address
+    source: https://developer-docs.amazon.com/sp-api/docs/tokens-api-use-case-guide
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445556
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      # Two hundred. The call succeeded, the order looks complete, and the
+      # two fields needed to ship it are simply not there. Nothing in the
+      # response says a token was the reason.
+      status: 200
+      body:
+        payload.AmazonOrderId: 111-2223334-4445556
+        payload.OrderStatus: Unshipped
+      absent:
+        - payload.BuyerInfo
+        - payload.ShippingAddress
+
+  - name: and a restricted data token returns both
+    source: https://developer-docs.amazon.com/sp-api/docs/tokens-api-use-case-guide
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445556
+      headers:
+        # Same header, same request, different answer.
+        x-amz-access-token: Atz.rdt.cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        payload.AmazonOrderId: 111-2223334-4445556
+        payload.BuyerInfo.BuyerName: A Buyer
+        # An alias that forwards. Not the buyer's real address.
+        payload.BuyerInfo.BuyerEmail: 8k2m4p7q1r3s5t6@marketplace.amazon.co.uk
+        payload.ShippingAddress.PostalCode: SW1A 1AA
+        payload.ShippingAddress.CountryCode: GB
+
+  - name: the listing is wrapped in payload too
+    source: https://developer-docs.amazon.com/sp-api/docs/orders-api-v0-reference
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders?MarketplaceIds=A1F83G8C2ARO7P
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        # payload.Orders, not Orders, and not data. Two levels before the
+        # array on every endpoint in the API.
+        payload.Orders[0].AmazonOrderId: 111-2223334-4445556
+      absent:
+        - Orders
+        - data
+        - payload.Orders[0].BuyerInfo
+
+  - name: the casing changes inside one body
+    source: https://developer-docs.amazon.com/sp-api/docs/orders-api-v0-reference
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445556
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        payload.OrderStatus: Unshipped
+        payload.FulfillmentChannel: MFN
+      absent:
+        # The envelope is lower case and its contents are not. A client with
+        # one naming convention has to break it here.
+        - Payload
+        - payload.orderStatus
+        - payload.amazonOrderId
+
+  - name: money is a string inside an object
+    source: https://developer-docs.amazon.com/sp-api/docs/orders-api-v0-reference
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445556
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        # Quoted. Two of these added in JavaScript concatenate.
+        payload.OrderTotal.Amount: "89.95"
+        payload.OrderTotal.CurrencyCode: GBP
+
+  - name: a pending order has no total at all
+    source: https://developer-docs.amazon.com/sp-api/docs/orders-api-v0-reference
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445557
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        # A real state, not an error: Amazon creates the order before payment
+        # clears.
+        payload.OrderStatus: Pending
+        # Amazon's warehouse ships this one, not the seller.
+        payload.FulfillmentChannel: AFN
+      absent:
+        # So a report summing OrderTotal across a day adds undefined to a
+        # number and gets NaN, or skips them and under-reports.
+        - payload.OrderTotal
+
+  - name: the rate limit is a rate and not a count
+    source: https://developer-docs.amazon.com/sp-api/docs/usage-plans-and-rate-limits
+    arm: quota_exceeded
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders?MarketplaceIds=A1F83G8C2ARO7P
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 429
+      headers:
+        # Requests per second. 0.0055 is one request every three minutes.
+        x-amzn-RateLimit-Limit: "0.0055"
+      body:
+        errors[0].code: QuotaExceeded
+        errors[0].message: You exceeded your quota for the requested resource.
+
+  - name: a failure is an array and carries an empty details string
+    source: https://developer-docs.amazon.com/sp-api/docs/sp-api-error-responses
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-0000000-0000000
+      headers:
+        x-amz-access-token: Atz.IwEBcauldron00000000000000000000
+    expect:
+      status: 404
+      body:
+        # errors[0], because one request can fail several ways at once.
+        errors[0].code: NotFound
+        # Present and empty on most failures, which is worse than absent: a
+        # client that shows details when it is truthy shows nothing, and one
+        # that shows it when it is defined shows a blank line.
+        errors[0].details: ""
+      absent:
+        - message
+        - error
+
+  - name: a token that is neither is refused
+    source: https://developer-docs.amazon.com/sp-api/docs/sp-api-error-responses
+    fixture: small-seller
+    request:
+      method: GET
+      path: /orders/v0/orders/111-2223334-4445556
+      headers:
+        x-amz-access-token: Atz.IwEBnot_the_token
+    expect:
+      # Not 401. Amazon answers 403 for a bad token as well as for a token
+      # without the right role, so the status does not tell the two apart.
+      status: 403
+      body:
+        errors[0].code: Unauthorized

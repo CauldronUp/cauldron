@@ -53,6 +53,21 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// The SP-API replaced Marketplace Web Service, and MWS was a
+			// different API entirely -- XML over a signed query string, with
+			// its own endpoints and its own vocabulary. Packages named after
+			// it are still installed and still named amazon, so they are
+			// named here to be excluded rather than matched by a rule that
+			// looks for the word.
+			recipe: "amazonsp",
+			composer: []string{
+				"jlevers/selling-partner-api",
+				"amazon-php/sp-api-sdk",
+				"amzn-spapi/sdk",
+			},
+			npm: []string{"amazon-sp-api"},
+		},
+		{
 			// eBay's most-installed PHP package is the wrong one. dts/ebay-sdk-php
 			// and its fork have well over a million installs between them and
 			// they speak the XML Trading, Finding and Shopping APIs -- the ones
