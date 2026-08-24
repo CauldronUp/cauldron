@@ -415,3 +415,49 @@ func TestNormaliseVersion(t *testing.T) {
 		}
 	}
 }
+
+// Shopify ships two Recipes and one of them cannot be detected from most of
+// its own libraries, which is worth asserting rather than leaving to be
+// rediscovered.
+//
+// A dependency maps to exactly one Recipe: the lookup returns the first match
+// and stops. Shopify's two most-installed clients each serve both the REST
+// Admin API and the GraphQL one -- @shopify/shopify-api exposes a REST client
+// and a GraphQL client side by side, and @shopify/admin-api-client documents
+// both -- so neither of them answers which emulator a project wants. They stay
+// on the REST Recipe, where they already were, because moving them would
+// silently change what existing projects are offered on a guess.
+//
+// @shopify/graphql-client is GraphQL and nothing else, so it is the one
+// dependency that decides by itself.
+func TestDetectShopifyGraphQLOnlyFromTheGraphQLOnlyClient(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@shopify/graphql-client": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "shopifygraphql") {
+		t.Errorf("@shopify/graphql-client did not detect shopifygraphql: %+v", p.Requirements)
+	}
+
+	// The ambiguous ones still answer REST, and the point is that this is a
+	// deliberate default rather than an oversight.
+	for _, pkg := range []string{"@shopify/shopify-api", "@shopify/admin-api-client"} {
+		p, err := Detect(writeProject(t, map[string]string{
+			"package.json": `{"dependencies": {"` + pkg + `": "^11.0.0"}}`,
+		}))
+		if err != nil {
+			t.Fatalf("Detect(%s): %v", pkg, err)
+		}
+
+		if !p.Has(KindRecipe, "shopify") {
+			t.Errorf("%s should still answer the REST Recipe: %+v", pkg, p.Requirements)
+		}
+
+		if p.Has(KindRecipe, "shopifygraphql") {
+			t.Errorf("%s serves both APIs and should not claim to pick one: %+v", pkg, p.Requirements)
+		}
+	}
+}

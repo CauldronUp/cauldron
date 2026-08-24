@@ -31,6 +31,23 @@ func providers() []provider {
 			gomod:    []string{"github.com/bold-commerce/go-shopify"},
 		},
 		{
+			// Only the package that serves one API is mapped here.
+			//
+			// A dependency maps to exactly one Recipe -- the lookup returns
+			// the first match -- and Shopify's two most-installed libraries
+			// each serve both APIs. @shopify/shopify-api exposes a REST
+			// client and a GraphQL client side by side, and
+			// @shopify/admin-api-client documents both. Moving either one to
+			// this Recipe would silently change which emulator existing
+			// projects are offered, on a guess about which half of the
+			// library they call.
+			//
+			// @shopify/graphql-client is GraphQL and nothing else, so it is
+			// the one dependency that answers the question by itself.
+			recipe: "shopifygraphql",
+			npm:    []string{"@shopify/graphql-client"},
+		},
+		{
 			recipe:   "bigcommerce",
 			composer: []string{"bigcommerce/api"},
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},

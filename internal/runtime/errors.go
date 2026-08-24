@@ -125,8 +125,9 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// category this replaced.
 	borrowed := resolved != name
 
-	// The envelope this failure travels in, which a single error may override.
-	var style string
+	// The envelope this failure travels in, which a single error may override
+	// in two respects: the shape it takes and the key it arrives under.
+	spec := s.recipe.Responses.Error
 
 	if defined, ok := s.recipe.Errors[resolved]; ok {
 		if !borrowed {
@@ -159,12 +160,21 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		}
 
 		extra = defined.Fields
-		style = defined.Style
+
+		if defined.Style != "" {
+			spec.Style = defined.Style
+		}
+
+		if defined.Key != "" {
+			spec.Key = defined.Key
+		}
+
+		if defined.MessageField != "" {
+			spec.MessageField = defined.MessageField
+		}
 	}
 
-	if style == "" {
-		style = s.recipe.Responses.Error.Style
-	}
+	style := spec.Style
 
 	// Trello answers with plain text, so a client calling .json() on the
 	// response throws rather than reporting the failure. Writing JSON here
@@ -192,7 +202,7 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		return status
 	}
 
-	writeJSON(w, status, s.errorBody(category, code, message, status, extra))
+	writeJSON(w, status, s.errorBody(spec, category, code, message, status, extra))
 
 	return status
 }
@@ -202,8 +212,7 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 // The return type is any rather than a map because Salesforce's failures are a
 // bare top-level array with no envelope at all. A client reading .message off
 // the response finds undefined, and has to index before it can read anything.
-func (s *Sandbox) errorBody(category, code, message string, status int, extra map[string]any) any {
-	spec := s.recipe.Responses.Error
+func (s *Sandbox) errorBody(spec recipe.ErrorResponse, category, code, message string, status int, extra map[string]any) any {
 
 	if spec.Style == "string_list" {
 		key := spec.Key

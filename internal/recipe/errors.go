@@ -21,8 +21,38 @@ type Error struct {
 	// found: 99.99.99". Same status, same registry, one object and one
 	// string. Code reading body.error off the second finds undefined, and
 	// code that reports body.error as the reason reports "undefined".
-	Style   string            `yaml:"style"`
-	Headers map[string]string `yaml:"headers"`
+	Style string `yaml:"style"`
+	// Key overrides the Recipe-wide envelope key for this failure alone,
+	// because a provider can answer two failures in two different places and
+	// Shopify's GraphQL API does.
+	//
+	// A GraphQL request that cannot be served at all -- a bad token, a
+	// throttled shop, a malformed query -- comes back as {"errors": [...]} at
+	// the top level. A request that was served and refused on business
+	// grounds comes back as
+	// {"data": {"productCreate": {"userErrors": [...]}}}, nested under the
+	// mutation's own name, with no top-level errors at all. Both are HTTP
+	// 200, and a client that checks only one of the two channels misses every
+	// failure in the other.
+	//
+	// A dotted name nests, the same way the Recipe-wide key does.
+	Key string `yaml:"key"`
+	// MessageField overrides the Recipe-wide field carrying the sentence, for
+	// this failure alone.
+	//
+	// Shopify needs it and the reason is worth stating. A throttled GraphQL
+	// request answers 200 with {"errors": [{"message": ...}]} -- an array of
+	// objects. A request with a bad token answers 401 with
+	// {"errors": "[API] Invalid API key or access token"} -- the same key,
+	// holding a bare string. So errors[0].message reads the sentence on one
+	// and reads the character "[" on the other, because indexing a string in
+	// JavaScript succeeds, and .message on that is undefined. Nothing throws
+	// and nothing is logged.
+	//
+	// Without this a Recipe could describe one of the two and would be
+	// claiming the other does not happen.
+	MessageField string            `yaml:"message_field"`
+	Headers      map[string]string `yaml:"headers"`
 	// Fields are extra body properties this failure carries, merged over the
 	// Recipe-wide ones. Dropbox describes each failure with its own nested
 	// union, so a single set of constants would make every error claim to be
