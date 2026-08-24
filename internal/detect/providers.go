@@ -70,6 +70,27 @@ func providers() []provider {
 			},
 		},
 		{
+			// A dependency on Apideck proves the caller uses Apideck and not
+			// which of its unified APIs. One SDK covers ecommerce, CRM,
+			// accounting, HRIS and the rest, so a project holding it may be
+			// doing none of the shopping this Recipe describes. It is mapped
+			// anyway, because offering the only Apideck Recipe there is beats
+			// offering nothing, and the imprecision is recorded here rather
+			// than hidden in a match.
+			//
+			// The near miss is one letter. appdeck publishes sql, sampa and
+			// filter -- a PDO wrapper, an MVC framework and an input filter --
+			// and none of the three has anything to do with this. Voucherify
+			// had Voucherly two letters away; this has appdeck at one, three
+			// times over.
+			//
+			// muammarsiddiqui/apideck-laravel is the ordinary sort: an API
+			// playground for Laravel that took the name.
+			recipe:   "apideck",
+			composer: []string{"apideck-libraries/php-sdk", "apideck-libraries/sdk-php"},
+			npm:      []string{"@apideck/unify", "@apideck/node", "apideck"},
+		},
+		{
 			// The near miss here is a different company rather than a
 			// different word. voucherly/voucherly-php-sdk belongs to
 			// Voucherly, an Italian payments business, and the name differs
