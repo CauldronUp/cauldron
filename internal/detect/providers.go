@@ -70,6 +70,38 @@ func providers() []provider {
 			},
 		},
 		{
+			// VTEX is the first provider here with no widely installed
+			// external client, and the reason is worth recording rather than
+			// working around.
+			//
+			// Its popular packages are all the IO platform's own toolchain.
+			// npm "vtex" is the Toolbelt, a command-line tool for building
+			// and publishing IO apps -- a build tool, not a caller of
+			// anything. @vtex/api and @vtex/clients are the IO runtime's
+			// clients, and an app using them runs inside VTEX's own
+			// infrastructure and is handed a platform token: it never sends
+			// X-VTEX-API-AppKey or X-VTEX-API-AppToken, which is the whole
+			// credential this Recipe describes. Mapping them would offer an
+			// emulator of the external integration path to code that does not
+			// take it.
+			//
+			// What is left are small. brandlive/vtex-api and the Laravel
+			// wrappers have four-figure install counts between them, and the
+			// npm one has fewer. They are mapped anyway, because a small
+			// package making exactly these requests is a better signal than a
+			// large one making different ones -- and because the alternative
+			// is mapping nothing at all for a platform that runs a
+			// significant share of Latin American retail.
+			recipe: "vtex",
+			composer: []string{
+				"brandlive/vtex-api",
+				"juanfeltrin/vtex-sdk-php",
+				"daygarcia/laravel-vtex",
+				"grebo87/laravel-vtex-api",
+			},
+			npm: []string{"vtex-api"},
+		},
+		{
 			// A third shape of vendor exclusion, after Printful's unrelated
 			// tool and Shopware's previous generation: here the vendor ships
 			// two SDKs for two different APIs under one npm scope.

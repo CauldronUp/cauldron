@@ -51,7 +51,22 @@ type Error struct {
 	//
 	// Without this a Recipe could describe one of the two and would be
 	// claiming the other does not happen.
-	MessageField string            `yaml:"message_field"`
+	MessageField string `yaml:"message_field"`
+	// CodeField overrides the Recipe-wide field carrying the code, for this
+	// failure alone, and "-" removes it.
+	//
+	// The same asymmetry MessageField already fixed, on the other half of the
+	// pair. A Recipe with two error envelopes could say where the prose lives
+	// in each and could not say that one of them has no code at all -- so the
+	// failure carried its own name as a code, which is worse than a wrong
+	// code because it looks like a real one.
+	//
+	// VTEX is the case. Its OMS endpoints answer {"error": {code, message,
+	// exception}} and its newer document endpoints answer an RFC 9110 problem
+	// detail -- {"type", "title", "status", "traceId"} -- which has no code
+	// anywhere in it. A client switching on a code has nothing to switch on,
+	// and that is the thing worth serving.
+	CodeField    string            `yaml:"code_field"`
 	Headers      map[string]string `yaml:"headers"`
 	// Fields are extra body properties this failure carries, merged over the
 	// Recipe-wide ones. Dropbox describes each failure with its own nested

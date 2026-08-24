@@ -172,6 +172,10 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		if defined.MessageField != "" {
 			spec.MessageField = defined.MessageField
 		}
+
+		if defined.CodeField != "" {
+			spec.CodeField = defined.CodeField
+		}
 	}
 
 	style := spec.Style

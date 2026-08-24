@@ -1,0 +1,694 @@
+# VTEX Orders Recipe for Cauldron
+#
+# Written against the OpenAPI description VTEX publishes at
+# github.com/vtex/openapi-schemas -- "VTEX - Orders API.json", version 1.0.
+# Every field name, status, example and quoted sentence below was read out of
+# that document.
+#
+# The reason this Recipe exists is that one purchase is not one order.
+#
+# VTEX says it in the description of its own path parameter, and the sentence
+# is worth quoting whole: "Order group ID is a part of the order ID that
+# groups all orders related to the same purchase. For example, when an order
+# is fulfilled by multiple sellers, each seller has its own order ID
+# (v71021570str-01 and v71021570str-02), but they share the same order group
+# ID (v71021570str)."
+#
+# So a checkout can produce two orders, or five. Code that stores "the order
+# id" stores one seller's share of a purchase. A report that counts rows
+# counts a marketplace basket twice. A refund issued against one id leaves the
+# other one paid. And the id a customer reads out over the telephone is a
+# third number again -- the sequence, the digit run inside the order id, which
+# is what the admin panel displays and is not what any endpoint accepts.
+#
+# Three identifiers for one purchase, and the only endpoint that reassembles
+# it is /orders/order-group/{orderGroup}, which answers with a bare array.
+#
+# Seven more things worth modelling exactly, each from the same document:
+#
+#   1. The listing stopped returning line items in 2018. The description says
+#      so with a date -- "since October 3rd, 2018, this endpoint does not
+#      return the items property" -- and the schema still lists items among
+#      an order's fields. A client that reads order.items from a listing gets
+#      undefined for every order and has to fetch each one individually.
+#   2. The listing and the order disagree about what the total is called. It
+#      is totalValue in a list row and value on the order, and both are
+#      integers in cents.
+#   3. An order can carry a roundingError, in cents: "in orders with
+#      discounts on non-integer multiplier items, rounding is applied per
+#      item, not after the sum". So the parts need not add up to the whole,
+#      and there is a field naming the size of the gap.
+#   4. Paging stops at thirty pages. "The limit of information retrieval is
+#      30 pages, the default number of orders per page is 15 and it is
+#      possible to configure it up to 100" -- so the listing reaches at most
+#      three thousand orders however narrow the filter, and a backfill that
+#      walks it cannot finish.
+#   5. And history stops at two years: "You can only access information from
+#      orders created in the last two years."
+#   6. Two headers, not one. X-VTEX-API-AppKey identifies the key and
+#      X-VTEX-API-AppToken is its secret, and a request carrying one without
+#      the other is refused.
+#   7. Two error envelopes in one API, both with worked examples in the
+#      document. The OMS endpoints answer {"error": {code, message,
+#      exception}} with codes that are sometimes a bare digit and sometimes
+#      namespaced -- "1" for unauthorised, "OMS003" for a wrong state -- and
+#      the newer document endpoints answer RFC 9110 problem detail:
+#      {"type", "title", "status", "traceId"}. Code that unwraps error.message
+#      reads undefined on one of them, and code that reads title reads
+#      undefined on the other.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The thirty-page ceiling and the two-year horizon are documented and are
+#     not enforced here. Cauldron can cap a page size and cannot cap how far
+#     a caller pages or how old a record may be, so both are stated and
+#     neither is served.
+#   - roundingError's sign convention is not documented. The fixture makes an
+#     order's totals disagree with its value by exactly the recorded error,
+#     with the error as the shortfall, because a fixture has to pick
+#     something. What is claimed is that the gap exists, is named, and is in
+#     cents -- not the direction.
+#   - The problem-detail envelope belongs to /api/orders/pvt/document
+#     endpoints, which are not modelled. It is declared and injectable so its
+#     shape is recorded; nothing here raises it on its own.
+#   - Only 401 and 409 have documented bodies. 400, 403, 404 and 429 are
+#     documented statuses with no example, so this Recipe declares the two it
+#     can see and leaves the rest to fall back rather than inventing prose
+#     for them.
+#   - Invoices, tracking, cancellation, the order feed, the hook
+#     configuration, checkout and the catalogue are all absent. Reading
+#     orders only.
+#
+# The key and token below are fixtures and belong to no account.
+
+recipe: vtex
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: oms
+  docs: https://developers.vtex.com/docs/api-reference/orders-api
+
+auth:
+  # The identifier half of the pair. The secret half is a second header, which
+  # required_headers below insists on -- a request carrying one and not the
+  # other is not authenticated, it is half-authenticated, and the provider
+  # refuses it.
+  scheme: header
+  header: X-VTEX-API-AppKey
+  keys:
+    - vtexappkey-cauldron-FIXTURE
+
+required_headers:
+  X-VTEX-API-AppToken:
+    error: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    key: list
+    # All four paging numbers live inside one object rather than beside the
+    # array, so a client reading response.total finds nothing.
+    count_field: paging.total
+    pages_field: paging.pages
+    page_field: paging.currentPage
+    limit_field: paging.perPage
+  resource:
+    style: bare
+  error:
+    # {"error": {"code": ..., "message": ..., "exception": null}}
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    # "1" is a string in the document's own example, and inferring a number
+    # from digits would lose that -- a client switching on the code would
+    # never match.
+    code_type: string
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      # v71021570str-01: a v, a digit run, an account suffix, and a
+      # two-digit share number. Cauldron mints the first two; the fixtures
+      # carry the real shape and a case asserts it.
+      style: prefixed
+      prefix: v
+      field: orderId
+    fields:
+      # The purchase. Several orders can share one, and the only way back from
+      # an order to the whole basket is this string.
+      orderGroup:
+        type: string
+      # The number the admin panel shows and a customer reads out. Not an
+      # identifier any endpoint accepts.
+      sequence:
+        type: string
+      status:
+        type: string
+        default: ready-for-handling
+      # Deprecated in the document's own words -- "this field is deprecated
+      # and may not return any value" -- and still in the schema.
+      statusDescription:
+        type: string
+        default: ""
+      # The order's own name for its total, in cents.
+      value:
+        type: integer
+      # And the listing's name for the same number.
+      totalValue:
+        type: integer
+      # Items, Discounts, Shipping, Tax -- each with its own value in cents,
+      # and no promise that they add up to the one above.
+      totals:
+        type: list
+      # The size of the gap when they do not, in cents.
+      roundingError:
+        type: integer
+        default: 0
+      items:
+        type: list
+      clientName:
+        type: string
+      totalItems:
+        type: integer
+      currencyCode:
+        type: string
+        default: BRL
+      salesChannel:
+        type: string
+        default: "1"
+      origin:
+        type: string
+        default: Marketplace
+      isCompleted:
+        type: boolean
+        default: false
+      allowCancellation:
+        type: boolean
+        default: true
+      creationDate:
+        type: string
+      lastChange:
+        type: string
+
+routes:
+  # The listing. Thirty pages of it, at most, ever.
+  - method: GET
+    path: /api/oms/pvt/orders
+    resource: order
+    operation: list
+    # What a list row actually carries. items is the point: the document says
+    # this endpoint stopped returning it on 3 October 2018, and an emulator
+    # that helpfully included it would let a client ship code that reads
+    # order.items from a listing and finds undefined against every real
+    # account.
+    returns:
+      - id
+      - creationDate
+      - clientName
+      - totalValue
+      - status
+      - statusDescription
+      - sequence
+      - salesChannel
+      - origin
+      - totalItems
+      - currencyCode
+    pagination:
+      style: page
+      # The documented default, and the documented ceiling.
+      limit: 15
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  # One order, with everything the listing leaves out.
+  - method: GET
+    path: /api/oms/pvt/orders/{id}
+    resource: order
+    operation: get
+    returns:
+      - id
+      - orderGroup
+      - sequence
+      - status
+      - statusDescription
+      - value
+      - totals
+      - roundingError
+      - items
+      - isCompleted
+      - allowCancellation
+      - salesChannel
+      - origin
+      - creationDate
+      - lastChange
+
+  # The purchase, reassembled. A bare array, because the answer is not one
+  # order and VTEX does not pretend otherwise.
+  - method: GET
+    path: /api/oms/pvt/orders/order-group/{orderGroup}
+    resource: order
+    operation: list
+    scope:
+      - orderGroup
+    list:
+      style: bare
+    pagination:
+      # The document lists no query parameters for this path: no page, no
+      # per_page, nothing but the group in the URL. "-" is how a Recipe says
+      # the provider accepts no name for a page size, which is the honest
+      # description of an endpoint that answers with the whole purchase.
+      #
+      # The number beside it is Cauldron's requirement rather than VTEX's. It
+      # is large enough that no purchase reaches it, and nothing in the
+      # document supports a smaller one.
+      limit: 100
+      limit_param: "-"
+    returns:
+      - id
+      - orderGroup
+      - sequence
+      - status
+      - value
+      - totals
+      - roundingError
+      - creationDate
+
+errors:
+  # The documented 401, quoted exactly: a code that is the string "1", and an
+  # exception field that is there and null.
+  authentication_error:
+    status: 401
+    code: "1"
+    message: Unauthorized access
+    fields:
+      # Inside the error rather than beside it, which a dotted name says.
+      # Declared on each failure that uses this envelope rather than once for
+      # the Recipe, because a Recipe-wide constant is added to every failure
+      # including the one below that uses a different envelope entirely --
+      # which would graft an error key onto a problem detail that has none.
+      error.exception: null
+
+  # The documented 409. Same envelope, and a code from a different scheme
+  # entirely -- namespaced where the last one was a digit, and both strings.
+  order_state_conflict:
+    status: 409
+    code: OMS003
+    message: Order status should be ready-for-handling to perform this action
+    fields:
+      error.exception: null
+
+  # The other envelope. RFC 9110 problem detail, from the newer document
+  # endpoints, with no error key to unwrap and no message field to read.
+  unauthorized_problem:
+    status: 401
+    style: flat
+    message_field: title
+    # There is no code anywhere in a problem detail, so there is no code
+    # field either -- and saying so is different from sending an empty one.
+    code_field: "-"
+    message: Unauthorized
+    fields:
+      type: https://tools.ietf.org/html/rfc9110#section-15.5.2
+      status: 401
+      traceId: 00-05464ee431d13f81b4fc065592acf694-d46dfbd48c924961-00
+
+fixtures:
+  empty: {}
+
+  # One purchase fulfilled by two sellers, plus one ordinary order that was
+  # not split. Three rows in the listing, two purchases in the shop.
+  split-purchase:
+    order:
+      - id: v71021570str-01
+        orderGroup: v71021570str
+        sequence: "71021570"
+        status: handling
+        statusDescription: ""
+        clientName: Ana Ribeiro
+        value: 12500
+        totalValue: 12500
+        totalItems: 1
+        totals:
+          - id: Items
+            name: Items
+            value: 12000
+          - id: Discounts
+            name: Discounts
+            value: -1000
+          - id: Shipping
+            name: Shipping
+            value: 1500
+        roundingError: 0
+        items:
+          - id: "310118450"
+            name: Fone de ouvido
+            quantity: 1
+            price: 12000
+            sellerSku: "310118450"
+        currencyCode: BRL
+        salesChannel: "1"
+        origin: Marketplace
+        isCompleted: true
+        allowCancellation: false
+        creationDate: "2026-02-09T13:22:41.4160000+00:00"
+        lastChange: "2026-02-10T09:14:03.7710000+00:00"
+      # The other half of the same purchase. A different order, a different
+      # seller, a different total, the same orderGroup and the same sequence.
+      - id: v71021570str-02
+        orderGroup: v71021570str
+        sequence: "71021570"
+        status: ready-for-handling
+        statusDescription: ""
+        clientName: Ana Ribeiro
+        value: 4497
+        totalValue: 4497
+        totalItems: 3
+        # 3990 + -500 + 1000 is 4490, and the order says 4497. The seven is
+        # the rounding error, recorded rather than reconciled.
+        totals:
+          - id: Items
+            name: Items
+            value: 3990
+          - id: Discounts
+            name: Discounts
+            value: -500
+          - id: Shipping
+            name: Shipping
+            value: 1000
+        roundingError: 7
+        items:
+          - id: "310118451"
+            name: Capa protetora
+            quantity: 3
+            price: 1330
+            sellerSku: "310118451"
+        currencyCode: BRL
+        salesChannel: "1"
+        origin: Marketplace
+        isCompleted: true
+        allowCancellation: true
+        creationDate: "2026-02-09T13:22:41.4160000+00:00"
+        lastChange: "2026-02-09T13:25:12.0030000+00:00"
+      # An unsplit purchase, whose orderGroup is its own order id without the
+      # share number. Nothing in the payload says which kind you are holding.
+      - id: v70530116str-01
+        orderGroup: v70530116str
+        sequence: "70530116"
+        status: invoiced
+        statusDescription: ""
+        clientName: Bruno Carvalho
+        value: 8900
+        totalValue: 8900
+        totalItems: 1
+        totals:
+          - id: Items
+            name: Items
+            value: 8900
+          - id: Shipping
+            name: Shipping
+            value: 0
+        roundingError: 0
+        items:
+          - id: "310118452"
+            name: Teclado sem fio
+            quantity: 1
+            price: 8900
+            sellerSku: "310118452"
+        currencyCode: BRL
+        salesChannel: "1"
+        origin: Fulfillment
+        isCompleted: true
+        allowCancellation: false
+        creationDate: "2026-01-28T10:04:19.8830000+00:00"
+        lastChange: "2026-02-02T17:41:55.2260000+00:00"
+
+conformance:
+  - name: one purchase is two orders
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/order-group/v71021570str
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # A bare array, and two entries in it. Each has its own identifier and
+        # its own total; neither is "the order".
+        "[0].orderId": v71021570str-01
+        "[0].value": 12500
+        "[1].orderId": v71021570str-02
+        "[1].value": 4497
+        # And the things they share. The group is the only handle on the
+        # purchase; the sequence is the digit run inside both order ids, so
+        # the number a customer reads out belongs to the basket rather than to
+        # either of the orders it became.
+        "[0].orderGroup": v71021570str
+        "[1].orderGroup": v71021570str
+        "[0].sequence": "71021570"
+        "[1].sequence": "71021570"
+
+  - name: the number a customer reads out is not an identifier
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/v71021570str-01
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # The digit run inside the order id, which is what the admin panel
+        # shows. Both halves of this purchase carry it, so it does not pick
+        # out an order and no endpoint accepts it as one.
+        sequence: "71021570"
+        orderGroup: v71021570str
+      matches:
+        # And the identifier the API does take, share number and all.
+        orderId: ^v[0-9]+str-[0-9]{2}$
+
+  - name: a listing row has no line items in it
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders?per_page=1
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # The listing's name for the total.
+        "list[0].totalValue": 12500
+        "list[0].totalItems": 1
+        "list[0].clientName": Ana Ribeiro
+      absent:
+        # Gone since 3 October 2018, and still in the schema. Anything reading
+        # order.items off a list row reads undefined for every order in the
+        # account, which looks exactly like an account with no line items.
+        - "list[0].items"
+        # And the order's own name for the total is not here either.
+        - "list[0].value"
+        - "list[0].orderGroup"
+        - "list[0].roundingError"
+
+  - name: and the order it points at has them, under a different total
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/v71021570str-01
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # Same money, other name.
+        value: 12500
+        "items[0].name": Fone de ouvido
+        "items[0].price": 12000
+      absent:
+        # And the listing's name is not on the order.
+        - totalValue
+        - clientName
+        - totalItems
+
+  - name: the parts need not add up to the whole
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/v71021570str-02
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # 3990 - 500 + 1000 is 4490. The order says 4497, and the seven is
+        # named rather than hidden: rounding is applied per item on a
+        # discounted non-integer multiplier, so the sum is not the total.
+        value: 4497
+        roundingError: 7
+        "totals[0].value": 3990
+        "totals[1].value": -500
+        "totals[2].value": 1000
+
+  - name: an order that was never split still has a group
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/order-group/v70530116str
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # One entry, and still an array. Code that indexes [0] because it has
+        # only ever seen unsplit purchases is the bug this Recipe is about.
+        "[0].orderId": v70530116str-01
+        "[0].roundingError": 0
+      absent:
+        - "[1]"
+
+  - name: the group endpoint has no page size to ask for
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/order-group/v71021570str?per_page=1&page=1
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # The document lists no query parameters for this path, so asking for
+        # one order per page gets both halves of the purchase anyway. An
+        # emulator that honoured per_page here would let a client page a
+        # purchase, which is not a thing this endpoint does -- and the client
+        # would then handle a marketplace order correctly in tests and take
+        # half of one in production.
+        "[0].orderId": v71021570str-01
+        "[1].orderId": v71021570str-02
+
+  - name: the paging numbers live inside an object of their own
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders?per_page=2&page=2
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # Not beside the array. A client reading response.total finds nothing
+        # at all, and one reading response.paging.total finds three.
+        "paging.total": 3
+        "paging.pages": 2
+        "paging.currentPage": 2
+        "paging.perPage": 2
+        "list[0].orderId": v70530116str-01
+
+  - name: a request naming no page size gets fifteen
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        # The documented default. Thirty pages of it is the documented
+        # ceiling, so the listing reaches four hundred and fifty orders unless
+        # the caller asks for more per page, and three thousand if it asks for
+        # the maximum.
+        "paging.perPage": 15
+        "paging.currentPage": 1
+        "paging.total": 3
+
+  - name: half a credential is not a credential
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    request:
+      method: GET
+      path: /api/oms/pvt/orders
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+    expect:
+      # The key without its token. Two headers carry one credential here, and
+      # a request that sends the identifying half and forgets the secret half
+      # is refused rather than treated as anonymous.
+      status: 401
+      body:
+        error.code: "1"
+        error.message: Unauthorized access
+        # There, and null. A client checking for the key finds it; one
+        # checking its value finds nothing.
+        error.exception: null
+
+  - name: a wrong state is refused with a code from another scheme
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    arm: order_state_conflict
+    request:
+      method: GET
+      path: /api/oms/pvt/orders/v71021570str-01
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      status: 409
+      body:
+        # OMS003 beside the "1" of the case above. One envelope, two code
+        # schemes, and both of them strings -- so a client that parses the
+        # code as a number gets 1 from one failure and NaN from the other.
+        error.code: OMS003
+        error.exception: null
+      matches:
+        error.message: ready-for-handling
+
+  - name: and the newer endpoints answer a different envelope entirely
+    source: https://github.com/vtex/openapi-schemas/blob/master/VTEX%20-%20Orders%20API.json
+    fixture: split-purchase
+    arm: unauthorized_problem
+    request:
+      method: GET
+      path: /api/oms/pvt/orders
+      headers:
+        X-VTEX-API-AppKey: vtexappkey-cauldron-FIXTURE
+        X-VTEX-API-AppToken: cauldron-fixture-token-000000000000
+    expect:
+      # RFC 9110 problem detail, which the document gives with a worked
+      # example on the change-summary endpoint. No error key to unwrap, no
+      # message field to read, and a status repeated inside the body.
+      status: 401
+      body:
+        title: Unauthorized
+        status: 401
+        type: https://tools.ietf.org/html/rfc9110#section-15.5.2
+      absent:
+        # The other envelope's whole shape is missing, which is the point:
+        # one client, one API, two unwrappings.
+        - error
+        # And there is no code anywhere in a problem detail. Code that
+        # switches on one has nothing to switch on.
+        - code
+        - message
