@@ -458,6 +458,44 @@ never verified, and a claim nobody checked is worse than silence. Restoring
 one is a matter of reading that provider's description and declaring its
 names, and the validator will insist.
 
+### What is left, and why it is stuck
+
+`verify` reports the remainder on every run: **15 routes across 7 Recipes page
+by a parameter nobody named**. The rule is a declared page size with neither a
+style nor a parameter name beside it, which is what `GuessedPagination`
+counts.
+
+They are:
+
+| Recipe | Routes |
+|---|---|
+| AssemblyAI | `GET /v2/transcript` |
+| Bill.com | `POST /api/v2/List/Vendor.json`, `POST /api/v2/List/Invoice.json` |
+| Deel | `GET /rest/v2/contracts`, `GET /rest/v2/invoice-adjustments` |
+| Mercury | `GET /api/v1/accounts`, `GET /api/v1/account/{accountId}/transactions` |
+| QuickBooks | `GET /v3/company/{realm}/query`, `/invoices`, `/accounts` |
+| Segment | `GET /v1beta/workspaces/{workspace}/sources`, `/destinations`, `/tracking-plans` |
+| Vonage | `GET /account/numbers`, `GET /search/message` |
+
+The blocker is obtaining the descriptions rather than declaring the names. The
+method above wants a provider's own OpenAPI document to read the parameters
+out of, and none of these seven publishes one at any obvious location -- the
+repository paths and well-known spec URLs were tried and answered 404. The
+nearest thing found was an AssemblyAI spec on a personal account with no
+confirmable relationship to AssemblyAI, which is not evidence: reading
+parameter names out of a stranger's fork and declaring them verified would be
+the guessing this section exists to refuse, wearing the costume of the method
+that replaced it.
+
+So the number stays at 15 on purpose. Anybody holding a real description for
+one of these seven can run `cauldron check --paging <recipe> <spec>` and fill
+it in; the work is small and the evidence is the hard part.
+
+QuickBooks may never move. Its listing endpoint takes a query language rather
+than parameters, and `STARTPOSITION` and `MAXRESULTS` are clauses inside the
+statement rather than things in the query string, so there may be no HTTP
+parameter to name.
+
 Two real bugs fell out of the verification. DigitalOcean was ignoring
 `per_page` and its own conformance case had been asserting the emulator's
 parameter name rather than the provider's. Twilio capitalises its parameters
