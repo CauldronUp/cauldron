@@ -70,6 +70,61 @@ func providers() []provider {
 			},
 		},
 		{
+			// The busiest exclusion list here, and the reason is that "wix"
+			// is three different things on two registries.
+			//
+			// It is a homonym. WiX is the Windows Installer XML toolset, and
+			// electron-wix-msi, @electron-forge/maker-wix and
+			// @mongodb-js/electron-wix-msi build MSI packages with it. They
+			// have nothing to do with Wix.com, they belong to other people --
+			// felixrieseberg/electron-wix-msi -- and between them they are
+			// installed far more than any client here. No shape recorded in
+			// this file covered that: Lago met Lagoon and Polar met Polaris,
+			// which are longer words that contain a provider's name. This is
+			// the same word meaning something else.
+			//
+			// It is a prefix. Packagist's most installed wix-something is
+			// wixel/gump, a PHP input validator with over a million
+			// downloads, and wixiweb, wixnit and wixet are three more vendors
+			// whose names begin with it. That is Lago's shape at a scale
+			// Lago never reached.
+			//
+			// And the vendor's own scope is mostly not this API.
+			// @wix/design-system, wix-style-react, wix-ui-core, wix-ui-tpa
+			// and @wix/wix-ui-icons-common are a React component library with
+			// hundreds of thousands of installs; @wix-pilot/core and
+			// @wix-pilot/detox are an LLM-driven test runner from
+			// wix-incubator with over a million; @wix/wix-code-types is
+			// types for Velo, the language sites are scripted in. The single
+			// most installed package with the word in its name, on either
+			// registry, is a testing tool.
+			//
+			// Then the shapes already recorded: lezhnev74/laravel-socialite
+			// -wix signs people in rather than calling the store, which is
+			// what unikapps/laravel-socialite-squarespace and
+			// socialiteproviders/gumroad were. epicformbuilder/wixhive-php-api
+			// speaks WixHive, Wix's retired contacts API, which is Shopware 5
+			// and the SOAP allegro package. And the bare npm "wix" is Wix's
+			// App Market SDK published by an individual, not a REST client.
+			//
+			// wix/framework-bundle and wix/framework-component are Wix's own
+			// Symfony packages for "decoding Wix instances" -- the vendor
+			// name is genuinely theirs and the packages are internal
+			// plumbing.
+			recipe: "wix",
+			composer: []string{
+				"chkltlabs/wix-client",
+				"storessuite/wix",
+				"storessuite/wix-connect",
+			},
+			npm: []string{
+				"@wix/sdk",
+				"@wix/ecom",
+				"@wix/api-client",
+				"@wix/headless-ecom",
+			},
+		},
+		{
 			// Four exclusions, and the biggest of them is the vendor's own
 			// scope. Everything under @squarespace/ is template tooling for
 			// building Squarespace sites -- template-engine, toolbelt,
