@@ -972,3 +972,37 @@ func TestDetectLightspeedFromTheRetailClientOnly(t *testing.T) {
 		}
 	}
 }
+
+// printful/php-gettext-cms is Printful's own and is a translation management
+// backend rather than an API client -- the same shape as etsy/phan and
+// lemonsqueezy/plain-ui-components, and with a six-figure install count. A
+// vendor prefix would offer a print-on-demand emulator to a project managing
+// its own translations.
+func TestDetectPrintfulFromTheApiClientsOnly(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"printful/php-api-sdk": "^1.0"}}`},
+		{"composer.json": `{"require": {"fwartner/printful": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"printful": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"printful-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "printful") {
+			t.Errorf("%v did not detect printful: %+v", manifest, p.Requirements)
+		}
+	}
+
+	p, err := Detect(writeProject(t, map[string]string{
+		"composer.json": `{"require": {"printful/php-gettext-cms": "^1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if p.Has(KindRecipe, "printful") {
+		t.Errorf("a translation CMS offered the printful Recipe: %+v", p.Requirements)
+	}
+}

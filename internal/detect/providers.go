@@ -53,6 +53,16 @@ func providers() []provider {
 			npm:      []string{"node-bigcommerce", "@bigcommerce/checkout-sdk"},
 		},
 		{
+			// printful/php-gettext-cms is Printful's, and it is a translation
+			// management backend rather than an API client -- the same shape
+			// as etsy/phan, and with a six-figure install count of its own. A
+			// vendor prefix would offer a print-on-demand emulator to a
+			// project managing its own translations.
+			recipe:   "printful",
+			composer: []string{"printful/php-api-sdk", "fwartner/printful"},
+			npm:      []string{"printful", "printful-api"},
+		},
+		{
 			// Lightspeed is four unrelated products sharing a brand, not two.
 			// R-Series is retail, K-Series is restaurants, X-Series is the
 			// former Vend, and eCom is the former SEOshop -- four APIs, four
