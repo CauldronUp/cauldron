@@ -1136,3 +1136,53 @@ func TestDetectShopwareFromItsClientsAndNotFromTheShopItself(t *testing.T) {
 		}
 	}
 }
+
+// commercetools ships two SDKs for two different APIs under one npm scope, so
+// its exclusions have to be made inside the vendor's own namespace.
+//
+// @commercetools/importapi-sdk is the Import API: a separate service on a
+// separate host, built around import containers and asynchronous import
+// operations, with no version on a resource and no update actions. A project
+// holding it is not calling the API this Recipe describes, and the only thing
+// that says so is the middle of the package name.
+//
+// The Merchant Center toolkits are excluded for the ordinary reason: they are
+// React components for building screens inside commercetools' own back office
+// rather than callers of the HTTP API.
+func TestDetectCommercetoolsAndNotItsOtherApiOrItsFrontend(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"commercetools/commercetools-sdk": "^7.0"}}`},
+		{"composer.json": `{"require": {"commercetools/php-sdk": "^2.0"}}`},
+		{"composer.json": `{"require": {"commercetools/symfony-bundle": "^3.0"}}`},
+		{"composer.json": `{"require": {"bestit/commercetools-odm": "^3.0"}}`},
+		{"package.json": `{"dependencies": {"@commercetools/platform-sdk": "^8.0.0"}}`},
+		{"package.json": `{"dependencies": {"@commercetools/sdk-client-v2": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"@commercetools/ts-client": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "commercetools") {
+			t.Errorf("%v did not detect commercetools: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A different API from the same vendor, one scope apart.
+		{"package.json": `{"dependencies": {"@commercetools/importapi-sdk": "^5.0.0"}}`},
+		// And the back office's own component libraries.
+		{"package.json": `{"dependencies": {"@commercetools-frontend/application-shell": "^23.0.0"}}`},
+		{"package.json": `{"dependencies": {"@commercetools-uikit/text": "^19.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "commercetools") {
+			t.Errorf("%v offered the commercetools Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

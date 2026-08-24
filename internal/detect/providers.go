@@ -70,6 +70,41 @@ func providers() []provider {
 			},
 		},
 		{
+			// A third shape of vendor exclusion, after Printful's unrelated
+			// tool and Shopware's previous generation: here the vendor ships
+			// two SDKs for two different APIs under one npm scope.
+			// @commercetools/importapi-sdk is the Import API -- a separate
+			// service on a separate host, built around import containers and
+			// asynchronous import operations, with no version on a resource
+			// and no update actions. A project holding it is not calling this
+			// API at all, and the only thing that says so is the middle of
+			// the package name.
+			//
+			// The Merchant Center toolkits are excluded for the ordinary
+			// reason. @commercetools-frontend/application-shell and the
+			// @commercetools-uikit packages are React components for building
+			// screens inside commercetools' own back office, so they are a
+			// user interface rather than a caller of the HTTP API.
+			//
+			// commercetools/php-sdk is deprecated and mapped anyway. Its
+			// deprecation notice does not stop three hundred thousand
+			// installs from making exactly these requests, and a Recipe is
+			// useful to whoever is maintaining that code precisely because
+			// nobody is rewriting it this week.
+			recipe: "commercetools",
+			composer: []string{
+				"commercetools/commercetools-sdk",
+				"commercetools/php-sdk",
+				"commercetools/symfony-bundle",
+				"bestit/commercetools-odm",
+			},
+			npm: []string{
+				"@commercetools/platform-sdk",
+				"@commercetools/sdk-client-v2",
+				"@commercetools/ts-client",
+			},
+		},
+		{
 			// The engine-is-not-a-client exclusion Medusa already needed,
 			// at a much larger scale: shopware/core, shopware/storefront,
 			// shopware/administration and shopware/platform run between one

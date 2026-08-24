@@ -731,6 +731,12 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			setPath(body, spec.CountField, s.countValue(spec, countTotal(spec, page, limit)))
 		}
 
+		// How many are on this page, for the providers that send that beside
+		// the total rather than instead of it.
+		if spec.PageCountField != "" {
+			setPath(body, spec.PageCountField, s.countValue(spec, len(page.Records)))
+		}
+
 		body = withFields(body, s.recipe.Responses.Success.Fields)
 
 		return withFields(body, spec.Fields)
