@@ -134,7 +134,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Pinecone | Indexes, namespaces, vectors, metadata filtering |
 | ~~Replicate~~ | Shipped. A created prediction has no output property at all rather than a null one, succeeded is not the same as produced something, a cold start is a minute with no signal but a boot_time, and the output is a link to a file deleted after an hour |
 | Hugging Face | Inference endpoints and model responses |
-| ElevenLabs | Speech generation, voices, async jobs |
+| ~~ElevenLabs~~ | Shipped, written against the OpenAPI document ElevenLabs serves from its own API host. The credential is optional on every endpoint that needs it: there is no securitySchemes block anywhere, xi-api-key is declared as an ordinary header parameter on 383 operations with required: false and a string-or-null schema, and its description hedges -- "required by most endpoints". Of 387 operations, 385 document exactly one failure (422) and two document a 401, so a generated client has a branch for a malformed request nearly everywhere and none for a wrong key almost anywhere. Also: the main endpoint of the product answers audio/mpeg rather than JSON; the history "does not include" music and SFX and they "cannot currently be retrieved via the API"; a generation's cost is the difference between two meter readings on the history item; and allowed_to_extend_character_limit is deprecated in favour of an inequality, `max_credit_limit_extension != 0`, on a field whose value may be the string "unlimited" |
 | ~~Deepgram~~ | Shipped. Four-level nesting, seconds against milliseconds, err_code |
 | ~~AssemblyAI~~ | Shipped. Failure at HTTP 200, present-and-null fields, ms against s |
 
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**119 more listings across 70 Recipes declare no paging at all**, and the
+**120 more listings across 71 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

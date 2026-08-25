@@ -2079,3 +2079,56 @@ func TestDetectOpenAIClientsAndNotTheShapeEverybodyElseCopied(t *testing.T) {
 		}
 	}
 }
+
+// ElevenLabs brings a shape this file had not recorded: the vendor's own most
+// installed packages are for a different transport.
+//
+// @elevenlabs/react and @elevenlabs/client are between them installed five
+// million times a month and both are for the Agents platform -- a browser
+// holding a conversation over a socket, not a server calling this REST API.
+//
+// @elevenlabs/types is sharper: "AsyncAPI contracts and generated TypeScript
+// types". Not OpenAPI, and types alone, so it makes no request at all.
+func TestDetectElevenLabsRestClientsAndNotItsRealtimeSDKs(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@elevenlabs/elevenlabs-js": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@ai-sdk/elevenlabs": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"elevenlabs-js": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"ardagnsrn/elevenlabs-laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"georgehadjisavva/elevenlabs-api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"onramplab/elevenlabs-api-client": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "elevenlabs") {
+			t.Errorf("%v did not detect elevenlabs: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A different transport for the same product.
+		{"package.json": `{"dependencies": {"@elevenlabs/react": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@elevenlabs/client": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@elevenlabs/react-native": "^0.1.0"}}`},
+		// A different specification format, and types alone.
+		{"package.json": `{"dependencies": {"@elevenlabs/types": "^0.1.0"}}`},
+		// Working with the output rather than calling the API, and tooling
+		// for other platforms.
+		{"package.json": `{"dependencies": {"@remotion/elevenlabs": "^4.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@elevenlabs/cli": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@livekit/agents-plugin-elevenlabs": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@mastra/voice-elevenlabs": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "elevenlabs") {
+			t.Errorf("%v offered the elevenlabs Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
