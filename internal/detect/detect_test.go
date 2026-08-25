@@ -2723,3 +2723,56 @@ func TestDetectVaultClientsAndNotTheOtherFourVaults(t *testing.T) {
 		}
 	}
 }
+
+// Unleash brings the near-miss shape next door to YouTube's simile: matched on
+// an imperative. "Unleash" is a verb package taglines love, so the biggest npm
+// result for it is precinct at twenty million downloads -- a dependency parser
+// described as "Unleash the detectives" -- with @remirror/extension-code-block
+// and veewee/reflecta close behind on the same trick.
+//
+// Three exclusions are deliberate rather than accidental: unleash-server is the
+// product itself, @pulumiverse/unleash provisions flags rather than reading
+// them, and @unleash/mcp is an agent tool rather than an SDK.
+func TestDetectUnleashClientsAndNotAnImperative(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"unleash-client": "^6.1.0"}}`},
+		{"package.json": `{"dependencies": {"unleash-proxy-client": "^3.7.0"}}`},
+		{"package.json": `{"dependencies": {"@unleash/proxy-client-react": "^4.3.0"}}`},
+		{"package.json": `{"dependencies": {"@unleash/nextjs": "^1.4.0"}}`},
+		{"composer.json": `{"require": {"unleash/client": "^2.6"}}`},
+		{"composer.json": `{"require": {"unleash/symfony-client-bundle": "^2.5"}}`},
+		{"composer.json": `{"require": {"mikefrancis/laravel-unleash": "^7.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "unleash") {
+			t.Errorf("%v did not detect unleash: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Matched on an imperative: packages whose taglines start "Unleash".
+		{"package.json": `{"dependencies": {"precinct": "^12.0.0"}}`},
+		{"package.json": `{"dependencies": {"@remirror/extension-code-block": "^2.0.0"}}`},
+		{"composer.json": `{"require": {"veewee/reflecta": "^0.5"}}`},
+		// A different vendor holding the same word.
+		{"composer.json": `{"require-dev": {"unleashedtech/php-coding-standard": "^4.0"}}`},
+		// The product itself, which needs no emulator of itself.
+		{"package.json": `{"dependencies": {"unleash-server": "^6.0.0"}}`},
+		// Infrastructure-as-code, and an agent tool.
+		{"package.json": `{"dependencies": {"@pulumiverse/unleash": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@unleash/mcp": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "unleash") {
+			t.Errorf("%v offered the unleash Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
