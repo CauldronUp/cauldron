@@ -868,6 +868,58 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The most contested name in this file. Four vendors ship a product
+			// called Vault, and the biggest one is not this one:
+			// @azure/keyvault-common has twenty-three million downloads and
+			// @azure/keyvault-secrets nearly ten, against node-vault's 1.7
+			// million. Oracle ships oci-vault, and @googleapis/vault is Google
+			// Vault, which is e-discovery for Workspace and holds no secrets
+			// at all.
+			//
+			// Then the words that are not products. spryker/vault at 2.2
+			// million is a module of the Spryker commerce framework.
+			// soarecostin/file-vault and its three relatives encrypt files.
+			// ansible-vault is a file format. dotenv-org/phpdotenv-vault reads
+			// .env.vault files. The DeFi packages are yield vaults.
+			// @apideck/vault-react is the settings UI of a provider already in
+			// this collection. And the top Packagist result for the word is
+			// ccxt/ccxt, a cryptocurrency exchange library.
+			//
+			// Two exclusions are deliberate rather than accidental.
+			// @testcontainers/vault starts a real Vault in Docker for tests,
+			// which is the thing somebody reaches for instead of an emulator --
+			// mapping it would offer this Recipe to the one project that has
+			// already decided against it. And @pulumi/vault provisions Vault
+			// rather than reading from it: infrastructure-as-code calls the API
+			// at deploy time, but a project holding it is configuring the
+			// server, not fetching secrets from it at runtime, which is what
+			// this Recipe serves.
+			//
+			// csharpru/vault-php-guzzle6-transport is mapped even though it is
+			// a transport rather than a client, because it exists only to carry
+			// csharpru/vault-php and four million downloads say so.
+			recipe: "vault",
+			composer: []string{
+				"csharpru/vault-php",
+				"csharpru/vault-php-guzzle6-transport",
+				"jippi/vault-php-sdk",
+				"violuke/vault-php-sdk",
+				"mittwald/vault-php",
+				"tokenly/laravel-vault",
+				"lucasberto/laravel-vault",
+				"itk-dev/vault",
+				"itk-dev/vault-bundle",
+			},
+			npm: []string{
+				"node-vault",
+				"node-vault-client",
+				"hashi-vault-js",
+				"@litehex/node-vault",
+				"vault-api",
+				"vault-auth-aws",
+			},
+		},
+		{
 			// A new shape, and the biggest number on the page produced it:
 			// matched on a simile. Packagist's top results for "youtube" are
 			// hashids/hashids at fifty-four million downloads and
