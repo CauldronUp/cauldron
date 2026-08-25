@@ -28,7 +28,7 @@ Two rules apply to everything here:
 | ~~AWS SES~~ | Shipped. Accepted-not-delivered, the invisible suppression list |
 | ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
 | ~~AWS Secrets Manager~~ | Shipped. Undeducible ARNs, rotation stages, scheduled deletion |
-| Google Cloud Storage | Objects, signed URLs, permissions |
+| ~~Google Cloud Storage~~ | Shipped, written against the discovery document Google publishes. The folders come back in a different array from the files: there are no directories in a bucket, only names with slashes, and of delimiter -- "Objects whose names, aside from the prefix, contain delimiter will have their name, truncated after the delimiter, returned in prefixes. Duplicate prefixes are omitted." So a bucket of ten thousand files answers with two items and a handful of prefixes, and code reading items has a complete, accurate array that is not the answer to its question. And the paging counts both arrays at once -- maxResults is "items plus prefixes" and "fewer total results may be returned than requested" -- so the loop everybody writes stops early on the first page where two objects shared a folder. Also: the id includes the generation, so overwriting a file changes it and name is the stable one; size, generation and metageneration are digits in strings; and being deleted is two states, timeDeleted and softDeleteTime. Fetching one object by name is stated and not served -- an object name goes into the path URL-encoded and Go decodes it before the router sees it |
 | ~~Google Pub/Sub~~ | Shipped. Base64 bodies, ack deadlines, delivery attempts |
 | Azure Blob Storage | Containers, blobs, SAS and auth behaviour |
 | Cloudflare R2 | Sits beside the existing Cloudflare Recipe |

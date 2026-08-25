@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The largest numbers in this file. google/cloud-storage has a
+			// hundred and five million downloads and @google-cloud/storage
+			// sixty-one million, and the Flysystem and Laravel adapters
+			// between them come to nearly sixty million more.
+			//
+			// Those adapters are mapped, because they call this API -- and it
+			// is worth noticing, as it was on Drive, that the dominant use of
+			// an object store is to make it look like a filesystem. Here the
+			// tension is sharper: GCS's own documentation says directory-like
+			// mode is a pretence, with the folders arriving in a separate
+			// array from the files.
+			//
+			// google/cloud is the umbrella client for every Google Cloud
+			// product at once, so it stays unmapped for the reason jira.js
+			// does: a package maps to one Recipe and that one speaks dozens.
+			//
+			// And mock-gcs is "a Mock implementation of the Google Cloud
+			// Storage" -- the second emulator this file has had to exclude in
+			// two Recipes, after google-drive-mock. Object stores attract
+			// them, presumably because everybody wants their tests to stop
+			// touching the network and nobody wants to run a bucket.
+			//
+			// The upload sinks are left alone: multer-cloud-storage,
+			// @tus/gcs-store, @payloadcms/storage-gcs and the Strapi provider
+			// write through the official client rather than being one, and
+			// webpack-google-cloud-storage-plugin, nx-remotecache-gcs and
+			// reg-publish-gcs-plugin are build tooling that happens to
+			// upload.
+			recipe: "googlecloudstorage",
+			composer: []string{
+				"google/cloud-storage",
+				"league/flysystem-google-cloud-storage",
+				"superbalist/flysystem-google-storage",
+				"spatie/laravel-google-cloud-storage",
+				"superbalist/laravel-google-cloud-storage",
+				"spatie/flysystem-google-cloud-storage",
+			},
+			npm: []string{"@google-cloud/storage"},
+		},
+		{
 			// Gemini is also a cryptocurrency exchange, which is the homonym
 			// shape Wix brought and this is the second instance of: ccxt/ccxt
 			// is "a cryptocurrency trading API" supporting a hundred-odd

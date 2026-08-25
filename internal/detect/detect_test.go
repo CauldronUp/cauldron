@@ -2554,3 +2554,56 @@ func TestDetectGeminiClientsAndNotTheExchangeOrVertex(t *testing.T) {
 		}
 	}
 }
+
+// Cloud Storage carries the largest numbers in this file: google/cloud-storage
+// has a hundred and five million downloads, and the Flysystem and Laravel
+// adapters between them nearly sixty million more.
+//
+// Those adapters are mapped because they call this API, and it is worth
+// noticing -- as it was on Drive -- that the dominant use of an object store
+// is to make it look like a filesystem, on an API whose own documentation says
+// directory-like mode is a pretence.
+//
+// And mock-gcs is the second emulator this file has excluded in two Recipes,
+// after google-drive-mock.
+func TestDetectCloudStorageClientsAndNotTheUmbrellaOrTheOtherMock(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@google-cloud/storage": "^7.0.0"}}`},
+		{"composer.json": `{"require": {"google/cloud-storage": "^1.40"}}`},
+		{"composer.json": `{"require": {"league/flysystem-google-cloud-storage": "^3.0"}}`},
+		{"composer.json": `{"require": {"superbalist/flysystem-google-storage": "^7.2"}}`},
+		{"composer.json": `{"require": {"spatie/laravel-google-cloud-storage": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "googlecloudstorage") {
+			t.Errorf("%v did not detect googlecloudstorage: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The umbrella client for every Google Cloud product at once.
+		{"composer.json": `{"require": {"google/cloud": "^0.200"}}`},
+		// Another emulator, doing this Recipe's job.
+		{"package.json": `{"devDependencies": {"mock-gcs": "^1.0.0"}}`},
+		// Upload sinks that write through the official client.
+		{"package.json": `{"dependencies": {"multer-cloud-storage": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"@tus/gcs-store": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@payloadcms/storage-gcs": "^3.0.0"}}`},
+		// And build tooling that happens to upload.
+		{"package.json": `{"devDependencies": {"webpack-google-cloud-storage-plugin": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"nx-remotecache-gcs": "^5.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "googlecloudstorage") {
+			t.Errorf("%v offered the googlecloudstorage Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
