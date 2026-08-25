@@ -868,16 +868,77 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
-			// No Recipe ships for OpenAI yet, and the mapping is here on
-			// purpose. A dependency Cauldron recognises and cannot emulate is
-			// reported by name, so the developer is told those calls will
+			// No Recipe ships for Anthropic, and the mapping is here on
+			// purpose -- the same reason OpenAI's was, before OpenAI's became
+			// a Recipe. A dependency Cauldron recognises and cannot emulate
+			// is reported by name, so the developer is told those calls will
 			// still reach the real network. Without the mapping it falls
 			// through to the "looks like an API client" heuristic and the
 			// warning is vaguer than it needs to be.
-			recipe:   "openai",
-			composer: []string{"openai-php/client", "openai-php/laravel"},
-			npm:      []string{"openai"},
-			gomod:    []string{"github.com/sashabaranov/go-openai"},
+			//
+			// @anthropic-ai/bedrock-sdk is excluded: it is "the official
+			// TypeScript library for the Anthropic Bedrock API", which is the
+			// same models addressed through AWS rather than through
+			// api.anthropic.com. That is the deployment shape @azure/openai
+			// has, one provider along.
+			recipe:   "anthropic",
+			npm:      []string{"@anthropic-ai/sdk"},
+			composer: []string{"anthropic-ai/sdk", "mozex/anthropic-php"},
+			gomod:    []string{"github.com/anthropics/anthropic-sdk-go"},
+		},
+		{
+			// This mapping predates the Recipe: it was here so that a
+			// dependency Cauldron recognised and could not emulate was
+			// reported by name rather than falling through to the "looks like
+			// an API client" heuristic. A Recipe ships now, and the mapping
+			// has grown the exclusions that go with the biggest ecosystem in
+			// this file.
+			//
+			// A shape that has outgrown its provider.
+			// @ai-sdk/openai-compatible, at twenty-three million installs a
+			// month, exists "to provide a foundation for implementing
+			// providers" that speak OpenAI's request format -- and
+			// deepseek-php/deepseek-php-client is one of the providers it
+			// means. A project holding either may never send a byte to
+			// OpenAI. No shape recorded here covered that: Wix was one word
+			// meaning two products and Metronome was one word meaning an
+			// instrument, where this is one company's wire format used by
+			// everybody else.
+			//
+			// Another deployment, again. @azure/openai and azure-openai talk
+			// to {resource}.openai.azure.com, which addresses deployments
+			// rather than models and versions itself with an api-version
+			// query parameter. Same models, different API -- the shape
+			// @atlassian-dc-mcp/confluence has.
+			//
+			// The vendor's own biggest package is not a client.
+			// @openai/codex is a coding agent that runs on your machine, and
+			// it is installed sixty-seven million times a month.
+			//
+			// And the sharpest miss is the subject of one of this Recipe's
+			// own claims: yethee/tiktoken is OpenAI's tokeniser ported to
+			// PHP, four and a half million installs of a library that counts
+			// tokens and never makes a request -- which is exactly the
+			// arithmetic the Recipe says will disagree with usage.
+			//
+			// Instrumentation is excluded too: @opentelemetry/instrumentation
+			// -openai, @traceloop/instrumentation-openai and @langfuse/openai
+			// wrap a client rather than being one, and a project holding any
+			// of them holds the real client as well.
+			recipe: "openai",
+			composer: []string{
+				"openai-php/client",
+				"openai-php/laravel",
+				"openai-php/symfony",
+				"orhanerday/open-ai",
+				"tectalic/openai",
+			},
+			npm: []string{
+				"openai",
+				"@ai-sdk/openai",
+				"@langchain/openai",
+			},
+			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
 			recipe:   "ably",
@@ -1553,7 +1614,7 @@ func providers() []provider {
 // naming "postmarkk" would quietly become a warning about a provider nobody has
 // heard of, and nothing would fail.
 var unshipped = map[string]string{
-	"openai": "worth a Recipe on its own merits; until then the warning is the value",
+	"anthropic": "worth a Recipe on its own merits; until then the warning is the value",
 }
 
 // suspectedAPIClient matches dependency names that look like third-party API

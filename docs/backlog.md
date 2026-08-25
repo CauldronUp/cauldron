@@ -128,7 +128,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 
 | Provider | Why |
 |---|---|
-| OpenAI | Responses, streaming, tool calls, rate limits, structured output |
+| ~~OpenAI~~ | Shipped, written against the OpenAPI document OpenAI publishes and generates its own SDKs from. The refusal is not in the answer: content and refusal are two sibling nullable strings on the message, only one is ever filled in, and a declined request is a 200 with finish_reason stop -- so the obvious read gets null and logs an outage while the model answered in the field beside it. Also: completion_tokens counts tokens that never arrive ("like reasoning tokens, these tokens are still counted in the total completion tokens for purposes of billing"), max_completion_tokens is spent on reasoning before a word is emitted, max_tokens is deprecated and "not compatible with o-series models", store defaults to false so the completion you just made cannot be fetched, and content_filter is a stopping reason rather than an error. Streaming and the Responses API are stated as not modelled |
 | Anthropic | Messages, content blocks, tool use, streaming |
 | Google Gemini | Generation, multimodal requests, safety responses |
 | Pinecone | Indexes, namespaces, vectors, metadata filtering |
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**118 more listings across 69 Recipes declare no paging at all**, and the
+**119 more listings across 70 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

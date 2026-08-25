@@ -2019,3 +2019,63 @@ func TestDetectJiraServiceManagementWithoutClaimingTheSharedJiraClient(t *testin
 		}
 	}
 }
+
+// OpenAI has the biggest ecosystem in this file, and the exclusions matter
+// more than the mappings.
+//
+// @ai-sdk/openai-compatible is "a foundation for implementing providers" that
+// speak OpenAI's request format, and deepseek-php-client is one of the
+// providers it means: a shape that has outgrown its provider, which is a
+// different thing from Wix's homonym or Metronome's everyday object.
+//
+// @azure/openai addresses deployments on a different host with an api-version
+// parameter -- the same models behind a different API. @openai/codex is a
+// coding agent, not a client, and it is installed sixty-seven million times a
+// month. And yethee/tiktoken counts tokens without making a request, which is
+// the arithmetic this Recipe says will disagree with usage.
+func TestDetectOpenAIClientsAndNotTheShapeEverybodyElseCopied(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"openai": "^4.0.0"}}`},
+		{"package.json": `{"dependencies": {"@ai-sdk/openai": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@langchain/openai": "^0.3.0"}}`},
+		{"composer.json": `{"require": {"openai-php/client": "^0.10"}}`},
+		{"composer.json": `{"require": {"openai-php/laravel": "^0.10"}}`},
+		{"composer.json": `{"require": {"orhanerday/open-ai": "^5.0"}}`},
+		{"composer.json": `{"require": {"tectalic/openai": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openai") {
+			t.Errorf("%v did not detect openai: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The shape without the provider.
+		{"package.json": `{"dependencies": {"@ai-sdk/openai-compatible": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"deepseek-php/deepseek-php-client": "^1.0"}}`},
+		// Another deployment, addressing deployments rather than models.
+		{"package.json": `{"dependencies": {"@azure/openai": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"azure-openai": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@azure/openai-assistants": "^1.0.0"}}`},
+		// The vendor's own coding agent, which is not a client.
+		{"package.json": `{"devDependencies": {"@openai/codex": "^0.5.0"}}`},
+		// Instrumentation wraps a client rather than being one.
+		{"package.json": `{"dependencies": {"@opentelemetry/instrumentation-openai": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@traceloop/instrumentation-openai": "^0.1.0"}}`},
+		// And a tokeniser, which counts without asking anybody.
+		{"composer.json": `{"require": {"yethee/tiktoken": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openai") {
+			t.Errorf("%v offered the openai Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
