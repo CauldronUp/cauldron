@@ -1,0 +1,451 @@
+# Google Cloud Storage Recipe for Cauldron
+#
+# Written against the discovery document Google publishes and generates its
+# own client libraries from, at
+# googleapis.com/discovery/v1/apis/storage/v1/rest -- 250 kilobytes, and the
+# source of every description quoted here.
+#
+# The folders come back in a different array from the files.
+#
+# There are no directories in a bucket. There are object names with slashes in
+# them, and a listing can be asked to pretend otherwise. Of delimiter:
+#
+#   "Returns results in a directory-like mode. items will contain only objects
+#   whose names, aside from the prefix, do not contain delimiter. Objects whose
+#   names, aside from the prefix, contain delimiter will have their name,
+#   truncated after the delimiter, returned in prefixes. Duplicate prefixes are
+#   omitted."
+#
+# So a listing of a bucket with ten thousand files in folders and two at the
+# top level answers with two items and a handful of prefixes. Code that reads
+# items and moves on has seen two objects and concluded the bucket is nearly
+# empty, and nothing in the response is wrong: the array it read is complete,
+# accurate, and not the answer to the question it was asking.
+#
+# And the paging counts both arrays at once, so a short page is not the last
+# page. Of maxResults:
+#
+#   "Maximum number of items plus prefixes to return in a single page of
+#   responses. As duplicate prefixes are omitted, fewer total results may be
+#   returned than requested."
+#
+# Which breaks the loop everybody writes. `while (items.length === pageSize)`
+# stops early on the first page where two objects shared a folder, because the
+# duplicate prefix was dropped and the page came back one short -- and one
+# short reads as the end.
+#
+# Three more, each from the same document:
+#
+#   1. The id is not the object's identity. Of id: "The ID of the object,
+#      including the bucket name, object name, and generation number." So
+#      overwriting a file changes its id, because the id names a version
+#      rather than a thing. name is the stable one, and it is the field that
+#      is not called id -- which is the reverse of every other provider in
+#      this collection.
+#   2. Numbers arrive as text. size is "Content-Length of the data in bytes"
+#      and is a string; so are generation and metageneration. A bucket can
+#      hold objects larger than a double can count, so the safe thing is to
+#      send digits as text and let the caller decide -- and a client that
+#      adds up sizes with + concatenates them instead.
+#   3. Being deleted is two states, not one. timeDeleted is set "if and only
+#      if this version of the object has been deleted", and softDeleteTime is
+#      "the time at which the object became soft-deleted" -- so an object can
+#      be gone from a listing, still billed, and still restorable, and which
+#      of those it is lives in whichever of two timestamps is present.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The delimiter is served for the one value everybody uses, "/", by way of
+#     a route that answers with prefixes and one that does not. Arbitrary
+#     delimiters are not modelled: the format selects a route by a value, and
+#     synthesising truncated names for any delimiter would be implementing the
+#     feature rather than describing it.
+#   - matchGlob, startOffset, endOffset, versions, softDeleted and
+#     includeFoldersAsPrefixes are all real and none is modelled. Each narrows
+#     or widens the same listing, and the claim this file makes is about the
+#     shape that comes back rather than about which rows are in it.
+#   - Fetching one object by name is not served, and the reason is worth
+#     recording. An object's name goes into the path URL-encoded, so
+#     invoices/2026-01.csv is addressed as invoices%2F2026-01.csv and a slash
+#     in a name is emphatically not a path separator. Go decodes the path
+#     before this format's router sees it, so the encoded name arrives as
+#     three segments and matches nothing. Every claim below is asserted from
+#     the listing instead, which is where a client meets these objects
+#     anyway.
+#   - Uploads and downloads are absent: object data travels on a different
+#     host with a different protocol, and this Recipe serves metadata.
+#   - Buckets, ACLs, HMAC keys, notifications and the rest are absent.
+#     Objects only.
+#
+# The token and the ids below are fixtures and belong to no project.
+
+recipe: googlecloudstorage
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://cloud.google.com/storage/docs/json_api/v1
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ya29.cauldron-gcs-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: items
+    cursor_field: nextPageToken
+    fields:
+      kind: storage#objects
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: status
+    status_field: code
+    type_field: "-"
+
+resources:
+  object:
+    id:
+      # The id includes the generation, so it names a version rather than a
+      # file. The stable name is the field below.
+      style: opaque
+    constants:
+      kind: storage#object
+    fields:
+      name:
+        type: string
+      bucket:
+        type: string
+      # Digits as text, because a bucket can hold objects a double cannot
+      # count.
+      generation:
+        type: string
+      metageneration:
+        type: string
+      size:
+        type: string
+      contentType:
+        type: string
+      md5Hash:
+        type: string
+      timeCreated:
+        type: datetime
+      updated:
+        type: datetime
+      # Set if and only if this version has been deleted.
+      timeDeleted:
+        type: datetime
+        stamped: false
+      # And the other kind of gone.
+      softDeleteTime:
+        type: datetime
+        stamped: false
+      storageClass:
+        type: string
+        default: STANDARD
+      # Which listing this object belongs to once a delimiter is in play.
+      # GCS works this out from the name; it is declared here, hidden from
+      # the wire, because the route needs something to select on.
+      depth:
+        type: string
+        in: "-"
+
+routes:
+  # The flat listing: every object in the bucket, folders and all, because
+  # without a delimiter there is no such thing as a folder.
+  - method: GET
+    path: /storage/v1/b/{bucket}/o
+    resource: object
+    operation: list
+    scope:
+      - bucket
+    pagination:
+      style: cursor
+      cursor_param: pageToken
+      limit_param: maxResults
+      limit: 1000
+
+  # The same path in "directory-like mode", which is where the folders go
+  # somewhere else.
+  - method: GET
+    path: /storage/v1/b/{bucket}/o
+    resource: object
+    operation: list
+    scope:
+      - bucket
+    matches_query:
+      delimiter: /
+    filters:
+      - param: delimiter
+        field: depth
+        values:
+          /:
+            - top
+    fields:
+      # "Objects whose names, aside from the prefix, contain delimiter will
+      # have their name, truncated after the delimiter, returned in
+      # prefixes." Two of the seeded objects live under invoices/ and one
+      # under receipts/, and the two under invoices/ collapse to one entry --
+      # "Duplicate prefixes are omitted."
+      prefixes:
+        - invoices/
+        - receipts/
+    pagination:
+      style: cursor
+      cursor_param: pageToken
+      limit_param: maxResults
+      limit: 1000
+
+errors:
+  authentication_error:
+    status: 401
+    message: Invalid Credentials
+    code: UNAUTHENTICATED
+
+  resource_missing:
+    status: 404
+    message: No such object.
+    code: NOT_FOUND
+
+  invalid_request:
+    status: 400
+    message: Invalid Value
+    code: INVALID_ARGUMENT
+
+fixtures:
+  empty: {}
+
+  bucket:
+    object:
+      # At the top level, so a directory-like listing shows it.
+      - id: cauldron-fixtures/README.txt/1712345678901234
+        bucket: cauldron-fixtures
+        depth: top
+        name: README.txt
+        generation: "1712345678901234"
+        metageneration: "1"
+        size: "482"
+        contentType: text/plain
+        md5Hash: 9e107d9d372bb6826bd81d3542a419d6
+        timeCreated: "2026-01-04T09:00:00.000Z"
+        updated: "2026-01-04T09:00:00.000Z"
+        storageClass: STANDARD
+      # Two under one folder. The folder is one prefix, not two.
+      - id: cauldron-fixtures/invoices/2026-01.csv/1712345678901235
+        bucket: cauldron-fixtures
+        depth: nested
+        name: invoices/2026-01.csv
+        generation: "1712345678901235"
+        metageneration: "1"
+        size: "20481"
+        contentType: text/csv
+        timeCreated: "2026-02-01T10:00:00.000Z"
+        updated: "2026-02-01T10:00:00.000Z"
+        storageClass: STANDARD
+      - id: cauldron-fixtures/invoices/2026-02.csv/1712345678901236
+        bucket: cauldron-fixtures
+        depth: nested
+        name: invoices/2026-02.csv
+        generation: "1712345678901236"
+        metageneration: "1"
+        size: "21300"
+        contentType: text/csv
+        timeCreated: "2026-03-01T10:00:00.000Z"
+        updated: "2026-03-01T10:00:00.000Z"
+        storageClass: STANDARD
+      # And one under another, soft-deleted: gone from the ordinary view,
+      # still billed, still restorable.
+      - id: cauldron-fixtures/receipts/old.pdf/1712345678901237
+        bucket: cauldron-fixtures
+        depth: nested
+        name: receipts/old.pdf
+        generation: "1712345678901237"
+        metageneration: "2"
+        size: "884210"
+        contentType: application/pdf
+        timeCreated: "2025-11-02T08:15:00.000Z"
+        updated: "2026-01-06T09:00:00.000Z"
+        softDeleteTime: "2026-01-06T09:00:00.000Z"
+        storageClass: NEARLINE
+
+conformance:
+  - name: the flat listing has every object and no folders at all
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # Without a delimiter there is no such thing as a folder: the names
+        # simply contain slashes.
+        kind: storage#objects
+        "items[0].name": README.txt
+        "items[1].name": invoices/2026-01.csv
+        "items[3].name": receipts/old.pdf
+      absent:
+        - prefixes
+
+  - name: asking for directories moves the folders into a different array
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o?delimiter=/
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # One item, because only one object's name has no slash in it -- and
+        # the three that do are represented by two entries in a second array
+        # most code never reads. "Duplicate prefixes are omitted", so the two
+        # invoices become one.
+        "items[0].name": README.txt
+        "prefixes[0]": invoices/
+        "prefixes[1]": receipts/
+      absent:
+        # A bucket with four objects, and the array everybody reads has one.
+        - items[1]
+        - prefixes[2]
+
+  - name: the id names a version and the name names the file
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # "The ID of the object, including the bucket name, object name, and
+        # generation number." Overwrite the file and this changes; the name
+        # does not. The stable identifier is the field that is not called id.
+        "items[1].id": cauldron-fixtures/invoices/2026-01.csv/1712345678901235
+        "items[1].name": invoices/2026-01.csv
+        "items[1].generation": "1712345678901235"
+        "items[1].kind": storage#object
+
+  - name: a size is digits in a string
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # A bucket can hold objects a double cannot count, so the safe thing
+        # is text -- and a client that adds sizes with + concatenates them.
+        "items[0].size": "482"
+        # And the bucket, which GCS does repeat on every object even though
+        # the path already named it -- so a record pulled out of a listing
+        # still knows where it lives, unlike most partitioned APIs here.
+        "items[0].bucket": cauldron-fixtures
+        "items[0].generation": "1712345678901234"
+        "items[0].metageneration": "1"
+
+  - name: soft-deleted is a third state with a timestamp of its own
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # softDeleteTime is set and timeDeleted is not: the object is gone
+        # from the ordinary view, still billed, and still restorable.
+        "items[3].softDeleteTime": "2026-01-06T09:00:00.000Z"
+        "items[3].storageClass": NEARLINE
+      absent:
+        - items[3].timeDeleted
+
+  - name: and a live object carries neither timestamp
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        "items[0].name": README.txt
+      absent:
+        # The other end of the distinction, so both are pinned: absence is
+        # the third state and it has no field of its own.
+        - items[0].softDeleteTime
+        - items[0].timeDeleted
+
+  - name: another bucket's objects are not in this bucket's listing
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/somebody-elses-bucket/o
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        kind: storage#objects
+      absent:
+        - items[0]
+
+  - name: a token the project does not know is refused
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o
+      headers:
+        Authorization: Bearer ya29.not-this-projects-token
+    expect:
+      status: 401
+      body:
+        "error.status": UNAUTHENTICATED
+        "error.message": Invalid Credentials
+
+  - name: a short page is not the last page
+    source: https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+    fixture: bucket
+    request:
+      method: GET
+      path: /storage/v1/b/cauldron-fixtures/o?maxResults=2
+      headers:
+        Authorization: Bearer ya29.cauldron-gcs-fixture-token
+    expect:
+      status: 200
+      body:
+        # "Maximum number of items plus prefixes to return in a single page
+        # of responses. As duplicate prefixes are omitted, fewer total
+        # results may be returned than requested." So the count a client
+        # compares against covers two arrays, and a page can be short for a
+        # reason that has nothing to do with reaching the end.
+        "items[0].name": README.txt
+        "items[1].name": invoices/2026-01.csv
+      matches:
+        # Which is why the token is the only thing that says whether there is
+        # more, and comparing the page length against maxResults is not.
+        nextPageToken: '^.+$'
+      absent:
+        - items[2]
