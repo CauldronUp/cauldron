@@ -4,6 +4,7 @@
 package recipe
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -119,6 +120,31 @@ func routeSegments(routes []Route) map[string]bool {
 	}
 
 	return spelled
+}
+
+// sendsBodyMarker reports whether any case sends a JSON body containing the
+// marker a selects_body route is waiting for.
+//
+// The comparison is over the body rendered back to text, which is what the
+// runtime matches against, so a marker inside a nested string counts exactly
+// as it would at request time.
+func sendsBodyMarker(cases []Case, marker string) bool {
+	for _, c := range cases {
+		if len(c.Request.JSON) == 0 {
+			continue
+		}
+
+		rendered, err := json.Marshal(c.Request.JSON)
+		if err != nil {
+			continue
+		}
+
+		if strings.Contains(string(rendered), marker) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // assertsName reports whether any case claims something about a field by name.

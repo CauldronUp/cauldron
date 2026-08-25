@@ -39,7 +39,10 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 		// exists to catch. The headers a route matches on are part of it for
 		// the same reason -- an AWS Recipe is every operation on POST /,
 		// told apart by X-Amz-Target.
-		key := route.Method + " " + route.Path + " " + route.Selects
+		// And selects_body for the third time: Gemini is one path answering
+		// two shapes depending on what the prompt asked for, which is two
+		// routes rather than one repeated.
+		key := route.Method + " " + route.Path + " " + route.Selects + " " + route.SelectsBody
 		for _, name := range sortedKeys(route.MatchesHeader) {
 			key += " " + name + "=" + route.MatchesHeader[name]
 		}

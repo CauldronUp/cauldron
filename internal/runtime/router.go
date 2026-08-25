@@ -138,7 +138,7 @@ func compilePath(path string) []segment {
 // over /v1/customers/{id} regardless of declaration order. Providers routinely
 // have both, and matching on declaration order alone is a subtle trap.
 func (r *router) match(method, path string) (route, map[string]string, bool) {
-	return r.matchSelecting(method, path, "", nil, nil)
+	return r.matchSelecting(method, path, "", "", nil, nil)
 }
 
 // matchSelecting is match with the request's GraphQL query in hand, so routes
@@ -147,7 +147,7 @@ func (r *router) match(method, path string) (route, map[string]string, bool) {
 // A route declaring selects matches only when the query mentions that word,
 // and beats an equally-scoring route that declares nothing, so a Recipe can
 // have several selecting routes and one fallback for everything else.
-func (r *router) matchSelecting(method, path, query string, params url.Values, headers http.Header) (route, map[string]string, bool) {
+func (r *router) matchSelecting(method, path, query, body string, params url.Values, headers http.Header) (route, map[string]string, bool) {
 	parts := splitPath(path)
 
 	// Whether the caller ended the path in a slash, which for some providers
@@ -182,6 +182,16 @@ func (r *router) matchSelecting(method, path, query string, params url.Values, h
 
 			// A route that asked for this query beats one that takes
 			// anything, however the paths scored.
+			score += 1000
+		}
+
+		// The same again for the providers whose answer depends on what the
+		// caller wrote rather than on where they sent it.
+		if candidate.spec.SelectsBody != "" {
+			if !mentions(body, candidate.spec.SelectsBody) {
+				continue
+			}
+
 			score += 1000
 		}
 
@@ -230,7 +240,8 @@ func (r *router) allowedMethods(path string) []string {
 		// methods a path supports. Counting it turned an unmodelled GraphQL
 		// query into 405 with Allow: POST, which tells a client to change
 		// the method it already got right. Not being modelled is a 404.
-		if candidate.spec.Selects != "" || len(candidate.spec.MatchesHeader) > 0 || len(candidate.spec.MatchesQuery) > 0 {
+		if candidate.spec.Selects != "" || candidate.spec.SelectsBody != "" ||
+			len(candidate.spec.MatchesHeader) > 0 || len(candidate.spec.MatchesQuery) > 0 {
 			continue
 		}
 

@@ -92,6 +92,27 @@ type Route struct {
 	// New Relic, Railway, ShipHero, and half of Fly.io -- and each had been
 	// recorded as its own judgement call rather than as one missing feature.
 	Selects string `yaml:"selects"`
+	// SelectsBody does the same job as Selects and looks anywhere in the
+	// request body rather than only in a GraphQL query.
+	//
+	// It is a separate field on purpose. Selects is fed the `query` property
+	// of a GraphQL envelope and nothing else, and seven Recipes depend on
+	// that narrowness: a marker word that today matches only inside a query
+	// would start matching variable names and argument values if the search
+	// were widened underneath them.
+	//
+	// What it is for is the providers whose response shape depends on what
+	// the request asked for rather than on where it was sent. Gemini answers
+	// a blocked prompt with a 200 and no candidates array at all, and a
+	// permitted one with candidates and no block reason -- one path, one
+	// method, two shapes, and nothing outside the body to tell them apart.
+	// That was written up in the backlog as unservable before this existed.
+	//
+	// The match is the same whole-word one Selects makes, over the raw body
+	// rather than a parsed field, because no emulator here can decide which
+	// answer a model would have given and the marker is how a fixture says
+	// which one to serve.
+	SelectsBody string `yaml:"selects_body"`
 	// IDFrom says where the identifier comes from when it is not a path
 	// parameter: "query:channel" or "body:channel". A body name may be
 	// dotted, because a provider that puts the identifier in the body does

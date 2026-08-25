@@ -384,6 +384,33 @@ func (r *Recipe) Validate() error {
 		add("resource %s declares id.pattern %q and no conformance case addresses it with an identifier the pattern rejects, so nothing here shows the shape is checked rather than merely declared", resourceName, pattern)
 	}
 
+	// A route selecting on the body has to be reachable, and there are two
+	// ways it quietly is not: a method that carries no body can never match
+	// one, and a marker no conformance case ever sends is a route nothing
+	// exercises. Both fail the same way -- the fallback answers instead, with
+	// a shape that looks plausible -- so both are refused here.
+	for _, route := range r.Routes {
+		if route.SelectsBody == "" {
+			continue
+		}
+
+		where := fmt.Sprintf("%s %s", route.Method, route.Path)
+
+		if route.Method == "GET" || route.Method == "DELETE" {
+			add("%s selects_body %q and %s carries no body, so the route can never be chosen",
+				where, route.SelectsBody, route.Method)
+
+			continue
+		}
+
+		if sendsBodyMarker(r.Conformance, route.SelectsBody) {
+			continue
+		}
+
+		add("%s selects_body %q and no conformance case sends a body containing it, so the route is never reached and the one below it answers instead",
+			where, route.SelectsBody)
+	}
+
 	// A route naming an event to emit has to name one the Recipe declares, or
 	// the change fires nothing and the only sign is a webhook that never
 	// arrives -- which is indistinguishable from a provider that does not
