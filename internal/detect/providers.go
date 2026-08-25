@@ -868,6 +868,35 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Atlas is an everyday word, and one of the collisions is a
+			// prefix nobody would predict: Atlassian begins with it.
+			// damienharper/adf-tools is "Atlassian Document Format PHP
+			// Tools", installed one point eight million times a month, and it
+			// is about Confluence and Jira rather than about databases.
+			//
+			// The everyday word does the rest. atlas/pdo, atlas/query and
+			// atlas/orm are a PHP persistence family under the vendor name
+			// atlas, and between them they outnumber every real client here.
+			// atlas-php/atlas is an AI SDK for Laravel. grazulex/laravel
+			// -atlas maps a Laravel project. Packagist has no client for this
+			// API at all.
+			//
+			// And MongoDB's own scope contains the deployment shape again:
+			// @mongodb-js/atlas-local manages "MongoDB Atlas Local
+			// deployments", which run in a container rather than in the
+			// cloud, so the administration API this Recipe models is not
+			// involved. mongodb-data-api speaks the Data API, a different
+			// interface for reading documents rather than administering
+			// clusters, and mongoose-atlas-search reaches Atlas Search
+			// through the database driver.
+			recipe: "mongodbatlas",
+			npm: []string{
+				"mongodb-atlas-api-client",
+				"awscdk-resources-mongodbatlas",
+				"mcp-mongodb-atlas",
+			},
+		},
+		{
 			// Keycloak's entry below names a shape -- the other half of the
 			// same product -- and FusionAuth confirms it is a property of
 			// identity providers rather than of one vendor. Everything

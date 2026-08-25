@@ -2397,3 +2397,56 @@ func TestDetectFusionAuthAdminClientsAndNotTheLoginHalf(t *testing.T) {
 		}
 	}
 }
+
+// Atlas is an everyday word, and one collision is a prefix nobody would
+// predict: Atlassian begins with it. damienharper/adf-tools is "Atlassian
+// Document Format PHP Tools" at one point eight million installs a month, and
+// it is about Confluence and Jira rather than databases.
+//
+// The PHP persistence family atlas/pdo, atlas/query and atlas/orm outnumbers
+// every real client here, and Packagist has no client for this API at all.
+//
+// MongoDB's own scope contains the deployment shape again: @mongodb-js
+// /atlas-local manages containers rather than cloud projects.
+func TestDetectMongoDBAtlasAdminClientsAndNotTheWordAtlas(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"mongodb-atlas-api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"awscdk-resources-mongodbatlas": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"mcp-mongodb-atlas": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "mongodbatlas") {
+			t.Errorf("%v did not detect mongodbatlas: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Atlassian begins with Atlas.
+		{"composer.json": `{"require": {"damienharper/adf-tools": "^3.0"}}`},
+		// A PHP persistence family that happens to be called it.
+		{"composer.json": `{"require": {"atlas/orm": "^3.0"}}`},
+		{"composer.json": `{"require": {"atlas/query": "^1.0"}}`},
+		{"composer.json": `{"require": {"atlas/pdo": "^1.0"}}`},
+		{"composer.json": `{"require": {"atlas-php/atlas": "^1.0"}}`},
+		{"composer.json": `{"require": {"grazulex/laravel-atlas": "^1.0"}}`},
+		// The vendor's own local deployment, which is not the cloud API.
+		{"package.json": `{"dependencies": {"@mongodb-js/atlas-local": "^1.0.0"}}`},
+		// A different interface, and a driver-level plugin.
+		{"package.json": `{"dependencies": {"mongodb-data-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"mongoose-atlas-search": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@mongodb-js/search-index-schema": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "mongodbatlas") {
+			t.Errorf("%v offered the mongodbatlas Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

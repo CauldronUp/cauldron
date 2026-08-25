@@ -149,7 +149,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Supabase~~ | Shipped. Auth, storage, database REST and realtime |
 | Redis Cloud | Keys, TTLs, streams, pub/sub |
 | Upstash | Redis REST, queues, rate limits |
-| MongoDB Atlas | Clusters, users, projects, the data API |
+| ~~MongoDB Atlas~~ | Shipped, the Administration API, written against the OpenAPI document MongoDB publishes. The version of the API you are talking to is a date inside a content type: GET /groups/{groupId}/clusters documents one 200 with three content types under it -- vnd.atlas.2023-01-01+json, 2023-02-01+json and 2024-08-05+json -- resolving to three separately named schemas, all current. And the difference is not cosmetic: the legacy view carries mongoURI, srvAddress, diskSizeGB and providerSettings and the newest carries none of them, so the field an application connects with is present under one date and absent under the next, same URL, same credentials, same instant. Also: the schema names carry the date (ClusterDescription20240805), failure is better documented than success (more operations describe a 401 than a 200), and the credential is HTTP Digest -- challenge-response, on a cloud API written in the 2020s. Digest is stated and not served, and so is the Content-Type echo |
 | ~~Neon~~ | Shipped. Branches, databases, endpoints |
 | ~~PlanetScale~~ | Shipped, written against the Swagger 2.0 document PlanetScale serves from its own API host. The field called state is not the state of the deployment: a deploy request carries state -- "Whether the deploy request is open or closed" -- beside deployment_state, "The deployment state of the deploy request", so a request abandoned after review and one whose migration ran an hour ago both read closed. Also: the id is "The ID of the deploy request" and every path takes the number instead, which is per database, so the globally unique identifier addresses nothing; a request outlives the branch it came from, still naming it while branch_deleted says it is gone; and next_page is "null when this is the last page" where Confluence omits the field entirely. The ten deploy-lifecycle endpoints are stated as not modelled, because each advances a state machine this format cannot express |
 | CockroachDB Cloud | Clusters, SQL users, operations |
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**121 more listings across 72 Recipes declare no paging at all**, and the
+**123 more listings across 73 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
