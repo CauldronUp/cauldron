@@ -3381,3 +3381,54 @@ to leave out the only reason to write it.
 
 Three of these unblock the moment a spec becomes reachable. The fourth would
 need Cauldron to serve XML, which is a larger decision than one Recipe.
+
+## Gemini, and a response shape chosen by what you asked for
+
+Written up rather than written, because the finding is real and the format
+cannot serve it.
+
+Of `promptFeedback.blockReason`, in the discovery document Google publishes at
+`generativelanguage.googleapis.com/$discovery/rest?version=v1beta`:
+
+> "If set, the prompt was blocked and no candidates are returned. Rephrase the
+> prompt."
+
+So a blocked prompt is **a 200 with the candidates taken away**. The response
+still carries a `responseId`, a `modelVersion` and `usageMetadata`; the
+`candidates` array, which is the only part anybody reads, is simply not there.
+Code written the obvious way does `candidates[0].content.parts[0].text` and
+throws on the first index, and the sentence explaining why sits in a sibling
+object most integrations have never opened.
+
+That is worth having because it differs from the relative already recorded.
+The OpenAI Recipe's refusal arrives as a normal message with `content: null`
+and the reason in `message.refusal`, so the read **succeeds and yields
+nothing**. Gemini removes the element, so the read **throws**. One provider
+hands you a null and the other an exception, for the same event, and neither
+says anything in the status code.
+
+**Why it is not a Recipe.** Demonstrating it needs one path to answer two
+shapes depending on what the request asked for, and the only mechanism here
+that reads a request body is `selects`, which is fed `graphQLQuery(r)` — the
+GraphQL `query` field and nothing else. A create route echoes the request; a
+route constant is fixed per route; `matches_query` and `matches_header` read
+places Gemini does not use. So the choice cannot be made.
+
+Generalising `selects` to look anywhere in the body would do it, and would
+want to be a new field rather than a change to the existing one: seven GraphQL
+Recipes depend on the current behaviour, and a marker word that currently
+matches only inside a query would start matching variables and arguments too.
+
+Three more from the same document, for whoever writes it:
+
+- **An empty finish reason means it has not finished.** Of `finishReason`:
+  "If empty, the model has not stopped generating tokens" — a field whose
+  absence means work in progress on the streaming endpoint and nothing at all
+  on the other one, from one schema serving both.
+- **The total counts thinking you never see.** `totalTokenCount` is "prompt +
+  thoughts + response candidates", with `thoughtsTokenCount` beside it. That
+  is OpenAI's reasoning-token bargain; what is Gemini's own is that the
+  arithmetic is spelled out in the field's own description.
+- **Being cached does not make a prompt smaller.** Of `promptTokenCount`:
+  "When `cached_content` is set, this is still the total effective prompt
+  size", so the number a cost model reads does not fall when caching works.
