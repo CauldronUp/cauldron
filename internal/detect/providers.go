@@ -868,6 +868,59 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Another near-miss shape, and again the biggest number on the page
+			// produced it: matched on an imperative. "Unleash" is a verb that
+			// package taglines love, so the largest npm result for it is
+			// precinct at twenty million downloads -- a JavaScript dependency
+			// parser whose description is "Unleash the detectives". Beside it,
+			// @remirror/extension-code-block "Unleash the inner coder",
+			// veewee/reflecta "Unleash the Power of Optics in your code!", and
+			// an npm package literally called unleash: "Unleash your code into
+			// the wild yonder". None of them is a feature flag.
+			//
+			// unleashedtech/php-coding-standard is a different vendor holding
+			// the same word -- a CodeSniffer ruleset from a company called
+			// Unleashed Technologies.
+			//
+			// Three exclusions are deliberate. unleash-server and
+			// unleash-frontend are the product: a project depending on those is
+			// running Unleash rather than calling it, and an emulator is not
+			// what it needs. @pulumiverse/unleash provisions flags rather than
+			// reading them, on the same line drawn for @pulumi/vault. And
+			// @unleash/mcp is an agent tool for managing flags rather than an
+			// SDK an application evaluates them with.
+			//
+			// One mapping is worth its own note: react-unleash-flags describes
+			// itself as a component "for Unleash or Gitlab Feature Flags",
+			// because GitLab implements Unleash's client API. A project holding
+			// it may be pointing at GitLab and still speaking this protocol,
+			// which is a reason to offer the Recipe rather than a reason not
+			// to.
+			recipe: "unleash",
+			composer: []string{
+				"unleash/client",
+				"unleash/symfony-client-bundle",
+				"j-webb/laravel-unleash",
+				"mikefrancis/laravel-unleash",
+				"huddlebv/laravel-unleash",
+				"stogon/unleash-bundle",
+				"bonch.dev/laravel-unleash",
+				"emersonecologics/unleash-client-php",
+			},
+			npm: []string{
+				"unleash-client",
+				"unleash-proxy-client",
+				"@unleash/proxy-client-react",
+				"@unleash/proxy-client-vue",
+				"@unleash/proxy-client-svelte",
+				"@unleash/nextjs",
+				"@unleash/unleash-react-native-sdk",
+				"@unleash/proxy",
+				"nestjs-unleash",
+				"react-unleash-flags",
+			},
+		},
+		{
 			// The most contested name in this file. Four vendors ship a product
 			// called Vault, and the biggest one is not this one:
 			// @azure/keyvault-common has twenty-three million downloads and

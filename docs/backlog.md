@@ -274,7 +274,7 @@ the header says so.
 | Flagsmith | Assess — flags per environment, identity overrides |
 | Split | Assess — treatments and targeting rules |
 | ConfigCat | Assess — flags, segments, config JSON delivery |
-| Unleash | Assess — toggles, strategies, the client and admin APIs being different shapes |
+| ~~Unleash~~ | Shipped, and the row was right that the APIs are different shapes -- it is worse than that. Three APIs expose the same flag, each schema has an `enabled` boolean, and in none of them does it mean "this flag is on". `frontendApiFeatureSchema.enabled` is documented as **"Always set to `true`."** -- the Frontend API returns only the flags that already evaluated on, so the field is a constant and the real answer is whether the object is in the array at all, which makes `toggles.find(t => t.name === x).enabled` a question whose answer is always yes when it does not throw. `clientFeatureSchema.enabled` is one input: "This is ANDed with the evaluation results of the strategies list", and the strategies are themselves "evaluated and ORed together", so the rule is an AND over an OR and it exists nowhere except as two clauses in two field descriptions. And the Admin API's `enabled` is a summary of an `environments` array whose members disagree with it -- on in development, off in production, one boolean at the top. Also pinned: the two SDK APIs do not agree on what to call the collection (`toggles` on one, `features` on the other, same flags, same server, because Unleash renamed the concept and one endpoint moved); the response format carries its own version number in the body, where version 2 "includes segments as a separate array" so an evaluation that reads strategies without joining segments applies a different rule while looking complete; and `description` and `variants` arrive as null rather than absent. Two authentication schemes share one header -- `apiKey` raw and `bearerToken` behind "Bearer " -- and only the raw form is served, which is pinned as a refusal so the gap is visible. Detection found the shape next door to YouTube's simile: matched on an imperative, where the biggest npm result for "unleash" is `precinct` at twenty million downloads, a dependency parser described as "Unleash the detectives" |
 
 ## Observability and product analytics
 
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**124 more listings across 74 Recipes declare no paging at all**, and the
+**126 more listings across 75 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
