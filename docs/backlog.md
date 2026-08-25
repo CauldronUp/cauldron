@@ -235,7 +235,7 @@ than finding out halfway through writing one.
 |---|---|
 | ~~Jira Cloud~~ | Shipped. Numbered custom fields, administrator-typed statuses, ADF descriptions, a create that returns no issue, and a 410 where the old search used to be |
 | Jira Service Management | Assess — requests, queues, SLAs. An SLA clock pauses and the paused time is not the elapsed time |
-| Confluence Cloud | Bodies are XHTML storage format rather than Markdown or HTML, and the `representation` field decides how the same string parses. Sending the wrong one stores markup as literal text |
+| ~~Confluence Cloud~~ | Shipped, written against the OpenAPI 3.0.3 document Atlassian publishes. This row's claim is true and is the second half. The first half is that asking for a page does not get you the page: body-format has no default, and "the representation will be available under a response field of the same name under the `body` field" only if you named one -- so an ordinary fetch returns a title, a status, a version, an author and nothing of what the page says, at 200. And the format you name becomes the key, so the same sentence is at body.storage.value for one request and body.atlas_doc_format.value for the next. Also: no partial update (id, status, title, body and version all required, so every updater must read before it writes); two documented ways to lose a draft, neither an error; the default listing includes archived pages; spaceId is accepted on an update and does nothing; and the id is int64 in the path and a string in every response |
 | Smartsheet | Assess — sheets, rows, columns. Column ids are numeric and per-sheet, so nothing is portable between sheets |
 | Wrike | Assess — tasks, folders, custom fields |
 | Height | Assess — tasks and lists |

@@ -1,0 +1,543 @@
+# Confluence Cloud Recipe for Cauldron
+#
+# Written against the OpenAPI 3.0.3 document Atlassian publishes at
+# developer.atlassian.com/cloud/confluence/openapi-v2.v3.json -- six hundred
+# kilobytes, 151 paths, titled "The Confluence Cloud REST API v2" -- and
+# quoted from the field and parameter descriptions in it.
+#
+# The backlog row that asked for this named the trap already: "Bodies are
+# XHTML storage format rather than Markdown or HTML, and the representation
+# field decides how the same string parses." That is true and it is the
+# second half. The first half is what happens before you get as far as
+# parsing anything.
+#
+# Asking for a page does not get you the page.
+#
+# Of body-format, on every read endpoint:
+#
+#   "The content format types to be returned in the `body` field of the
+#   response. If available, the representation will be available under a
+#   response field of the same name under the `body` field."
+#
+# The parameter has no default. So a request that does not name a format
+# gets a page with a title, an id, a status, a version, a space, an author,
+# timestamps, links -- and nothing whatsoever of what the page says. The
+# response is a 200 and it looks whole, because everything a page has except
+# its contents is there.
+#
+# And the format you name becomes the key. Ask for storage and the text is at
+# body.storage.value; ask for atlas_doc_format and the same text is at
+# body.atlas_doc_format.value, and body.storage is gone. One page, two
+# requests, two field names, both 200. Code written against either is broken
+# against the other, and the failure is a property access on undefined rather
+# than anything the API said.
+#
+# Then the backlog's half, which is what the value means once you have it.
+# Of BodyType.value: "Body of the content, in the format found in the
+# representation field." Confluence storage format is XHTML with Confluence's
+# own macro elements in it -- not Markdown, not HTML -- and atlas_doc_format
+# is a JSON tree serialised into a string. The two are wildly different
+# strings under the same field name, and the only thing distinguishing them
+# is a sibling field. Sending Markdown as storage stores the asterisks.
+#
+# Six more, each from the same document:
+#
+#   1. There is no partial update. PUT /pages/{id} requires id, status,
+#      title, body and version, all five. Changing one word in a page means
+#      resending its title and status, and a client that sends only the body
+#      is refused -- so every updater must read before it writes, and a
+#      client that reads without body-format has just fetched a page with no
+#      body to resend.
+#   2. Two documented ways to lose a draft, both in the request's own field
+#      descriptions. Of an update: "If two versions are significantly
+#      diverged, the latest provided content may entirely override what was
+#      previously in the draft." And of the status field: "if you change the
+#      status of a page from 'current' to 'draft' and it has an existing
+#      draft, the existing draft will be deleted in favor of the updated
+#      draft." Neither is an error, a warning, or a field on the response.
+#   3. The default listing includes archived pages. Of status: "By default,
+#      `current` and `archived` are used." That is the inverse of the shape
+#      Ecwid and Squarespace have -- those hide a category and this shows one
+#      -- and it fails the other way round: a page somebody archived to get
+#      it out of the way is still in every count, every search index and
+#      every export that did not think to filter.
+#   4. A field you can send that does nothing. Of spaceId on an update: "This
+#      currently **does not support moving the page to a different space**."
+#      It is accepted, it is documented, and it has no effect.
+#   5. The identifier is a number going in and a string coming out. The path
+#      parameter is declared integer with format int64; every response
+#      declares "id": {"type": "string"}. The same value, in one document,
+#      typed twice.
+#   6. The end of a listing is an absence. Of _links.next: "This property
+#      will not be present if there is no additional data available." Not
+#      null -- gone. Metronome's next_page is the same idea spelled the other
+#      way, sent as null and always present, and a paging loop written for
+#      one runs for ever against the other.
+#
+# One shape here is recorded against another provider and is stated as shared
+# rather than offered as a finding: an update carries the version it is based
+# on and the write is refused if it is stale. That is commercetools', in the
+# same words -- a contract a test suite cannot test, because the wrong
+# version passes every local check and overwrites in production.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Confluence's paging pointer travels twice, in the Link header and in
+#     _links.next, and both are relative URLs rather than tokens. Both are
+#     served and both are asserted, because a client that concatenates a base
+#     URL onto either builds an address that does not exist -- which is the
+#     mistake eight Recipes here were already making when cursor_url was
+#     added.
+#   - The version conflict is declared and its refusal is served. What is not
+#     served is the reconciliation in gap 2 above: an update that overrides a
+#     draft is a merge decision taken inside Confluence, and no response
+#     field reports it, so there is nothing an emulator could answer with.
+#   - body-format also accepts view, export_view, anonymous_export_view,
+#     styled_view and editor. Two are modelled -- storage and
+#     atlas_doc_format -- because those are the two the write endpoints
+#     accept and the two the bulk listing can return. The others are read
+#     projections and would be the same claim a fourth and fifth time.
+#   - Spaces, blog posts, attachments, comments, labels, custom content,
+#     classification levels and the other hundred-odd paths are absent. Pages
+#     only.
+#
+# The credential and the ids below are fixtures and belong to no site.
+
+recipe: confluence
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developer.atlassian.com/cloud/confluence/rest/v2/
+
+auth:
+  # An email address and an API token, base64'd together, which is what
+  # Atlassian's own examples send. The secret is the second half: the email
+  # names who you are and the token is what proves it, so a Recipe checking
+  # the username would accept any token at all.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-confluence-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # A relative URL in a Link header, which is where Confluence's own
+    # parameter descriptions send you: "use the relative URL in the Link
+    # header to retrieve the next set of results".
+    link_header: true
+    cursor_field: _links.next
+    cursor_url: path
+  resource:
+    style: bare
+  error:
+    # An array, because one request can fail several ways at once, with the
+    # HTTP status repeated inside each entry as a number.
+    style: list
+    key: errors
+    message_field: title
+    status_field: status
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  page:
+    id:
+      # Numeric, and a string on the wire whatever the path parameter says.
+      style: numeric
+    fields:
+      status:
+        type: string
+        default: current
+      title:
+        type: string
+      spaceId:
+        type: string
+      parentId:
+        type: string
+      authorId:
+        type: string
+      createdAt:
+        type: datetime
+      # Carries the number an update has to quote back.
+      version:
+        type: map
+      # Confluence storage format: XHTML with Confluence's macro elements in
+      # it. Nested under body and named for the format, because that is how
+      # the response names it.
+      body_storage:
+        type: map
+        in: body
+        as: storage
+      # And the same page as an Atlassian Document Format tree, serialised
+      # into a string.
+      body_adf:
+        type: map
+        in: body
+        as: atlas_doc_format
+
+routes:
+  # The listing, which includes archived pages unless told otherwise.
+  - method: GET
+    path: /wiki/api/v2/pages
+    resource: page
+    operation: list
+    returns:
+      - id
+      - status
+      - title
+      - spaceId
+      - parentId
+      - authorId
+      - createdAt
+      - version
+    filters:
+      # "By default, `current` and `archived` are used."
+      - param: status
+        field: status
+        default: current,archived
+        values:
+          current,archived:
+            - current
+            - archived
+          current:
+            - current
+          archived:
+            - archived
+          draft:
+            - draft
+    pagination:
+      style: cursor
+      cursor_param: cursor
+      limit_param: limit
+      limit: 25
+
+  # A page asked for by name, with no format named, which is a page without
+  # its contents.
+  - method: GET
+    path: /wiki/api/v2/pages/{id}
+    resource: page
+    operation: get
+    returns:
+      - id
+      - status
+      - title
+      - spaceId
+      - parentId
+      - authorId
+      - createdAt
+      - version
+
+  # The same page, asked for as storage.
+  - method: GET
+    path: /wiki/api/v2/pages/{id}
+    resource: page
+    operation: get
+    matches_query:
+      body-format: storage
+    returns:
+      - id
+      - status
+      - title
+      - spaceId
+      - parentId
+      - authorId
+      - createdAt
+      - version
+      - body_storage
+
+  # And as Atlassian Document Format, where the contents move to a different
+  # key and the storage one is not there at all.
+  - method: GET
+    path: /wiki/api/v2/pages/{id}
+    resource: page
+    operation: get
+    matches_query:
+      body-format: atlas_doc_format
+    returns:
+      - id
+      - status
+      - title
+      - spaceId
+      - parentId
+      - authorId
+      - createdAt
+      - version
+      - body_adf
+
+  - method: POST
+    path: /wiki/api/v2/pages
+    resource: page
+    operation: create
+
+  # Five required fields to change one of them.
+  - method: PUT
+    path: /wiki/api/v2/pages/{id}
+    resource: page
+    operation: update
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized; scope does not match.
+
+  resource_missing:
+    status: 404
+    message: The requested resource could not be found.
+
+  invalid_request:
+    status: 400
+    message: Bad request.
+
+  parameter_missing:
+    status: 400
+    message: "Missing required field: {detail}."
+
+fixtures:
+  empty: {}
+
+  site:
+    page:
+      # A published page, with both representations of the same sentence.
+      - id: "1441793"
+        status: current
+        title: Deployment runbook
+        spaceId: "786433"
+        parentId: "65601"
+        authorId: 5b10ac8d82e05b22cc7d4ef5
+        createdAt: "2026-05-14T09:12:44.113Z"
+        version:
+          number: 7
+          createdAt: "2026-08-02T15:41:02.905Z"
+          message: Corrected the rollback step
+          minorEdit: false
+          authorId: 5b10ac8d82e05b22cc7d4ef5
+        # XHTML with a Confluence macro in it, which is neither Markdown nor
+        # HTML and parses as neither.
+        body_storage:
+          representation: storage
+          value: >-
+            <p>Roll back with <code>deploy --to previous</code>.</p><ac:structured-macro
+            ac:name="warning"><ac:rich-text-body><p>Drain the queue
+            first.</p></ac:rich-text-body></ac:structured-macro>
+        # The same page as a JSON document tree, serialised into a string.
+        body_adf:
+          representation: atlas_doc_format
+          value: >-
+            {"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Roll
+            back with "},{"type":"text","text":"deploy --to
+            previous","marks":[{"type":"code"}]},{"type":"text","text":"."}]}]}
+      # Archived by somebody tidying up, and in the default listing all the
+      # same.
+      - id: "1441801"
+        status: archived
+        title: Deployment runbook (2024)
+        spaceId: "786433"
+        parentId: "65601"
+        authorId: 5b10ac8d82e05b22cc7d4ef5
+        createdAt: "2024-02-01T11:00:00.000Z"
+        version:
+          number: 12
+          createdAt: "2025-11-19T08:22:10.441Z"
+          message: Superseded
+          minorEdit: false
+          authorId: 5b10ac8d82e05b22cc7d4ef5
+        body_storage:
+          representation: storage
+          value: <p>Superseded by the current runbook.</p>
+        body_adf:
+          representation: atlas_doc_format
+          value: >-
+            {"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Superseded
+            by the current runbook."}]}]}
+      # A draft, which the default listing does not carry.
+      - id: "1441815"
+        status: draft
+        title: Incident review template
+        spaceId: "786433"
+        authorId: 5b10ac8d82e05b22cc7d4ef5
+        createdAt: "2026-08-20T16:03:51.208Z"
+        version:
+          number: 1
+          createdAt: "2026-08-20T16:03:51.208Z"
+          minorEdit: true
+          authorId: 5b10ac8d82e05b22cc7d4ef5
+        body_storage:
+          representation: storage
+          value: <p>Timeline, impact, contributing factors.</p>
+
+conformance:
+  - name: asking for a page gets everything about it except what it says
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-id-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/1441793
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # Title, status, space, author, version -- a page-shaped object with
+        # nothing of the page in it. body-format has no default, and "the
+        # representation will be available under a response field of the same
+        # name" only if you asked for one.
+        id: "1441793"
+        title: Deployment runbook
+        status: current
+        "version.number": 7
+      absent:
+        - body.storage
+        - body.atlas_doc_format
+
+  - name: naming the format puts the contents under a key named after it
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-id-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/1441793?body-format=storage
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # Confluence storage format, which is XHTML with Confluence's own
+        # macro elements in it. Not Markdown. Not HTML. A client that sends
+        # Markdown here stores the asterisks.
+        "body.storage.representation": storage
+      matches:
+        "body.storage.value": '^<p>Roll back with <code>'
+      absent:
+        - body.atlas_doc_format
+
+  - name: and naming a different one moves the contents to a different key
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-id-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/1441793?body-format=atlas_doc_format
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # The same page, the same sentence, a different field name and a
+        # completely different string: a JSON tree serialised into the same
+        # "value" property that held XHTML a request ago. Both are 200s and
+        # nothing in either says the other exists.
+        "body.atlas_doc_format.representation": atlas_doc_format
+      matches:
+        "body.atlas_doc_format.value": '^\{"type":"doc"'
+      absent:
+        - body.storage
+
+  - name: the default listing carries the archived page
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # "By default, `current` and `archived` are used." The page somebody
+        # archived last November is in every count that did not think to
+        # filter, and the draft is not.
+        "results[0].title": Deployment runbook
+        "results[1].title": Deployment runbook (2024)
+        "results[1].status": archived
+      absent:
+        - results[2]
+
+  - name: and asking for one status gets one status
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages?status=current
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # The other side of the default, so both ends are pinned: naming
+        # current excludes the archived page the default included.
+        "results[0].title": Deployment runbook
+      absent:
+        - results[1]
+
+  - name: the listing carries no page contents whatever you ask it for
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages?limit=1
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        "results[0].id": "1441793"
+      header_matches:
+        # The pointer to the rest travels twice. Here it is a relative URL in
+        # a Link header, which is where Atlassian's own parameter description
+        # sends you: "use the relative URL in the Link header".
+        Link: 'rel="next"'
+      matches:
+        # And here it is again in the body, the same relative URL under
+        # _links.next.
+        "_links.next": '^/wiki/api/v2/pages\?'
+      absent:
+        - results[0].body.storage
+        - results[1]
+
+  - name: a page identifier is a number in the path and a string in the body
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-id-get
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/1441801
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 200
+      body:
+        # The path parameter is declared integer with format int64 and every
+        # response declares the same value as a string. One document, one
+        # value, two types.
+        id: "1441801"
+        status: archived
+
+  - name: a page that is not there is refused in Atlassian's own envelope
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/intro/#status-codes
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages/9999999
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tY29uZmx1ZW5jZS1maXh0dXJlLXRva2Vu
+    expect:
+      status: 404
+      body:
+        # An array, because one request can fail several ways at once, with
+        # the status repeated inside each entry as a number.
+        "errors[0].status": 404
+        "errors[0].title": The requested resource could not be found.
+
+  - name: a credential the site does not know is refused
+    source: https://developer.atlassian.com/cloud/confluence/rest/v2/intro/#auth
+    fixture: site
+    request:
+      method: GET
+      path: /wiki/api/v2/pages
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206bm90LXRoaXMtc2l0ZXMtdG9rZW4=
+    expect:
+      status: 401
+      body:
+        "errors[0].status": 401
