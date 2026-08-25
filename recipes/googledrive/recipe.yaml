@@ -1,0 +1,430 @@
+# Google Drive Recipe for Cauldron
+#
+# Written against the discovery document Google publishes and generates its
+# own client libraries from, at
+# googleapis.com/discovery/v1/apis/drive/v3/rest -- 270 kilobytes, and the
+# source of every field description quoted here.
+#
+# The listing tells you when it might be wrong, in a field nobody reads.
+#
+# A file listing carries this beside the files:
+#
+#   incompleteSearch -- "Whether the search process was incomplete. If true,
+#   then some search results might be missing, since all documents were not
+#   searched. This can occur when searching multiple drives with the
+#   `allDrives` corpora, but all corpora couldn't be searched. When this
+#   happens, it's suggested that clients narrow their query by choosing a
+#   different corpus such as `user` or `drive`."
+#
+# So a 200, a files array, a page token -- and a boolean saying the answer may
+# be short. Nothing else in the response differs. The count agrees with the
+# array, the paging works, and code that loops until nextPageToken is absent
+# terminates cleanly having seen an unknown fraction of what it asked for.
+#
+# It is a sync job's worst case: not an error, not a retry, not a partial
+# status code. A quietly incomplete answer that looks exactly like a complete
+# one, and the remedy Google suggests is to ask a narrower question rather
+# than to ask again.
+#
+# Four more, each from the same document:
+#
+#   1. Drive is not a filesystem, and says so. Of name: "The name of the file.
+#      This isn't necessarily unique within a folder." Two files called
+#      invoices.csv can sit in one folder, so "find the file called X" is a
+#      query that returns a list, and every path-shaped mental model of Drive
+#      is wrong in a way that only shows up on somebody else's account.
+#   2. A field that is an array holds at most one thing. Of parents: "The ID
+#      of the parent folder containing the file. A file can only have one
+#      parent folder; specifying multiple parents isn't supported." The type
+#      is a list because it used to mean one, and the prose is now the only
+#      thing saying it does not.
+#   3. Shared drives are invisible until you ask twice.
+#      includeItemsFromAllDrives -- "Whether both My Drive and shared drive
+#      items should be included in results" -- defaults to false, and
+#      supportsAllDrives -- "Whether the requesting application supports both
+#      My Drives and shared drives" -- defaults to false as well. An
+#      integration written and tested on a personal account sees everything
+#      it expects; the same code against a company that uses shared drives
+#      sees a fraction and reports no error.
+#   4. A page token can be refused mid-loop, and the remedy is to start again.
+#      Of nextPageToken: "If the token is rejected for any reason, it should
+#      be discarded, and pagination should be restarted from the first page of
+#      results." Not retried -- restarted, from the beginning, with whatever
+#      was already processed processed again.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The q parameter is a query language of its own -- name contains,
+#      mimeType =, trashed = false, and so on -- and is not modelled. What is
+#      served is the corpora distinction the incompleteSearch description
+#      names as its cause, because that is the claim this file is about.
+#   - Four parameters on this one method are deprecated and still documented:
+#     teamDriveId, corpus, supportsTeamDrives and includeTeamDriveItems, each
+#     saying "Deprecated: Use X instead". They are not modelled, and they are
+#     worth knowing about, because a client copied from an old example uses
+#     the deprecated spelling and nothing tells it so.
+#   - A rejected page token is stated and not served: this format has no way
+#     to make a cursor stop being valid partway through a listing.
+#   - Every seeded file states whether it is trashed and nothing here creates
+#     one, so the default on that field is a claim about a request this
+#     Recipe cannot make. It is kept because a file Drive returns always
+#     carries the flag.
+#   - Uploads, revisions, permissions, comments, changes, shortcuts and the
+#     rest of the sixty-five fields on a file are absent. Listing and reading
+#     files only.
+#
+# The token and the ids below are fixtures and belong to no account.
+
+recipe: googledrive
+capability: files
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.google.com/workspace/drive/api/reference/rest/v3
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - ya29.cauldron-googledrive-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: files
+    cursor_field: nextPageToken
+    fields:
+      kind: drive#fileList
+  resource:
+    style: bare
+  error:
+    # Google's shape: everything under error, with an array of individual
+    # reasons inside it.
+    style: nested
+    key: error
+    message_field: message
+    code_field: status
+    type_field: "-"
+
+resources:
+  file:
+    id:
+      style: opaque
+      length: 33
+    constants:
+      kind: drive#file
+    fields:
+      name:
+        type: string
+      mimeType:
+        type: string
+      # A list that can hold one thing.
+      parents:
+        type: list
+      trashed:
+        type: boolean
+        default: false
+      # "Only populated for items in shared drives."
+      driveId:
+        type: string
+      createdTime:
+        type: datetime
+      modifiedTime:
+        type: datetime
+      size:
+        type: string
+      md5Checksum:
+        type: string
+      # Which corpus a file belongs to. Google decides this from where the
+      # file lives rather than sending it as a field, and it is declared here
+      # -- hidden from the wire -- because the corpora parameter is what
+      # selects between them.
+      corpus:
+        type: string
+        in: "-"
+
+routes:
+  # The ordinary listing: one account's own files, and nothing from a shared
+  # drive.
+  - method: GET
+    path: /drive/v3/files
+    resource: file
+    operation: list
+    filters:
+      # Not the q language -- the corpus, which is what the incompleteSearch
+      # description names as the cause.
+      - param: corpora
+        field: corpus
+        default: user
+    fields:
+      # One corpus searched, so the answer is whole.
+      incompleteSearch: false
+    pagination:
+      style: cursor
+      cursor_param: pageToken
+      limit_param: pageSize
+      limit: 100
+
+  # The same path asked across every drive, which is the case the
+  # incompleteSearch description names.
+  - method: GET
+    path: /drive/v3/files
+    resource: file
+    operation: list
+    matches_query:
+      corpora: allDrives
+    filters:
+      - param: corpora
+        field: corpus
+        values:
+          allDrives:
+            - user
+            - drive
+    fields:
+      # "This can occur when searching multiple drives with the `allDrives`
+      # corpora, but all corpora couldn't be searched."
+      incompleteSearch: true
+    pagination:
+      style: cursor
+      cursor_param: pageToken
+      limit_param: pageSize
+      limit: 100
+
+  - method: GET
+    path: /drive/v3/files/{id}
+    resource: file
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    message: Request had invalid authentication credentials.
+    code: UNAUTHENTICATED
+
+  resource_missing:
+    status: 404
+    message: File not found.
+    code: NOT_FOUND
+
+  invalid_request:
+    status: 400
+    message: Invalid Value
+    code: INVALID_ARGUMENT
+
+fixtures:
+  empty: {}
+
+  account:
+    file:
+      # Two files with the same name, in the same folder. Drive says this is
+      # allowed and it is the reason name lookups are queries.
+      - id: 1aBcDeFgHiJkLmNoPqRsTuVwXyZ012345
+        corpus: user
+        name: invoices.csv
+        mimeType: text/csv
+        parents:
+          - 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        trashed: false
+        createdTime: "2026-03-04T10:00:00.000Z"
+        modifiedTime: "2026-03-04T10:00:00.000Z"
+        size: "20481"
+        md5Checksum: 9e107d9d372bb6826bd81d3542a419d6
+      - id: 2bCdEfGhIjKlMnOpQrStUvWxYz0123456
+        corpus: user
+        name: invoices.csv
+        mimeType: text/csv
+        parents:
+          - 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        trashed: false
+        createdTime: "2026-07-19T16:42:00.000Z"
+        modifiedTime: "2026-07-19T16:42:00.000Z"
+        size: "31002"
+        md5Checksum: e4d909c290d0fb1ca068ffaddf22cbd0
+      # Trashed, and still in the listing unless the query says otherwise.
+      - id: 3cDeFgHiJkLmNoPqRsTuVwXyZ01234567
+        corpus: user
+        name: invoices-old.csv
+        mimeType: text/csv
+        parents:
+          - 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        trashed: true
+        createdTime: "2025-11-02T08:15:00.000Z"
+        modifiedTime: "2026-01-06T09:00:00.000Z"
+        size: "18220"
+      # In a shared drive, which the ordinary listing does not reach.
+      - id: 4dEfGhIjKlMnOpQrStUvWxYz012345678
+        corpus: drive
+        name: supplier-agreement.pdf
+        mimeType: application/pdf
+        parents:
+          - 0AKlMnOpQrStUvWxYz01234
+        trashed: false
+        driveId: 0AKlMnOpQrStUvWxYz01234
+        createdTime: "2026-05-21T11:30:00.000Z"
+        modifiedTime: "2026-05-21T11:30:00.000Z"
+        size: "884210"
+
+conformance:
+  - name: two files in one folder answer to the same name
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # "The name of the file. This isn't necessarily unique within a
+        # folder." Same name, same parent, different ids, different contents
+        # -- so "the file called invoices.csv" is not a thing that exists.
+        "files[0].name": invoices.csv
+        "files[1].name": invoices.csv
+        "files[0].parents[0]": 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        "files[1].parents[0]": 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        "files[0].md5Checksum": 9e107d9d372bb6826bd81d3542a419d6
+        "files[1].md5Checksum": e4d909c290d0fb1ca068ffaddf22cbd0
+
+  - name: the ordinary listing says the search was complete
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # corpora defaults to user, one corpus is searched, and the answer is
+        # whole. This is the case every integration is written against.
+        incompleteSearch: false
+        kind: drive#fileList
+        "files[0].kind": drive#file
+
+  - name: and asking across all drives says it might not have been
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files?corpora=allDrives
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # "This can occur when searching multiple drives with the `allDrives`
+        # corpora, but all corpora couldn't be searched." A 200, a longer
+        # list, and a boolean saying the list may still be short. A loop that
+        # runs to the end of the pages terminates cleanly and has seen an
+        # unknown fraction.
+        incompleteSearch: true
+        "files[3].name": supplier-agreement.pdf
+        "files[3].driveId": 0AKlMnOpQrStUvWxYz01234
+
+  - name: the shared drive file is not in the ordinary listing at all
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # Three files rather than four. includeItemsFromAllDrives defaults to
+        # false and so does supportsAllDrives, so an integration written on a
+        # personal account sees everything and the same code at a company
+        # that uses shared drives sees a fraction, with no error.
+        "files[2].name": invoices-old.csv
+      absent:
+        - files[3]
+
+  - name: a trashed file is in the listing like any other
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # "Whether the file has been trashed, either explicitly or from a
+        # trashed parent folder." Excluding it is the caller's job, through
+        # the q language this Recipe does not model, so here it is.
+        "files[2].trashed": true
+        "files[0].trashed": false
+
+  - name: the parent list holds exactly one parent
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files/1aBcDeFgHiJkLmNoPqRsTuVwXyZ012345
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        # "A file can only have one parent folder; specifying multiple
+        # parents isn't supported." The field is an array because it used to
+        # mean several, and the prose is the only thing that says it does not.
+        "parents[0]": 0BwwA4oUTeiV1TGRPeTVjaWRDY1E
+        name: invoices.csv
+      absent:
+        - parents[1]
+
+  - name: paging carries a token and the envelope names its own kind
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files?pageSize=2
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 200
+      body:
+        kind: drive#fileList
+        "files[0].id": 1aBcDeFgHiJkLmNoPqRsTuVwXyZ012345
+      matches:
+        # "If the token is rejected for any reason, it should be discarded,
+        # and pagination should be restarted from the first page of results"
+        # -- which is the one thing about this token a client has to handle
+        # and the one thing this emulator cannot make happen.
+        nextPageToken: '^.+$'
+      absent:
+        - files[2]
+
+  - name: a file that is not there is refused in Google's own envelope
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files/0000000000000000000000000000000ff
+      headers:
+        Authorization: Bearer ya29.cauldron-googledrive-fixture-token
+    expect:
+      status: 404
+      body:
+        "error.status": NOT_FOUND
+        "error.message": File not found.
+
+  - name: a token the account does not know is refused
+    source: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
+    fixture: account
+    request:
+      method: GET
+      path: /drive/v3/files
+      headers:
+        Authorization: Bearer ya29.not-this-accounts-token
+    expect:
+      status: 401
+      body:
+        "error.status": UNAUTHENTICATED

@@ -2450,3 +2450,56 @@ func TestDetectMongoDBAtlasAdminClientsAndNotTheWordAtlas(t *testing.T) {
 		}
 	}
 }
+
+// Drive follows the scoped-package pattern Gmail and Calendar already use
+// here: the unscoped googleapis covers every Google API at once, and a package
+// maps to one Recipe.
+//
+// The most installed Drive packages on Packagist are Flysystem adapters, and
+// they are mapped because they really do call this API -- while their whole
+// purpose is to make Drive look like a filesystem, on an API whose own
+// documentation says a name "isn't necessarily unique within a folder".
+//
+// Everything else with the name is a picker, and one of the exclusions is
+// google-drive-mock: another emulator doing this Recipe's job.
+func TestDetectGoogleDriveClientsAndNotThePickers(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@googleapis/drive": "^8.0.0"}}`},
+		{"composer.json": `{"require": {"masbug/flysystem-google-drive-ext": "^2.0"}}`},
+		{"composer.json": `{"require": {"nao-pon/flysystem-google-drive": "^1.1"}}`},
+		{"composer.json": `{"require": {"yaza/laravel-google-drive-storage": "^3.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "googledrive") {
+			t.Errorf("%v did not detect googledrive: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Pickers: browser widgets on a different API.
+		{"package.json": `{"dependencies": {"@uppy/google-drive": "^4.0.0"}}`},
+		{"package.json": `{"dependencies": {"react-google-drive-picker": "^1.2.0"}}`},
+		{"package.json": `{"dependencies": {"@googleworkspace/drive-picker-element": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@googleworkspace/drive-picker-react": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"google-drive-picker": "^1.0.0"}}`},
+		// Typings, which make no request.
+		{"package.json": `{"devDependencies": {"@maxim_mazurok/gapi.client.drive-v3": "^0.0.1"}}`},
+		// Another emulator, doing this Recipe's job.
+		{"package.json": `{"devDependencies": {"google-drive-mock": "^1.0.0"}}`},
+		// And a different Google product entirely.
+		{"composer.json": `{"require": {"spatie/laravel-google-cloud-storage": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "googledrive") {
+			t.Errorf("%v offered the googledrive Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
