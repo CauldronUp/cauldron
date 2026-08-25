@@ -868,6 +868,40 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The vendor's own unrelated library, at a scale nothing else in
+			// this file approaches -- and it is the second time the unrelated
+			// library is a PHP static analyser.
+			//
+			// vimeo/psalm has eighty-five million downloads. It finds errors
+			// in PHP and has nothing whatever to do with video. Etsy's phan
+			// is the same tool doing the same job under the same kind of
+			// vendor name, so two providers here now have static analysis as
+			// their largest near miss. vimeo/php-mysql-engine is a MySQL
+			// engine written in PHP, from the same vendor and the same
+			// distance from this API.
+			//
+			// And the player, which is the transport shape at twenty to one.
+			// @vimeo/player -- "Interact with and control an embedded Vimeo
+			// Player" -- is installed five and a quarter million times a
+			// month against the official Node client's two hundred and sixty
+			// thousand. It drives an iframe in a browser and never calls this
+			// API. vimeo-video-element, @u-wave/react-vimeo, vue-vimeo
+			// -player, react-native-vimeo-iframe, lite-vimeo-embed and
+			// @astro-community/astro-embed-vimeo are all the same thing
+			// again, and @types/vimeo__player alone outnumbers the client six
+			// to one.
+			//
+			// @snowplow/browser-plugin-vimeo-tracking watches the player
+			// rather than calling anything, and plyr is a general HTML5
+			// player that merely mentions Vimeo in its description.
+			recipe: "vimeo",
+			composer: []string{
+				"vimeo/vimeo-api",
+				"vimeo/laravel",
+			},
+			npm: []string{"@vimeo/vimeo"},
+		},
+		{
 			// A rename the ecosystem has not followed. HelloSign became
 			// Dropbox Sign, and on Packagist the old package is installed
 			// seven times more than the new one -- hellosign/hellosign-php
