@@ -70,6 +70,36 @@ func providers() []provider {
 			},
 		},
 		{
+			// The sibling problem, inverted -- and a mapping this file
+			// deliberately does not make.
+			//
+			// Confluence's entry above notes that a Jira client is not a
+			// Confluence client. Service Management is the other way round:
+			// jira.js describes itself as a "library for the Jira Cloud
+			// platform API, Jira Agile API, and Jira Service Management API",
+			// and it is installed over a million times a month. One
+			// dependency speaks three products.
+			//
+			// A package maps to one Recipe here, and TestNoPackageMapsToTwo
+			// Recipes enforces it. So jira.js stays with Jira, where it
+			// mostly belongs, and this API is reachable only through the
+			// small dedicated client below -- which is the honest state of
+			// the world rather than a shortfall in the search. Claiming
+			// jira.js for Service Management would have made every Jira
+			// project look like a Service Management project.
+			//
+			// The rest are near misses: jira-service-desk-resources is a
+			// stylesheet for a portal theme, react-spartez-support-chat
+			// -widget embeds somebody else's chat product into a portal page,
+			// and @atlassian-dc-mcp/jira is Data Center, whose REST API is
+			// not this one. Packagist has nothing at all -- searching it for
+			// the product returns Freshdesk SDKs, Zoho Desk SDKs and a
+			// Laravel package that implements a service desk rather than
+			// calling one.
+			recipe: "jiraservicemanagement",
+			npm:    []string{"@pipedream/jira_service_desk"},
+		},
+		{
 			// Two new shapes here, and both are about a name being right
 			// while the thing behind it is not this API.
 			//
