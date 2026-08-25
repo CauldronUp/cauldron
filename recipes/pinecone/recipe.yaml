@@ -1,0 +1,406 @@
+# Pinecone Recipe for Cauldron
+#
+# The response to "make me an index" is an address somewhere else.
+#
+# Pinecone is two APIs with two base URLs. The control plane lives at
+# api.pinecone.io and creates, lists and deletes indexes. The data plane --
+# query, upsert, fetch, delete vectors, which is every operation an
+# application actually performs -- lives at the index's own host, and you
+# cannot know that host until the control plane tells you.
+#
+# The data plane's own OpenAPI document says so by not being able to name its
+# server:
+#
+#   servers:
+#   - url: https://{index_host}
+#     variables:
+#       index_host:
+#         default: unknown
+#         description: host of the index
+#
+# The default value of the host is the word "unknown". A client generated from
+# that document and left unconfigured posts its query to https://unknown/query.
+#
+# So the first request of any Pinecone integration returns an address, and the
+# integration is wrong until it uses it. host is required on every IndexModel
+# -- not optional, not sometimes -- because there is no other way to find the
+# thing you just made.
+#
+# Written against the OpenAPI documents Pinecone publishes at
+# pinecone-io/pinecone-api: db_control_2026-04.oas.yaml and
+# db_data_2026-04.oas.yaml, which are two of the ten documents in that
+# directory for one dated version of one product.
+#
+# Four more the Recipe pins:
+#
+#   1. ready and state are two fields and the vendor's own example has them
+#      disagreeing. The example attached to status is, verbatim,
+#      {"ready": true, "state": "ScalingUpPodSize"} -- ready, and not in the
+#      state called Ready. There are nine states and Ready is one of them, so
+#      code that waits for state == "Ready" waits through scaling that the
+#      index is already serving through, and code that waits for ready alone
+#      proceeds during Terminating.
+#   2. A created index has an address before it has an index. The create
+#      answers 201 with host filled in and status.ready false, which is the
+#      right shape for a client to store and the wrong moment to query.
+#   3. A delete is a 202. So is a configure. "The request to delete the index
+#      has been accepted" -- and Terminating is one of the nine states, so the
+#      index you deleted answers describe for a while afterwards.
+#   4. The error vocabulary is gRPC's. "The response shape used for all error
+#      responses" carries a code drawn from OK, UNKNOWN, INVALID_ARGUMENT,
+#      DEADLINE_EXCEEDED, QUOTA_EXCEEDED, NOT_FOUND, ALREADY_EXISTS,
+#      PERMISSION_DENIED, UNAUTHENTICATED, RESOURCE_EXHAUSTED,
+#      FAILED_PRECONDITION, ABORTED, OUT_OF_RANGE, UNIMPLEMENTED, INTERNAL,
+#      UNAVAILABLE, DATA_LOSS, and then FORBIDDEN, UNPROCESSABLE_ENTITY and
+#      PAYMENT_REQUIRED bolted on the end. The first seventeen are the
+#      canonical gRPC status codes, which is why an error code of OK is a
+#      documented possibility. The HTTP status is repeated inside the body
+#      beside it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The data plane is not served, because it is a second base URL and this
+#     emulator is one address. Serving /query and /vectors/upsert here would
+#     teach that they answer on api.pinecone.io, which is the exact mistake
+#     this Recipe exists to describe. What is served instead is the claim
+#     that produces it: an index's host is somewhere else, asserted against
+#     the address the request was sent to.
+#   - X-Pinecone-Api-Version is required: true on every operation in both
+#     documents, described as "Required date-based version header", and
+#     neither document says what a missing one answers. The 400 below is this
+#     file's reading rather than a quotation, and is marked as such.
+#   - A deleted index staying answerable in state Terminating is described
+#     above and not served: the delete removes the record here.
+#   - Backups, collections, restore jobs, import, namespaces, inference and
+#     the assistant surfaces are absent -- six more documents in the same
+#     directory.
+#
+# The key and index names below are fixtures and belong to no project.
+
+recipe: pinecone
+capability: database
+version: 0.1.0
+
+upstream:
+  api: 2026-04
+  docs: https://docs.pinecone.io/reference/api
+
+auth:
+  # "An API Key is required to call Pinecone APIs."
+  scheme: header
+  header: Api-Key
+  keys:
+    - pcsk_cauldronfixture_NotARealPineconeKey0000000
+
+required_headers:
+  # required: true on every operation in both documents. What a missing one
+  # answers is not stated anywhere, so the failure below is a reading.
+  X-Pinecone-Api-Version: invalid_request
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  index:
+    collection: indexes
+    id:
+      style: opaque
+      field: name
+    fields:
+      # Absent on a sparse index: "If 'sparse', the vector dimension should
+      # not be specified."
+      dimension:
+        type: integer
+      metric:
+        type: string
+        default: cosine
+      # Required on every index, because there is no other way to find it.
+      host:
+        type: string
+        default: cauldron-fixture-0000000.svc.aped-4627-b74a.pinecone.io
+      private_host:
+        type: string
+      vector_type:
+        type: string
+        default: dense
+      deletion_protection:
+        type: string
+        default: disabled
+      spec:
+        type: map
+      status:
+        type: map
+        # An address before an index. A create answers with this.
+        default:
+          ready: false
+          state: Initializing
+      tags:
+        type: map
+
+routes:
+  - method: POST
+    path: /indexes
+    resource: index
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /indexes
+    resource: index
+    operation: list
+    list:
+      style: wrapped
+
+  - method: GET
+    path: /indexes/{id}
+    resource: index
+    operation: get
+
+  - method: DELETE
+    path: /indexes/{id}
+    resource: index
+    operation: delete
+    # "The request to delete the index has been accepted."
+    status: 202
+
+errors:
+  # status is declared per failure rather than with status_field, because
+  # Pinecone puts it beside the error object and status_field puts it inside.
+  authentication_error:
+    status: 401
+    message: Invalid API key.
+    code: UNAUTHENTICATED
+    fields:
+      status: 401
+
+  resource_missing:
+    status: 404
+    message: Index not found.
+    code: NOT_FOUND
+    fields:
+      status: 404
+
+  invalid_request:
+    status: 400
+    message: Index name must contain only lowercase alphanumeric characters or hyphens, and must not begin or end with a hyphen.
+    code: INVALID_ARGUMENT
+    fields:
+      status: 400
+
+  conflict:
+    status: 409
+    message: An index with that name already exists.
+    code: ALREADY_EXISTS
+    fields:
+      status: 409
+
+fixtures:
+  empty: {}
+
+  project:
+    index:
+      # The vendor's own status example, verbatim: ready, and not in the
+      # state called Ready.
+      - id: semantic-search
+        dimension: 1536
+        metric: cosine
+        host: semantic-search-c01b5b5.svc.us-west1-gcp.pinecone.io
+        private_host: semantic-search-c01b5b5.svc.private.us-west1-gcp.pinecone.io
+        vector_type: dense
+        deletion_protection: disabled
+        spec:
+          serverless:
+            cloud: aws
+            region: us-east-1
+        status:
+          ready: true
+          state: ScalingUpPodSize
+        tags:
+          env: fixtures
+
+      # Still coming up, and already advertising where it will be.
+      - id: product-titles
+        metric: dotproduct
+        host: product-titles-c01b5b5.svc.us-west1-gcp.pinecone.io
+        vector_type: sparse
+        deletion_protection: disabled
+        spec:
+          serverless:
+            cloud: aws
+            region: us-east-1
+        status:
+          ready: false
+          state: Initializing
+
+conformance:
+  - name: the answer to a describe is an address somewhere else
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes/semantic-search
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 200
+      body:
+        # Every vector operation goes here instead, and there is no way to
+        # know this host without having asked. The data plane's own document
+        # cannot name its server: the default value of its host variable is
+        # the word "unknown".
+        host: semantic-search-c01b5b5.svc.us-west1-gcp.pinecone.io
+        private_host: semantic-search-c01b5b5.svc.private.us-west1-gcp.pinecone.io
+      matches:
+        # Somewhere else, said as a shape rather than as a string. Every
+        # index host has a .svc. segment and a region in it; api.pinecone.io,
+        # which is where this request went, has neither.
+        host: '^[a-z0-9-]+\.svc\.[a-z0-9.-]+\.pinecone\.io$'
+
+  - name: ready and the state called Ready are different questions
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes/semantic-search
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 200
+      body:
+        # The example attached to status in the document, verbatim. Nine
+        # states, Ready is one of them, and this index is not in it.
+        "status.ready": true
+        "status.state": ScalingUpPodSize
+
+  - name: and an index that is not ready still tells you where it lives
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes/product-titles
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 200
+      body:
+        "status.ready": false
+        "status.state": Initializing
+        host: product-titles-c01b5b5.svc.us-west1-gcp.pinecone.io
+
+  - name: a sparse index has no dimension at all
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes/product-titles
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 200
+      body:
+        vector_type: sparse
+      absent:
+        # "If the 'vector_type' is 'sparse', the vector dimension should not
+        # be specified." Not nought, and not null: gone.
+        - dimension
+
+  - name: a create answers with an address and an index that is not there yet
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: POST
+      path: /indexes
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+      json:
+        name: order-notes
+        dimension: 1536
+        metric: cosine
+        spec:
+          serverless:
+            cloud: aws
+            region: us-east-1
+    expect:
+      # 201, with a host to store and nothing yet to query.
+      status: 201
+      body:
+        name: order-notes
+        "status.ready": false
+        "status.state": Initializing
+
+  - name: a delete is accepted rather than done
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: DELETE
+      path: /indexes/semantic-search
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      # "The request to delete the index has been accepted." Terminating is
+      # one of the nine states, so the real thing answers describe for a
+      # while after this.
+      status: 202
+      no_body: true
+
+  - name: the version header is required on everything
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+    expect:
+      # required: true on every operation in both documents. An SDK sets it;
+      # the first hand-written fetch does not.
+      status: 400
+      body:
+        "error.code": INVALID_ARGUMENT
+
+  - name: the failure speaks gRPC and repeats its own status
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes/semantic-search
+      headers:
+        Api-Key: pcsk_NotThisProjectsKey000000000000000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 401
+      body:
+        # UNAUTHENTICATED is a gRPC canonical status, which is why OK is a
+        # documented value of a field called "The error code".
+        "error.code": UNAUTHENTICATED
+        "error.message": Invalid API key.
+        # And the HTTP status again, in the body, as a number.
+        status: 401
+
+  - name: a listing wraps the indexes under their own name
+    source: https://github.com/pinecone-io/pinecone-api
+    fixture: project
+    request:
+      method: GET
+      path: /indexes
+      headers:
+        Api-Key: pcsk_cauldronfixture_NotARealPineconeKey0000000
+        X-Pinecone-Api-Version: "2026-04"
+    expect:
+      status: 200
+      body:
+        "indexes[0].name": semantic-search
+        "indexes[1].name": product-titles

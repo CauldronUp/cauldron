@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Two exclusions here have now happened three times running, which
+			// makes them a rule rather than a judgement call.
+			//
+			// The first is infrastructure-as-code. @pinecone-database/pulumi
+			// joins @pulumi/vault and @pulumiverse/unleash: a project holding
+			// one is provisioning the provider rather than calling it at
+			// runtime, so an emulator of the runtime API is not what its tests
+			// need. The second is agent tooling: @pinecone-database/mcp beside
+			// @unleash/mcp. Both are published by the vendor under the vendor's
+			// own scope, which is exactly why the name alone cannot decide it.
+			//
+			// @traceloop/instrumentation-pinecone at eight hundred thousand is
+			// a third kind, and a new one: it is OpenTelemetry instrumentation
+			// that wraps the official SDK to emit traces. It observes a client
+			// rather than being one, and any project holding it already holds
+			// @pinecone-database/pinecone, which is what actually offers the
+			// Recipe.
+			//
+			// The homonyms are small but real. The npm package called plainly
+			// "pinecone" is a JavaScript-to-Lua converter, and create-pc-app
+			// scaffolds "a Pinecone addon app" for something else entirely.
+			// symfony/ai-store is the generic vector-store abstraction, so only
+			// its Pinecone bridge is mapped.
+			recipe: "pinecone",
+			composer: []string{
+				"probots-io/pinecone-php",
+				"scotteuser/pinecone-php",
+				"symfony/ai-pinecone-store",
+				"islambaraka90/pinecone-php-client",
+				"mbvb1223/pinecone-php-client",
+			},
+			npm: []string{
+				"@pinecone-database/pinecone",
+				"@pinecone-database/connect",
+				"@langchain/pinecone",
+				"@mastra/pinecone",
+				"genkitx-pinecone",
+			},
+		},
+		{
 			// Another near-miss shape, and again the biggest number on the page
 			// produced it: matched on an imperative. "Unleash" is a verb that
 			// package taglines love, so the largest npm result for it is

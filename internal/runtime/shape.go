@@ -861,6 +861,18 @@ func (s *Sandbox) writeRaw(w http.ResponseWriter, matched route, body map[string
 // A field declared type: map is free-form and keeps whatever it was sent,
 // because some providers really do accept arbitrary keys. That is a Recipe
 // saying so rather than the runtime assuming it.
+//
+// The identifier is taken under whichever name the resource publishes it. It
+// used to be kept under that name as an ordinary key, which meant a create
+// naming its own identifier -- Pinecone's POST /indexes sends {"name": ...},
+// and the index name is the identifier -- stored no id at all, minted one, and
+// then answered with two writers for a single key: the stored value under the
+// wire name, and the minted identifier rendered under the same wire name.
+//
+// Which won depended on map iteration order, so the response was a coin flip.
+// That is the worst failure this emulator can have: a fake that is
+// non-deterministic makes a suite flaky, and the first place anybody looks is
+// their own code.
 func (s *Sandbox) declaredOnly(resource string, record store.Record) store.Record {
 	spec, ok := s.recipe.Resources[resource]
 	if !ok {
@@ -870,10 +882,24 @@ func (s *Sandbox) declaredOnly(resource string, record store.Record) store.Recor
 	kept := store.Record{}
 
 	for name, value := range record {
-		if name == spec.ID.Field || name == "id" {
+		if name == "id" {
 			kept[name] = value
 
 			continue
+		}
+
+		// The wire name of the identifier, stored as the identifier. Not when
+		// the resource also declares a field of that name: then the Recipe has
+		// said the two are different things, and the field wins because the
+		// identifier still has "id" to arrive under.
+		if name == spec.ID.Field && spec.ID.Field != "" && spec.ID.Field != "-" {
+			if _, declared := spec.Fields[name]; !declared {
+				if _, already := kept["id"]; !already {
+					kept["id"] = value
+				}
+
+				continue
+			}
 		}
 
 		if _, declared := spec.Fields[name]; declared {

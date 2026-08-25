@@ -2776,3 +2776,54 @@ func TestDetectUnleashClientsAndNotAnImperative(t *testing.T) {
 		}
 	}
 }
+
+// Pinecone settles two exclusions that have now come up three Recipes running.
+//
+// Infrastructure-as-code: @pinecone-database/pulumi joins @pulumi/vault and
+// @pulumiverse/unleash. A project holding one provisions the provider rather
+// than calling it at runtime. Agent tooling: @pinecone-database/mcp beside
+// @unleash/mcp. Both are published under the vendor's own scope, which is why
+// the name alone cannot decide it.
+//
+// And a new kind: @traceloop/instrumentation-pinecone is OpenTelemetry
+// instrumentation that wraps the official SDK. It observes a client rather than
+// being one, and any project holding it already holds the client.
+func TestDetectPineconeClientsAndNotItsToolingOrATranspiler(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@pinecone-database/pinecone": "^6.0.0"}}`},
+		{"package.json": `{"dependencies": {"@langchain/pinecone": "^0.2.0"}}`},
+		{"package.json": `{"dependencies": {"@mastra/pinecone": "^0.3.0"}}`},
+		{"composer.json": `{"require": {"probots-io/pinecone-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"symfony/ai-pinecone-store": "^0.1"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "pinecone") {
+			t.Errorf("%v did not detect pinecone: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own tooling, which is not a client.
+		{"package.json": `{"dependencies": {"@pinecone-database/pulumi": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@pinecone-database/mcp": "^1.0.0"}}`},
+		// Instrumentation that wraps the client rather than being one.
+		{"package.json": `{"dependencies": {"@traceloop/instrumentation-pinecone": "^0.14.0"}}`},
+		// The bare name is a JavaScript-to-Lua converter.
+		{"package.json": `{"devDependencies": {"pinecone": "^0.2.0"}}`},
+		// The generic abstraction, without the Pinecone bridge.
+		{"composer.json": `{"require": {"symfony/ai-store": "^0.1"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "pinecone") {
+			t.Errorf("%v offered the pinecone Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
