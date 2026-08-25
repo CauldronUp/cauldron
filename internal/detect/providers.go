@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// A small ecosystem where nearly everything under the vendor's own
+			// scope is something other than a client, which makes the scope
+			// useless as a signal and the exclusions the whole job.
+			//
+			// @hookdeck/outpost-sdk is the sharpest: Outpost is Hookdeck's
+			// open-source, self-hosted outbound-webhook product, with an API of
+			// its own. Same vendor, same npm scope, different surface -- so
+			// mapping it here would offer a Recipe for the wrong API to a
+			// project that is not calling this one at all. That is a new shape
+			// for this file, and it is the reason a scope cannot be trusted the
+			// way @googleapis/ can.
+			//
+			// The rest are the rules three Recipes have already settled.
+			// @nectarsocial/hookdeck and @sst-provider/hookdeck are Pulumi
+			// bridges and @toppy/hookdeck-deploy-cli deploys infrastructure
+			// from declarative config, all infrastructure-as-code;
+			// @stackcurious/hookdeck-mcp and @iflow-mcp/hookdeck-hookdeck-cli
+			// are agent tooling; @hookdeck/eventcatalog-generator produces
+			// documentation.
+			//
+			// The workflow nodes are mapped, because they really do call this
+			// API on a project's behalf, which is the same reading that mapped
+			// @pipedream/jira_service_desk.
+			//
+			// Packagist has no Hookdeck client at all. Searching for the word
+			// returns laracasts/holodeck, ffm/hookdocs and avirdz/hookdeploy,
+			// none of which shares it -- fuzzy-match noise rather than
+			// homonyms, and worth recording only because an empty result and a
+			// wrong result look the same from a distance.
+			recipe: "hookdeck",
+			npm: []string{
+				"hookdeck-cli",
+				"@hookdeck/vercel",
+				"@hookdeck/pubsub",
+				"n8n-nodes-hookdeck",
+				"@hookdeck/n8n-nodes-hookdeck",
+				"@pipedream/hookdeck",
+			},
+		},
+		{
 			// Two exclusions here have now happened three times running, which
 			// makes them a rule rather than a judgement call.
 			//
