@@ -1,0 +1,659 @@
+# Jira Service Management Recipe for Cauldron
+#
+# Written against the OpenAPI document Atlassian publishes at
+# developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json -- 370
+# kilobytes, 50 paths, 117 schemas, titled "Service Management Public REST
+# API" -- and quoted from the field descriptions in it.
+#
+# This is a different product from the Jira Recipe beside it, on a different
+# path prefix (/rest/servicedeskapi rather than /rest/api/3), with its own
+# object model. What it shares with Jira is the credential and the host, which
+# is the whole reason the detection notes below exist.
+#
+# The clock on an SLA is not a clock.
+#
+# An ongoing SLA cycle reports elapsedTime as "Duration of the service" and
+# carries two booleans that decide what that means:
+#
+#   withinCalendarHours -- "Indicates whether the SLA it timed during
+#   calendared working hours only (true) or not (false)."
+#
+#   paused -- "Indicates whether the SLA is paused (true) or not (false)."
+#
+# So elapsedTime counts service time and not elapsed time. A ticket raised at
+# five on Friday afternoon against a nine-to-five calendar has an elapsedTime
+# near zero on Monday morning, three days after it started, and a ticket
+# waiting on the customer is paused and its clock is not running at all.
+#
+# The consequence is arithmetic that quietly disagrees. `now - startTime` is
+# the obvious way to work out how long a ticket has been open, every dashboard
+# computes it, and it is not the number the SLA breaches on. The two diverge
+# by exactly the hours nobody was working, which is most of them.
+#
+# And the field is not in the response unless you ask. On the customer request
+# object, sla is "Expandable details of the SLAs relating to the request" --
+# so a plain GET of a request answers 200 with a summary, a status, a
+# reporter, timestamps, and nothing about whether the thing is breaching. That
+# is Clover's expand and Confluence's body-format, arriving on the field that
+# decides whether somebody is about to be in trouble.
+#
+# Six more, each from the same document:
+#
+#   1. There is no such thing as "the SLA". Atlassian's own words on the SLA
+#      endpoint: "A customer request can have zero or more SLAs. Each SLA can
+#      have recordings for zero or more completed cycles and zero or 1
+#      ongoing cycle." So answering "is this breaching" means walking a list
+#      of objects, each of which may or may not have a cycle running, and
+#      there is no field anywhere that answers it.
+#   2. breachTime is populated on cycles that never breached. Of the
+#      completed cycle's: "Time and date at which the SLA cycle breached in
+#      case of completed breached cycle or would have breached in case of
+#      non-breached completed cycle." A timestamp under that name, on a
+#      ticket that was answered in time, describing an event that did not
+#      happen.
+#   3. paused is on the ongoing cycle and not on the completed one. Once a
+#      cycle finishes, the record that it was ever stopped is gone, so a
+#      completed cycle's elapsedTime cannot be reconciled with its own start
+#      and stop times and nothing in the object explains the difference.
+#   4. remainingTime survives the end of the cycle: on a completed cycle it
+#      is "Duration remaining after the service was completed", which is a
+#      leftover rather than a countdown, and it is the same field name that
+#      meant a countdown five minutes earlier.
+#   5. Every instant arrives four times. DateDTO is epochMillis, friendly,
+#      iso8601 and jira -- and jira is defined as "ISO8601 format but extended
+#      with milliseconds", which is a field Atlassian ships because its own
+#      other API does not agree with the standard the field beside it is
+#      named for. Durations arrive twice, as millis and friendly.
+#   6. The page reports its own size and never the total. size is "Number of
+#      items returned in the page" and isLastPage is the only other signal,
+#      so a progress bar over this API has nothing to divide by. That is
+#      Shopware's trap and is stated as shared.
+#
+# Two more shapes are recorded against the Jira Recipe and are stated as
+# shared rather than offered here: requestFieldValues is "a JSON map of Jira
+# field IDs and their values", so the same field is customfield_10023 on one
+# instance and something else on the next; and a status name is whatever an
+# administrator typed, with statusCategory the stable one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The clock itself is not modelled. elapsedTime, remainingTime and paused
+#     are served as seeded, not computed, because working out service time
+#     needs a calendar, a pause history and a notion of now that the fixture
+#     does not carry. What is served is the shape the arithmetic fails
+#     against: a startTime three days old beside an elapsedTime of ninety
+#     minutes, on one object, both true.
+#   - expand is a multi-value parameter and this Recipe serves one value of
+#     it, sla, because that is the one the file is about. serviceDesk,
+#     requestType and participant expand the same way and would be the same
+#     claim three more times.
+#   - The request identifier is issueId and the request key is issueKey, and
+#     the path accepts either ({issueIdOrKey}). The id is served; addressing
+#     a request by its key is not, because this format resolves one lookup
+#     field per route and the key would need a second.
+#   - A request with no SLAs at all is not modelled. Atlassian says a request
+#     can have "zero or more" and does not say whether the expanded field is
+#     then an empty array or absent, so this Recipe declares no default for
+#     it and every request a case expands is seeded with one. Guessing either
+#     way would be a claim the document does not support.
+#   - Queues, organisations, approvals, attachments, comments, the knowledge
+#     base and the Assets workspace are absent. Customer requests and their
+#     SLAs only.
+#
+# The credential and the ids below are fixtures and belong to no site.
+
+recipe: jiraservicemanagement
+capability: issues
+version: 0.1.0
+
+upstream:
+  api: servicedeskapi
+  docs: https://developer.atlassian.com/cloud/jira/service-desk/rest/
+
+auth:
+  # An email address and an API token, base64'd together. The secret is the
+  # second half.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-jsm-fixture-token
+
+responses:
+  list:
+    style: wrapped
+    key: values
+    # "Number of items returned in the page", which is not how many matched.
+    count_field: size
+    count_means: page
+    page_field: start
+    limit_field: limit
+    complete_field: isLastPage
+    cursor_field: _links.next
+    cursor_url: absolute
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: errorMessage
+    status_field: status
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  request:
+    id:
+      # The peer issue id, which is a number written as text.
+      style: digits
+      field: issueId
+    fields:
+      # And the key the same request answers to, which is what a human
+      # quotes and what the path also accepts.
+      issueKey:
+        type: string
+      summary:
+        type: string
+      requestTypeId:
+        type: string
+      serviceDeskId:
+        type: string
+      # Four spellings of one instant.
+      createdDate:
+        type: map
+      currentStatus:
+        type: map
+      reporter:
+        type: map
+      # customfield_10023 and friends, which is the Jira Recipe's first
+      # claim and is repeated here rather than made again.
+      requestFieldValues:
+        type: list
+        default: []
+      # Expandable, and absent from an ordinary fetch. No default: a request
+      # nobody asked to expand does not carry an empty list of SLAs, it
+      # carries no sla field at all.
+      sla:
+        type: list
+
+routes:
+  - method: GET
+    path: /rest/servicedeskapi/request
+    resource: request
+    operation: list
+    returns:
+      - id
+      - issueKey
+      - summary
+      - requestTypeId
+      - serviceDeskId
+      - createdDate
+      - currentStatus
+      - reporter
+      - requestFieldValues
+    filters:
+      - param: serviceDeskId
+        field: serviceDeskId
+    pagination:
+      style: offset
+      cursor_param: start
+      limit_param: limit
+      limit: 50
+
+  # A request, without the thing that decides whether it is in trouble.
+  - method: GET
+    path: /rest/servicedeskapi/request/{id}
+    resource: request
+    operation: get
+    returns:
+      - id
+      - issueKey
+      - summary
+      - requestTypeId
+      - serviceDeskId
+      - createdDate
+      - currentStatus
+      - reporter
+      - requestFieldValues
+
+  # The same request, asked for with the SLAs in it.
+  - method: GET
+    path: /rest/servicedeskapi/request/{id}
+    resource: request
+    operation: get
+    matches_query:
+      expand: sla
+
+  - method: POST
+    path: /rest/servicedeskapi/request
+    resource: request
+    operation: create
+    status: 201
+
+errors:
+  authentication_error:
+    status: 401
+    message: Client must be authenticated to access this resource.
+
+  resource_missing:
+    status: 404
+    message: No request could be found with the given id.
+
+  invalid_request:
+    status: 400
+    message: The request was invalid.
+
+fixtures:
+  empty: {}
+
+  desk:
+    request:
+      # Raised at five on Friday afternoon, answered nothing over the
+      # weekend, and its clock says an hour and a half.
+      - id: "10021"
+        issueKey: SD-3
+        summary: Laptop will not wake from sleep
+        requestTypeId: "25"
+        serviceDeskId: "10"
+        createdDate:
+          epochMillis: 1755277200000
+          friendly: Friday 17:00
+          iso8601: "2026-08-15T17:00:00+0000"
+          jira: "2026-08-15T17:00:00.000+0000"
+        currentStatus:
+          status: Waiting for support
+          statusCategory: INDETERMINATE
+          statusDate:
+            epochMillis: 1755277200000
+            friendly: Friday 17:00
+            iso8601: "2026-08-15T17:00:00+0000"
+            jira: "2026-08-15T17:00:00.000+0000"
+        reporter:
+          accountId: 5b10a2844c20165700ede21g
+          displayName: Ada Lovelace
+          emailAddress: ada@example.com
+        requestFieldValues:
+          - fieldId: summary
+            label: Summary
+            value: Laptop will not wake from sleep
+          - fieldId: customfield_10023
+            label: Impact
+            value: Single user
+        sla:
+          - id: "10030"
+            name: Time to first response
+            slaDisplayFormat: DURATION
+            completedCycles: []
+            ongoingCycle:
+              startTime:
+                epochMillis: 1755277200000
+                friendly: Friday 17:00
+                iso8601: "2026-08-15T17:00:00+0000"
+                jira: "2026-08-15T17:00:00.000+0000"
+              breachTime:
+                epochMillis: 1755522000000
+                friendly: Monday 13:00
+                iso8601: "2026-08-18T13:00:00+0000"
+                jira: "2026-08-18T13:00:00.000+0000"
+              breached: false
+              # Ninety minutes of service time, three days after it started,
+              # because the clock only runs nine to five.
+              elapsedTime:
+                millis: 5400000
+                friendly: 1h 30m
+              goalDuration:
+                millis: 14400000
+                friendly: 4h
+              remainingTime:
+                millis: 9000000
+                friendly: 2h 30m
+              paused: false
+              withinCalendarHours: true
+      # Waiting on the customer, so the clock is stopped entirely.
+      - id: "10022"
+        issueKey: SD-4
+        summary: Please reset my VPN certificate
+        requestTypeId: "25"
+        serviceDeskId: "10"
+        createdDate:
+          epochMillis: 1755594000000
+          friendly: Tuesday 09:00
+          iso8601: "2026-08-19T09:00:00+0000"
+          jira: "2026-08-19T09:00:00.000+0000"
+        currentStatus:
+          status: Waiting for customer
+          statusCategory: INDETERMINATE
+          statusDate:
+            epochMillis: 1755597600000
+            friendly: Tuesday 10:00
+            iso8601: "2026-08-19T10:00:00+0000"
+            jira: "2026-08-19T10:00:00.000+0000"
+        reporter:
+          accountId: 5b10a2844c20165700ede21g
+          displayName: Ada Lovelace
+          emailAddress: ada@example.com
+        sla:
+          - id: "10030"
+            name: Time to first response
+            slaDisplayFormat: DURATION
+            completedCycles: []
+            ongoingCycle:
+              startTime:
+                epochMillis: 1755594000000
+                friendly: Tuesday 09:00
+                iso8601: "2026-08-19T09:00:00+0000"
+                jira: "2026-08-19T09:00:00.000+0000"
+              breachTime:
+                epochMillis: 1755608400000
+                friendly: Tuesday 13:00
+                iso8601: "2026-08-19T13:00:00+0000"
+                jira: "2026-08-19T13:00:00.000+0000"
+              breached: false
+              elapsedTime:
+                millis: 3600000
+                friendly: 1h
+              goalDuration:
+                millis: 14400000
+                friendly: 4h
+              remainingTime:
+                millis: 10800000
+                friendly: 3h
+              # Stopped. Nothing about the timestamps says so.
+              paused: true
+              withinCalendarHours: true
+      # Answered in time, and carrying a breach time for a breach that never
+      # happened.
+      - id: "10023"
+        issueKey: SD-5
+        summary: New starter needs a mailbox
+        requestTypeId: "26"
+        serviceDeskId: "10"
+        createdDate:
+          epochMillis: 1754902800000
+          friendly: Monday 09:00
+          iso8601: "2026-08-11T09:00:00+0000"
+          jira: "2026-08-11T09:00:00.000+0000"
+        currentStatus:
+          status: Done
+          statusCategory: DONE
+          statusDate:
+            epochMillis: 1754910000000
+            friendly: Monday 11:00
+            iso8601: "2026-08-11T11:00:00+0000"
+            jira: "2026-08-11T11:00:00.000+0000"
+        reporter:
+          accountId: 5b10a2844c20165700ede21h
+          displayName: Grace Hopper
+          emailAddress: grace@example.com
+        sla:
+          - id: "10030"
+            name: Time to first response
+            slaDisplayFormat: DURATION
+            completedCycles:
+              - startTime:
+                  epochMillis: 1754902800000
+                  friendly: Monday 09:00
+                  iso8601: "2026-08-11T09:00:00+0000"
+                  jira: "2026-08-11T09:00:00.000+0000"
+                stopTime:
+                  epochMillis: 1754910000000
+                  friendly: Monday 11:00
+                  iso8601: "2026-08-11T11:00:00+0000"
+                  jira: "2026-08-11T11:00:00.000+0000"
+                # A breach that did not occur, timed to the minute.
+                breachTime:
+                  epochMillis: 1754917200000
+                  friendly: Monday 13:00
+                  iso8601: "2026-08-11T13:00:00+0000"
+                  jira: "2026-08-11T13:00:00.000+0000"
+                breached: false
+                elapsedTime:
+                  millis: 7200000
+                  friendly: 2h
+                goalDuration:
+                  millis: 14400000
+                  friendly: 4h
+                # A leftover rather than a countdown, under the name that
+                # meant a countdown while the cycle was running.
+                remainingTime:
+                  millis: 7200000
+                  friendly: 2h
+      # A fourth request, on a different service desk, so that filtering by
+      # one and paging past two are both things a case can show.
+      - id: "10024"
+        issueKey: FAC-1
+        summary: Meeting room projector is dead
+        requestTypeId: "31"
+        serviceDeskId: "11"
+        createdDate:
+          epochMillis: 1755856800000
+          friendly: Friday 10:00
+          iso8601: "2026-08-22T10:00:00+0000"
+          jira: "2026-08-22T10:00:00.000+0000"
+        currentStatus:
+          status: Waiting for support
+          statusCategory: INDETERMINATE
+          statusDate:
+            epochMillis: 1755856800000
+            friendly: Friday 10:00
+            iso8601: "2026-08-22T10:00:00+0000"
+            jira: "2026-08-22T10:00:00.000+0000"
+        reporter:
+          accountId: 5b10a2844c20165700ede21i
+          displayName: Alan Turing
+          emailAddress: alan@example.com
+
+conformance:
+  - name: a request does not say whether it is breaching
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10021
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # A summary, a status, a reporter, four spellings of the created
+        # date -- and nothing about the SLA, because sla is "Expandable
+        # details" and nobody expanded it.
+        issueId: "10021"
+        issueKey: SD-3
+        "currentStatus.status": Waiting for support
+      absent:
+        - sla
+
+  - name: the clock says ninety minutes three days after it started
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-sla-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10021?expand=sla
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # Started Friday at five. elapsedTime is "Duration of the service",
+        # and withinCalendarHours says the service is only counted nine to
+        # five, so the number is an hour and a half while now minus startTime
+        # is three days. The second number is the one every dashboard
+        # computes and the first is the one the breach is decided on.
+        "sla[0].ongoingCycle.startTime.iso8601": "2026-08-15T17:00:00+0000"
+        "sla[0].ongoingCycle.elapsedTime.millis": 5400000
+        "sla[0].ongoingCycle.withinCalendarHours": true
+        "sla[0].ongoingCycle.breached": false
+
+  - name: a paused clock is not stopped by anything a timestamp shows
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-sla-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10022?expand=sla
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # Waiting on the customer. The clock is not running and the only
+        # sign is this boolean: every timestamp on the object still reads
+        # exactly as it did while it was.
+        "sla[0].ongoingCycle.paused": true
+        "sla[0].ongoingCycle.elapsedTime.millis": 3600000
+        "currentStatus.status": Waiting for customer
+
+  - name: and the running clock beside it says it is not paused
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-sla-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10021?expand=sla
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # The other end of the distinction, so both are pinned: two ongoing
+        # cycles, both unbreached, both with time remaining, and only one of
+        # them counting.
+        "sla[0].ongoingCycle.paused": false
+
+  - name: a cycle that never breached carries the time it would have
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-sla-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10023?expand=sla
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # "would have breached in case of non-breached completed cycle". A
+        # timestamp under the name breachTime, on a ticket answered two hours
+        # inside its four-hour goal, describing an event that did not happen.
+        "sla[0].completedCycles[0].breached": false
+        "sla[0].completedCycles[0].breachTime.iso8601": "2026-08-11T13:00:00+0000"
+        "sla[0].completedCycles[0].stopTime.iso8601": "2026-08-11T11:00:00+0000"
+        # And remainingTime, which meant a countdown while the cycle ran and
+        # means a leftover now.
+        "sla[0].completedCycles[0].remainingTime.millis": 7200000
+      absent:
+        # paused is on the ongoing cycle and not on this one, so the record
+        # that a clock was ever stopped does not survive the cycle.
+        - sla[0].completedCycles[0].paused
+        - sla[0].ongoingCycle
+
+  - name: every instant arrives four times and one of them exists to disagree
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-issueidorkey-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/10021
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # iso8601 and jira are both here, and jira is documented as "ISO8601
+        # format but extended with milliseconds" -- a field Atlassian ships
+        # because its own other API does not send what the field beside it is
+        # named for.
+        "createdDate.iso8601": "2026-08-15T17:00:00+0000"
+        "createdDate.jira": "2026-08-15T17:00:00.000+0000"
+        "createdDate.epochMillis": 1755277200000
+        "createdDate.friendly": Friday 17:00
+
+  - name: the listing counts the page and says only whether it is the last
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request?serviceDeskId=10&limit=2
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # size is "Number of items returned in the page" and there is no
+        # total anywhere. Shopware's trap, and isLastPage is the only other
+        # thing the envelope offers.
+        size: 2
+        isLastPage: false
+        "values[0].issueKey": SD-3
+        "values[1].issueKey": SD-4
+      matches:
+        # The pointer to the rest, as a whole REST API URL rather than a
+        # token -- "REST API URL for the next page, if there is one" -- so a
+        # client that joins it to a base builds an address that does not
+        # exist.
+        "_links.next": '^https?://'
+      absent:
+        - values[2]
+        - total
+        - totalCount
+
+  - name: a request that is not there is refused with the status in the body
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/intro/#status-codes
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request/999999
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 404
+      body:
+        errorMessage: No request could be found with the given id.
+        status: 404
+
+  - name: a credential the site does not know is refused
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/intro/#auth
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206bm90LXRoaXMtc2l0ZXMtdG9rZW4=
+    expect:
+      status: 401
+      body:
+        status: 401
+
+  - name: the second page starts where the first one stopped counting from nought
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request?serviceDeskId=10&start=2&limit=2
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # "The starting index of the returned objects. Base index: 0." An
+        # offset counts records rather than pages, so two records in is the
+        # third of three, and the response echoes the index it served.
+        start: 2
+        size: 1
+        isLastPage: true
+        "values[0].issueKey": SD-5
+      absent:
+        - values[1]
+
+  - name: filtering by service desk leaves the other desk's requests out
+    source: https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/#api-rest-servicedeskapi-request-get
+    fixture: desk
+    request:
+      method: GET
+      path: /rest/servicedeskapi/request?serviceDeskId=11
+      headers:
+        Authorization: Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tanNtLWZpeHR1cmUtdG9rZW4=
+    expect:
+      status: 200
+      body:
+        # One request on desk eleven, and the three on desk ten are not
+        # here. Without the parameter every one of them would be.
+        "values[0].issueKey": FAC-1
+        size: 1
+      absent:
+        - values[1]

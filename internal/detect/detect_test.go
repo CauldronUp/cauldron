@@ -1962,3 +1962,60 @@ func TestDetectConfluenceCloudClientsAndNotItsDesignSystemOrItsDataCentre(t *tes
 		}
 	}
 }
+
+// Service Management inverts the sibling problem Confluence has, and the
+// inversion is why this mapping is small on purpose.
+//
+// A Jira client is not a Confluence client. But jira.js is "a library for the
+// Jira Cloud platform API, Jira Agile API, and Jira Service Management API",
+// so one dependency speaks three products. A package maps to one Recipe here,
+// so jira.js stays with Jira: claiming it would have made every Jira project
+// look like a Service Management project.
+func TestDetectJiraServiceManagementWithoutClaimingTheSharedJiraClient(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@pipedream/jira_service_desk": "^0.1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "jiraservicemanagement") {
+		t.Errorf("the dedicated client did not detect jiraservicemanagement: %+v", p.Requirements)
+	}
+
+	// The shared client stays with Jira, and says nothing about this API.
+	shared, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"jira.js": "^6.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !shared.Has(KindRecipe, "jira") {
+		t.Errorf("jira.js stopped offering the jira Recipe: %+v", shared.Requirements)
+	}
+
+	if shared.Has(KindRecipe, "jiraservicemanagement") {
+		t.Errorf("jira.js claimed jiraservicemanagement, which would make every Jira project look like a Service Management one: %+v", shared.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// A stylesheet for a portal theme, and somebody else's chat widget.
+		{"package.json": `{"dependencies": {"jira-service-desk-resources": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"react-spartez-support-chat-widget": "^1.0.0"}}`},
+		// Data Center, whose REST API is not this one.
+		{"package.json": `{"dependencies": {"@atlassian-dc-mcp/jira": "^1.0.0"}}`},
+		// A Laravel package that implements a service desk rather than
+		// calling one.
+		{"composer.json": `{"require": {"jeffersongoncalves/laravel-service-desk": "^1.0"}}`},
+	} {
+		got, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if got.Has(KindRecipe, "jiraservicemanagement") {
+			t.Errorf("%v offered the jiraservicemanagement Recipe: %+v", manifest, got.Requirements)
+		}
+	}
+}
