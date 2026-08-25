@@ -121,8 +121,8 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | ~~LaunchDarkly~~ | Shipped. Per-environment state, variations as indices |
 | ~~PostHog~~ | Shipped. A property is nested under properties and a flag is a string, a boolean or false, all in the same field |
-| Mixpanel | Events, profiles, exports |
-| Amplitude | Events, cohorts, user properties |
+| Mixpanel | Events, profiles, exports. **Assessed and written up rather than written** -- see "Mixpanel, and an API that only speaks in batches" below. The findings are recorded there; the blocker is that every ingestion endpoint takes an array and this format models one record per request |
+| Amplitude | Events, cohorts, user properties. Batch-shaped for the same reason Mixpanel is, so read that assessment first |
 
 ## Models and inference
 
@@ -3434,3 +3434,123 @@ Three more from the same document, for whoever writes it:
 - **Being cached does not make a prompt smaller.** Of `promptTokenCount`:
   "When `cached_content` is set, this is still the total effective prompt
   size", so the number a cost model reads does not fall when caching works.
+
+## Mixpanel, and an API that only speaks in batches
+
+Assessed against the OpenAPI document Mixpanel publishes and its own
+documentation site renders from, at `mixpanel/docs`,
+`openapi/ingestion.openapi.yaml` -- 68 kilobytes, and the source of every
+quotation below. Written up rather than written, for the reason at the end.
+
+**The endpoint everybody uses answers with the number 1, and Mixpanel says
+plainly that it does not mean what you think.** Of the `/track` response, which
+is `text/plain` carrying an integer:
+
+> "`1` - One or more objects provided are valid. **This does not signify a
+> valid project token or secret.**"
+>
+> "`0` - No data objects in the body are valid."
+
+Three separate things are in there.
+
+The first is that the answer to a whole batch is **one bit**, and the bit is an
+OR. Send fifty events, have forty-nine rejected, and the response is `1`.
+Nothing in it says forty-nine, or which, or why.
+
+The second is the sentence Mixpanel took the trouble to write: a `1` **does not
+signify a valid project token**. `/track` carries `security: - {}` in the spec
+-- no HTTP authentication at all -- because the credential is a field inside
+each event, `properties.token`. So a request with a wrong token, an expired
+token or no token is not a 401. It is a `1`, and the events are gone.
+
+The third is that you have to opt in to being told anything. Of `verbose`:
+
+> "If present and equal to 1, Mixpanel will respond with a JSON Object
+> describing the success or failure of the tracking call."
+
+The default is the bit. The diagnosis is a query parameter, and its own
+description recommends it only "for debugging during implementation".
+
+**A 400 from `/import` can have imported 999 records.** That is Mixpanel's own
+example, verbatim, in the `StrictInvalid` response:
+
+```
+code: 400
+num_records_imported: 999
+status: Bad Request
+failed_records:
+- index: 0
+  insert_id: 13c0b661-f48b-51cd-ba54-97c5999169c0
+  field: properties.time
+  message: "'properties.time' is invalid: must be specified as seconds since epoch"
+```
+
+The batch is not atomic and the status code says nothing about how much of it
+landed. Retrying the request on a 400 -- which is what a client does when it
+reads a 4xx as "this did not happen" -- re-sends 999 records that did.
+
+And the failures name records by `index`: their **position in the array you
+sent**. Not by id, because an event has no id until Mixpanel assigns one. So
+interpreting the response requires still holding the request body, which a
+client that streamed or freed its batch no longer does.
+
+**Twenty paths, six URLs.** The document's path keys are `/engage#profile
+-set`, `/engage#profile-set-once`, `/engage#profile-numerical-add`,
+`/engage#profile-union`, `/engage#profile-list-append`,
+`/engage#profile-list-remove`, `/engage#profile-unset`,
+`/engage#profile-batch-update`, `/engage#profile-delete`, and the same trick
+again seven times for `/groups`.
+
+There is one `/engage` endpoint. It does nine different things depending on
+which `$`-prefixed key is present in the body -- `$set`, `$set_once`, `$add`,
+`$union`, `$append`, `$remove`, `$unset`, `$delete` -- and OpenAPI requires
+path keys to be unique, so the fragments are there to make nine descriptions of
+one URL fit in a document that has no way to say "same path, different body".
+
+So sixteen of the document's twenty path keys describe two endpoints, and the
+whole file describes six: `/track`, `/import`, `/engage`, `/groups`,
+`/lookup-tables` and `/lookup-tables/{id}`.
+
+A URL fragment is never sent over the wire, so a client generated from this
+document requests `/engage` and works by accident. Every tool that reads the
+document for inventory -- a gateway, a catalogue, a coverage report -- counts
+twenty endpoints where there are six.
+
+**`status` is three different things in one document.** In `verbose` mode it is
+"the value 1 on success and 0 on failure", a number. In `StrictReceived` it is
+the string `"OK"`, and in `StrictUnauthorized` the string `"Unauthorized"` --
+HTTP reason phrases. In the shared `ErrorResponse` schema, which `/track`'s own
+401 and 403 use, it is an enum of exactly one value, `"error"`. So the two 401s
+in this document disagree with each other about what `status` says, and the
+success field of the same name is a different type again.
+
+### Why it is not written
+
+**No endpoint in this API accepts a single JSON object.** `/track`, `/import`,
+all nine `/engage` operations and all seven `/groups` ones -- eighteen of the
+twenty path keys -- declare `requestBody: schema: type: array, minItems: 1`.
+The two that do not are the lookup tables, which take `text/csv`. There is no
+single-record form of anything.
+
+This format models one record per request, and a conformance case's request
+body is a mapping. Serving Mixpanel would mean accepting a single event object
+at `/track` -- a request shape Mixpanel does not accept -- which is the
+helpful kind of wrong this collection refuses: a suite that passes locally
+against a body the provider would reject.
+
+PostHog is the near neighbour that shows the line. Its Recipe ships and its
+`/capture/` case pins the same `{"status": 1}` shape, because PostHog has a
+single-event endpoint and a separate `/batch/` one. Mixpanel has only the
+batch.
+
+The second gap is smaller and real: a `text/plain` body containing `1` is not
+an object, and every response this format emits is. Even ignoring the content
+type -- `1` is valid JSON -- there is no way to say "this route answers with a
+constant rather than a record".
+
+**What would unblock it is a category, not a Recipe.** Array request bodies
+would reach Mixpanel, Amplitude, Heap, Segment's batch endpoint and Customer.io,
+all of which are queued above and all of which are batch-shaped for the same
+reason: an analytics SDK buffers on the client and flushes. That is a decision
+about what this format models, which is larger than one provider and should be
+made on its own evidence rather than as a side effect of wanting this one.
