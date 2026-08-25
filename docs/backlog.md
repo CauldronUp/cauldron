@@ -130,7 +130,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | ~~OpenAI~~ | Shipped, written against the OpenAPI document OpenAI publishes and generates its own SDKs from. The refusal is not in the answer: content and refusal are two sibling nullable strings on the message, only one is ever filled in, and a declined request is a 200 with finish_reason stop -- so the obvious read gets null and logs an outage while the model answered in the field beside it. Also: completion_tokens counts tokens that never arrive ("like reasoning tokens, these tokens are still counted in the total completion tokens for purposes of billing"), max_completion_tokens is spent on reasoning before a word is emitted, max_tokens is deprecated and "not compatible with o-series models", store defaults to false so the completion you just made cannot be fetched, and content_filter is a stopping reason rather than an error. Streaming and the Responses API are stated as not modelled |
 | Anthropic | Messages, content blocks, tool use, streaming |
-| Google Gemini | Generation, multimodal requests, safety responses |
+| ~~Google Gemini~~ | Shipped, and the section near the end of this file that recorded it as unservable is now the story of how it was unblocked. A blocked prompt is a 200 with the candidates taken away -- promptFeedback.blockReason is "If set, the prompt was blocked and no candidates are returned" -- so candidates[0] throws where OpenAI's refusal hands back a null. Serving the contrast needed one path to answer two shapes chosen by the request body, which selects could not do, so selects_body was added beside it as a separate field. Also: an empty finishReason means the model "has not stopped generating tokens", from one schema serving the streaming and non-streaming calls; totalTokenCount is documented as "prompt + thoughts + response candidates"; and promptTokenCount "is still the total effective prompt size" when content is cached |
 | Pinecone | Indexes, namespaces, vectors, metadata filtering |
 | ~~Replicate~~ | Shipped. A created prediction has no output property at all rather than a null one, succeeded is not the same as produced something, a cold start is a minute with no signal but a boot_time, and the output is a link to a file deleted after an hour |
 | Hugging Face | Inference endpoints and model responses |
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**123 more listings across 73 Recipes declare no paging at all**, and the
+**124 more listings across 74 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -3414,10 +3414,12 @@ GraphQL `query` field and nothing else. A create route echoes the request; a
 route constant is fixed per route; `matches_query` and `matches_header` read
 places Gemini does not use. So the choice cannot be made.
 
-Generalising `selects` to look anywhere in the body would do it, and would
-want to be a new field rather than a change to the existing one: seven GraphQL
-Recipes depend on the current behaviour, and a marker word that currently
-matches only inside a query would start matching variables and arguments too.
+**This has since been done and the Recipe ships.** `selects_body` was added as
+a new field beside `selects` rather than as a change to it: seven GraphQL
+Recipes depend on the current behaviour, and a marker word that matches only
+inside a query today would have started matching variables and arguments too.
+What is above is left as it was written, because the reasoning that identified
+the missing mechanism is the useful part of it.
 
 Three more from the same document, for whoever writes it:
 

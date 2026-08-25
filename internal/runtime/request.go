@@ -48,6 +48,26 @@ func graphQLQuery(r *http.Request) string {
 	return envelope.Query
 }
 
+// rawBody returns the request body as text, leaving it readable afterwards.
+//
+// selects_body matches over this rather than over a parsed field, so a Recipe
+// can pick a route by anything the caller wrote -- which for the providers
+// that need it is a word in a prompt rather than a name in a query.
+func rawBody(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil {
+		return ""
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	return string(body)
+}
+
 // decodeBody reads a request body as either JSON or form encoding.
 //
 // Supporting both is a fidelity requirement, not a convenience: Stripe's

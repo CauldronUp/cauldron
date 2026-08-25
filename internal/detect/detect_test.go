@@ -2503,3 +2503,54 @@ func TestDetectGoogleDriveClientsAndNotThePickers(t *testing.T) {
 		}
 	}
 }
+
+// Gemini is also a cryptocurrency exchange -- the homonym shape Wix brought,
+// and this is the second instance. ccxt/ccxt is a trading API supporting a
+// hundred-odd venues and Gemini is one of them, so a trading bot matches the
+// word without ever meeting a model.
+//
+// @google-cloud/vertexai is the same models through a different host with a
+// different credential, which is @azure/openai one provider along. And
+// @google/gemini-cli is a coding agent rather than a client, the shape
+// @openai/codex has.
+func TestDetectGeminiClientsAndNotTheExchangeOrVertex(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@google/genai": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@google/generative-ai": "^0.21.0"}}`},
+		{"package.json": `{"dependencies": {"@google-ai/generativelanguage": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@langchain/google-genai": "^0.1.0"}}`},
+		{"composer.json": `{"require": {"google-gemini-php/client": "^1.0"}}`},
+		{"composer.json": `{"require": {"google-gemini-php/laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"gemini-api-php/client": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "gemini") {
+			t.Errorf("%v did not detect gemini: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The cryptocurrency exchange of the same name.
+		{"composer.json": `{"require": {"ccxt/ccxt": "^4.0"}}`},
+		// The same models through a different host and credential.
+		{"package.json": `{"dependencies": {"@google-cloud/vertexai": "^1.0.0"}}`},
+		// A coding agent, not a client.
+		{"package.json": `{"devDependencies": {"@google/gemini-cli": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@google/gemini-cli-core": "^0.1.0"}}`},
+		// A different vendor matching on the phrase.
+		{"package.json": `{"dependencies": {"@ibm-generative-ai/node-sdk": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "gemini") {
+			t.Errorf("%v offered the gemini Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -868,6 +868,48 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Gemini is also a cryptocurrency exchange, which is the homonym
+			// shape Wix brought and this is the second instance of: ccxt/ccxt
+			// is "a cryptocurrency trading API" supporting a hundred-odd
+			// venues and Gemini is one of them, so a trading bot matches the
+			// word without ever meeting a model.
+			//
+			// The deployment shape again, and a large one.
+			// @google-cloud/vertexai is the same models reached through
+			// Vertex AI -- a different host, a different credential and
+			// service-account auth rather than an API key -- installed nearly
+			// four million times a month. That is @azure/openai one provider
+			// along.
+			//
+			// The vendor's own CLI outweighs whole ecosystems: @google
+			// /gemini-cli and @google/gemini-cli-core are a coding agent, not
+			// a client, and between them they are installed more than every
+			// PHP client here put together. @openai/codex is the same shape.
+			//
+			// And two official SDKs coexist at enormous scale:
+			// @google/generative-ai at sixteen million a month is superseded
+			// by @google/genai at seventy-four, so both are mapped -- the
+			// older name is what a great many projects are still holding,
+			// which is the rename Dropbox Sign's entry records at a smaller
+			// size.
+			//
+			// @ibm-generative-ai/node-sdk is a different vendor that matches
+			// on the phrase rather than the name, and Vercel's "ai" is a
+			// generic SDK that mentions Gemini among many.
+			recipe: "gemini",
+			composer: []string{
+				"google-gemini-php/client",
+				"google-gemini-php/laravel",
+				"gemini-api-php/client",
+			},
+			npm: []string{
+				"@google/genai",
+				"@google/generative-ai",
+				"@google-ai/generativelanguage",
+				"@langchain/google-genai",
+			},
+		},
+		{
 			// The scoped package, as Gmail and Calendar already do here: the
 			// unscoped googleapis covers every Google API at once and a
 			// package maps to one Recipe, so @googleapis/drive is the one
