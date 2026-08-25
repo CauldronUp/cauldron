@@ -1,0 +1,529 @@
+# PlanetScale Recipe for Cauldron
+#
+# Written against the Swagger 2.0 document PlanetScale serves from its own API
+# host at api.planetscale.com/v1/openapi-spec -- 670 kilobytes, 135 paths, 87
+# definitions -- and quoted from the field descriptions in it.
+#
+# The field called state is not the state of the deployment.
+#
+# A deploy request carries both of these, side by side:
+#
+#   state             -- "Whether the deploy request is open or closed"
+#   deployment_state  -- "The deployment state of the deploy request"
+#
+# So state is about the review and not about the schema. A deploy request that
+# was opened, examined and closed without ever shipping anything reads
+# state: closed, and so does one whose migration ran an hour ago. The field
+# whose name a reader reaches for first is the one that answers a different
+# question, and the field that answers theirs is the one with the longer name.
+#
+# The consequence is a deployment dashboard that is confidently wrong in the
+# safe-looking direction: closed reads as done, done reads as deployed, and
+# the request that was abandoned is counted as a release.
+#
+# Four more, each from the same document:
+#
+#   1. The identifier you would store cannot address the thing. A deploy
+#      request has an id -- "The ID of the deploy request" -- and a number --
+#      "The number of the deploy request" -- and every path takes the number:
+#      /organizations/{organization}/databases/{database}/deploy-requests
+#      /{number}. The number is per database, so 1 exists in every database
+#      an organisation owns, and the globally unique id addresses nothing.
+#      Code that stores the id and interpolates it into the URL gets a 404
+#      that looks like a deleted record.
+#   2. A deploy request outlives the branch it came from. branch_deleted is
+#      "Whether or not the deploy request branch was deleted", with
+#      branch_deleted_by and branch_deleted_at beside it, and branch still
+#      holding the name. So the request still names a branch, and the branch
+#      is not there, and only a third field says so.
+#   3. The end of a listing is a null rather than an absence. next_page is
+#      "The next page number, or null when this is the last page", and
+#      next_page_url says the same. Metronome's next_page is the same
+#      decision and Confluence's _links.next is the opposite one -- absent
+#      when there is nothing more -- so three providers in this collection
+#      spell the end of a list three different ways.
+#   4. The envelope names its own type. Every paginated response carries
+#      type: "list", which is Stripe's habit arriving on a database API.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The deploy lifecycle has ten endpoints -- deploy, apply-deploy,
+#     complete-deploy, cancel, revert, skip-revert, force-cutover and the
+#     rest -- and none is modelled. Each moves deployment_state, and this
+#     format cannot express a route that advances a state machine, so
+#     modelling them would mean ten routes that all answer the record
+#     unchanged. What is served is the pair of fields those endpoints move
+#     between, which is what the file is about.
+#   - Branches, backups, passwords, keyspaces and the organisation's own
+#     endpoints are absent. Databases and deploy requests only.
+#   - PlanetScale's own documentation describes a service token as an
+#     Authorization header of "{id}:{token}". The document itself declares
+#     only OAuth2, so the header form is taken from the prose and the key
+#     below has that shape.
+#
+# The token and the ids below are fixtures and belong to no organisation.
+
+recipe: planetscale
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api-docs.planetscale.com/reference/
+
+auth:
+  # A token id and a token, joined by a colon, with no scheme word in front.
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldronfixture:pscale_tkn_cauldron000000000000
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    page_field: current_page
+    limit_field: per_page
+    # Present and null on the last page rather than absent, which Metronome
+    # does too and Confluence does the other way round.
+    cursor_field: next_page
+    cursor_null: true
+    fields:
+      type: list
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  deploy_request:
+    id:
+      # The number, because that is what every path takes. The globally
+      # unique id is a field beside it and addresses nothing.
+      style: numeric
+      type: number
+      field: number
+    fields:
+      # "The ID of the deploy request" -- and not the way to ask for one.
+      # Stored under a name of its own because the record is keyed by the
+      # number, and published as id because that is what PlanetScale calls
+      # it.
+      deploy_request_id:
+        type: string
+        as: id
+      branch:
+        type: string
+      branch_id:
+        type: string
+      # The branch may be gone while branch still names it.
+      branch_deleted:
+        type: boolean
+        default: false
+      branch_deleted_at:
+        type: datetime
+        stamped: false
+      into_branch:
+        type: string
+      approved:
+        type: boolean
+        default: false
+      # Open or closed, which is about the review.
+      state:
+        type: string
+        default: open
+      # And what actually happened to the schema.
+      deployment_state:
+        type: string
+        default: pending
+      notes:
+        type: string
+      html_url:
+        type: string
+      num_comments:
+        type: integer
+        default: 0
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      closed_at:
+        type: datetime
+        stamped: false
+      deployed_at:
+        type: datetime
+        stamped: false
+      # The partition lives in the path and is not repeated in the body.
+      organization:
+        type: string
+        in: "-"
+      database:
+        type: string
+        in: "-"
+
+  database:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      state:
+        type: string
+        default: ready
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      organization:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /v1/organizations/{organization}/databases/{database}/deploy-requests
+    resource: deploy_request
+    operation: list
+    scope:
+      - organization
+      - database
+    filters:
+      - param: state
+        field: state
+    pagination:
+      style: page
+      cursor_param: page
+      limit_param: per_page
+      limit: 25
+      first_page: 1
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases/{database}/deploy-requests/{id}
+    resource: deploy_request
+    operation: get
+    scope:
+      - organization
+      - database
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases
+    resource: database
+    operation: list
+    scope:
+      - organization
+    pagination:
+      style: page
+      cursor_param: page
+      limit_param: per_page
+      limit: 25
+      first_page: 1
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases/{id}
+    resource: database
+    operation: get
+    scope:
+      - organization
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized.
+    code: unauthorized
+
+  resource_missing:
+    status: 404
+    message: Not Found.
+    code: not_found
+
+  invalid_request:
+    status: 422
+    message: Unprocessable Entity.
+    code: unprocessable
+
+fixtures:
+  empty: {}
+
+  organisation:
+    database:
+      - id: qc0kbgxvbqmr
+        organization: cauldron
+        name: shop
+        state: ready
+        created_at: "2026-01-09T10:14:22.000Z"
+        updated_at: "2026-08-12T09:01:44.000Z"
+
+    deploy_request:
+      # Closed, and deployed. The two fields agree here, which is what makes
+      # the next one survive review.
+      - id: "3"
+        organization: cauldron
+        database: shop
+        deploy_request_id: dr_cauldron000000000001
+        branch: add-order-index
+        branch_id: br_cauldron0000000000a1
+        branch_deleted: true
+        branch_deleted_at: "2026-08-12T09:05:00.000Z"
+        into_branch: main
+        approved: true
+        state: closed
+        deployment_state: complete
+        notes: Adds an index on orders.created_at.
+        html_url: https://app.planetscale.com/cauldron/shop/deploy-requests/3
+        num_comments: 2
+        created_at: "2026-08-11T14:20:00.000Z"
+        updated_at: "2026-08-12T09:05:00.000Z"
+        closed_at: "2026-08-12T09:05:00.000Z"
+        deployed_at: "2026-08-12T09:02:11.000Z"
+      # Closed, and never deployed at all. Same state, opposite outcome.
+      - id: "4"
+        organization: cauldron
+        database: shop
+        deploy_request_id: dr_cauldron000000000002
+        branch: drop-legacy-column
+        branch_id: br_cauldron0000000000a2
+        branch_deleted: false
+        into_branch: main
+        approved: false
+        state: closed
+        deployment_state: pending
+        notes: Abandoned after review.
+        html_url: https://app.planetscale.com/cauldron/shop/deploy-requests/4
+        num_comments: 5
+        created_at: "2026-08-13T11:00:00.000Z"
+        updated_at: "2026-08-14T16:30:00.000Z"
+        closed_at: "2026-08-14T16:30:00.000Z"
+      # Still open, and in the middle of deploying.
+      - id: "5"
+        organization: cauldron
+        database: shop
+        deploy_request_id: dr_cauldron000000000003
+        branch: widen-sku
+        branch_id: br_cauldron0000000000a3
+        branch_deleted: false
+        into_branch: main
+        approved: true
+        state: open
+        deployment_state: in_progress
+        notes: Widens sku to varchar(64).
+        html_url: https://app.planetscale.com/cauldron/shop/deploy-requests/5
+        num_comments: 0
+        created_at: "2026-08-20T08:45:00.000Z"
+        updated_at: "2026-08-20T08:52:00.000Z"
+
+conformance:
+  - name: two deploy requests are closed and only one of them shipped
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/4
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # state is "Whether the deploy request is open or closed", and this
+        # one was closed without deploying anything. A dashboard counting
+        # closed requests as releases counts this.
+        state: closed
+        deployment_state: pending
+        notes: Abandoned after review.
+      absent:
+        # And the field that would have given it away is not there.
+        - deployed_at
+
+  - name: and the one that did ship says so in the other field
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/3
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # Identical state, opposite outcome. The only difference between this
+        # request and the one above is a field whose name nobody reaches for
+        # first.
+        state: closed
+        deployment_state: complete
+        deployed_at: "2026-08-12T09:02:11.000Z"
+
+  - name: an open request can be deploying while it is still open
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/5
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # The third combination, so the two fields are pinned as independent
+        # rather than as two spellings of one thing.
+        state: open
+        deployment_state: in_progress
+
+  - name: the identifier a client would store cannot address the request
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/dr_cauldron000000000001
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      # The id is a real field on a real record and the path takes the
+      # number. Asking by id is a 404 that reads exactly like a deleted
+      # deploy request.
+      status: 404
+      body:
+        code: not_found
+
+  - name: and the number that does address it is only unique to its database
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/3
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # A small integer, counted per database, sent as a number -- and the
+        # unique identifier riding along beside it as an ordinary field.
+        number: 3
+        id: dr_cauldron000000000001
+      absent:
+        # And the partition it lives in is in the path and not in the body,
+        # so a record pulled out of a listing carries no memory of which
+        # database it belongs to.
+        - organization
+        - database
+
+  - name: a deploy request still names a branch that is gone
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/3
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # branch still holds the name, branch_id still holds the id, and the
+        # only thing saying it does not exist any more is a third field.
+        branch: add-order-index
+        branch_deleted: true
+        branch_deleted_at: "2026-08-12T09:05:00.000Z"
+
+  - name: and the request beside it has a branch that is still there
+    source: https://api-docs.planetscale.com/reference/get-a-deploy-request
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests/5
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        branch: widen-sku
+        branch_deleted: false
+      absent:
+        - branch_deleted_at
+
+  - name: the last page says so with a null rather than by leaving it out
+    source: https://api-docs.planetscale.com/reference/list-deploy-requests
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # "The next page number, or null when this is the last page." A loop
+        # testing for the key never ends; one testing the value does.
+        # Confluence spells the same idea by omitting the field.
+        next_page: null
+        type: list
+        current_page: 1
+        per_page: 25
+        "data[0].number": 3
+        "data[2].number": 5
+
+  - name: filtering a listing by state gets the review state and not the other one
+    source: https://api-docs.planetscale.com/reference/list-deploy-requests
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases/shop/deploy-requests?state=open
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # The parameter is called state, and it filters the field called
+        # state -- so there is no way to ask this endpoint for everything
+        # that has actually been deployed.
+        "data[0].number": 5
+        "data[0].deployment_state": in_progress
+      absent:
+        - data[1]
+
+  - name: a database in another organisation is not there
+    source: https://api-docs.planetscale.com/reference/get-a-database
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/somebody-else/databases/shop
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      # A record that exists but belongs to another organisation looks
+      # absent rather than forbidden.
+      status: 404
+      body:
+        code: not_found
+
+  - name: a token the organisation does not know is refused
+    source: https://api-docs.planetscale.com/reference/
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/cauldron/databases
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_not_this_organisation
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+        message: Unauthorized.
+
+  - name: another organisation's databases are not in this one's listing
+    source: https://api-docs.planetscale.com/reference/list-databases
+    fixture: organisation
+    request:
+      method: GET
+      path: /v1/organizations/somebody-else/databases
+      headers:
+        Authorization: cauldronfixture:pscale_tkn_cauldron000000000000
+    expect:
+      status: 200
+      body:
+        # An empty list rather than a refusal: the organisation is a
+        # partition in the path, and asking a valid token about an
+        # organisation it cannot see answers with nothing rather than saying
+        # so.
+        type: list
+        next_page: null
+      absent:
+        - data[0]

@@ -151,7 +151,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Upstash | Redis REST, queues, rate limits |
 | MongoDB Atlas | Clusters, users, projects, the data API |
 | ~~Neon~~ | Shipped. Branches, databases, endpoints |
-| PlanetScale | Databases, branches, deploy requests |
+| ~~PlanetScale~~ | Shipped, written against the Swagger 2.0 document PlanetScale serves from its own API host. The field called state is not the state of the deployment: a deploy request carries state -- "Whether the deploy request is open or closed" -- beside deployment_state, "The deployment state of the deploy request", so a request abandoned after review and one whose migration ran an hour ago both read closed. Also: the id is "The ID of the deploy request" and every path takes the number instead, which is per database, so the globally unique identifier addresses nothing; a request outlives the branch it came from, still naming it while branch_deleted says it is gone; and next_page is "null when this is the last page" where Confluence omits the field entirely. The ten deploy-lifecycle endpoints are stated as not modelled, because each advances a state machine this format cannot express |
 | CockroachDB Cloud | Clusters, SQL users, operations |
 | Turso | Databases, replicas, tokens |
 | Confluent Cloud | Kafka topics, schemas, consumers |
@@ -1376,7 +1376,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Thirty-five Recipes send at least one identifier as a number now, and each
+Thirty-six Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
