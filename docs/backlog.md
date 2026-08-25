@@ -206,7 +206,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Ghost~~ | Shipped. Plural-wrapped singles, sent-not-published, Lexical |
 | Imgix | Image transformations and delivery |
 | ~~Mux~~ | Shipped. Asset against playback id, preparing state, array messages |
-| Vimeo | Uploads, videos, privacy |
+| ~~Vimeo~~ | Shipped, written against the OpenAPI document Vimeo publishes at vimeo/openapi. The privacy setting called unlisted is described as a fact about search: the video privacy enum describes six of its seven values as rules about who may watch and the seventh as "Not searchable from vimeo.com" -- while the user privacy enum in the same file says of the same value "Anybody can view the user's videos if they have a link". One value, two descriptions, and only the one attached to the field you do not set tells you who can see the thing. Also: two fields called status answering different questions, one of them "deprecated in favor of `upload` and `transcode`", so the migration from one field is to two; a video with no identifier at all, only a uri to cut a number off; and a privacy value that changes which content types the request may use -- "When this value is `users`, `application/json` is the only valid content type" -- which is stated and not served. Detection found the largest near miss in the collection: vimeo/psalm, the PHP static analyser, at eighty-five million downloads, which is Etsy's phan a second time |
 | YouTube Data API | Videos, playlists, channels |
 
 ## A note on the sections below

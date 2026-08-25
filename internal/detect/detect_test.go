@@ -2233,3 +2233,55 @@ func TestDetectDropboxSignClientsAndNotItsEmbedOrTheFileStorage(t *testing.T) {
 		}
 	}
 }
+
+// Vimeo's largest near miss is the vendor's own unrelated library, at a scale
+// nothing else in this file approaches -- and it is the second time that
+// library is a PHP static analyser.
+//
+// vimeo/psalm has eighty-five million downloads and finds errors in PHP.
+// Etsy's phan is the same tool doing the same job under the same kind of
+// vendor name.
+//
+// And @vimeo/player -- an iframe controller that never calls this API -- is
+// installed twenty times more than the official Node client.
+func TestDetectVimeoAPIClientsAndNotItsPlayerOrItsStaticAnalyser(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@vimeo/vimeo": "^3.0.0"}}`},
+		{"composer.json": `{"require": {"vimeo/vimeo-api": "^3.0"}}`},
+		{"composer.json": `{"require": {"vimeo/laravel": "^5.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "vimeo") {
+			t.Errorf("%v did not detect vimeo: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor name on tools that are not about video at all.
+		{"composer.json": `{"require-dev": {"vimeo/psalm": "^5.0"}}`},
+		{"composer.json": `{"require-dev": {"vimeo/php-mysql-engine": "^0.1"}}`},
+		// The player, and everything wrapping it.
+		{"package.json": `{"dependencies": {"@vimeo/player": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"vimeo-video-element": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@u-wave/react-vimeo": "^0.9.0"}}`},
+		{"package.json": `{"dependencies": {"vue-vimeo-player": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"react-native-vimeo-iframe": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"lite-vimeo-embed": "^0.1.0"}}`},
+		{"package.json": `{"devDependencies": {"@types/vimeo__player": "^2.0.0"}}`},
+		// Watching the player rather than calling anything.
+		{"package.json": `{"dependencies": {"@snowplow/browser-plugin-vimeo-tracking": "^4.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "vimeo") {
+			t.Errorf("%v offered the vimeo Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
