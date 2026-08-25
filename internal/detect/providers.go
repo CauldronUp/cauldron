@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The thinnest mapping in this file, and the reason is worth more
+			// than the mapping: eighteen npm results for "grafana" and not one
+			// of them calls this API.
+			//
+			// The entire @grafana/ scope is plugin-development tooling.
+			// @grafana/data, /ui, /runtime, /schema, /scenes, /plugin-ui,
+			// /e2e-selectors and /plugin-e2e are for building panels that run
+			// inside Grafana, which reach its internals directly and never make
+			// an HTTP request to it. A vendor scope full of the vendor's name
+			// and empty of clients is the Hookdeck lesson at scale.
+			//
+			// On Packagist the largest numbers belong to a different product
+			// from the same vendor. itspire/monolog-loki at nine hundred
+			// thousand, cebe/yii2-loki-log-target, two Laravel Loki drivers and
+			// a Craft one all speak to Loki, Grafana Labs' log database, whose
+			// push and query API has nothing in common with this one. Beside
+			// them sit Prometheus exporters -- iamfarhad/laravel-prometheus,
+			// machour/yii2-prometheus, renoki-co/horizon-exporter -- which
+			// publish metrics to be scraped and call nobody.
+			//
+			// The Foundation SDK is the near miss that took the most thought.
+			// It builds dashboard documents as code, in Go, TypeScript, PHP and
+			// more; it does not send them. A project holding it probably does
+			// POST the result somewhere, but the package itself is a builder,
+			// and mapping a builder would offer the Recipe on the strength of a
+			// guess about the line after.
+			//
+			// @pulumiverse/grafana is infrastructure-as-code, for the fifth
+			// Recipe running.
+			//
+			// What is left is two small PHP packages by one author. That is the
+			// honest coverage for an API most people reach through the UI, a
+			// provisioning file, or Terraform.
+			recipe: "grafana",
+			composer: []string{
+				"saschahemleb/php-grafana-api-client",
+				"saschahemleb/laravel-grafana",
+			},
+		},
+		{
 			// A small ecosystem where nearly everything under the vendor's own
 			// scope is something other than a client, which makes the scope
 			// useless as a signal and the exclusions the whole job.
