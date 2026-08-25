@@ -2659,3 +2659,67 @@ func TestDetectYouTubeDataClientsAndNotASimileOrAScraper(t *testing.T) {
 		}
 	}
 }
+
+// Vault is the most contested name in this file. Four vendors ship a product
+// called one, and the biggest is not HashiCorp's: @azure/keyvault-common has
+// twenty-three million downloads against node-vault's 1.7 million, Oracle ships
+// oci-vault, and @googleapis/vault is Google Vault -- e-discovery for
+// Workspace, holding no secrets at all.
+//
+// Then the words that are not products: spryker/vault is a commerce framework
+// module at 2.2 million, the file-vault family encrypts files, ansible-vault is
+// a file format, and the top Packagist result for the word is ccxt/ccxt, a
+// cryptocurrency exchange library.
+//
+// Two exclusions are deliberate. @testcontainers/vault starts a real Vault in
+// Docker, which is what somebody reaches for instead of an emulator, and
+// @pulumi/vault provisions the server rather than reading secrets from it.
+func TestDetectVaultClientsAndNotTheOtherFourVaults(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"node-vault": "^0.10.2"}}`},
+		{"package.json": `{"dependencies": {"hashi-vault-js": "^0.4.14"}}`},
+		{"package.json": `{"dependencies": {"@litehex/node-vault": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"vault-api": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"csharpru/vault-php": "^4.2"}}`},
+		{"composer.json": `{"require": {"jippi/vault-php-sdk": "^2.4"}}`},
+		{"composer.json": `{"require": {"mittwald/vault-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"tokenly/laravel-vault": "^0.1"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "vault") {
+			t.Errorf("%v did not detect vault: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Three other vendors' Vaults, and the largest numbers of the lot.
+		{"package.json": `{"dependencies": {"@azure/keyvault-secrets": "^4.8.0"}}`},
+		{"package.json": `{"dependencies": {"oci-vault": "^2.90.0"}}`},
+		{"package.json": `{"dependencies": {"@googleapis/vault": "^11.0.0"}}`},
+		{"composer.json": `{"require": {"keboola/azure-key-vault-client": "^3.0"}}`},
+		// Words that are not products.
+		{"composer.json": `{"require": {"spryker/vault": "^1.0"}}`},
+		{"composer.json": `{"require": {"soarecostin/file-vault": "^1.0"}}`},
+		{"composer.json": `{"require": {"dotenv-org/phpdotenv-vault": "^0.1"}}`},
+		{"package.json": `{"dependencies": {"ansible-vault": "^1.1.1"}}`},
+		{"package.json": `{"dependencies": {"@apideck/vault-react": "^2.0.0"}}`},
+		// The real server in Docker, which is the alternative to a Recipe.
+		{"package.json": `{"devDependencies": {"@testcontainers/vault": "^10.0.0"}}`},
+		// And infrastructure-as-code, which configures Vault rather than
+		// reading secrets from it.
+		{"package.json": `{"dependencies": {"@pulumi/vault": "^6.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "vault") {
+			t.Errorf("%v offered the vault Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
