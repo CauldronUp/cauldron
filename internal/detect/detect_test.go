@@ -2132,3 +2132,52 @@ func TestDetectElevenLabsRestClientsAndNotItsRealtimeSDKs(t *testing.T) {
 		}
 	}
 }
+
+// PlanetScale is the clearest instance of the shape ElevenLabs introduced: the
+// vendor's most installed package is for a different protocol.
+//
+// @planetscale/database is "A Fetch API-compatible PlanetScale database
+// driver", installed a million times a month, and it runs SQL over the
+// serverless query protocol. This Recipe is the management API, which creates
+// databases and merges deploy requests. Same company, same account, no
+// endpoint in common -- and everything built on the driver inherits the
+// exclusion.
+func TestDetectPlanetScaleManagementClientsAndNotItsQueryDriver(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@distilled.cloud/planetscale": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@sst-provider/planetscale": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"x7media/laravel-planetscale": "^1.0"}}`},
+		{"composer.json": `{"require": {"bellows-app/plugin-planetscale": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "planetscale") {
+			t.Errorf("%v did not detect planetscale: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The query driver, and everything built on it.
+		{"package.json": `{"dependencies": {"@planetscale/database": "^1.19.0"}}`},
+		{"package.json": `{"dependencies": {"@prisma/adapter-planetscale": "^6.0.0"}}`},
+		{"package.json": `{"dependencies": {"kysely-planetscale": "^1.4.0"}}`},
+		{"package.json": `{"dependencies": {"@mattrax/mysql-planetscale": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@storecraft/database-planetscale": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"planetscale-stream-ts": "^1.0.0"}}`},
+		// And the bare name, which describes itself as connecting rather than
+		// managing and is installed two thousand times a month.
+		{"package.json": `{"dependencies": {"planetscale": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "planetscale") {
+			t.Errorf("%v offered the planetscale Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

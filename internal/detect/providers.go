@@ -868,6 +868,43 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The clearest instance yet of a shape ElevenLabs introduced: the
+			// vendor's most installed package is for a different protocol.
+			//
+			// @planetscale/database is "A Fetch API-compatible PlanetScale
+			// database driver", installed a million times a month, and it
+			// speaks the serverless query protocol -- it runs SQL. This
+			// Recipe is the management API, which creates databases and
+			// merges deploy requests. Same company, same account, same
+			// credential family, and no endpoint in common.
+			//
+			// Everything built on the driver inherits the exclusion:
+			// @prisma/adapter-planetscale, kysely-planetscale,
+			// @mattrax/mysql-planetscale, @storecraft/database-planetscale
+			// and planetscale-stream-ts are all query-path packages, and
+			// between them they outnumber every management client here by two
+			// orders of magnitude.
+			//
+			// The bare npm "planetscale" is "a simple client for connecting
+			// to PlanetScale" -- connecting, which is the driver's job -- and
+			// is installed two thousand times a month, so it is left alone on
+			// the Marqeta reading rather than guessed at.
+			//
+			// What is mapped is the management side: an SDK generated from
+			// this very document, a Pulumi provider bridged from it, and two
+			// PHP packages that exist to move migrations through branches and
+			// deploy requests.
+			recipe: "planetscale",
+			composer: []string{
+				"x7media/laravel-planetscale",
+				"bellows-app/plugin-planetscale",
+			},
+			npm: []string{
+				"@distilled.cloud/planetscale",
+				"@sst-provider/planetscale",
+			},
+		},
+		{
 			// A new shape: the vendor's own most installed packages are for a
 			// different transport.
 			//
