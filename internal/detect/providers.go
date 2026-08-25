@@ -868,6 +868,43 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// A rename the ecosystem has not followed. HelloSign became
+			// Dropbox Sign, and on Packagist the old package is installed
+			// seven times more than the new one -- hellosign/hellosign-php
+			// -sdk against dropbox/sign -- so both are mapped and the older
+			// name is the one most projects will actually be holding.
+			//
+			// The sibling product, across a wider gulf than Jira and
+			// Confluence. The npm package "dropbox" is the file storage SDK
+			// and @uppy/dropbox is an uploader for it: same company, same
+			// brand, nothing to do with signatures. Nothing but the package
+			// name connects them to this API.
+			//
+			// And the transport shape again, more installed than the client
+			// it sits beside: hellosign-embedded "embeds HelloSign signature
+			// requests and templates from within your app", which is an
+			// iframe in a browser fed a sign_url that some server already
+			// fetched. It makes no call to this API and is installed eight
+			// hundred thousand times a month, against the official Node
+			// client's four hundred and sixty.
+			//
+			// hellosign/hawk and lnn/hellowight are Packagist noise that
+			// merely begins with the word.
+			recipe: "dropboxsign",
+			composer: []string{
+				"dropbox/sign",
+				"hellosign/hellosign-php-sdk",
+				"industrious/hellosign-laravel",
+				"bukashk0zzz/hellosign-bundle",
+				"o0khoiclub0o/hellosign-php",
+			},
+			npm: []string{
+				"@dropbox/sign",
+				"@memberjunction/esignature-dropboxsign",
+				"@molecule/api-esign-hellosign",
+			},
+		},
+		{
 			// The clearest instance yet of a shape ElevenLabs introduced: the
 			// vendor's most installed package is for a different protocol.
 			//

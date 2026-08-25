@@ -178,7 +178,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Provider | Why |
 |---|---|
 | ~~Documenso~~ | Shipped. Document against recipient status, tokens, CC recipients |
-| Dropbox Sign | Signature requests and callbacks |
+| ~~Dropbox Sign~~ | Shipped, written against the OpenAPI document Dropbox Sign publishes and generates its own SDKs from. There is no status: a signature request carries is_complete, is_declined and has_error, three independent booleans, so is_complete: false is four situations wearing one face -- nobody has signed, somebody declined, something broke, or two of three are done. A dashboard rendering complete-or-pending shows a declined contract as pending for ever. Also: the person who signs need not be the one you asked (reassigned_by, reassignment_reason and reassigned_from on the signature that replaced yours); every signer carries an error of its own beside the request's; and a test request that "has no legal value" is in the listing with the contracts, which takes account_id, page, page_size and query and nothing else. The most surprising thing about this API is stated and not served: the document defines EventCallbackResponse as text/plain defaulting to "Hello API Event Received", which is the body your callback endpoint must answer with -- every other provider here reads your status code, this one reads your prose |
 | Adobe Acrobat Sign | Agreements and the signing lifecycle |
 | Ironclad | Contracts and approval workflows |
 | DocSpring | PDF generation and templates |

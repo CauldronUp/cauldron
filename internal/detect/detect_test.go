@@ -2181,3 +2181,55 @@ func TestDetectPlanetScaleManagementClientsAndNotItsQueryDriver(t *testing.T) {
 		}
 	}
 }
+
+// Dropbox Sign brings three exclusions, and one of them is a rename the
+// ecosystem has not followed: hellosign/hellosign-php-sdk is installed seven
+// times more than dropbox/sign, so both are mapped.
+//
+// The npm package "dropbox" is the file storage SDK -- the sibling product,
+// across a wider gulf than Jira and Confluence.
+//
+// And hellosign-embedded is an iframe in a browser fed a sign_url some server
+// already fetched. It makes no call to this API and is installed eight hundred
+// thousand times a month, against the official Node client's four hundred and
+// sixty.
+func TestDetectDropboxSignClientsAndNotItsEmbedOrTheFileStorage(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@dropbox/sign": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@memberjunction/esignature-dropboxsign": "^2.0.0"}}`},
+		{"composer.json": `{"require": {"dropbox/sign": "^1.0"}}`},
+		{"composer.json": `{"require": {"hellosign/hellosign-php-sdk": "^3.0"}}`},
+		{"composer.json": `{"require": {"industrious/hellosign-laravel": "^1.0"}}`},
+		{"composer.json": `{"require": {"bukashk0zzz/hellosign-bundle": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "dropboxsign") {
+			t.Errorf("%v did not detect dropboxsign: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// An iframe fed a URL somebody else fetched.
+		{"package.json": `{"dependencies": {"hellosign-embedded": "^2.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@types/hellosign-embedded": "^2.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@types/hellosign-sdk": "^1.0.0"}}`},
+		// The sibling product: file storage, not signatures.
+		{"package.json": `{"dependencies": {"dropbox": "^10.0.0"}}`},
+		{"package.json": `{"dependencies": {"@uppy/dropbox": "^4.0.0"}}`},
+		// And Packagist noise that begins with the word.
+		{"composer.json": `{"require": {"hellosign/hawk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "dropboxsign") {
+			t.Errorf("%v offered the dropboxsign Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
