@@ -2344,3 +2344,56 @@ func TestDetectKeycloakAdminClientsAndNotTheHalfEverybodyUses(t *testing.T) {
 		}
 	}
 }
+
+// FusionAuth confirms the shape Keycloak's entry names: the other half of the
+// same product. Everything popular is about getting a token or checking one,
+// and the administration API is the smaller half again.
+//
+// The sharpest detail is that fusionauth/jwt-auth-webtoken-provider is under
+// the vendor's own namespace and is still a JWT library plug-in rather than a
+// client, so the vendor prefix is useless as a signal here. And
+// nodebb-theme-fusionauth is a forum theme.
+func TestDetectFusionAuthAdminClientsAndNotTheLoginHalf(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@fusionauth/typescript-client": "^1.50.0"}}`},
+		{"package.json": `{"dependencies": {"pulumi-fusionauth": "^4.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@fusionauth/cli": "^0.1.0"}}`},
+		{"composer.json": `{"require": {"fusionauth/fusionauth-client": "^1.50"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "fusionauth") {
+			t.Errorf("%v did not detect fusionauth: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Signing people in.
+		{"composer.json": `{"require": {"socialiteproviders/fusionauth": "^4.0"}}`},
+		{"composer.json": `{"require": {"jerryhopper/oauth2-fusionauth": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"passport-fusionauth": "^1.0.0"}}`},
+		// Validating a token somebody else issued -- including one under the
+		// vendor's own namespace.
+		{"composer.json": `{"require": {"danilopolani/laravel-fusionauth-jwt": "^1.0"}}`},
+		{"composer.json": `{"require": {"fusionauth/jwt-auth-webtoken-provider": "^1.0"}}`},
+		{"composer.json": `{"require": {"werk365/jwtauthroles": "^1.0"}}`},
+		// Logging people in from a browser.
+		{"package.json": `{"dependencies": {"@fusionauth/react-sdk": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@fusionauth/angular-sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@fusionauth/vue-sdk": "^1.0.0"}}`},
+		// And a forum theme.
+		{"package.json": `{"dependencies": {"nodebb-theme-fusionauth": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "fusionauth") {
+			t.Errorf("%v offered the fusionauth Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

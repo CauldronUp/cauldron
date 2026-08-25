@@ -112,7 +112,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~WorkOS~~ | Shipped. Inactive-but-present users, per-IdP raw attributes, draft connections |
 | ~~Stytch~~ | Shipped. Per-factor verification, session factors, invited members |
 | Descope | Authentication flows and identities |
-| FusionAuth | Users, tenants, applications |
+| ~~FusionAuth~~ | Shipped, written against the OpenAPI document FusionAuth publishes. A header that is optional until somebody else changes something: X-FusionAuth-TenantId is declared required: false on nearly every operation, and its own description says "Only required when there is more than one tenant and the API key is not tenant-scoped". Both of those are administrative acts in a different system, so code written against a single-tenant install works, ships, and breaks the day a second tenant appears -- and a developer's sandbox is single-tenant, which is precisely the state in which this cannot be found. This Recipe seeds two. Also: an account's password can go from fine to breached without the account being touched, insertInstant and lastUpdateInstant identical while breachedPasswordStatus changes; active is a boolean and expiry is a date and neither mentions the other; and timestamps are called insertInstant and lastUpdateInstant, in milliseconds, so mapping by convention finds neither |
 | ~~Keycloak~~ | Shipped, the Admin REST API, written against the OpenAPI document Keycloak publishes. Creating a user tells you nothing about the user you created: POST /admin/realms/{realm}/users is documented as "201 Created" and nothing else -- no content, no schema, no headers -- so the document describes no response body for the endpoint that makes the central object of the API, and does not say the identifier went into a Location header either. Also: enabled does not mean able to log in, because a requiredActions entry stops a login dead while enabled stays true; search is prefix-based by default with *foo* for infix and quotes for exact, so the punctuation is the API; and first is the pagination offset while the exact parameter's own description names "first" as a field to match on. The search punctuation is stated and not served |
 
 ## Analytics and flags
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**120 more listings across 71 Recipes declare no paging at all**, and the
+**121 more listings across 72 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
