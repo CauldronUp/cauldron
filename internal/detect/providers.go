@@ -868,6 +868,36 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Keycloak's entry below names a shape -- the other half of the
+			// same product -- and FusionAuth confirms it is a property of
+			// identity providers rather than of one vendor. Everything
+			// popular here is about getting a token or checking one, and the
+			// administration API is the smaller half again.
+			//
+			// socialiteproviders/fusionauth is the Socialite shape for the
+			// fifth time in this file. jerryhopper/oauth2-fusionauth signs
+			// people in for the PHP League. danilopolani/laravel-fusionauth
+			// -jwt, werk365/jwtauthroles and fusionauth/jwt-auth-webtoken
+			// -provider all validate a token FusionAuth issued -- and the
+			// last of those is under the vendor's own namespace, which is
+			// what makes the vendor prefix useless as a signal here.
+			//
+			// @fusionauth/react-sdk, angular-sdk and vue-sdk log people in
+			// from a browser, and passport-fusionauth and nodebb-plugin
+			// -fusionauth-oidc are authentication strategies.
+			//
+			// nodebb-theme-fusionauth is a forum theme. It is a stylesheet.
+			recipe:   "fusionauth",
+			composer: []string{"fusionauth/fusionauth-client"},
+			npm: []string{
+				"@fusionauth/typescript-client",
+				"@fusionauth/cli",
+				"fusionauth-cli",
+				"@fusionauth/mcp-api",
+				"pulumi-fusionauth",
+			},
+		},
+		{
 			// The other half of the same product, which is a new shape here.
 			// Not a different deployment and not a different transport: the
 			// thing almost everybody uses Keycloak for is getting a token or
