@@ -282,7 +282,7 @@ the header says so.
 |---|---|
 | ~~Bugsnag~~ | Shipped. An error is not its occurrences, and the counts are on the error |
 | Honeybadger | Assess — faults and notices |
-| Grafana Cloud | Assess — dashboards, alert rules, the Prometheus-shaped query API |
+| Grafana Cloud | Assess — the stack-management API, which is a second surface on top of the one that now ships. **The Grafana HTTP API is shipped** as `grafana`, written against `api-merged.json` in `grafana/grafana`: two unique identifiers for one dashboard, and the one called `id` is the one you cannot use. A save's required fields are `["status", "title", "version", "id", "uid", "url"]` and the two identifiers carry the same sentence -- "The unique identifier (id)" and "The unique identifier (uid)" -- for an int64 and a string, while the only path that fetches a dashboard is `/api/dashboards/uid/{uid}`. So the integer is required in every save response and can address nothing; it is the instance's row number, and a deploy that stored it stored the identifier that will not survive the move. The document says the same about folders outright: `folderId` is "Deprecated: use FolderUID instead", beside `folderUid`. Also pinned: a field called `title` whose description is **"Slug The slug of the dashboard."** with the example "my-dashboard" -- a struct comment one field out of place, on the field a UI shows back to the user; the `version` that guards the next save living in `meta` rather than on the dashboard, which is free-form JSON, with a **412** declared on the save; five permission booleans (`canAdmin`, `canDelete`, `canEdit`, `canSave`, `canStar`) and a sixth field, `provisioned`, that none of them accounts for; and a search that answers with a bare array, no envelope and no count, whose hits can be dashboards already in the bin. Detection is the thinnest in the collection and the reason is the finding: eighteen npm results for "grafana" and not one calls this API -- the whole `@grafana/` scope is plugin tooling, and the biggest Packagist numbers are Loki, a different product from the same vendor |
 | Honeycomb | Assess — datasets, triggers, query results |
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | Heap | Assess — events and user properties |
@@ -989,7 +989,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**127 more listings across 76 Recipes declare no paging at all**, and the
+**128 more listings across 77 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1132,7 +1132,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Bugsnag~~ | Shipped. An error carries counts and no stack trace, fixed is not terminal, and severity is a different question from unhandled |
-| Grafana Cloud | Assess — dashboards, alert rules, and a Prometheus-shaped query API that is not REST |
+| Grafana Cloud | Assess — the stack-management API and the Prometheus-shaped query API that is not REST. The Grafana HTTP API itself ships; see the row in the observability table above for what it pins |
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | ~~PostHog~~ | Shipped. A flag definition is not what a user gets, nought per cent is not inactive, and capture says the same thing whatever you send |
 | Statsig | Assess — gates, experiments, exposure logging |

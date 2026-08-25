@@ -46,9 +46,17 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 	var presented string
 
 	switch auth.Scheme {
-	case "bearer":
-		presented = r.Header.Get("Authorization")
-	case "header":
+	case "bearer", "header":
+		// One branch, because the two schemes differ only in convention: a
+		// bearer token usually carries a prefix and a header credential
+		// usually does not, and Prefix is applied below either way.
+		//
+		// bearer used to read Authorization and ignore auth.header entirely,
+		// which made the field inert on 127 of the 130 Recipes that declare
+		// it. All 127 say "Authorization", so nothing on the wire changes --
+		// but a Recipe describing a bearer token in some other header was
+		// silently served on Authorization instead, and a mutation renaming
+		// the header could not be caught by any case.
 		header := auth.Header
 		if header == "" {
 			header = "Authorization"

@@ -2878,3 +2878,57 @@ func TestDetectHookdeckClientsAndNotTheVendorsOtherProduct(t *testing.T) {
 		}
 	}
 }
+
+// Grafana has the thinnest mapping in this file, and the reason matters more
+// than the mapping: eighteen npm results for the word and not one of them calls
+// this API.
+//
+// The whole @grafana/ scope is plugin-development tooling -- panels that run
+// inside Grafana and reach its internals directly. On Packagist the largest
+// numbers belong to Loki, a different product from the same vendor, beside
+// Prometheus exporters that publish metrics to be scraped and call nobody.
+//
+// The Foundation SDK builds dashboard documents as code and does not send them.
+func TestDetectGrafanaClientsAndNotItsPluginToolkitOrLoki(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"saschahemleb/php-grafana-api-client": "^0.4"}}`},
+		{"composer.json": `{"require": {"saschahemleb/laravel-grafana": "^0.3"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "grafana") {
+			t.Errorf("%v did not detect grafana: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's scope, which is entirely plugin tooling.
+		{"package.json": `{"dependencies": {"@grafana/data": "^11.0.0"}}`},
+		{"package.json": `{"dependencies": {"@grafana/ui": "^11.0.0"}}`},
+		{"package.json": `{"dependencies": {"@grafana/runtime": "^11.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@grafana/plugin-e2e": "^1.0.0"}}`},
+		// A builder rather than a client.
+		{"package.json": `{"dependencies": {"@grafana/grafana-foundation-sdk": "^11.0.0"}}`},
+		{"composer.json": `{"require": {"grafana/foundation-sdk": "^11.0"}}`},
+		// A different product from the same vendor, and the biggest numbers.
+		{"composer.json": `{"require": {"itspire/monolog-loki": "^2.0"}}`},
+		{"composer.json": `{"require": {"cebe/yii2-loki-log-target": "^1.0"}}`},
+		// Metrics that get scraped rather than sent.
+		{"composer.json": `{"require": {"iamfarhad/laravel-prometheus": "^1.0"}}`},
+		{"composer.json": `{"require": {"renoki-co/horizon-exporter": "^3.0"}}`},
+		// Infrastructure-as-code, for the fifth Recipe running.
+		{"package.json": `{"dependencies": {"@pulumiverse/grafana": "^0.4.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "grafana") {
+			t.Errorf("%v offered the grafana Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
