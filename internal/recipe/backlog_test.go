@@ -200,3 +200,144 @@ func TestTheBacklogCountsUnstatedPaging(t *testing.T) {
 		t.Errorf("the backlog says those listings are spread across %d Recipes and they are across %d", n, recipes)
 	}
 }
+
+// The test above compares a queued row to a Recipe's directory name exactly.
+// Directory names are short and product names are not, so two providers sat in
+// the queue for months after they shipped: Hetzner Cloud, under recipes/hetzner,
+// and Fly.io, under recipes/fly. The Hetzner row was the pointed one. It asked
+// for "every mutation returns an action object you have to poll, rather than the
+// thing you changed", which is the sentence the shipped Recipe opens with.
+//
+// Widening the match is not free, and that is the whole difficulty. Of the nine
+// pairs a plain substring test finds, two are the real ones and the other seven
+// are not. Circle is the stablecoin company and not CircleCI, which is a
+// homonym. GitHub Actions and Stripe Tax are separate surfaces of a vendor
+// already here, and both rows say so themselves -- "probably its own",
+// "probably a specialised extension". GoCardless is payments, where the shipped
+// gocardlessbank is GoCardless Bank Account Data: one vendor, two APIs,
+// different shapes. Cloudflare R2 is an S3-compatible object store that shares
+// a brand with the Cloudflare Recipe and nothing else. And two are accidents of
+// spelling -- "lob" sits inside "Azure Blob Storage", and "kit" inside
+// "buildkite".
+//
+// So the machine cannot decide this and this test does not try. It finds
+// candidates and requires each one to be resolved -- struck through, or written
+// down below with the reason it is a different thing. A silent blind spot
+// becomes a decision somebody has to record, which is the most a name
+// comparison can honestly do.
+func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
+	// Candidates that are genuinely different products, and why. A row named
+	// here must still be a candidate: an entry that stops matching is stale and
+	// fails, for the same reason the queue itself does.
+	distinct := map[string]string{
+		"Circle":         "the stablecoin company, not CircleCI",
+		"Cloudflare R2":  "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
+		"GitHub Actions": "a separate surface of GitHub, as the row itself says",
+		"GoCardless":     "payments, where gocardlessbank is GoCardless Bank Account Data",
+		"Stripe Tax":     "a specialised extension of Stripe, as the row itself says",
+	}
+
+	raw, err := os.ReadFile(backlogPath)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+
+	shipped := recipe.Bundled()
+
+	header := regexp.MustCompile(`^\|\s*Provider\s*\|\s*Why\s*\|`)
+	row := regexp.MustCompile(`^\| ([^|]+?) \|`)
+
+	matched := map[string]bool{}
+
+	var inQueue bool
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimRight(line, "\r")
+
+		if header.MatchString(line) {
+			inQueue = true
+			continue
+		}
+
+		if !strings.HasPrefix(line, "|") {
+			inQueue = false
+			continue
+		}
+
+		if !inQueue {
+			continue
+		}
+
+		m := row.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+
+		name := strings.TrimSpace(m[1])
+		if strings.HasPrefix(name, "~~") || strings.HasPrefix(name, "---") {
+			continue
+		}
+
+		for _, under := range namedBy(name, shipped) {
+			matched[name] = true
+
+			if _, known := distinct[name]; known {
+				continue
+			}
+
+			t.Errorf("the backlog queues %q and recipes/%s ships; strike it through, or record here why they are different things", name, under)
+		}
+	}
+
+	for name := range distinct {
+		if !matched[name] {
+			t.Errorf("%q is recorded as distinct from a shipped Recipe and no longer looks like one; drop the entry", name)
+		}
+	}
+}
+
+// namedBy returns the shipped Recipes whose directory name looks like the
+// provider a queued row names.
+//
+// Exact-equal is the caller's job; this is the near miss. A row matches a
+// Recipe when one of its words is that Recipe's whole name -- "Fly.io" against
+// fly, "Hetzner Cloud" against hetzner -- or when either name is a prefix of
+// the other, which is how "Circle" reaches circleci. The prefix arms need four
+// characters to fire, because three-letter Recipe names turn up inside ordinary
+// words: without the floor, lob matches "Azure Blob Storage".
+func namedBy(row string, shipped []string) []string {
+	whole := simplify(row)
+
+	words := strings.FieldsFunc(strings.ToLower(row), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	})
+
+	var found []string
+
+	for _, name := range shipped {
+		if name == whole {
+			continue
+		}
+
+		var looksLike bool
+
+		for _, word := range words {
+			if word == name {
+				looksLike = true
+				break
+			}
+		}
+
+		if len(name) >= 4 {
+			looksLike = looksLike ||
+				strings.HasPrefix(name, whole) ||
+				strings.HasPrefix(whole, name)
+		}
+
+		if looksLike {
+			found = append(found, name)
+		}
+	}
+
+	return found
+}
