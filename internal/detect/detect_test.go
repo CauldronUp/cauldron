@@ -2285,3 +2285,62 @@ func TestDetectVimeoAPIClientsAndNotItsPlayerOrItsStaticAnalyser(t *testing.T) {
 		}
 	}
 }
+
+// Keycloak brings a shape this file had not recorded: the other half of the
+// same product.
+//
+// Not a different deployment and not a different transport -- the thing almost
+// everybody uses Keycloak for is getting a token or checking one, and the
+// Admin REST API this Recipe models is the side door. stevenmaguire
+// /oauth2-keycloak signs people in and has six and three quarter million
+// downloads, against the PHP admin client's seven hundred and ninety thousand.
+//
+// keycloakify is the sharpest: "Framework to create custom Keycloak UIs", a
+// build tool that produces login pages and makes no request of any kind.
+func TestDetectKeycloakAdminClientsAndNotTheHalfEverybodyUses(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@keycloak/keycloak-admin-client": "^26.0.0"}}`},
+		{"package.json": `{"dependencies": {"@s3pweb/keycloak-admin-client-cjs": "^26.0.0"}}`},
+		{"package.json": `{"dependencies": {"@pulumi/keycloak": "^6.0.0"}}`},
+		{"composer.json": `{"require": {"mohammad-waleed/keycloak-admin-client": "^0.1"}}`},
+		{"composer.json": `{"require": {"fschmtt/keycloak-rest-api-client-php": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "keycloak") {
+			t.Errorf("%v did not detect keycloak: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Signing people in, which is the other half of the product.
+		{"composer.json": `{"require": {"stevenmaguire/oauth2-keycloak": "^5.0"}}`},
+		{"composer.json": `{"require": {"socialiteproviders/keycloak": "^4.0"}}`},
+		// Validating a token somebody else issued.
+		{"composer.json": `{"require": {"robsontenorio/laravel-keycloak-guard": "^3.0"}}`},
+		{"composer.json": `{"require": {"vizir/laravel-keycloak-web-guard": "^3.0"}}`},
+		{"package.json": `{"dependencies": {"keycloak-connect": "^26.0.0"}}`},
+		{"package.json": `{"dependencies": {"keycloak-angular": "^16.0.0"}}`},
+		{"package.json": `{"dependencies": {"@react-keycloak/web": "^3.4.0"}}`},
+		{"package.json": `{"dependencies": {"nest-keycloak-connect": "^1.10.0"}}`},
+		{"package.json": `{"dependencies": {"passport-keycloak-bearer": "^1.0.0"}}`},
+		// The browser adapter under the bare name.
+		{"package.json": `{"dependencies": {"keycloak": "^1.0.0"}}`},
+		// A build tool that produces login pages and calls nothing.
+		{"package.json": `{"devDependencies": {"keycloakify": "^11.0.0"}}`},
+		// And test helpers that log a user in.
+		{"package.json": `{"devDependencies": {"cypress-keycloak": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "keycloak") {
+			t.Errorf("%v offered the keycloak Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
