@@ -1,0 +1,508 @@
+# Dropbox Sign Recipe for Cauldron
+#
+# Written against the OpenAPI 3.0.3 document Dropbox Sign publishes and
+# generates its own SDKs from, at github.com/hellosign/hellosign-openapi --
+# six hundred kilobytes -- and quoted from the field descriptions in it.
+#
+# There is no status. There are three booleans, and none of them is enough.
+#
+# A signature request carries these, side by side, and nothing else that says
+# what happened to it:
+#
+#   is_complete  -- "Whether or not the SignatureRequest has been fully
+#                   executed by all signers."
+#   is_declined  -- "Whether or not the SignatureRequest has been declined by
+#                   a signer."
+#   has_error    -- "Whether or not an error occurred (either during the
+#                   creation of the SignatureRequest or during one of the
+#                   signings)."
+#
+# So is_complete: false is four different situations wearing one face. Nobody
+# has signed yet. Somebody declined. Something broke. Two of three signed and
+# the third is on holiday. A dashboard that renders complete-or-pending shows
+# a declined contract as pending for ever, and the customer waiting on it is
+# told the other side has not got round to it.
+#
+# The combination is the answer, and the combination has to be built by hand
+# every time. There is no field to switch on, no enum, no state -- and the
+# three are independent, so a request can be declined and errored at once.
+#
+# Four more, each from the same document:
+#
+#   1. Your handler has to say a specific sentence back. The document defines
+#      EventCallbackResponse as text/plain with a default of
+#
+#        Hello API Event Received
+#
+#      and that is the body Dropbox Sign requires your callback endpoint to
+#      answer with. A handler that returns 200 and an empty body, or 200 and
+#      a JSON receipt, has failed the delivery as far as the provider is
+#      concerned. Every other provider in this collection reads your status
+#      code; this one reads your prose.
+#   2. The person who signs need not be the person you asked. A signature
+#      carries reassigned_by -- "Email address of original signer who
+#      reassigned to this signer" -- with reassignment_reason and
+#      reassigned_from, the previous signature's identifier. So the name on
+#      the executed document is somebody the request never named, and the
+#      only trace is three fields on the signature that replaced the one you
+#      created.
+#   3. Every signer has an error of its own, beside the request's. A
+#      signature's error is "Error message pertaining to this signer, or
+#      null", and has_error on the request is the union of those and the
+#      creation's. Reading has_error tells you something went wrong; finding
+#      out what means walking the signatures.
+#   4. A test request is in the listing with the real ones. test_mode is
+#      "Whether this is a test signature request. Test requests have no legal
+#      value" -- and the listing takes account_id, page, page_size and query,
+#      none of which is test_mode. A count of contracts sent includes every
+#      one a developer made while wiring this up.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Claim 1 is stated and not served. Cauldron delivers a webhook and
+#     records what came back; it does not require the subscriber to answer
+#     with a particular body, and adding that would be a change to how every
+#     Recipe's deliveries are judged rather than a fact about this one. It is
+#     the most surprising thing about this API and it is written down here
+#     rather than modelled.
+#   - Signing is declared as Dropbox Sign describes it -- an event_hash,
+#     "Generated hash used to verify source of event data" -- and the digest
+#     here is over the body, which is Cauldron's shape rather than
+#     necessarily this provider's. A handler that verifies against this
+#     emulator is learning that a hash arrives and where, not how to compute
+#     it.
+#   - Sending a signature request is a multipart upload of files, and is not
+#     modelled. What is served is what comes back afterwards.
+#   - Sending is not modelled, so nothing here mints an identifier: the forty
+#     hexadecimal characters declared for one are checked against the
+#     fixtures and cannot be exercised by a case. The same is true of the
+#     defaults on the three booleans -- with no create route there is no
+#     request that could omit them.
+#   - Templates, team management, bulk send, faxes, embedded signing and the
+#     OAuth flow are absent. Signature requests only.
+#
+# The key and the ids below are fixtures and belong to no account.
+
+recipe: dropboxsign
+capability: signing
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.hellosign.com/api/reference/
+
+auth:
+  # Basic, with the API key as the username and nothing as the password,
+  # which is what the document declares and what every example sends.
+  scheme: basic
+  keys:
+    - cauldron-dropboxsign-fixture-key
+
+responses:
+  list:
+    style: wrapped
+    key: signature_requests
+    count_field: list_info.num_results
+    page_field: list_info.page
+    limit_field: list_info.page_size
+    pages_field: list_info.num_pages
+  resource:
+    style: wrapped
+    key: signature_request
+  error:
+    style: nested
+    key: error
+    message_field: error_msg
+    code_field: error_name
+    type_field: "-"
+
+resources:
+  signature_request:
+    id:
+      style: hex
+      length: 40
+      field: signature_request_id
+    fields:
+      title:
+        type: string
+      subject:
+        type: string
+      message:
+        type: string
+      requester_email_address:
+        type: string
+      created_at:
+        type: timestamp
+      expires_at:
+        type: timestamp
+        stamped: false
+      # Three booleans and no status between them.
+      is_complete:
+        type: boolean
+        default: false
+      is_declined:
+        type: boolean
+        default: false
+      has_error:
+        type: boolean
+        default: false
+      # In the listing with the real ones, and no parameter to exclude it.
+      test_mode:
+        type: boolean
+        default: false
+      signatures:
+        type: list
+      cc_email_addresses:
+        type: list
+        default: []
+      details_url:
+        type: string
+      files_url:
+        type: string
+
+routes:
+  - method: GET
+    path: /v3/signature_request/list
+    resource: signature_request
+    operation: list
+    pagination:
+      style: page
+      cursor_param: page
+      limit_param: page_size
+      limit: 20
+      first_page: 1
+
+  - method: GET
+    path: /v3/signature_request/{id}
+    resource: signature_request
+    operation: get
+
+webhooks:
+  events:
+    - signature_request_sent
+    - signature_request_viewed
+    - signature_request_signed
+    - signature_request_declined
+    - signature_request_all_signed
+  # The event and its metadata, with the hash that authenticates it. The
+  # payload arrives as a form field called json rather than as a JSON body,
+  # which is another thing this format cannot say and the file says instead.
+  payload:
+    event:
+      event_type: "{event}"
+      event_time: "{created}"
+      event_hash: "{id}"
+    signature_request:
+      signature_request_id: "{record_id}"
+  signing:
+    scheme: hmac-sha256
+    header: X-Dropbox-Signature
+    secret: cauldron-dropboxsign-callback-secret
+    encoding: hex
+    over: "{body}"
+    value: "{digest}"
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized. The API key you supplied is invalid.
+    code: unauthorized
+
+  resource_missing:
+    status: 404
+    message: Could not find the signature request.
+    code: not_found
+
+  invalid_request:
+    status: 400
+    message: Bad request.
+    code: bad_request
+
+fixtures:
+  empty: {}
+
+  account:
+    signature_request:
+      # Signed by everybody. The only combination anybody tests.
+      - id: fa5c8a0b0f492d768749333ad6fcc214c111e967
+        title: Supply agreement
+        subject: Please sign the supply agreement
+        message: Countersigned copy attached once everyone has signed.
+        requester_email_address: ops@example.com
+        created_at: 1754899200
+        is_complete: true
+        is_declined: false
+        has_error: false
+        test_mode: false
+        cc_email_addresses:
+          - finance@example.com
+        details_url: https://app.hellosign.com/editor/documents/fa5c8a0b0f
+        files_url: https://api.hellosign.com/v3/signature_request/files/fa5c8a0b0f
+        signatures:
+          - signature_id: 78caf2a1d01cd6d4c69e5cc9f9a1e4bd
+            signer_email_address: ada@example.com
+            signer_name: Ada Lovelace
+            status_code: signed
+            signed_at: 1754902800
+            last_viewed_at: 1754901000
+            error: null
+      # Declined. is_complete is false, exactly as it is for a request nobody
+      # has opened yet.
+      - id: 2b3d1f6c9e0a4857bd23c7419fe0a8d5c2743916
+        title: Consultancy contract
+        subject: Please sign the consultancy contract
+        requester_email_address: ops@example.com
+        created_at: 1755072000
+        is_complete: false
+        is_declined: true
+        has_error: false
+        test_mode: false
+        details_url: https://app.hellosign.com/editor/documents/2b3d1f6c9e
+        signatures:
+          - signature_id: 91ade4c7b28f0361d5e8a70c4b9f2d63
+            signer_email_address: grace@example.com
+            signer_name: Grace Hopper
+            status_code: declined
+            decline_reason: The indemnity clause needs revising.
+            last_viewed_at: 1755075600
+            error: null
+      # Errored, and the reason is on the signer rather than on the request.
+      - id: 7e1c4b93a0d5f286c34e9b7d01a6f852bd4c0397
+        title: Non-disclosure agreement
+        subject: Please sign the NDA
+        requester_email_address: ops@example.com
+        created_at: 1755158400
+        is_complete: false
+        is_declined: false
+        has_error: true
+        test_mode: false
+        details_url: https://app.hellosign.com/editor/documents/7e1c4b93a0
+        signatures:
+          - signature_id: c50b8f27e93a1ד
+            signer_email_address: alan@example.com
+            signer_name: Alan Turing
+            status_code: awaiting_signature
+            error: The signer's email address was rejected by the receiving server.
+      # Nobody has signed yet, and it reads the same as the declined one on
+      # the only field most code looks at.
+      - id: d94a7f2e6b18c035a7fe412d8c063b95ea27f180
+        title: Data processing addendum
+        subject: Please sign the DPA
+        requester_email_address: ops@example.com
+        created_at: 1755244800
+        is_complete: false
+        is_declined: false
+        has_error: false
+        test_mode: false
+        details_url: https://app.hellosign.com/editor/documents/d94a7f2e6b
+        signatures:
+          - signature_id: 3f7e91c8b04a62d5e78c1a30bf946d27
+            signer_email_address: katherine@example.com
+            signer_name: Katherine Johnson
+            status_code: awaiting_signature
+            error: null
+          # Reassigned: the person who will sign is not the person who was
+          # asked, and only these fields say so.
+          - signature_id: 6a2d80f4c917be35d0a8e4612c73f9b8
+            signer_email_address: dorothy@example.com
+            signer_name: Dorothy Vaughan
+            status_code: awaiting_signature
+            reassigned_by: mary@example.com
+            reassignment_reason: Handing this to the person who owns the contract.
+            reassigned_from: 8c14b7e0a9d3625f4e17c802ab5d93f6
+            error: null
+      # A developer wiring the integration up, in the same listing as the
+      # contracts, with no parameter to leave it out.
+      - id: 05fb3c8e17a92d64b0e5c7318fa6d240973be15c
+        title: Test agreement
+        subject: Testing the integration
+        requester_email_address: dev@example.com
+        created_at: 1755331200
+        is_complete: true
+        is_declined: false
+        has_error: false
+        test_mode: true
+        details_url: https://app.hellosign.com/editor/documents/05fb3c8e17
+        signatures:
+          - signature_id: b83f05e29c7a1d46f0b2e83c95a7d104
+            signer_email_address: dev@example.com
+            signer_name: Developer
+            status_code: signed
+            signed_at: 1755331500
+            error: null
+
+conformance:
+  - name: a declined request and an untouched one agree on the only field most code reads
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/2b3d1f6c9e0a4857bd23c7419fe0a8d5c2743916
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Declined by a signer, and is_complete says only that it is not
+        # finished -- which is what it says about a request nobody has
+        # opened. The distinguishing field is the second boolean.
+        "signature_request.is_complete": false
+        "signature_request.is_declined": true
+        "signature_request.has_error": false
+        "signature_request.signatures[0].status_code": declined
+        "signature_request.signatures[0].decline_reason": The indemnity clause needs revising.
+
+  - name: and the untouched one carries the same false with a different meaning
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/d94a7f2e6b18c035a7fe412d8c063b95ea27f180
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # All three booleans false. Nothing has gone wrong and nothing has
+        # happened, and only the signatures say which.
+        "signature_request.is_complete": false
+        "signature_request.is_declined": false
+        "signature_request.has_error": false
+        "signature_request.signatures[0].status_code": awaiting_signature
+
+  - name: an errored request keeps its reason on the signer rather than on itself
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/7e1c4b93a0d5f286c34e9b7d01a6f852bd4c0397
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # has_error is the union of the creation's failure and every signer's.
+        # It says something is wrong; the sentence is one level down.
+        "signature_request.has_error": true
+        "signature_request.is_declined": false
+        "signature_request.signatures[0].error": The signer's email address was rejected by the receiving server.
+
+  - name: the finished request is the only one where the obvious read is right
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/fa5c8a0b0f492d768749333ad6fcc214c111e967
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # The fourth corner: complete, not declined, no error. This is the
+        # combination every integration is tested against, which is why the
+        # other three survive.
+        "signature_request.is_complete": true
+        "signature_request.is_declined": false
+        "signature_request.has_error": false
+        "signature_request.signatures[0].signed_at": 1754902800
+        # And the identifier under the name Dropbox Sign gives it, which is
+        # not "id" -- so a client reading response.signature_request.id finds
+        # nothing at all.
+        "signature_request.signature_request_id": fa5c8a0b0f492d768749333ad6fcc214c111e967
+      absent:
+        - signature_request.id
+
+  - name: the person about to sign is not the person who was asked
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/d94a7f2e6b18c035a7fe412d8c063b95ea27f180
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # reassigned_by names the original signer, reassigned_from names the
+        # signature that was replaced, and the email on this one belongs to
+        # somebody the request never mentioned.
+        "signature_request.signatures[1].signer_email_address": dorothy@example.com
+        "signature_request.signatures[1].reassigned_by": mary@example.com
+        "signature_request.signatures[1].reassigned_from": 8c14b7e0a9d3625f4e17c802ab5d93f6
+      absent:
+        # And the signer beside them was not reassigned, so the fields are
+        # absent rather than null -- which is what makes testing for them work
+        # by accident until it does not.
+        - signature_request.signatures[0].reassigned_by
+
+  - name: the test request is in the listing with the contracts
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/list
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Five requests, one of which "has no legal value", and the listing
+        # takes account_id, page, page_size and query -- none of which is
+        # test_mode.
+        "list_info.num_results": 5
+        "list_info.page": 1
+        "list_info.num_pages": 1
+        "signature_requests[4].test_mode": true
+        "signature_requests[4].title": Test agreement
+
+  - name: the listing counts pages as well as results
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/list?page_size=2
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 200
+      body:
+        # Everything about the paging is inside list_info rather than beside
+        # the array, so a client reading response.page finds nothing.
+        "list_info.num_results": 5
+        "list_info.num_pages": 3
+        "list_info.page_size": 2
+        "signature_requests[0].title": Supply agreement
+      absent:
+        - signature_requests[2]
+        - page
+        - num_results
+
+  - name: a request that is not there is refused with a name for the failure
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/0000000000000000000000000000000000000000
+      headers:
+        Authorization: Basic Y2F1bGRyb24tZHJvcGJveHNpZ24tZml4dHVyZS1rZXk6
+    expect:
+      status: 404
+      body:
+        # error_msg and error_name, nested under error -- and error_path,
+        # which the document describes as "Path at which an error occurred"
+        # and this Recipe does not invent.
+        "error.error_name": not_found
+        "error.error_msg": Could not find the signature request.
+
+  - name: a key the account does not know is refused
+    source: https://github.com/hellosign/hellosign-openapi
+    fixture: account
+    request:
+      method: GET
+      path: /v3/signature_request/list
+      headers:
+        Authorization: Basic bm90LXRoaXMtYWNjb3VudHMta2V5Og==
+    expect:
+      status: 401
+      body:
+        "error.error_name": unauthorized
