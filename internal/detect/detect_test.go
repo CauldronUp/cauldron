@@ -1893,3 +1893,72 @@ func TestDetectMetronomeSDKAndNotTheInstrumentOrTheToken(t *testing.T) {
 		}
 	}
 }
+
+// Confluence brings two shapes this file had not recorded, and both are about
+// a name being right while the thing behind it is not this API.
+//
+// The sibling product: Atlassian sells Jira and Confluence to the same
+// customers behind the same credential, and a project holding a Jira client is
+// not calling Confluence.
+//
+// The other deployment: @atlassian-dc-mcp/confluence says Data Center in its
+// own description -- the self-hosted product, whose REST API is not Cloud's
+// v2. That is Shopware 5's shape arriving as a deployment choice rather than a
+// version.
+//
+// And the sharpest miss is what this Recipe is about:
+// @shogobg/markdown2confluence converts Markdown into Confluence markup and
+// never makes a request -- the storage-format trap as a pure function,
+// installed a quarter of a million times a month.
+func TestDetectConfluenceCloudClientsAndNotItsDesignSystemOrItsDataCentre(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"confluence.js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"confluence-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"confluence-cli": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@theholocron/confluence-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@aashari/mcp-server-atlassian-confluence": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"lesstif/confluence-rest-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"cloudplaydev/confluence-php-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"artemeon/confluence": "^1.0"}}`},
+		{"composer.json": `{"require": {"laravel-fans/confluence": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "confluence") {
+			t.Errorf("%v did not detect confluence: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own design system, installed more than every real
+		// client here put together.
+		{"package.json": `{"dependencies": {"@atlaskit/embedded-confluence": "^4.0.0"}}`},
+		{"package.json": `{"dependencies": {"@atlaskit/editor-confluence-transformer": "^7.0.0"}}`},
+		// The in-product app runtime rather than the REST API.
+		{"package.json": `{"dependencies": {"@forge/confluence-bridge": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@forge/ui-confluence": "^1.0.0"}}`},
+		// The other deployment, whose API is not this one.
+		{"package.json": `{"dependencies": {"@atlassian-dc-mcp/confluence": "^1.0.0"}}`},
+		// The storage-format trap as a pure function, with no request in it.
+		{"package.json": `{"dependencies": {"@shogobg/markdown2confluence": "^0.5.0"}}`},
+		{"composer.json": `{"require": {"xen3r0/adf-converter": "^1.0"}}`},
+		// Connect framework and auth middleware, not a content client.
+		{"composer.json": `{"require": {"thecatontheflat/atlassian-connect-bundle": "^3.0"}}`},
+		{"composer.json": `{"require": {"brezzhnev/atlassian-connect-core": "^1.0"}}`},
+		{"composer.json": `{"require": {"adlogix/guzzle-atlassian-connect-middleware": "^1.0"}}`},
+		// And the name nobody can verify.
+		{"package.json": `{"dependencies": {"confluence": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "confluence") {
+			t.Errorf("%v offered the confluence Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

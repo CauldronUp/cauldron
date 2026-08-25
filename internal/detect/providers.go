@@ -70,6 +70,56 @@ func providers() []provider {
 			},
 		},
 		{
+			// Two new shapes here, and both are about a name being right
+			// while the thing behind it is not this API.
+			//
+			// The sibling product. Atlassian sells Jira and Confluence to the
+			// same customers, behind the same credential, on the same host,
+			// and a project holding a Jira client is not calling Confluence.
+			// Nothing distinguishes them but the package name, so the Jira
+			// Recipe's mappings and these are kept apart on purpose.
+			//
+			// The other deployment. @atlassian-dc-mcp/confluence says Data
+			// Center in its own description: the self-hosted product, whose
+			// REST API is a different one from Cloud's v2. That is the shape
+			// Shopware 5 and epicformbuilder/wixhive-php-api have -- a
+			// previous or parallel generation of the same vendor's API --
+			// arriving here as a deployment choice rather than a version.
+			//
+			// Then the shapes already on file. @atlaskit/embedded-confluence
+			// and @atlaskit/editor-confluence-transformer are Atlassian's own
+			// design system, and the first has three hundred thousand monthly
+			// installs, which is more than every real client here put
+			// together. @forge/confluence-bridge and @forge/ui-confluence are
+			// the in-product app runtime rather than the REST API.
+			//
+			// And the sharpest miss is the one this Recipe is about:
+			// @shogobg/markdown2confluence converts Markdown into Confluence
+			// markup and never makes a request. It is the storage-format trap
+			// as a pure function, installed a quarter of a million times a
+			// month by people who will never call this API at all.
+			//
+			// The bare npm "confluence" describes itself as "confluence
+			// ==========" and is installed 76 times a month, which is the
+			// unverifiable-name state the backlog records against Marqeta.
+			recipe: "confluence",
+			composer: []string{
+				"lesstif/confluence-rest-api",
+				"cloudplaydev/confluence-php-client",
+				"artemeon/confluence",
+				"rainflute/confluence-php-client",
+				"laravel-fans/confluence",
+				"sinkcup/confluence-sdk-php",
+			},
+			npm: []string{
+				"confluence.js",
+				"confluence-api",
+				"confluence-cli",
+				"@theholocron/confluence-client",
+				"@aashari/mcp-server-atlassian-confluence",
+			},
+		},
+		{
 			// The name is an everyday object, and that is most of the
 			// problem. @dougflip/metronome, expo-precision-metronome,
 			// strumming-metronome, react-native-metronome-module,
