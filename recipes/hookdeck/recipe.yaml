@@ -1,0 +1,559 @@
+# Hookdeck Recipe for Cauldron
+#
+# "Did my webhook work" has three answers here and they disagree on purpose.
+#
+# Hookdeck sits between a provider and your server, so one arriving webhook
+# becomes three kinds of object with three kinds of state:
+#
+#   A Request is what arrived. It can be verified, acknowledged with a 200,
+#   and produce nothing at all.
+#   An Event is what gets delivered. It has six states.
+#   An Attempt is one try. It has two.
+#
+# Each layer can be fine while the one below it is not, and the field names
+# encourage reading only the top one.
+#
+# **A request that arrived, was verified, and went to nobody.** Request
+# carries a rejection_cause, and one of its nine values is NO_CONNECTION: the
+# webhook was received and accepted and there was nothing configured to send
+# it on to. events_count is "The count of events created from this request
+# (CLI events not included)" and it is nought. The sender saw a 200. Nothing
+# anywhere failed.
+#
+# **A failed attempt leaves the event scheduled.** EventStatus is SCHEDULED,
+# QUEUED, HOLD, SUCCESSFUL, FAILED, CANCELLED. AttemptStatus is FAILED and
+# SUCCESSFUL and nothing else. So an event whose last two attempts both FAILED
+# is SCHEDULED, because the next retry is pending -- FAILED on an event means
+# the retries are exhausted, which is a different sentence from FAILED on an
+# attempt. Code alerting on event.status stays quiet through every failure
+# until the end; code alerting on attempts fires on failures that will succeed
+# on the next try.
+#
+# Written against the OpenAPI document Hookdeck serves at
+# api.hookdeck.com/2024-03-01/openapi -- 89 paths, 475 schemas, and the source
+# of every description quoted here.
+#
+# Four more the Recipe pins:
+#
+#   1. webhook_id is not the id of a webhook. Its description is "ID of the
+#      associated connection (webhook)" -- the product renamed webhooks to
+#      connections and the field kept the old word, so the most obvious field
+#      name on an event points at the thing with the other name.
+#   2. Thirty-two of the thirty-three attempt error codes mean the request
+#      never reached you. DNS_LOOKUP_FAILED, CONNECTION_RESET, SSL_CERT_EXPIRED,
+#      TOO_MANY_REDIRECTS, HOST_UNREACHABLE, SOCKET_CLOSED and the rest are
+#      transport; BAD_RESPONSE is the only one meaning your server answered
+#      and said no. An attempt that failed without reaching you has a
+#      response_status of null rather than a 5xx, so code reading
+#      response_status >= 500 to count failures counts none of them.
+#   3. verified has three states. It is a nullable boolean: verified, failed
+#      verification, and never checked because the source has no verification
+#      configured. `if (!request.verified)` treats the third as the second.
+#   4. Everything is under models. The listing envelope is {pagination, count,
+#      models} for every resource in the API, so the key that holds events is
+#      the key that holds destinations and attempts, and it never says which.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Retrying, replaying, cancelling and the bulk operations are absent. They
+#     are the interesting write surface and each is a state machine over time
+#     rather than a shape, which is what this format serves.
+#   - HOLD is served as a state a fixture is in, not as a consequence of
+#     pausing a destination. Disabling a destination here does not move its
+#     events, because that is a rule about what happens next rather than what
+#     a response looks like.
+#   - The error envelope declares its own status as
+#     "type": "number", "format": "float" -- a HTTP status code with a decimal
+#     point in its schema. It is emitted as the integer every real response
+#     carries, since the float is a schema artefact rather than a wire shape.
+#   - Issue triggers, bookmarks, transformations, custom domains and the CLI
+#     surfaces are absent.
+#
+# The token and ids below are fixtures and belong to no project.
+
+recipe: hookdeck
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: 2024-03-01
+  docs: https://hookdeck.com/docs/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - hkdk_cauldron_fixture_token_not_a_real_one_00000
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    # The same key for every resource in the API.
+    key: models
+    count_field: count
+    cursor_field: pagination.next
+    limit_field: pagination.limit
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    status_field: status
+    type_field: "-"
+
+resources:
+  request:
+    id:
+      style: opaque
+    fields:
+      team_id:
+        type: string
+      source_id:
+        type: string
+      # A nullable boolean, so three states rather than two: verified, failed
+      # verification, and never checked.
+      verified:
+        type: boolean
+      rejection_cause:
+        type: string
+      original_event_data_id:
+        type: string
+      # "The count of events created from this request (CLI events not
+      # included)" -- so the total needs both of these added together.
+      events_count:
+        type: integer
+      cli_events_count:
+        type: integer
+      ingested_at:
+        type: datetime
+      created_at:
+        type: datetime
+
+  event:
+    id:
+      style: opaque
+    fields:
+      team_id:
+        type: string
+      # "ID of the associated connection (webhook)".
+      webhook_id:
+        type: string
+      source_id:
+        type: string
+      destination_id:
+        type: string
+      event_data_id:
+        type: string
+      request_id:
+        type: string
+      attempts:
+        type: integer
+      status:
+        type: string
+      response_status:
+        type: integer
+      error_code:
+        type: string
+      last_attempt_at:
+        type: datetime
+      next_attempt_at:
+        type: datetime
+      successful_at:
+        type: datetime
+      created_at:
+        type: datetime
+
+  attempt:
+    id:
+      style: opaque
+    fields:
+      team_id:
+        type: string
+      event_id:
+        type: string
+      destination_id:
+        type: string
+      status:
+        type: string
+      attempt_number:
+        type: integer
+      response_status:
+        type: integer
+      error_code:
+        type: string
+      trigger:
+        type: string
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /2024-03-01/requests
+    resource: request
+    operation: list
+    pagination:
+      style: cursor
+      cursor_param: next
+      limit_param: limit
+      limit: 100
+
+  - method: GET
+    path: /2024-03-01/requests/{id}
+    resource: request
+    operation: get
+
+  - method: GET
+    path: /2024-03-01/events
+    resource: event
+    operation: list
+    filters:
+      - param: status
+        field: status
+    pagination:
+      style: cursor
+      cursor_param: next
+      limit_param: limit
+      limit: 100
+
+  - method: GET
+    path: /2024-03-01/events/{id}
+    resource: event
+    operation: get
+
+  - method: GET
+    path: /2024-03-01/attempts
+    resource: attempt
+    operation: list
+    filters:
+      - param: event_id
+        field: event_id
+    pagination:
+      style: cursor
+      cursor_param: next
+      limit_param: limit
+      limit: 100
+
+  - method: GET
+    path: /2024-03-01/attempts/{id}
+    resource: attempt
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    code: UNAUTHORIZED
+
+  resource_missing:
+    status: 404
+    message: Not Found
+    code: NOT_FOUND
+
+  invalid_request:
+    status: 422
+    message: Unprocessable Entity
+    code: UNPROCESSABLE_ENTITY
+
+fixtures:
+  empty: {}
+
+  project:
+    request:
+      # Received, verified, acknowledged, and delivered to nobody.
+      - id: req_nowhere0000000001
+        team_id: tm_cauldron000000001
+        source_id: src_cauldron00000001
+        verified: true
+        rejection_cause: NO_CONNECTION
+        original_event_data_id: evtdata_req000000001
+        events_count: 0
+        cli_events_count: 0
+        ingested_at: "2026-05-11T08:14:02.000Z"
+        created_at: "2026-05-11T08:14:02.000Z"
+
+      # Never checked, rather than failed: the source has no verification
+      # configured, so verified is null.
+      - id: req_unchecked000000002
+        team_id: tm_cauldron000000001
+        source_id: src_cauldron00000001
+        verified: null
+        original_event_data_id: evtdata_req000000002
+        events_count: 1
+        cli_events_count: 0
+        ingested_at: "2026-05-11T09:02:44.000Z"
+        created_at: "2026-05-11T09:02:44.000Z"
+
+    event:
+      # Two attempts, both failed, and the event is SCHEDULED.
+      - id: evt_retrying00000001
+        team_id: tm_cauldron000000001
+        webhook_id: web_connection0000001
+        source_id: src_cauldron00000001
+        destination_id: des_cauldron00000001
+        event_data_id: evtdata_evt00000001
+        request_id: req_unchecked000000002
+        attempts: 2
+        status: SCHEDULED
+        response_status: null
+        error_code: CONNECTION_RESET
+        last_attempt_at: "2026-05-11T09:06:12.000Z"
+        next_attempt_at: "2026-05-11T09:21:12.000Z"
+        successful_at: null
+        created_at: "2026-05-11T09:02:44.000Z"
+
+      # The paused destination: not failing, not moving.
+      - id: evt_onhold000000001
+        team_id: tm_cauldron000000001
+        webhook_id: web_connection0000002
+        source_id: src_cauldron00000001
+        destination_id: des_paused0000000001
+        event_data_id: evtdata_evt00000002
+        request_id: req_unchecked000000002
+        attempts: 0
+        status: HOLD
+        response_status: null
+        last_attempt_at: null
+        next_attempt_at: null
+        successful_at: null
+        created_at: "2026-05-11T09:03:01.000Z"
+
+    attempt:
+      # Your server answered and said no.
+      - id: atm_first00000000001
+        team_id: tm_cauldron000000001
+        event_id: evt_retrying00000001
+        destination_id: des_cauldron00000001
+        status: FAILED
+        attempt_number: 1
+        response_status: 500
+        error_code: BAD_RESPONSE
+        trigger: INITIAL
+        created_at: "2026-05-11T09:02:46.000Z"
+
+      # This one never reached your server at all.
+      - id: atm_second0000000002
+        team_id: tm_cauldron000000001
+        event_id: evt_retrying00000001
+        destination_id: des_cauldron00000001
+        status: FAILED
+        attempt_number: 2
+        response_status: null
+        error_code: CONNECTION_RESET
+        trigger: AUTOMATIC
+        created_at: "2026-05-11T09:06:12.000Z"
+
+conformance:
+  - name: a webhook can arrive, verify, and go to nobody
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/requests/req_nowhere0000000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # Received and verified, and NO_CONNECTION is one of the nine
+        # rejection causes: nothing was configured to send it on to. The
+        # provider that sent it saw a 200.
+        verified: true
+        rejection_cause: NO_CONNECTION
+        events_count: 0
+        cli_events_count: 0
+
+  - name: verified is a nullable boolean, so not-checked is not false
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/requests/req_unchecked000000002
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # Null, not false. The source has no verification configured, so
+        # nothing was checked -- and `if (!request.verified)` reads that as a
+        # failed signature.
+        verified: null
+        events_count: 1
+
+  - name: an event with two failed attempts is SCHEDULED
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events/evt_retrying00000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # Six event states against two attempt states. FAILED on an event
+        # means the retries are exhausted; this one has a retry pending, so
+        # it is SCHEDULED and an alert on status === "FAILED" is silent.
+        status: SCHEDULED
+        attempts: 2
+        successful_at: null
+        next_attempt_at: "2026-05-11T09:21:12.000Z"
+
+  - name: and both of its attempts are FAILED
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/attempts?event_id=evt_retrying00000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        "models[0].status": FAILED
+        "models[1].status": FAILED
+        count: 2
+
+  - name: an attempt that never reached you has no response status
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/attempts/atm_second0000000002
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # Thirty-two of the thirty-three error codes are transport failures,
+        # and BAD_RESPONSE is the only one meaning your server answered.
+        # Counting failures by response_status >= 500 counts none of these.
+        error_code: CONNECTION_RESET
+        response_status: null
+        status: FAILED
+
+  - name: and the one before it did reach you and was refused
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/attempts/atm_first00000000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        error_code: BAD_RESPONSE
+        response_status: 500
+        attempt_number: 1
+
+  - name: a held event is not failing and not moving
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events/evt_onhold000000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # HOLD is one of the six. Nothing has been attempted and nothing is
+        # scheduled, so every field an alert would read is empty.
+        status: HOLD
+        attempts: 0
+        next_attempt_at: null
+        last_attempt_at: null
+
+  - name: the field called webhook_id names a connection
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events/evt_retrying00000001
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # "ID of the associated connection (webhook)". The product renamed
+        # webhooks to connections; the field kept the old word.
+        webhook_id: web_connection0000001
+        destination_id: des_cauldron00000001
+        source_id: src_cauldron00000001
+
+  - name: every listing holds its records under models
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # The same key whatever it holds: events here, destinations and
+        # attempts elsewhere, and nothing in the envelope says which.
+        "models[0].id": evt_retrying00000001
+        count: 2
+      absent:
+        - events
+        - data
+
+  - name: a token this project does not know is refused
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events
+      headers:
+        Authorization: Bearer hkdk_not_this_projects_token_000000000000000
+    expect:
+      status: 401
+      body:
+        code: UNAUTHORIZED
+        message: Unauthorized
+        # Declared as "type": "number", "format": "float" -- a status code
+        # with a decimal point in its schema.
+        status: 401
+
+  - name: filtering by status finds the held event and nothing else
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events?status=HOLD
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # One of six, and the one that means a human paused something.
+        "models[0].id": evt_onhold000000001
+        "models[0].status": HOLD
+        count: 1
+      absent:
+        - models[1]
+
+  - name: a short page carries its cursor inside the pagination object
+    source: https://api.hookdeck.com/2024-03-01/openapi
+    fixture: project
+    request:
+      method: GET
+      path: /2024-03-01/events?limit=1
+      headers:
+        Authorization: Bearer hkdk_cauldron_fixture_token_not_a_real_one_00000
+    expect:
+      status: 200
+      body:
+        # Seek pagination: the cursor is nested under pagination beside the
+        # limit that was used, while count sits outside it.
+        "pagination.limit": 1
+        count: 2
+      matches:
+        "pagination.next": '.+'
+      absent:
+        - next
+        - models[1]

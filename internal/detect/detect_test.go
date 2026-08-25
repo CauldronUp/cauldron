@@ -2827,3 +2827,54 @@ func TestDetectPineconeClientsAndNotItsToolingOrATranspiler(t *testing.T) {
 		}
 	}
 }
+
+// Hookdeck is a small ecosystem where nearly everything under the vendor's own
+// npm scope is something other than a client, so the scope is useless as a
+// signal and the exclusions are the whole job.
+//
+// @hookdeck/outpost-sdk is the sharpest, and a new shape for this file: Outpost
+// is Hookdeck's open-source, self-hosted outbound-webhook product with an API
+// of its own. Same vendor, same scope, different surface.
+//
+// The rest are rules three Recipes have already settled: Pulumi bridges and a
+// declarative deploy CLI are infrastructure-as-code, two packages are agent
+// tooling, and one generates documentation.
+func TestDetectHookdeckClientsAndNotTheVendorsOtherProduct(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"devDependencies": {"hookdeck-cli": "^0.10.0"}}`},
+		{"package.json": `{"dependencies": {"@hookdeck/vercel": "^0.2.0"}}`},
+		{"package.json": `{"dependencies": {"@hookdeck/pubsub": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"n8n-nodes-hookdeck": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "hookdeck") {
+			t.Errorf("%v did not detect hookdeck: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's other product, under the vendor's own scope.
+		{"package.json": `{"dependencies": {"@hookdeck/outpost-sdk": "^0.5.0"}}`},
+		// Infrastructure-as-code, for the fourth Recipe running.
+		{"package.json": `{"dependencies": {"@nectarsocial/hookdeck": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@sst-provider/hookdeck": "^0.1.0"}}`},
+		{"package.json": `{"devDependencies": {"@toppy/hookdeck-deploy-cli": "^1.0.0"}}`},
+		// Agent tooling, for the third.
+		{"package.json": `{"devDependencies": {"@stackcurious/hookdeck-mcp": "^0.1.0"}}`},
+		// And a documentation generator.
+		{"package.json": `{"devDependencies": {"@hookdeck/eventcatalog-generator": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "hookdeck") {
+			t.Errorf("%v offered the hookdeck Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
