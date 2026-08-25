@@ -2607,3 +2607,55 @@ func TestDetectCloudStorageClientsAndNotTheUmbrellaOrTheOtherMock(t *testing.T) 
 		}
 	}
 }
+
+// YouTube brings a shape this file had not recorded, and the biggest number on
+// the page produced it: matched on a simile.
+//
+// Packagist's top results for "youtube" are hashids/hashids at fifty-four
+// million downloads and vinkla/hashids at fifteen, and sqids/sqids says
+// outright what all three are -- "Generate short YouTube-looking IDs from
+// numbers". They share neither the name, the vendor nor the domain; they
+// describe their output as looking like something YouTube makes.
+//
+// And norkunas/youtube-dl-php wraps youtube-dl and yt-dlp, which get at videos
+// by scraping rather than by asking the Data API -- the tool people reach for
+// instead of this one.
+func TestDetectYouTubeDataClientsAndNotASimileOrAScraper(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@googleapis/youtube": "^15.0.0"}}`},
+		{"package.json": `{"dependencies": {"simple-youtube-api": "^5.2.0"}}`},
+		{"package.json": `{"dependencies": {"youtube-node": "^1.3.0"}}`},
+		{"composer.json": `{"require": {"alaouy/youtube": "^3.0"}}`},
+		{"composer.json": `{"require": {"madcoda/php-youtube-api": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "youtube") {
+			t.Errorf("%v did not detect youtube: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Matched on a simile: libraries whose output merely looks like a
+		// YouTube identifier.
+		{"composer.json": `{"require": {"hashids/hashids": "^5.0"}}`},
+		{"composer.json": `{"require": {"vinkla/hashids": "^12.0"}}`},
+		{"composer.json": `{"require": {"sqids/sqids": "^0.4"}}`},
+		// The tool people use instead of this API, by scraping.
+		{"composer.json": `{"require": {"norkunas/youtube-dl-php": "^2.0"}}`},
+		// And oEmbed, which reads a public page rather than the Data API.
+		{"composer.json": `{"require": {"mpratt/embera": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "youtube") {
+			t.Errorf("%v offered the youtube Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

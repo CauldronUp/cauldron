@@ -868,6 +868,40 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// A new shape, and the biggest number on the page produced it:
+			// matched on a simile. Packagist's top results for "youtube" are
+			// hashids/hashids at fifty-four million downloads and
+			// vinkla/hashids at fifteen, and sqids/sqids says outright what
+			// all three are -- "Generate short YouTube-looking IDs from
+			// numbers". They do not share the name, the vendor or the
+			// domain. They describe their output as looking like something
+			// YouTube makes.
+			//
+			// And the second exclusion is the tool people reach for instead
+			// of this API. norkunas/youtube-dl-php wraps youtube-dl and
+			// yt-dlp, which get at videos by scraping the site rather than by
+			// asking the Data API, so a project holding it is doing the thing
+			// this API deliberately does not offer.
+			//
+			// The client follows the scoped pattern Gmail, Calendar and Drive
+			// already use here. npm has no widely installed YouTube client
+			// otherwise: the largest is simple-youtube-api at seven thousand
+			// a month, which is a fact about the API rather than a gap in the
+			// search -- most people who touch YouTube from a browser use the
+			// iframe player, and most who touch it from a server use the
+			// official client under its scope.
+			recipe: "youtube",
+			composer: []string{
+				"alaouy/youtube",
+				"madcoda/php-youtube-api",
+			},
+			npm: []string{
+				"@googleapis/youtube",
+				"simple-youtube-api",
+				"youtube-node",
+			},
+		},
+		{
 			// The largest numbers in this file. google/cloud-storage has a
 			// hundred and five million downloads and @google-cloud/storage
 			// sixty-one million, and the Flysystem and Laravel adapters
