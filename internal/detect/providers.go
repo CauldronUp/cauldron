@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The scoped package, as Gmail and Calendar already do here: the
+			// unscoped googleapis covers every Google API at once and a
+			// package maps to one Recipe, so @googleapis/drive is the one
+			// that means Drive and nothing else.
+			//
+			// The most installed Drive packages on Packagist are filesystem
+			// adapters -- masbug/flysystem-google-drive-ext and nao-pon
+			// /flysystem-google-drive, four and a half million downloads
+			// between them -- and they are mapped, because they really do
+			// call this API. It is worth noticing that their whole purpose is
+			// to make Drive look like a filesystem, on an API whose own
+			// documentation says a file's name "isn't necessarily unique
+			// within a folder".
+			//
+			// Everything else with the name is a picker. @uppy/google-drive,
+			// react-google-drive-picker, @googleworkspace/drive-picker
+			// -element and -react, google-drive-picker and
+			// @fyelci/react-google-drive-picker are between them installed
+			// more than two and a half million times a month, and all of them
+			// are browser widgets that let a person choose a file through the
+			// Picker API rather than servers calling this one.
+			//
+			// Two more worth naming. @maxim_mazurok/gapi.client.drive-v3 is
+			// third-party typings and makes no request. And google-drive-mock
+			// is "a Mock-Server that simulates being google-drive" -- another
+			// emulator, doing this Recipe's job, which is the first time
+			// anything in this file has collided with the project itself.
+			//
+			// spatie/laravel-google-cloud-storage, at nearly eleven million
+			// downloads, is Google Cloud Storage: a different Google product
+			// that shares three quarters of its name with nothing here.
+			recipe: "googledrive",
+			composer: []string{
+				"masbug/flysystem-google-drive-ext",
+				"nao-pon/flysystem-google-drive",
+				"yaza/laravel-google-drive-storage",
+			},
+			npm: []string{"@googleapis/drive"},
+		},
+		{
 			// Atlas is an everyday word, and one of the collisions is a
 			// prefix nobody would predict: Atlassian begins with it.
 			// damienharper/adf-tools is "Atlassian Document Format PHP

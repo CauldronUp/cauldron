@@ -105,7 +105,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Microsoft Graph | Mail, calendars, users, files. Enormous surface area |
 | ~~Google Calendar~~ | Shipped. Listings return the series not the occurrence, all-day events have no time, cancelled instances are almost empty |
 | ~~Gmail~~ | Shipped. A listing carries no message, headers are an array, no read flag, trash is not delete |
-| Google Drive | Files, permissions, revisions, shared drives |
+| ~~Google Drive~~ | Shipped, written against the discovery document Google publishes. The listing tells you when it might be wrong, in a field nobody reads: incompleteSearch is "Whether the search process was incomplete. If true, then some search results might be missing, since all documents were not searched" -- a 200, a files array, a working page token, and a boolean saying the answer may be short, so a sync job terminates cleanly having seen an unknown fraction. Also: Drive is not a filesystem and says so, because a name "isn't necessarily unique within a folder"; parents is an array documented as holding at most one; and shared drives are invisible until you ask twice, since includeItemsFromAllDrives and supportsAllDrives both default to false. Stated and not served: the q query language, four deprecated parameters that still sit beside their replacements, and a page token that "should be discarded, and pagination should be restarted from the first page" if it is ever rejected |
 | Microsoft OneDrive | Files, sharing, async operations |
 | Microsoft Teams | Channels, messages, members |
 | GitHub Actions | Could extend the GitHub Recipe, probably its own |
