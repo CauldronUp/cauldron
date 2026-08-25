@@ -95,11 +95,12 @@ func TestPlanDetectsRecipesFromTheProject(t *testing.T) {
 // A detected provider Cauldron cannot emulate must be reported, never silently
 // dropped, or the developer believes it is faked when it is not.
 //
-// OpenAI is used here precisely because no Recipe ships for it. If one ever
+// Anthropic is used here precisely because no Recipe ships for it. If one ever
 // does, this test should fail and be repointed rather than deleted, which is
-// what happened to the Adyen it used to name.
+// what happened to the Adyen it used to name and to the OpenAI that replaced
+// it.
 func TestPlanReportsDetectedRecipesItCannotServe(t *testing.T) {
-	dir := projectWith(t, `{"require":{"stripe/stripe-php":"^17.0","openai-php/client":"^0.10"}}`)
+	dir := projectWith(t, `{"require":{"stripe/stripe-php":"^17.0","mozex/anthropic-php":"^1.0"}}`)
 
 	mount, missing, err := plan(serveOptions{dir: dir})
 	if err != nil {
@@ -110,13 +111,13 @@ func TestPlanReportsDetectedRecipesItCannotServe(t *testing.T) {
 		t.Errorf("mount = %v", mount)
 	}
 
-	if len(missing) != 1 || missing[0] != "openai" {
-		t.Errorf("missing = %v, want [openai]", missing)
+	if len(missing) != 1 || missing[0] != "anthropic" {
+		t.Errorf("missing = %v, want [anthropic]", missing)
 	}
 }
 
 func TestPlanFailsWhenNothingCanBeServed(t *testing.T) {
-	dir := projectWith(t, `{"require":{"openai-php/client":"^0.10"}}`)
+	dir := projectWith(t, `{"require":{"mozex/anthropic-php":"^1.0"}}`)
 
 	_, missing, err := plan(serveOptions{dir: dir})
 	if err == nil {
