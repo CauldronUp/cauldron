@@ -868,6 +868,44 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// A new shape: the vendor's own most installed packages are for a
+			// different transport.
+			//
+			// @elevenlabs/react and @elevenlabs/client are between them
+			// installed five million times a month, and both are for the
+			// Agents platform -- a browser holding a conversation over a
+			// socket, not a server calling this REST API. @elevenlabs
+			// /react-native says so in its own description. Squarespace's
+			// @squarespace/* and Wix's @atlaskit-alikes were the vendor
+			// publishing a *front end*; this is the vendor publishing a
+			// different protocol for the same product.
+			//
+			// @elevenlabs/types is sharper still: "AsyncAPI contracts and
+			// generated TypeScript types". Not OpenAPI -- AsyncAPI, the
+			// event-driven description -- and types alone, so it makes no
+			// request of any kind. Two and a half million installs a month of
+			// a package generated from a different specification format for a
+			// different half of the product.
+			//
+			// @remotion/elevenlabs works with "the output of the ElevenLabs
+			// API" rather than calling it, and @elevenlabs/cli, the n8n nodes
+			// and the LiveKit and Mastra plugins are integrations for other
+			// platforms.
+			recipe: "elevenlabs",
+			composer: []string{
+				"ardagnsrn/elevenlabs-laravel",
+				"georgehadjisavva/elevenlabs-api-client",
+				"onramplab/elevenlabs-api-client",
+				"gridwb/laravel-elevenlabs",
+				"samandar/laravel-elevenlabs",
+			},
+			npm: []string{
+				"@elevenlabs/elevenlabs-js",
+				"@ai-sdk/elevenlabs",
+				"elevenlabs-js",
+			},
+		},
+		{
 			// No Recipe ships for Anthropic, and the mapping is here on
 			// purpose -- the same reason OpenAI's was, before OpenAI's became
 			// a Recipe. A dependency Cauldron recognises and cannot emulate
