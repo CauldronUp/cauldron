@@ -113,7 +113,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~Stytch~~ | Shipped. Per-factor verification, session factors, invited members |
 | Descope | Authentication flows and identities |
 | FusionAuth | Users, tenants, applications |
-| Keycloak | Realms, users, clients, tokens |
+| ~~Keycloak~~ | Shipped, the Admin REST API, written against the OpenAPI document Keycloak publishes. Creating a user tells you nothing about the user you created: POST /admin/realms/{realm}/users is documented as "201 Created" and nothing else -- no content, no schema, no headers -- so the document describes no response body for the endpoint that makes the central object of the API, and does not say the identifier went into a Location header either. Also: enabled does not mean able to log in, because a requiredActions entry stops a login dead while enabled stays true; search is prefix-based by default with *foo* for infix and quotes for exact, so the punctuation is the API; and first is the pagination offset while the exact parameter's own description names "first" as a field to match on. The search punctuation is stated and not served |
 
 ## Analytics and flags
 

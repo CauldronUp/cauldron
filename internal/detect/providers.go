@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The other half of the same product, which is a new shape here.
+			// Not a different deployment and not a different transport: the
+			// thing almost everybody uses Keycloak for is getting a token or
+			// checking one, and the Admin REST API this Recipe models is the
+			// side door.
+			//
+			// stevenmaguire/oauth2-keycloak has six and three quarter million
+			// downloads and signs people in. socialiteproviders/keycloak has
+			// two and a half million and is the Socialite shape this file has
+			// now recorded four times. robsontenorio/laravel-keycloak-guard,
+			// vizir/laravel-keycloak-web-guard and two more like them
+			// *validate* a token Keycloak issued and never call the admin API
+			// at all.
+			//
+			// npm is the same: keycloak-connect, keycloak-angular, the
+			// @react-keycloak packages, nest-keycloak-connect and
+			// passport-keycloak-bearer are adapters that authenticate people,
+			// and the bare "keycloak" is the browser adapter.
+			//
+			// keycloakify is the sharpest of them -- "Framework to create
+			// custom Keycloak UIs", four hundred and thirty thousand installs
+			// of a build tool that produces login pages and makes no request
+			// of any kind. cypress-keycloak logs a test user in.
+			//
+			// What is mapped is the administration side, and it is much the
+			// smaller half: the PHP admin client has seven hundred and ninety
+			// thousand downloads against the OAuth provider's six and three
+			// quarter million.
+			recipe: "keycloak",
+			composer: []string{
+				"mohammad-waleed/keycloak-admin-client",
+				"fschmtt/keycloak-rest-api-client-php",
+			},
+			npm: []string{
+				"@keycloak/keycloak-admin-client",
+				"@s3pweb/keycloak-admin-client-cjs",
+				"@pulumi/keycloak",
+			},
+		},
+		{
 			// The vendor's own unrelated library, at a scale nothing else in
 			// this file approaches -- and it is the second time the unrelated
 			// library is a PHP static analyser.
