@@ -868,6 +868,36 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Almost everything the word returns on npm shells out to nuget.exe.
+			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
+			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
+			// restore. That is the line already drawn at the Sonar scanners and
+			// at PyPI's publishers: something that runs a tool is not a client
+			// of the read API.
+			//
+			// Two near-miss kinds recur, and both are now established rather
+			// than noticed. @snyk/nuget-semver is "a semantic version parser for
+			// NuGet" -- matched on a semantic, the second after @snyk/ruby-semver
+			// and, oddly, from the same publisher. The @cratis/arc packages, at
+			// fifteen thousand downloads each, carry an img.shields.io/nuget
+			// badge in their READMEs -- matched on a badge, for the fourth
+			// Recipe running.
+			//
+			// Packagist has nothing. melonsmasher/chocolatier is a NuGet
+			// repository server rather than a client of one, and
+			// activerules/nugget is a JSON validator spelled with two g's.
+			//
+			// snyk-nuget-plugin is mapped despite being CLI tooling, because
+			// what it does is resolve dependency versions against this API --
+			// the same reading that mapped sonarqube-verify while excluding the
+			// scanners beside it.
+			recipe: "nuget",
+			npm: []string{
+				"nuget",
+				"snyk-nuget-plugin",
+			},
+		},
+		{
 			// The homonym here is the fixture. This Recipe is written about the
 			// phoenix package on Hex, and the npm package called phoenix -- at
 			// 5.3 million downloads, the biggest number on the page -- is the

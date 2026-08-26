@@ -3318,3 +3318,51 @@ func TestDetectHexClientsAndNotThePhoenixChannelClient(t *testing.T) {
 		}
 	}
 }
+
+// Almost everything the word returns on npm shells out to nuget.exe: nuget-bin
+// downloads the binary, and the grunt and gulp tasks drive it to pack, push and
+// restore. That is the line drawn at the Sonar scanners and PyPI's publishers.
+//
+// Two near-miss kinds recur and are now established. @snyk/nuget-semver is a
+// semantic version parser -- matched on a semantic, the second after
+// @snyk/ruby-semver and from the same publisher. The @cratis/arc packages carry
+// an img.shields.io/nuget badge -- matched on a badge, for the fourth Recipe
+// running.
+func TestDetectNuGetClientsAndNotTheExeWrappers(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"nuget": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"snyk-nuget-plugin": "^2.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "nuget") {
+			t.Errorf("%v did not detect nuget: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Wrappers that run nuget.exe.
+		{"package.json": `{"devDependencies": {"nuget-bin": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"grunt-nuget": "^0.2.0"}}`},
+		{"package.json": `{"devDependencies": {"gulp-nuget-restore": "^0.1.0"}}`},
+		// Matched on a semantic, for the second Recipe.
+		{"package.json": `{"dependencies": {"@snyk/nuget-semver": "^2.0.0"}}`},
+		// Matched on a badge, for the fourth.
+		{"package.json": `{"dependencies": {"@cratis/arc": "^1.0.0"}}`},
+		// A repository server, and a JSON validator spelled with two g's.
+		{"composer.json": `{"require": {"melonsmasher/chocolatier": "^1.0"}}`},
+		{"composer.json": `{"require": {"activerules/nugget": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "nuget") {
+			t.Errorf("%v offered the nuget Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
