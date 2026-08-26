@@ -868,6 +868,50 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// A new exclusion kind, and it owns the biggest number on the page
+			// that is not the scanner: packages that write a file for another
+			// program to upload.
+			//
+			// vitest-sonar-reporter has eight hundred and forty thousand
+			// downloads and never makes a network request. Nor do
+			// karma-sonarqube-reporter, cypress-sonarqube-reporter,
+			// mocha-reporter-sonarqube, node-reporter-sonarqube or
+			// symbiote/phpcs-sonar. They serialise test or lint results to disk
+			// in a format the scanner later reads. A project holding one is
+			// integrating with SonarCloud and is not calling it.
+			//
+			// The scanners are excluded for a neighbouring reason.
+			// sonarqube-scanner at two million and @sonar/scan at seven hundred
+			// thousand are bootstrappers: they download the sonar-scanner
+			// Java CLI and run it, and the CLI submits an analysis over a
+			// protocol this Recipe does not serve. Same line as the build
+			// tooling excluded for Cloud Storage -- something that happens to
+			// upload is not a client of the read API.
+			//
+			// sonarqube-verify is mapped despite living in the same
+			// neighbourhood, because what it does after the analysis is poll
+			// the Compute Engine task and read the quality gate, which is
+			// exactly the surface here.
+			//
+			// The homonym is the largest number of all: nimut/phpunit-merger at
+			// 1.89 million, the top Packagist result for "sonarqube", merges
+			// PHPUnit reports. eslint-config-sonarqube is a lint configuration.
+			//
+			// What is left speaks the Web API: two community JavaScript clients
+			// and two PHP ones, with about twelve thousand downloads between
+			// them.
+			recipe: "sonarcloud",
+			composer: []string{
+				"forgeqc/sonarqube-api-client",
+				"spirit-dev/php-sonarqube-api",
+			},
+			npm: []string{
+				"sonarqube-api-client",
+				"sonarqube",
+				"sonarqube-verify",
+			},
+		},
+		{
 			// The starkest version of a shape this file has now met three
 			// Recipes running: the vendor's popular client speaks a different
 			// surface, and mapping it would offer an emulator of the wrong API.
