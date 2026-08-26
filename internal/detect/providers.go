@@ -868,6 +868,41 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The largest number this file has ever excluded, and it is not even
+			// a homonym: composer/installers, at a hundred and forty-eight
+			// million downloads, is the top Packagist result for "pypi". It is a
+			// multi-framework Composer library installer. The word appears
+			// somewhere in its metadata and the search engine did the rest,
+			// which is a useful reminder that a registry's ranking is not
+			// evidence of anything.
+			//
+			// The real split here is between reading and publishing.
+			// semantic-release-pypi at forty-two thousand, @lets-release/pypi,
+			// foundry-release-pypi and putitoutthere all upload a built
+			// distribution, which is twine's protocol and not this API. Same
+			// line drawn at the Sonar scanners: something that happens to upload
+			// is not a client of the read API.
+			//
+			// What reads it is small and genuine. pypi and pypi-info fetch
+			// project metadata, pypi-axi inspects packages, and bismar and
+			// muaddib-scanner walk several registries at once -- npm, crates.io,
+			// PyPI -- which is exactly the shape a supply-chain tool has.
+			//
+			// Python packages are the obvious clients of PyPI and this file
+			// reads Composer, npm and Go modules, so the coverage here is
+			// structurally thin rather than accidentally so. That is worth
+			// saying plainly: the Recipe is reachable, and the dependency that
+			// would most often reach it is one this detector cannot see.
+			recipe: "pypi",
+			npm: []string{
+				"pypi",
+				"pypi-info",
+				"pypi-axi",
+				"bismar",
+				"muaddib-scanner",
+			},
+		},
+		{
 			// The same split as ConfigCat, immediately afterwards, and by now it
 			// is a rule about the category rather than a fact about a vendor: a
 			// feature-flag platform has a delivery surface that SDKs read and a
