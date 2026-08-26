@@ -3223,3 +3223,53 @@ func TestDetectRubyGemsClientsAndNotItsSemantics(t *testing.T) {
 		}
 	}
 }
+
+// Packagist is the first registry in this run with real clients on its own
+// language's registry: spatie/packagist-api at 2.4 million downloads and
+// knplabs/packagist-api at 1.5 million.
+//
+// The exclusion that took the most care is private-packagist/api-client.
+// Private Packagist is the same company's commercial product -- a hosted
+// private repository at packagist.com with an API of its own -- so it is the
+// Hookdeck/Outpost shape again, and sharper, because these two share a vendor
+// prefix as well as a brand.
+//
+// And the badge match recorded at crates.io recurs, which makes it a pattern:
+// two of the three packages surfacing on it are Angular projects with no PHP.
+func TestDetectPackagistClientsAndNotPrivatePackagist(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"spatie/packagist-api": "^2.0"}}`},
+		{"composer.json": `{"require": {"knplabs/packagist-api": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@agonyz/packagist-api-client": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"gatsby-source-packagist": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "packagist") {
+			t.Errorf("%v did not detect packagist: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The same company's commercial product, with an API of its own.
+		{"composer.json": `{"require": {"private-packagist/api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"private-packagist/bitbucket-api": "^1.0"}}`},
+		// Matched on a README badge, for the second Recipe running.
+		{"package.json": `{"dependencies": {"angular-dashboard-framework": "^0.14.0"}}`},
+		// And fuzzy matches with nothing to do with the registry.
+		{"composer.json": `{"require": {"khill/lavacharts": "^3.1"}}`},
+		{"composer.json": `{"require": {"square/connect": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "packagist") {
+			t.Errorf("%v offered the packagist Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

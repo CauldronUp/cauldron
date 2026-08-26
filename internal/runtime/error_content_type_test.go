@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -95,5 +96,53 @@ func TestATextFailureWithoutADeclarationIsStillPlainText(t *testing.T) {
 
 	if got, want := rec.Header().Get("Content-Type"), "text/plain; charset=utf-8"; got != want {
 		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+}
+
+// The same rule for a JSON body, which is where the second half of this lived.
+//
+// writeJSON set application/json on every response it wrote, so a failure whose
+// body is JSON and whose content type is not had the header replaced. Packagist
+// is that: its 404 body is the bare JSON string "404 not found, no packages
+// here" -- valid JSON, and not an object -- served as text/html.
+//
+// Both halves are the finding. Serving the body faithfully under a header the
+// provider does not send would teach a client that branching on the content
+// type is safe here, and it is exactly what is not.
+func TestAJSONFailureKeepsTheContentTypeItDeclares(t *testing.T) {
+	r, err := recipe.Open("packagist")
+	if err != nil {
+		t.Fatalf("open packagist: %v", err)
+	}
+
+	s, err := New(r, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("new sandbox: %v", err)
+	}
+
+	if err := s.Seed("repository"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/p2/nobody/nothing.json", nil)
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+
+	if got, want := rec.Header().Get("Content-Type"), "text/html"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+
+	// And the body is still JSON, because that is the other half of it.
+	var decoded any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("the body is not JSON: %v", err)
+	}
+
+	if _, isString := decoded.(string); !isString {
+		t.Errorf("the body decoded to %T, want a bare string", decoded)
 	}
 }

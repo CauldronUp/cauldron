@@ -397,7 +397,16 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// Only when nothing has said otherwise, which is the same rule the text
+	// error style follows. A failure can declare its own content type, and
+	// Packagist needs to: its 404 body is a bare JSON string -- valid JSON,
+	// and not an object -- served as text/html. Both halves of that are the
+	// finding, and forcing application/json here would have served the body
+	// faithfully under a header the provider does not send.
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+
 	w.WriteHeader(status)
 
 	_, _ = w.Write(buffer.Bytes())

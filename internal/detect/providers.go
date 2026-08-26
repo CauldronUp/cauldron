@@ -868,6 +868,44 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The first registry in this run with real clients on its own
+			// language's registry, and the numbers say why: spatie/packagist-api
+			// at 2.4 million and knplabs/packagist-api at 1.5 million are both
+			// what they say they are.
+			//
+			// The exclusion that took the most care is private-packagist
+			// /api-client at eighty-seven thousand. Private Packagist is the
+			// same company's commercial product -- a hosted private repository
+			// at packagist.com with an API of its own -- so it is the
+			// Hookdeck/Outpost shape a second time, and sharper, because here
+			// the two products share a vendor prefix as well as a brand.
+			// private-packagist/bitbucket-api is the same vendor again and is
+			// entirely about Bitbucket.
+			//
+			// The badge match recorded at crates.io recurs and is now a
+			// pattern rather than an observation: maxfactor-laravel-checkout,
+			// angular-dashboard-framework and opengate-angular-dashboard-frame
+			// all surface because their READMEs carry an
+			// img.shields.io/packagist badge. Two of the three are Angular
+			// projects with no PHP in them at all.
+			//
+			// khill/lavacharts at 2.1 million and square/connect at 1.4 million
+			// are fuzzy matches with nothing to do with the registry, and
+			// square/connect is doubly odd: it is a deprecated client for a
+			// provider this collection already ships.
+			recipe: "packagist",
+			composer: []string{
+				"spatie/packagist-api",
+				"knplabs/packagist-api",
+			},
+			npm: []string{
+				"@agonyz/packagist-api-client",
+				"php-packagist-api-client",
+				"gatsby-source-packagist",
+				"alfred-packagist",
+			},
+		},
+		{
 			// Another new near-miss kind, and it owns the biggest number here:
 			// matched on a semantic. @snyk/ruby-semver, at forty-two thousand
 			// downloads, is "a node-semver compatible API with RubyGems
