@@ -3034,3 +3034,52 @@ func TestDetectSonarWebAPIClientsAndNotReportersOrScanners(t *testing.T) {
 		}
 	}
 }
+
+// GrowthBook repeats ConfigCat's split immediately afterwards, which makes it a
+// rule about feature-flag platforms rather than a fact about one vendor: there
+// is a delivery surface that SDKs read and a management API that everything else
+// uses, and they are different APIs on different hosts.
+//
+// @growthbook/growthbook has 3.49 million downloads and the PHP SDK 3.92
+// million, and neither calls the REST API this Recipe serves. Exactly one
+// package here does, and it says so in its own description: growthbook,
+// "Command-line interface for the GrowthBook REST API".
+//
+// Unleash is the contrast: its client and admin APIs share a host, so one Recipe
+// covers both and its SDKs are mapped.
+func TestDetectGrowthBookRestClientsAndNotItsSDKs(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"devDependencies": {"growthbook": "^0.2.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "growthbook") {
+		t.Errorf("the REST CLI did not detect growthbook: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// The SDKs, which read feature definitions from a CDN or a proxy.
+		{"package.json": `{"dependencies": {"@growthbook/growthbook": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@growthbook/growthbook-react": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"growthbook/growthbook": "^1.2"}}`},
+		// Wrappers around those SDKs.
+		{"package.json": `{"dependencies": {"@flags-sdk/growthbook": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"nuxt-growthbook": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@growthbook/edge-cloudflare": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"gathern/growthbook-openfeature-pro": "^1.0"}}`},
+		// The product's own server component, and agent tooling.
+		{"package.json": `{"dependencies": {"@growthbook/proxy": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@growthbook/mcp": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "growthbook") {
+			t.Errorf("%v offered the growthbook Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
