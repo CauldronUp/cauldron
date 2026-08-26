@@ -3128,3 +3128,51 @@ func TestDetectPyPIReadersAndNotPublishers(t *testing.T) {
 		}
 	}
 }
+
+// crates.io brings two near-miss kinds at once, and one of them is new.
+//
+// The homonym is a single letter: every Packagist result for "crates" is
+// CrateDB, a distributed SQL database that lives at crate.io. crate/crate-pdo
+// has ninety-six thousand downloads and nothing to do with the Rust registry.
+//
+// The new kind is matched on a badge. ts-gettext-extractor at fifty-five
+// thousand and the Tauri plugins beside it surface because their READMEs carry
+// a shields.io badge whose URL contains crates.io. The badge is honest -- there
+// really is a crate -- and the match is not, because nothing in the npm package
+// calls the registry API.
+func TestDetectCratesIOClientsAndNotCrateDBOrABadge(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"crates.io": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "cratesio") {
+			t.Errorf("%v did not detect cratesio: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// CrateDB, which is crate.io and a database.
+		{"composer.json": `{"require": {"crate/crate-pdo": "^2.0"}}`},
+		{"composer.json": `{"require": {"crate/crate-dbal": "^2.0"}}`},
+		{"composer.json": `{"require": {"ratkor/laravel-crate.io": "^1.0"}}`},
+		// Matched on a README badge.
+		{"package.json": `{"devDependencies": {"ts-gettext-extractor": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"tauri-plugin-keyring-api": "^1.0.0"}}`},
+		// Publishers, which speak cargo's upload protocol.
+		{"package.json": `{"devDependencies": {"@auto-it/crates": "^11.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@releasekit/publish": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "cratesio") {
+			t.Errorf("%v offered the cratesio Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

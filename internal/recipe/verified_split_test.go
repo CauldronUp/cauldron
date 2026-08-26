@@ -55,11 +55,16 @@ func TestTheREADMEBreakdownOfLiveCasesMatchesTheRecipes(t *testing.T) {
 		}
 	}
 
+	// A dot is part of a name. crates.io is the first provider here whose name
+	// carries one, and without it in the class the claim "Eleven are crates.io's"
+	// matched nothing -- the sum caught that too, which is the second time it
+	// has earned its place.
+	//
 	// The paragraph is wrapped, so a claim can be split across a line break:
 	// "Five are" ends one line and "OpenRouter's" begins the next. Matching a
 	// literal space silently found four of the five claims and the sum caught it,
 	// which is the whole argument for checking the sum as well as the parts.
-	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z[:space:]]*?)'s`).FindAllStringSubmatch(paragraph, -1)
+	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]]*?)'s`).FindAllStringSubmatch(paragraph, -1)
 	if len(claims) == 0 {
 		t.Fatal("no provider counts were found in the paragraph; update this test with the form it takes now")
 	}
