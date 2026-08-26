@@ -185,7 +185,18 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 	// response throws rather than reporting the failure. Writing JSON here
 	// would hide that.
 	if style == "text" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// Only when the Recipe has not said otherwise. Homebrew's 404 is a
+		// full HTML page served from a path ending in .json, and text is the
+		// right style for it -- the body is not JSON and a client calling
+		// .json() on it throws, which is the finding. Its content type is
+		// text/html, declared on the failure, and this used to overwrite it:
+		// the header was set a few lines above and replaced here, so a Recipe
+		// could say text/html and be served text/plain with nothing to notice
+		// it by.
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
+
 		w.WriteHeader(status)
 
 		fmt.Fprint(w, message)
