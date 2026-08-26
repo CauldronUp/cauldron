@@ -3083,3 +3083,48 @@ func TestDetectGrowthBookRestClientsAndNotItsSDKs(t *testing.T) {
 		}
 	}
 }
+
+// PyPI carries the largest number this file has ever excluded, and it is not
+// even a homonym: composer/installers, at a hundred and forty-eight million
+// downloads, is the top Packagist result for "pypi" and is a Composer library
+// installer. A registry's ranking is not evidence of anything.
+//
+// The real split is between reading and publishing. semantic-release-pypi and
+// its neighbours upload a built distribution over twine's protocol, which is
+// not this API -- the same line drawn at the Sonar scanners.
+func TestDetectPyPIReadersAndNotPublishers(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"pypi-info": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"pypi": "^0.1.0"}}`},
+		{"package.json": `{"devDependencies": {"muaddib-scanner": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"bismar": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "pypi") {
+			t.Errorf("%v did not detect pypi: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Publishers, which speak twine's upload protocol.
+		{"package.json": `{"devDependencies": {"semantic-release-pypi": "^3.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@lets-release/pypi": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"foundry-release-pypi": "^1.0.0"}}`},
+		{"composer.json": `{"require-dev": {"hiqdev/hidev-pypi": "^0.1"}}`},
+		// And the biggest number on the page, which is a Composer installer.
+		{"composer.json": `{"require": {"composer/installers": "^2.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "pypi") {
+			t.Errorf("%v offered the pypi Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
