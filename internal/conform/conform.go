@@ -564,6 +564,24 @@ func compareValue(path string, want, got any) []string {
 			return []string{fmt.Sprintf("%s: want an object, got %s", path, describe(got))}
 		}
 
+		// An object expectation is deliberately partial: {a: 1} says the
+		// response carries a and says nothing about its neighbours, which is
+		// what lets a case name the fields it cares about.
+		//
+		// That degenerates at zero. {} named nothing, so it required nothing,
+		// and asserting it meant no more than "this is an object" -- while the
+		// list beside it, [], is length-checked and really does mean empty.
+		// Two containers, two strengths, and nothing in a Recipe to tell them
+		// apart.
+		//
+		// Four cases in the collection assert an empty object and all four say
+		// in their own names that they mean empty: Asana's delete receipt,
+		// DigitalOcean's links when everything fits on one page, Jira's error
+		// map, and Hex's retirements. None of them was checking it.
+		if len(expected) == 0 && len(actual) != 0 {
+			return []string{fmt.Sprintf("%s: want an empty object, got %d key(s)", path, len(actual))}
+		}
+
 		var failures []string
 
 		for _, key := range sortedKeys(expected) {
