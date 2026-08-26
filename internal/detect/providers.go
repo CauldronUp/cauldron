@@ -868,6 +868,39 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The same split as ConfigCat, immediately afterwards, and by now it
+			// is a rule about the category rather than a fact about a vendor: a
+			// feature-flag platform has a delivery surface that SDKs read and a
+			// management API that everything else uses, and they are different
+			// APIs on different hosts.
+			//
+			// @growthbook/growthbook has 3.49 million downloads,
+			// @growthbook/growthbook-react 1.65 million and the PHP SDK 3.92
+			// million. All of them fetch feature definitions from
+			// cdn.growthbook.io or from a proxy, and none calls the REST API
+			// this Recipe serves. The edge apps, the Nuxt module, the Flags SDK
+			// provider, the OpenFeature provider and the DevTools plugin all
+			// wrap one of those SDKs, so they are on the same side.
+			//
+			// Exactly one package here speaks this API, and it says so in its
+			// own description: growthbook, "Command-line interface for the
+			// GrowthBook REST API", at a hundred and ten thousand downloads
+			// against nine million on the other side.
+			//
+			// @growthbook/proxy is excluded as the product's own server
+			// component, on the reading that put unleash-server outside: a
+			// project running it is operating GrowthBook rather than
+			// integrating with it. @growthbook/mcp is agent tooling, for the
+			// fourth Recipe running.
+			//
+			// Unleash is the useful contrast. Its client and admin APIs share a
+			// host, so one Recipe covers both and its SDKs are mapped. Where the
+			// split is by host, as here and at ConfigCat, it is two Recipes or
+			// none.
+			recipe: "growthbook",
+			npm:    []string{"growthbook"},
+		},
+		{
 			// A new exclusion kind, and it owns the biggest number on the page
 			// that is not the scanner: packages that write a file for another
 			// program to upload.
