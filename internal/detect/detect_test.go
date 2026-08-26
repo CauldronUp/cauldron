@@ -3273,3 +3273,48 @@ func TestDetectPackagistClientsAndNotPrivatePackagist(t *testing.T) {
 		}
 	}
 }
+
+// Hex's homonym is the fixture this Recipe is written about. The npm package
+// called phoenix, at 5.3 million downloads, is the official JavaScript client
+// for the Phoenix framework's channels -- same name, same project, and it
+// speaks a websocket protocol to an application rather than HTTP to a registry.
+//
+// The badge match turns up for the third Recipe running, which makes it
+// reliable enough to expect on any provider whose users publish elsewhere.
+func TestDetectHexClientsAndNotThePhoenixChannelClient(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"hex-api-client": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"cerebro-hex": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@api-hooks/hex": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "hexpm") {
+			t.Errorf("%v did not detect hexpm: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Phoenix channel client, and the biggest number on the page.
+		{"package.json": `{"dependencies": {"phoenix": "^1.8.0"}}`},
+		// Matched on a README badge, for the third Recipe running.
+		{"package.json": `{"dependencies": {"@mrdotb/live-react": "^0.1.0"}}`},
+		// Agent tooling, for the sixth.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-hex-pm": "^1.0.0"}}`},
+		// And Packagist prefix collisions, which share four letters.
+		{"composer.json": `{"require": {"hexpang/ssh-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"hexmedia/yaml-linter": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "hexpm") {
+			t.Errorf("%v offered the hexpm Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

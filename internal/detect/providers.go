@@ -868,6 +868,35 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The homonym here is the fixture. This Recipe is written about the
+			// phoenix package on Hex, and the npm package called phoenix -- at
+			// 5.3 million downloads, the biggest number on the page -- is the
+			// official JavaScript client for the Phoenix framework's channels.
+			// Same name, same project, and it speaks a websocket protocol to an
+			// application rather than HTTP to a registry.
+			//
+			// The badge match turns up for the third Recipe running:
+			// @mrdotb/live-react and @leuchtturm/turboprop both surface on a
+			// shields.io/hexpm badge in their READMEs. It is now reliable enough
+			// to expect on any provider whose users publish packages elsewhere.
+			//
+			// Packagist has nothing, and the results are all prefix collisions:
+			// hexpang/ssh-client, hexmedia/yaml-linter and sizuhiko/hexpress
+			// share four letters and no subject.
+			//
+			// What is left is four small TypeScript clients and a search plugin.
+			// The obvious client of Hex is a Mix project, which is a registry
+			// this file does not read -- the same structural thinness recorded
+			// at PyPI and crates.io.
+			recipe: "hexpm",
+			npm: []string{
+				"hex-api-client",
+				"cerebro-hex",
+				"hex-name",
+				"@api-hooks/hex",
+			},
+		},
+		{
 			// The first registry in this run with real clients on its own
 			// language's registry, and the numbers say why: spatie/packagist-api
 			// at 2.4 million and knplabs/packagist-api at 1.5 million are both
