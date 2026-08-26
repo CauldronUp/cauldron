@@ -2980,3 +2980,57 @@ func TestDetectConfigCatManagementClientsAndNotItsSDKs(t *testing.T) {
 		}
 	}
 }
+
+// SonarCloud brings an exclusion kind this file had not recorded, and it owns
+// the biggest number on the page that is not the scanner: packages that write a
+// file for another program to upload.
+//
+// vitest-sonar-reporter has eight hundred and forty thousand downloads and never
+// makes a network request -- it serialises test results to disk in a format the
+// scanner later reads. The scanners themselves are bootstrappers that download
+// the sonar-scanner Java CLI and run it, submitting analyses over a protocol
+// this Recipe does not serve.
+//
+// sonarqube-verify is mapped despite the neighbourhood, because what it does
+// after an analysis is poll the Compute Engine task and read the quality gate.
+func TestDetectSonarWebAPIClientsAndNotReportersOrScanners(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"sonarqube-api-client": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"sonarqube-verify": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"forgeqc/sonarqube-api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"spirit-dev/php-sonarqube-api": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "sonarcloud") {
+			t.Errorf("%v did not detect sonarcloud: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Reporters, which write a file and call nobody.
+		{"package.json": `{"devDependencies": {"vitest-sonar-reporter": "^2.0.0"}}`},
+		{"package.json": `{"devDependencies": {"karma-sonarqube-reporter": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"cypress-sonarqube-reporter": "^5.0.0"}}`},
+		{"composer.json": `{"require-dev": {"symbiote/phpcs-sonar": "^1.0"}}`},
+		// Scanners, which download a Java CLI and run it.
+		{"package.json": `{"devDependencies": {"sonarqube-scanner": "^4.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@sonar/scan": "^4.0.0"}}`},
+		{"composer.json": `{"require-dev": {"rogervila/php-sonarqube-scanner": "^1.0"}}`},
+		// A lint configuration, and the top Packagist result for the word.
+		{"package.json": `{"devDependencies": {"eslint-config-sonarqube": "^1.0.0"}}`},
+		{"composer.json": `{"require-dev": {"nimut/phpunit-merger": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "sonarcloud") {
+			t.Errorf("%v offered the sonarcloud Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
