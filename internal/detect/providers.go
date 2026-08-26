@@ -868,6 +868,46 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Two near-miss kinds at once, and one of them is new.
+			//
+			// The homonym is a single letter. Every Packagist result for
+			// "crates" is CrateDB, a distributed SQL database that lives at
+			// crate.io: crate/crate-pdo at ninety-six thousand,
+			// crate/crate-dbal at forty-seven, ratkor/laravel-crate.io and
+			// michabbb/php-crate. Not one of them has anything to do with the
+			// Rust registry at crates.io, and the domain differs by an s.
+			//
+			// The new kind is matched on a badge. ts-gettext-extractor at
+			// fifty-five thousand, @fltsci/tauri-plugin-tracing,
+			// tauri-plugin-keyring-api, @fuel-bridge/fungible-token and
+			// @tauri-liesel/reg all surface because their READMEs carry a
+			// shields.io badge whose URL contains crates.io. The package is
+			// usually a JavaScript binding for something written in Rust, so
+			// the badge is honest and the match is not: the crate exists, and
+			// nothing in the npm package calls the registry API.
+			//
+			// The publishers are excluded on the line drawn at PyPI:
+			// @auto-canary/crates, @auto-it/crates, @releasekit/publish and
+			// putitoutthere upload a built crate, which is cargo's protocol
+			// rather than this API.
+			//
+			// What is left is the package named after the registry: "A crates.io
+			// API client".
+			//
+			// bismar walks npm, crates.io and PyPI together and would belong
+			// here as much as it belongs to PyPI, which is exactly what a
+			// package mapping to one Recipe forbids -- the same invariant that
+			// stopped jira.js naming two. It stays with PyPI because that is
+			// where it was mapped first, and this note is the record that the
+			// choice was arbitrary rather than considered.
+			//
+			// As with PyPI, the coverage is structurally thin: the obvious
+			// client of crates.io is a Rust crate, and this file reads
+			// Composer, npm and Go modules.
+			recipe: "cratesio",
+			npm:    []string{"crates.io"},
+		},
+		{
 			// The largest number this file has ever excluded, and it is not even
 			// a homonym: composer/installers, at a hundred and forty-eight
 			// million downloads, is the top Packagist result for "pypi". It is a
