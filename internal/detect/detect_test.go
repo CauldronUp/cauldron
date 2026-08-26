@@ -3176,3 +3176,50 @@ func TestDetectCratesIOClientsAndNotCrateDBOrABadge(t *testing.T) {
 		}
 	}
 }
+
+// RubyGems brings another new near-miss kind, and it owns the biggest number on
+// the page: matched on a semantic. @snyk/ruby-semver at forty-two thousand
+// downloads is "a node-semver compatible API with RubyGems semantics" -- a
+// JavaScript implementation of how RubyGems compares versions. It knows more
+// about this registry than any client here does and never sends it a request.
+//
+// A badge match, which crates.io records, means the package is published
+// somewhere. A semantic match means it reimplements the provider's rules.
+func TestDetectRubyGemsClientsAndNotItsSemantics(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"rubygems": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"gem-count": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"supply-chain-guard": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@agntn/registries": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "rubygems") {
+			t.Errorf("%v did not detect rubygems: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Matched on a semantic: RubyGems' version rules, in JavaScript.
+		{"package.json": `{"dependencies": {"@snyk/ruby-semver": "^3.0.0"}}`},
+		// Publishers, which push a built gem.
+		{"package.json": `{"devDependencies": {"@webhippie/semantic-release-ruby": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@tegami/gem": "^1.0.0"}}`},
+		// Agent tooling, for the fifth Recipe running.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-rubygems": "^1.0.0"}}`},
+		// And Packagist noise, which mentions no Ruby at all.
+		{"composer.json": `{"require": {"judev/php-htmltruncator": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "rubygems") {
+			t.Errorf("%v offered the rubygems Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

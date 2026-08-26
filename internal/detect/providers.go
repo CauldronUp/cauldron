@@ -868,6 +868,43 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// Another new near-miss kind, and it owns the biggest number here:
+			// matched on a semantic. @snyk/ruby-semver, at forty-two thousand
+			// downloads, is "a node-semver compatible API with RubyGems
+			// semantics" -- a JavaScript implementation of how RubyGems compares
+			// versions. It knows more about this registry than any client here
+			// does, and it never sends it a request.
+			//
+			// That is worth separating from a badge match, which the crates.io
+			// entry records. A badge means the package is published somewhere; a
+			// semantic means the package reimplements the provider's rules. Both
+			// are honest mentions of a provider by something that does not call
+			// it.
+			//
+			// The publishers go out on the line drawn at PyPI:
+			// @webhippie/semantic-release-ruby and @tegami/gem push a built gem,
+			// which is a different protocol with a token. And two MCP servers,
+			// for the fifth Recipe running.
+			//
+			// Packagist has nothing at all. The word returns
+			// judev/php-htmltruncator at three hundred thousand, ory/client and
+			// duncan3dc/exec -- none of which mentions Ruby -- so the empty
+			// result and the wrong result look identical, which is the reason to
+			// write down that it is empty.
+			//
+			// bismar belongs here too and is mapped to PyPI, for the reason
+			// recorded there.
+			recipe: "rubygems",
+			npm: []string{
+				"rubygems",
+				"gem-count",
+				"cerebro-rubygems",
+				"supply-chain-guard",
+				"@agntn/registries",
+				"@push.rocks/smartregistry",
+			},
+		},
+		{
 			// Two near-miss kinds at once, and one of them is new.
 			//
 			// The homonym is a single letter. Every Packagist result for

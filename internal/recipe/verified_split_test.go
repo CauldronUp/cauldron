@@ -60,11 +60,16 @@ func TestTheREADMEBreakdownOfLiveCasesMatchesTheRecipes(t *testing.T) {
 	// matched nothing -- the sum caught that too, which is the second time it
 	// has earned its place.
 	//
+	// And the possessive s is optional, because a name already ending in one
+	// takes a bare apostrophe: "Nine are RubyGems'". That is the third time,
+	// and the pattern is now that every new provider tests a corner of English
+	// the last one did not.
+	//
 	// The paragraph is wrapped, so a claim can be split across a line break:
 	// "Five are" ends one line and "OpenRouter's" begins the next. Matching a
 	// literal space silently found four of the five claims and the sum caught it,
 	// which is the whole argument for checking the sum as well as the parts.
-	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]]*?)'s`).FindAllStringSubmatch(paragraph, -1)
+	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]]*?)'s?`).FindAllStringSubmatch(paragraph, -1)
 	if len(claims) == 0 {
 		t.Fatal("no provider counts were found in the paragraph; update this test with the form it takes now")
 	}
