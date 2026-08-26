@@ -2932,3 +2932,51 @@ func TestDetectGrafanaClientsAndNotItsPluginToolkitOrLoki(t *testing.T) {
 		}
 	}
 }
+
+// ConfigCat is the starkest version of a shape this file has now met three
+// Recipes running: the vendor's popular client speaks a different surface.
+//
+// configcat/configcat-client has 1.29 million downloads and calls a CDN, not
+// api.configcat.com -- a ConfigCat SDK fetches a static configuration file and
+// evaluates flags locally. The Public Management API this Recipe serves is what
+// dashboards and CI scripts use, and its clients have about five thousand
+// downloads between them.
+func TestDetectConfigCatManagementClientsAndNotItsSDKs(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"devDependencies": {"configcat-publicapi-node-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"ng-configcat-publicapi": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "configcat") {
+			t.Errorf("%v did not detect configcat: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The SDKs, which read a configuration file from the CDN.
+		{"composer.json": `{"require": {"configcat/configcat-client": "^9.0"}}`},
+		{"package.json": `{"dependencies": {"configcat-common": "^9.0.0"}}`},
+		{"package.json": `{"dependencies": {"@configcat/sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"configcat-react": "^4.0.0"}}`},
+		// Wrappers around those SDKs, so they are on the CDN side too.
+		{"package.json": `{"dependencies": {"@openfeature/config-cat-provider": "^0.7.0"}}`},
+		{"composer.json": `{"require": {"pod-point/laravel-configcat": "^2.0"}}`},
+		// Infrastructure-as-code, for the sixth Recipe running.
+		{"package.json": `{"dependencies": {"@pulumiverse/configcat": "^0.1.0"}}`},
+		// And agent tooling, even though it names this exact API.
+		{"package.json": `{"devDependencies": {"@configcat/mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "configcat") {
+			t.Errorf("%v offered the configcat Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

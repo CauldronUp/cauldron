@@ -868,6 +868,40 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The starkest version of a shape this file has now met three
+			// Recipes running: the vendor's popular client speaks a different
+			// surface, and mapping it would offer an emulator of the wrong API.
+			//
+			// configcat/configcat-client has 1.29 million downloads and
+			// configcat-common seven hundred thousand, and neither calls
+			// api.configcat.com. A ConfigCat SDK fetches a static configuration
+			// file from the CDN and evaluates flags locally; the Public
+			// Management API this Recipe serves is what dashboards and CI
+			// scripts use. The clients that do speak it --
+			// configcat-publicapi-node-client and ng-configcat-publicapi -- have
+			// about five thousand downloads between them, so the ratio between
+			// the two surfaces is roughly two hundred and sixty to one.
+			//
+			// That makes the config-delivery surface worth a Recipe of its own
+			// rather than worth folding into this one. It is a different host,
+			// a different shape and a different job.
+			//
+			// Everything else follows from that. The OpenFeature providers, the
+			// Laravel, Spryker and Vue wrappers and the Belvo client all wrap
+			// the SDK, so they are on the CDN side too. @pulumiverse/configcat
+			// is infrastructure-as-code, for the sixth Recipe running. And
+			// @configcat/mcp-server is the awkward one: it says outright that it
+			// exposes the Public Management API, which is exactly this surface,
+			// and it is still agent tooling rather than something an
+			// application calls -- the same line drawn at @unleash/mcp and
+			// @pinecone-database/mcp.
+			recipe: "configcat",
+			npm: []string{
+				"configcat-publicapi-node-client",
+				"ng-configcat-publicapi",
+			},
+		},
+		{
 			// The thinnest mapping in this file, and the reason is worth more
 			// than the mapping: eighteen npm results for "grafana" and not one
 			// of them calls this API.
