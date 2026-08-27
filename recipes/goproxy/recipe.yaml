@@ -1,0 +1,361 @@
+# Go module proxy Recipe for Cauldron
+#
+# The proxy refuses the module path in the URL and then hands it back in the
+# body.
+#
+# A Go module path is case-sensitive, and the proxy protocol will not carry
+# capitals: every uppercase letter is escaped to an exclamation mark followed
+# by its lowercase. So the module written in every go.mod as
+# github.com/BurntSushi/toml is fetched as github.com/!burnt!sushi/toml, and
+# asking for the spelling the author used is refused:
+#
+#   GET /github.com/BurntSushi/toml/@latest
+#   404  bad request: invalid escaped module path "github.com/BurntSushi/toml"
+#
+# Two things there. The status is 404 and the sentence says "bad request",
+# which are different claims about whose fault it is. And the escaped form,
+# once accepted, answers with Origin.URL: "https://github.com/BurntSushi/toml"
+# -- the capitals restored, in the body, by the same server that would not take
+# them in the path.
+#
+# Written against the live proxy rather than a document: every case below was
+# checked against proxy.golang.org on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. The JSON keys are Go struct field names. Version, Time, Origin, and
+#      inside it VCS, URL, Ref, Hash -- PascalCase with an all-caps acronym,
+#      because the type is marshalled straight out of cmd/go with no tags. It
+#      is the only registry in this collection whose wire format is somebody's
+#      internal struct.
+#   2. Ref is there or it is not. gorilla/mux carries
+#      Ref: "refs/tags/v1.8.1"; BurntSushi/toml carries no Ref at all, only a
+#      Hash. Same endpoint, same version of the protocol, and the field that
+#      says which tag a version came from is optional.
+#   3. A module nobody has published answers with a git transcript. The 404
+#      body is the proxy's own shell failure -- the git ls-remote it tried, the
+#      path inside its cache on its own disk, "exit status 128", git's
+#      "terminal prompts disabled", and two lines of advice. It is the eighth
+#      distinct not-found shape in this collection and the only one that names
+#      a directory on the server.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - /@v/list is not served. It answers text/plain with one version per line
+#     and no envelope, and this format has no way to emit a plain-text success
+#     body -- the same gap recorded for Mixpanel's bare integer. It is worth
+#     writing down what it does anyway: the list is unsorted. BurntSushi/toml
+#     answers v1.3.0, v0.3.0, v1.6.0, v1.0.0, v1.3.1, v1.5.0, v0.4.0 and so on,
+#     in no order at all, so anything that wants the newest has to parse and
+#     compare every line rather than read the first.
+#   - .mod and .zip are the other two endpoints and are a file and an archive,
+#     which is the same gap again.
+#   - The escaping rule is served for one path rather than as a rule. Any
+#     capital anywhere in a module path is refused the same way; this file
+#     answers for github.com/BurntSushi/toml specifically, because a rule about
+#     the shape of a path is not something a route can express here.
+#   - Two modules cannot both be called toml here, so the owner and module
+#     segments are declared as scope and not demonstrated. This format's
+#     identifier space is one per resource rather than one per scope: scope
+#     filters a lookup, but seeding github.com/naoina/toml beside
+#     github.com/!burnt!sushi/toml is refused as a duplicate identifier. That
+#     is a real constraint for a registry, where the last segment of a path is
+#     routinely shared -- naoina/toml is v0.1.1 and BurntSushi/toml is v1.6.0,
+#     five years and one major apart, and both are called toml. The same goes
+#     for versions: gorilla/mux v1.6.0 and BurntSushi/toml v1.6.0 are two
+#     releases eight years apart. Asserting the emulator's behaviour here would
+#     mean asserting a 404 the real proxy does not send, so the cases stop
+#     short of it.
+#   - Origin is optional too, and older entries do without it. gorilla/mux
+#     v1.6.0, cached in 2017, answers {"Version", "Time"} and nothing else --
+#     so the object holding the repository URL, the commit and the tag is
+#     absent on exactly the versions somebody is most likely to be auditing.
+#   - Module paths are as many segments as their author chose. The routes below
+#     take three, which covers github.com/owner/repo and not
+#     github.com/owner/repo/v3 -- and a major-version suffix is exactly where a
+#     fourth appears.
+#
+# The modules below are public and the responses were recorded on the date in
+# the cases.
+
+recipe: goproxy
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://go.dev/ref/mod#goproxy-protocol
+
+auth:
+  # Public.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  module:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      host:
+        type: string
+        in: "-"
+      owner:
+        type: string
+        in: "-"
+      # Go struct field names, straight onto the wire.
+      Version:
+        type: string
+      Time:
+        type: string
+      Origin:
+        type: map
+
+  version:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      host:
+        type: string
+        in: "-"
+      owner:
+        type: string
+        in: "-"
+      module:
+        type: string
+        in: "-"
+      Version:
+        type: string
+      Time:
+        type: string
+      Origin:
+        type: map
+
+routes:
+  # The escaped spelling, which is the only one that works.
+  - method: GET
+    path: /{host}/{owner}/{id}/@latest
+    resource: module
+    operation: get
+    scope: [host, owner]
+
+  - method: GET
+    path: /{host}/{owner}/{module}/@v/{id}.info
+    resource: version
+    operation: get
+    scope: [host, owner, module]
+
+  # And the spelling every go.mod actually contains, which is refused. A
+  # literal path rather than a rule, for the reason in the gaps above -- the
+  # same shape as a retired endpoint that always answers one way.
+  - method: GET
+    path: /github.com/BurntSushi/toml/@latest
+    error: invalid_escaped_path
+
+errors:
+  invalid_escaped_path:
+    status: 404
+    headers:
+      Content-Type: text/plain; charset=UTF-8
+    message: 'bad request: invalid escaped module path "github.com/BurntSushi/toml"'
+
+  resource_missing:
+    status: 404
+    headers:
+      Content-Type: text/plain; charset=UTF-8
+    message: |-
+      not found: module github.com/cauldron/not-a-real-module: git ls-remote -q --end-of-options https://github.com/cauldron/not-a-real-module in /tmp/gopath/pkg/mod/cache/vcs/18446dffe8e885df127c8a2d2752ab52119cfffc33a5fa2a83014fb95d06089f: exit status 128:
+      	fatal: could not read Username for 'https://github.com': terminal prompts disabled
+      Confirm the import path was entered correctly.
+      If this is a private repository, see https://go.dev/doc/faq#git_https for additional information.
+
+  invalid_request:
+    status: 400
+    message: bad request
+
+fixtures:
+  empty: {}
+
+  proxy:
+    module:
+      # The capitals escaped to exclamation marks, which is the only spelling
+      # the path will take.
+      - id: toml
+        host: github.com
+        owner: "!burnt!sushi"
+        Version: v1.6.0
+        Time: "2025-12-18T12:15:22Z"
+        Origin:
+          VCS: git
+          # And the capitals back again, in the body.
+          URL: https://github.com/BurntSushi/toml
+          Hash: 52534926c55b4cd85b05aee90569dd0668b8cf30
+
+      # An all-lowercase path, so nothing is escaped -- and this one carries a
+      # Ref where the other does not.
+      - id: mux
+        host: github.com
+        owner: gorilla
+        Version: v1.8.1
+        Time: "2023-10-18T11:23:00Z"
+        Origin:
+          VCS: git
+          URL: https://github.com/gorilla/mux
+          Ref: refs/tags/v1.8.1
+          Hash: b4617d0b9670ad14039b2739167fd35a60f557c5
+
+    version:
+      - id: v1.6.0
+        host: github.com
+        owner: "!burnt!sushi"
+        module: toml
+        Version: v1.6.0
+        Time: "2025-12-18T12:15:22Z"
+        Origin:
+          VCS: git
+          URL: https://github.com/BurntSushi/toml
+          Hash: 52534926c55b4cd85b05aee90569dd0668b8cf30
+
+conformance:
+  - name: the escaped module path is the one that works
+    source: https://proxy.golang.org/github.com/!burnt!sushi/toml/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/!burnt!sushi/toml/@latest
+    expect:
+      status: 200
+      body:
+        # Every capital in the author's spelling becomes an exclamation mark
+        # and its lowercase, and this is the only form the path will take.
+        Version: v1.6.0
+        Time: "2025-12-18T12:15:22Z"
+
+  - name: and the body hands the capitals straight back
+    source: https://proxy.golang.org/github.com/!burnt!sushi/toml/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/!burnt!sushi/toml/@latest
+    expect:
+      status: 200
+      body:
+        # The same server that would not take BurntSushi in the path returns
+        # it in the response, spelled the way its author wrote it.
+        "Origin.URL": https://github.com/BurntSushi/toml
+        "Origin.VCS": git
+
+  - name: the spelling in every go.mod is refused
+    source: https://proxy.golang.org/github.com/BurntSushi/toml/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/BurntSushi/toml/@latest
+    expect:
+      # A 404 whose sentence says "bad request" -- two different claims about
+      # whose fault it is, in one response.
+      status: 404
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+      body_matches: '^bad request: invalid escaped module path "github\.com/BurntSushi/toml"$'
+
+  - name: the JSON keys are Go struct field names
+    source: https://proxy.golang.org/github.com/gorilla/mux/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/gorilla/mux/@latest
+    expect:
+      status: 200
+      body:
+        # PascalCase with an all-caps acronym, because the type is marshalled
+        # straight out of cmd/go with no struct tags on it.
+        Version: v1.8.1
+        "Origin.VCS": git
+        "Origin.Hash": b4617d0b9670ad14039b2739167fd35a60f557c5
+      absent:
+        - version
+        - origin
+
+  - name: Ref is there or it is not
+    source: https://proxy.golang.org/github.com/gorilla/mux/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/gorilla/mux/@latest
+    expect:
+      status: 200
+      body:
+        # gorilla/mux says which tag the version came from.
+        "Origin.Ref": refs/tags/v1.8.1
+
+  - name: and on the module next door it is not
+    source: https://proxy.golang.org/github.com/!burnt!sushi/toml/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/!burnt!sushi/toml/@latest
+    expect:
+      status: 200
+      body:
+        "Origin.Hash": 52534926c55b4cd85b05aee90569dd0668b8cf30
+      absent:
+        # Same endpoint, same protocol version, no Ref at all -- so the field
+        # naming the tag a release came from is optional and nothing says when.
+        - Origin.Ref
+
+  - name: asking for one version answers the same shape as asking for latest
+    source: https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.6.0.info
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/!burnt!sushi/toml/@v/v1.6.0.info
+    expect:
+      status: 200
+      body:
+        # @latest and @v/{version}.info return the same three keys, so the
+        # only difference between "newest" and "this one" is the URL.
+        Version: v1.6.0
+        Time: "2025-12-18T12:15:22Z"
+        "Origin.URL": https://github.com/BurntSushi/toml
+
+  - name: a module nobody has published answers with a git transcript
+    source: https://proxy.golang.org/github.com/cauldron/not-a-real-module/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/cauldron/not-a-real-module/@latest
+    expect:
+      # The proxy's own shell failure: the command it ran, a path inside its
+      # cache on its own disk, git's exit status and stderr, and two lines of
+      # advice. The eighth distinct not-found shape in this collection, and
+      # the only one that names a directory on the server.
+      status: 404
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+      body_matches: 'git ls-remote -q --end-of-options'
+
+  - name: and it quotes git's own refusal back at you
+    source: https://proxy.golang.org/github.com/cauldron/not-a-real-module/@latest
+    verified: "2026-08-27"
+    fixture: proxy
+    request:
+      method: GET
+      path: /github.com/cauldron/not-a-real-module/@latest
+    expect:
+      status: 404
+      body_matches: 'terminal prompts disabled'
