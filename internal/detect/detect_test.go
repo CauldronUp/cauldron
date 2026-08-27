@@ -3366,3 +3366,46 @@ func TestDetectNuGetClientsAndNotTheExeWrappers(t *testing.T) {
 		}
 	}
 }
+
+// The Go proxy carries the sharpest matched-on-a-semantic yet, and the third:
+// golang.org/x/mod implements module.EscapePath, the exact rule this Recipe is
+// about, and never opens a connection. After @snyk/ruby-semver and
+// @snyk/nuget-semver the pattern is established -- a provider's rules get
+// reimplemented as a library more often than its API gets called, and the
+// library is the more popular package every time.
+//
+// The rest of the neighbourhood is the toolchain: go-mod-upgrade shells out to
+// go list, which reaches the proxy through cmd/go rather than over an API a
+// test could redirect. gomajor is mapped because it fetches @v/list itself.
+func TestDetectGoProxyClientsAndNotTheEscapingLibrary(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"go.mod": "module example.com/app\n\nrequire github.com/icholy/gomajor v0.13.0\n",
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "goproxy") {
+		t.Errorf("gomajor did not detect goproxy: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// The library that implements the escaping and calls nobody.
+		{"go.mod": "module example.com/app\n\nrequire golang.org/x/mod v0.21.0\n"},
+		// The toolchain wrapper.
+		{"go.mod": "module example.com/app\n\nrequire github.com/oligot/go-mod-upgrade v0.10.0\n"},
+		// A GOPROXY implementation is the product, not a client of it.
+		{"package.json": `{"dependencies": {"gosub-goproxy": "^1.0.0"}}`},
+		// And agent tooling, for the seventh Recipe running.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-goproxy": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "goproxy") {
+			t.Errorf("%v offered the goproxy Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

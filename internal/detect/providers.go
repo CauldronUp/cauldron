@@ -868,6 +868,31 @@ func providers() []provider {
 			npm:      []string{"@sendgrid/mail"},
 		},
 		{
+			// The sharpest matched-on-a-semantic yet, and the third:
+			// golang.org/x/mod implements module.EscapePath, which is the exact
+			// rule this Recipe is about -- every capital to an exclamation mark
+			// and its lowercase -- and it never opens a connection. It knows the
+			// protocol better than any client here and does not speak it.
+			//
+			// After @snyk/ruby-semver and @snyk/nuget-semver, the pattern is
+			// established: a provider's rules get reimplemented as a library far
+			// more often than its API gets called, and the library is the more
+			// popular package every time.
+			//
+			// The rest of the neighbourhood is the toolchain. go-mod-upgrade and
+			// its relatives shell out to go list, which reaches the proxy
+			// through cmd/go rather than over an API a test could point
+			// somewhere else -- the line drawn at the Sonar scanners and NuGet's
+			// exe wrappers. gomajor is mapped because it fetches @v/list from
+			// GOPROXY itself.
+			//
+			// On npm, gosub-goproxy is a GOPROXY implementation: the product
+			// rather than a client of it, which is where unleash-server and
+			// unleash-frontend went.
+			recipe: "goproxy",
+			gomod:  []string{"github.com/icholy/gomajor"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
