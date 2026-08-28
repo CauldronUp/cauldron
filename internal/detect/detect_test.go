@@ -3558,3 +3558,49 @@ func TestDetectDepsDevClientsAndNotTheDescriptions(t *testing.T) {
 		}
 	}
 }
+
+// The vendor's own client does not speak the vendor's documented JSON API. The
+// npm package openmeteo is Open-Meteo's and it sets format=flatbuffers on every
+// request, so it receives a binary payload rather than the document this Recipe
+// describes; @openmeteo/sdk is the generated FlatBuffers schema for it. Neither
+// is mapped, because an emulator answering JSON cannot answer either.
+//
+// @openmeteo/weather-map-layer is a third wire format again, the OMfile tiles.
+func TestDetectOpenMeteoJSONClientsAndNotTheVendorsOwnSDK(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"symfony/ai-open-meteo-tool": "^7.0"}}`},
+		{"composer.json": `{"require": {"php-weather/open-meteo": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@agentic/open-meteo": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/hectormalot/omgo v0.2.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openmeteo") {
+			t.Errorf("%v did not detect openmeteo: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own client, on FlatBuffers.
+		{"package.json": `{"dependencies": {"openmeteo": "^1.2.0"}}`},
+		{"package.json": `{"dependencies": {"@openmeteo/sdk": "^1.20.0"}}`},
+		// And a third wire format, the OMfile tiles.
+		{"package.json": `{"dependencies": {"@openmeteo/weather-map-layer": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/kkkk2323/go-omfiles v0.1.0\n"},
+		// Agent tooling, for the third Recipe running from one publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-open-meteo": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"open-meteo-mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openmeteo") {
+			t.Errorf("%v offered the openmeteo Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

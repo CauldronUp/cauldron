@@ -69,7 +69,13 @@ func TestTheREADMEBreakdownOfLiveCasesMatchesTheRecipes(t *testing.T) {
 	// "Five are" ends one line and "OpenRouter's" begins the next. Matching a
 	// literal space silently found four of the five claims and the sum caught it,
 	// which is the whole argument for checking the sum as well as the parts.
-	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]]*?)'s?`).FindAllStringSubmatch(paragraph, -1)
+	//
+	// And a hyphen is part of a name, because Open-Meteo has one. That is the
+	// fourth corner of English a new provider has found in this one expression,
+	// after the dot in crates.io, the bare apostrophe on RubyGems' and the line
+	// break in the middle of a claim -- and the fourth time the sum was what
+	// noticed, because a claim that does not match is simply not counted.
+	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]-]*?)'s?`).FindAllStringSubmatch(paragraph, -1)
 	if len(claims) == 0 {
 		t.Fatal("no provider counts were found in the paragraph; update this test with the form it takes now")
 	}

@@ -1,0 +1,479 @@
+# Open-Meteo Recipe for Cauldron
+#
+# The timestamps carry no offset, and the same string means two different hours.
+#
+# Ask for Toronto with a timezone and you get hourly times like
+# "2026-08-28T00:00". Ask for the same coordinates without one and you get
+# "2026-08-28T00:00" again -- the identical string, four hours earlier, because
+# the default timezone is GMT. Nothing in the hourly block distinguishes them.
+# The offset lives elsewhere, in utc_offset_seconds, as a number:
+#
+#   timezone=America/Toronto  ->  "2026-08-28T00:00" is 17.5 °C, offset -14400
+#   (no timezone)             ->  "2026-08-28T00:00" is 21.7 °C, offset 0
+#
+# There is no Z, no +00:00, and no seconds. So new Date("2026-08-28T00:00")
+# parses as local time in whatever zone the reader happens to be in, which is a
+# third answer, and the only way to be right is to read a field on the other
+# side of the document and apply it by hand.
+#
+# **And the coordinates come back moved.** The request asks for 43.65, -79.38
+# and the response says 43.646603, -79.38272: the nearest cell of the weather
+# model, silently substituted. Code that round-trips the coordinates it sent is
+# querying a different point on the next call, and code that compares what it
+# asked for with what it got never matches.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.open-meteo.com on the date in its verified field.
+#
+# Five more the Recipe pins:
+#
+#   1. The hourly data is parallel arrays, not a list of readings. hourly.time,
+#      hourly.temperature_2m and hourly.precipitation are three arrays whose
+#      only relationship is that the nth entry of each belongs together.
+#      Sorting or filtering one of them destroys the association with no error
+#      of any kind.
+#   2. The units are in a different object. hourly_units.temperature_2m is
+#      "°C", beside hourly_units.time, which is "iso8601" -- a serialisation
+#      format described as a unit, in the units object, for a field that has no
+#      unit.
+#   3. Adding a second coordinate changes the top-level type. One latitude
+#      answers with an object; two, comma-separated, answer with an array of
+#      them. Same endpoint, same parameters, one comma, and a client written
+#      for either shape fails on the other.
+#   4. And location_id is absent on the first element rather than 0. The second
+#      carries location_id: 1, so anything keying results by it loses the first
+#      location entirely.
+#   5. timezone_abbreviation is "GMT-4" rather than "EDT". It is the offset
+#      spelled as a name, so it is neither the zone nor a standard abbreviation.
+#
+# The failures name a field "error" that is only ever true, and the reason is a
+# Swift decoder's stringified error:
+#
+#   {"error":true,"reason":"Data corrupted at path ''. Cannot initialize
+#    SurfacePressureAndHeightVariable<VariableAndPreviousDay,
+#    VariableOrSpread<ForecastPressureVariable>, ForecastHeightVariable> from
+#    invalid String value not_a_variable."}
+#
+# That is the service's internal Swift generic type signature, on the public
+# API, in response to a misspelled variable name. A successful response carries
+# no "error" key at all, so `if (body.error)` works and `body.error === false`
+# never happens.
+#
+# And omitting latitude is reported as a length mismatch: "Parameter 'latitude'
+# and 'longitude' must have the same number of elements". The parameter takes a
+# comma-separated list, an absent one has zero elements, and so a forgotten
+# coordinate is described as two lists disagreeing.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The forecast is served rather than computed. A real request returns the
+#     next seven days from the model run that finished most recently; this
+#     Recipe answers with the hours its fixture holds, recorded on the date in
+#     the cases.
+#   - generationtime_ms is a float that changes on every request. It is served
+#     as the value that was recorded, so its presence and type are right and
+#     its variability is not modelled.
+#   - The hourly arrays are trimmed to four entries. A real forecast_days=1
+#     answers twenty-four.
+#   - Only the hourly block is served. daily, current, minutely_15 and the
+#     archive, marine, air-quality and geocoding hosts are not modelled.
+#
+# The coordinates below are public and were recorded on the date in the cases.
+
+recipe: openmeteo
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://open-meteo.com/en/docs
+
+auth:
+  # Public, and no key at all on the free tier.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  list:
+    # Two coordinates answer with a bare array of the same objects.
+    style: bare
+  error:
+    style: flat
+    # "reason", not "message".
+    message_field: reason
+    fields:
+      # A boolean that is only ever true. A success carries no such key.
+      error: true
+
+resources:
+  forecast:
+    id:
+      style: opaque
+      # The identifier is the latitude in the query string, and it is not in
+      # the response. What comes back under that name is the model's cell:
+      # 43.646603 for a request that said 43.65. So the field below carries
+      # the identifier the way HAL's self link does -- near enough to address
+      # by, and not the value you sent.
+      field: "-"
+      carried_by: latitude
+    fields:
+      latitude:
+        type: number
+      longitude:
+        type: number
+      generationtime_ms:
+        type: number
+      # The offset, as a number, on the other side of the document from the
+      # timestamps it applies to.
+      utc_offset_seconds:
+        type: integer
+      timezone:
+        type: string
+      # "GMT-4", not "EDT".
+      timezone_abbreviation:
+        type: string
+      elevation:
+        type: number
+      # Absent on the first element of a multi-location answer.
+      location_id:
+        type: integer
+      # Keyed by variable name, and it calls a timestamp format a unit.
+      hourly_units:
+        type: map
+      # Parallel arrays. The nth entry of each belongs together and nothing
+      # says so.
+      hourly:
+        type: map
+
+routes:
+  - method: GET
+    path: /v1/forecast
+    resource: forecast
+    operation: get
+    id_from: query:latitude
+
+  # One comma, and the same path answers with an array instead.
+  - method: GET
+    path: /v1/forecast
+    resource: forecast
+    operation: list
+    matches_query:
+      # Matches when the second coordinate is among the comma-separated
+      # members, which is what a multi-location request looks like.
+      latitude: "49.28"
+
+errors:
+  # The service's own Swift generic type signature, on the public API.
+  invalid_variable:
+    status: 400
+    message: >-
+      Data corrupted at path ''. Cannot initialize
+      SurfacePressureAndHeightVariable<VariableAndPreviousDay,
+      VariableOrSpread<ForecastPressureVariable>, ForecastHeightVariable> from
+      invalid String value not_a_variable.
+
+  # A forgotten parameter, described as two lists disagreeing.
+  missing_coordinate:
+    status: 400
+    message: Parameter 'latitude' and 'longitude' must have the same number of elements
+
+  latitude_out_of_range:
+    status: 400
+    message: "Latitude must be in range of -90 to 90°. Given: 200.0."
+
+fixtures:
+  empty: {}
+
+  # Asked for 43.65, -79.38 with a timezone.
+  toronto:
+    forecast:
+      - id: "43.65"
+        # The model's cell, not the point in the request.
+        latitude: 43.646603
+        longitude: -79.38272
+        generationtime_ms: 0.024437904357910156
+        utc_offset_seconds: -14400
+        timezone: America/Toronto
+        # The offset spelled as a name.
+        timezone_abbreviation: GMT-4
+        elevation: 87.0
+        hourly_units:
+          # A serialisation format, in the units object, for a field with no
+          # unit.
+          time: iso8601
+          temperature_2m: "°C"
+          precipitation: mm
+        hourly:
+          # No offset and no seconds. The same strings appear in the fixture
+          # below meaning four hours earlier.
+          time:
+            - "2026-08-28T00:00"
+            - "2026-08-28T01:00"
+            - "2026-08-28T02:00"
+            - "2026-08-28T03:00"
+          temperature_2m:
+            - 17.5
+            - 16.8
+            - 16.2
+            - 15.9
+          precipitation:
+            - 0.0
+            - 0.0
+            - 0.0
+            - 0.0
+
+  # The same coordinates, no timezone parameter. Identical time strings.
+  utc:
+    forecast:
+      - id: "43.65"
+        # The model's cell, not the point in the request.
+        latitude: 43.646603
+        longitude: -79.38272
+        generationtime_ms: 0.019073486328125
+        utc_offset_seconds: 0
+        timezone: GMT
+        timezone_abbreviation: GMT
+        elevation: 87.0
+        hourly_units:
+          time: iso8601
+          temperature_2m: "°C"
+        hourly:
+          time:
+            - "2026-08-28T00:00"
+            - "2026-08-28T01:00"
+            - "2026-08-28T02:00"
+          # Four degrees warmer at the same wall clock, because it is a
+          # different hour.
+          temperature_2m:
+            - 21.7
+            - 20.3
+            - 19.2
+
+  # Two coordinates, comma-separated.
+  two:
+    forecast:
+      # No location_id at all on the first.
+      - id: "43.65"
+        # The model's cell, not the point in the request.
+        latitude: 43.646603
+        longitude: -79.38272
+        generationtime_ms: 0.032186508178710938
+        utc_offset_seconds: 0
+        timezone: GMT
+        timezone_abbreviation: GMT
+        elevation: 87.0
+        hourly_units:
+          time: iso8601
+          temperature_2m: "°C"
+        hourly:
+          time:
+            - "2026-08-28T00:00"
+            - "2026-08-28T01:00"
+            - "2026-08-28T02:00"
+          temperature_2m:
+            - 21.7
+            - 20.3
+            - 19.2
+
+      - id: "49.28"
+        latitude: 49.268272
+        longitude: -123.11624
+        generationtime_ms: 0.032186508178710938
+        utc_offset_seconds: 0
+        timezone: GMT
+        timezone_abbreviation: GMT
+        elevation: 37.0
+        # 1 on the second, and nothing on the first.
+        location_id: 1
+        hourly_units:
+          time: iso8601
+          temperature_2m: "°C"
+        hourly:
+          time:
+            - "2026-08-28T00:00"
+            - "2026-08-28T01:00"
+            - "2026-08-28T02:00"
+          temperature_2m:
+            - 18.1
+            - 18.6
+            - 18.7
+
+conformance:
+  - name: the coordinates come back moved to the model's cell
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America/Toronto
+    verified: "2026-08-28"
+    fixture: toronto
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America%2FToronto
+    expect:
+      status: 200
+      body:
+        # Asked for 43.65, -79.38. Nothing says the point was substituted.
+        latitude: 43.646603
+        longitude: -79.38272
+        elevation: 87.0
+
+  - name: the hourly data is parallel arrays rather than a list of readings
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America/Toronto
+    verified: "2026-08-28"
+    fixture: toronto
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America%2FToronto
+    expect:
+      status: 200
+      body:
+        # Three arrays whose only relationship is the index. Sort one and the
+        # association is gone, with no error of any kind.
+        "hourly.time[1]": "2026-08-28T01:00"
+        "hourly.temperature_2m[1]": 16.8
+        "hourly.precipitation[1]": 0.0
+        "hourly.temperature_2m[3]": 15.9
+
+  - name: the units are in a different object and one of them is a format
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America/Toronto
+    verified: "2026-08-28"
+    fixture: toronto
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America%2FToronto
+    expect:
+      status: 200
+      body:
+        # A serialisation format described as a unit, for a field that has none.
+        "hourly_units.time": iso8601
+        "hourly_units.temperature_2m": "°C"
+        "hourly_units.precipitation": mm
+
+  - name: the timestamps carry no offset and the offset is somewhere else
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America/Toronto
+    verified: "2026-08-28"
+    fixture: toronto
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation&forecast_days=1&timezone=America%2FToronto
+    expect:
+      status: 200
+      body:
+        # No Z, no +00:00, no seconds. new Date() on this parses as local time
+        # in the reader's own zone, which is a third answer again.
+        "hourly.time[0]": "2026-08-28T00:00"
+        utc_offset_seconds: -14400
+        timezone: America/Toronto
+        # The offset spelled as a name, rather than EDT.
+        timezone_abbreviation: GMT-4
+
+  - name: without a timezone the same string is four hours earlier
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m&forecast_days=1
+    verified: "2026-08-28"
+    fixture: utc
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m&forecast_days=1
+    expect:
+      status: 200
+      body:
+        # The identical string to the case above, and 21.7 rather than 17.5.
+        "hourly.time[0]": "2026-08-28T00:00"
+        "hourly.temperature_2m[0]": 21.7
+        utc_offset_seconds: 0
+        timezone: GMT
+
+  - name: a second coordinate turns the object into an array
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65,49.28&longitude=-79.38,-123.12&hourly=temperature_2m&forecast_days=1
+    verified: "2026-08-28"
+    fixture: two
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65,49.28&longitude=-79.38,-123.12&hourly=temperature_2m&forecast_days=1
+    expect:
+      status: 200
+      body:
+        # One comma, and a client written for the object shape reads
+        # body.hourly off an array and finds undefined.
+        "[0].latitude": 43.646603
+        "[1].latitude": 49.268272
+        "[1].elevation": 37.0
+        "[1].hourly.temperature_2m[0]": 18.1
+
+  - name: and the index is absent on the first element rather than zero
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65,49.28&longitude=-79.38,-123.12&hourly=temperature_2m&forecast_days=1
+    verified: "2026-08-28"
+    fixture: two
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65,49.28&longitude=-79.38,-123.12&hourly=temperature_2m&forecast_days=1
+    expect:
+      status: 200
+      body:
+        # 1 on the second. Anything keying by it loses the first location.
+        "[1].location_id": 1
+      absent:
+        - "[0].location_id"
+        - "[2]"
+
+  - name: a variable that does not exist leaks a Swift generic signature
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=not_a_variable
+    verified: "2026-08-28"
+    fixture: toronto
+    arm: invalid_variable
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=not_a_variable
+    expect:
+      status: 400
+      body:
+        # A boolean that is only ever true, beside the service's internal type
+        # names with their generic parameters.
+        error: true
+      body_matches: 'SurfacePressureAndHeightVariable<VariableAndPreviousDay, VariableOrSpread<ForecastPressureVariable>, ForecastHeightVariable>'
+
+  - name: a forgotten coordinate is reported as two lists disagreeing
+    source: https://api.open-meteo.com/v1/forecast?longitude=-79.38&hourly=temperature_2m
+    verified: "2026-08-28"
+    fixture: toronto
+    arm: missing_coordinate
+    request:
+      method: GET
+      path: /v1/forecast?longitude=-79.38&hourly=temperature_2m
+    expect:
+      # latitude is not there at all. The parameter takes a comma-separated
+      # list, an absent one has zero elements, and so this is how it is put.
+      status: 400
+      body:
+        error: true
+        reason: Parameter 'latitude' and 'longitude' must have the same number of elements
+
+  - name: a latitude out of range reads the value back with a decimal point
+    source: https://api.open-meteo.com/v1/forecast?latitude=200&longitude=-79.38&hourly=temperature_2m
+    verified: "2026-08-28"
+    fixture: toronto
+    arm: latitude_out_of_range
+    request:
+      method: GET
+      path: /v1/forecast?latitude=200&longitude=-79.38&hourly=temperature_2m
+    expect:
+      status: 400
+      body:
+        # Sent 200. Reported as 200.0, because it was parsed as a float first.
+        error: true
+        reason: "Latitude must be in range of -90 to 90°. Given: 200.0."
+
+  - name: a successful response carries no error key at all
+    source: https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m&forecast_days=1
+    verified: "2026-08-28"
+    fixture: utc
+    request:
+      method: GET
+      path: /v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m&forecast_days=1
+    expect:
+      status: 200
+      body:
+        # So `if (body.error)` works and `body.error === false` never happens.
+        generationtime_ms: 0.019073486328125
+      absent:
+        - error
+        - reason
+        - location_id
