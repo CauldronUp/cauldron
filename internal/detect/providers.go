@@ -1410,6 +1410,33 @@ func providers() []provider {
 			npm:    []string{"@shaggytools/nhtsa-api-wrapper"},
 		},
 		{
+			// The obvious name is a placeholder. The npm package called "wikidata"
+			// is two files and its own description reads "this is a placeholder for
+			// an incoming package". Nothing has arrived. That is a kind not seen
+			// before: the name a project would reach for first is reserved and
+			// empty.
+			//
+			// Then the same split as Wikipedia and MusicBrainz, and for the same
+			// reason. wikibase-sdk, wikibase-edit, wikibase-cli, nodemw and
+			// wikidata-entity-lookup all reach w/api.php -- the Action API, which
+			// predates this one. Only @wmde/wikibase-rest-api and
+			// wikibase-rest-api-ts call rest.php/wikibase, and the first of those
+			// is by the team that builds Wikibase.
+			//
+			// Packagist's whole first page is the vendor's own PHP value-object
+			// model: wikibase/data-model, data-values/geo, data-values/number,
+			// serialization/serialization and diff/diff at 1.7 million installs.
+			// They are the types and parsers lifted out of the Wikibase software
+			// and they open no connection at all -- matched on a semantic, at
+			// scale, by the provider itself.
+			//
+			// And three more that ship the data rather than fetch it: wikidata-lang
+			// and wikidata-person-names are datasets built from SPARQL, and
+			// wikidata-filter processes the newline-delimited dump.
+			recipe: "wikidata",
+			npm:    []string{"@wmde/wikibase-rest-api", "wikibase-rest-api-ts"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
