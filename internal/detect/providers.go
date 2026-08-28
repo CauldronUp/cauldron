@@ -1207,6 +1207,30 @@ func providers() []provider {
 			gomod:  []string{"github.com/hermanschaaf/hackernews"},
 		},
 		{
+			// pokeapi-sprites is the offline-data kind at its largest: 4237 files,
+			// every sprite shipped as an asset, and the only pokeapi.co URLs in it
+			// are in the README. It is the same reading as @renovatebot/osv-offline
+			// -- the data as a package, so there is no request to redirect -- and
+			// it lands doubly here, because the sprite URLs this API returns point
+			// at raw.githubusercontent.com and were never on pokeapi.co either.
+			//
+			// Matched on a semantic, the eighth: pokeapi-types and
+			// @bgoff1/pokeapi-types are four files each, declaring the shapes this
+			// Recipe serves, with the API's address appearing only in a comment.
+			//
+			// @professorragna/pokeapi-cli is mapped and is worth naming: its own
+			// description is "CLI for the PokeAPI (pokemon and pokemon-species
+			// endpoints)", which is exactly the two this Recipe models.
+			recipe:   "pokeapi",
+			composer: []string{"danrovito/pokephp", "lmerotta/phpokeapi"},
+			npm: []string{
+				"pokeapi-js-wrapper",
+				"pokeapi-typescript",
+				"@professorragna/pokeapi-cli",
+			},
+			gomod: []string{"github.com/mtslzr/pokeapi-go"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

@@ -3884,3 +3884,48 @@ func TestDetectHackerNewsClientsAndNotAlgoliasAPI(t *testing.T) {
 		}
 	}
 }
+
+// pokeapi-sprites is the offline-data kind at its largest: 4237 files, every
+// sprite shipped as an asset, and the only pokeapi.co URLs in it are in the
+// README. It lands doubly here, because the sprite URLs this API returns point
+// at raw.githubusercontent.com and were never on pokeapi.co either.
+//
+// Matched on a semantic, the eighth: pokeapi-types is four files declaring the
+// shapes this Recipe serves, with the API's address only in a comment.
+func TestDetectPokeAPIClientsAndNotTheSpriteBundle(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"danrovito/pokephp": "^2.0"}}`},
+		{"package.json": `{"dependencies": {"pokeapi-js-wrapper": "^1.2.5"}}`},
+		// "CLI for the PokeAPI (pokemon and pokemon-species endpoints)".
+		{"package.json": `{"dependencies": {"@professorragna/pokeapi-cli": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/mtslzr/pokeapi-go v1.6.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "pokeapi") {
+			t.Errorf("%v did not detect pokeapi: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The data as a package: 4237 files and no request to redirect.
+		{"package.json": `{"dependencies": {"pokeapi-sprites": "^1.0.0"}}`},
+		// Four files of type declarations.
+		{"package.json": `{"devDependencies": {"pokeapi-types": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@bgoff1/pokeapi-types": "^1.0.0"}}`},
+		// Agent tooling.
+		{"package.json": `{"devDependencies": {"pokeapi-mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "pokeapi") {
+			t.Errorf("%v offered the pokeapi Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
