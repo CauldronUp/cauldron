@@ -1157,6 +1157,31 @@ func providers() []provider {
 			gomod: []string{"github.com/exlibris-fed/openlibrary-go"},
 		},
 		{
+			// Two APIs on one host, and almost everything uses the other one.
+			// MediaWiki's Action API lives at /w/api.php and predates the REST API
+			// this Recipe describes by a decade, so node-wikifetch,
+			// symfony/ai-wikipedia-tool and sophivorus/easy-wiki all reach
+			// wikipedia.org and none of them reach anything served here. That is
+			// the vendor's-other-product kind, except the other product is the
+			// vendor's older API and it is still the popular one.
+			//
+			// wikifox is the nearest miss of all: it does call /api/rest_v1/, at
+			// page/pdf/{title}, which answers a PDF. The right host, the right API
+			// family, and a response an emulator of this endpoint cannot give.
+			//
+			// webignition/internet-media-type matched because its description
+			// cites an en.wikipedia.org URL as the definition of the thing it
+			// models -- matched on a link rather than on a dependency, which is
+			// new. wikimedia/wikipedia-preview is the vendor's own embeddable
+			// widget. And "wikipedia api" on npm returns color-name.
+			//
+			// Mapped: the two that name /api/rest_v1/ outright. Nothing on
+			// Packagist or in Go modules does, which is why the coverage table
+			// counts this Recipe as reachable from npm alone.
+			recipe: "wikipedia",
+			npm:    []string{"wikipedia", "wikipedia-summary"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
