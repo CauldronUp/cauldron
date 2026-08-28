@@ -1,0 +1,423 @@
+# Open Library Recipe for Cauldron
+#
+# The answer is keyed by the string you sent, and a miss is that key's absence.
+#
+#   GET /api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+#   ->  200  {"ISBN:0451526538": { ... }}
+#
+#   GET /api/books?bibkeys=ISBN:0000000000404&format=json&jscmd=data
+#   ->  200  {}
+#
+# So reading the answer means rebuilding the query string you just sent --
+# prefix, colon and all -- to index your own response. And a lookup that matched
+# nothing is an empty object with a 200, not a null under that key and not a
+# 404, so the difference between found and not found is whether a key you
+# constructed yourself is there. Code doing data["ISBN:" + isbn].title throws
+# TypeError on the miss and says nothing about why.
+#
+# **And the same field name carries a reference on one endpoint and a resolved
+# object on the other.** The canonical document answers
+#
+#   "authors": [{"key": "/authors/OL18319A"}]
+#
+# and the api/books endpoint, for the same book, answers
+#
+#   "authors": [{"url": "http://openlibrary.org/authors/OL18319A/Mark_Twain",
+#                "name": "Mark Twain"}]
+#
+# One is a pointer that costs another request; the other is the answer. Nothing
+# in either says which you are holding except the shape.
+#
+# Written against the live API rather than a document: every case below was
+# checked against openlibrary.org on the date in its verified field.
+#
+# Six more the Recipe pins:
+#
+#   1. /isbn/{isbn}.json answers a 302 when it finds the book and a 404 when it
+#      does not, so the redirect is the happy path. A client that does not
+#      follow redirects gets an empty body and a status it probably treats as
+#      an error, on success.
+#   2. And that 404 is a full HTML page -- <!DOCTYPE html>, a stylesheet, a
+#      navigation bar -- served as text/html from a path ending in .json. A
+#      client calling .json() on it throws a parse error rather than reading a
+#      status.
+#   3. Timestamps are typed objects rather than strings:
+#      {"type": "/type/datetime", "value": "2008-04-01T03:28:50.625462"}. The
+#      type is a path, the value has microseconds and no timezone at all, and
+#      code reading record.created gets an object.
+#   4. Two schemes in one document. url and authors[].url are http://, while
+#      subjects[].url and every cover URL are https://. The record links are
+#      the insecure ones.
+#   5. Every identifier is an array, including the ones that cannot repeat:
+#      "openlibrary": ["OL1017798M"], "isbn_10": ["0451526538"],
+#      "lccn": ["96072233"].
+#   6. type is a reference too -- {"key": "/type/edition"} -- and revision and
+#      latest_revision are two fields carrying one number.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The catalogue is served rather than searched. bibkeys takes a
+#     comma-separated list of keys in several prefixes (ISBN, LCCN, OCLC,
+#     OLID); this Recipe declares one of them as the collection key, because
+#     the key is the caller's own string and a route can name one value of it
+#     -- the same reading recorded for Open-Meteo's second coordinate.
+#   - The /isbn redirect and its 404 are served for one ISBN each rather than
+#     as a rule, because a rule about the shape of a path is not something a
+#     route can express here -- the same reading recorded for the Go module
+#     proxy's escaping.
+#   - jscmd=data is served. jscmd=viewapi and jscmd=details answer different
+#     documents from the same path, and the /works, /authors and /search
+#     endpoints are not modelled.
+#
+# The books below are public and were recorded on the date in the cases.
+
+recipe: openlibrary
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: openlibrary
+  docs: https://openlibrary.org/developers/api
+
+auth:
+  # Public, and no key at all.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    # Neither failure here is JSON: one is a redirect with no body and the
+    # other is a web page.
+    style: text
+
+resources:
+  # What /api/books answers with, under a key the caller built.
+  bibentry:
+    id:
+      style: opaque
+      # The book's own key is inside, as a path with a leading slash.
+      field: "-"
+      carried_by: key
+    fields:
+      # http://, where the subject links below are https://.
+      url:
+        type: string
+      key:
+        type: string
+      title:
+        type: string
+      # Resolved here. A reference on the canonical document.
+      authors:
+        type: list
+      number_of_pages:
+        type: integer
+      pagination:
+        type: string
+      by_statement:
+        type: string
+      # Every value an array, including the ones that cannot repeat.
+      identifiers:
+        type: map
+      publishers:
+        type: list
+      publish_date:
+        type: string
+      subjects:
+        type: list
+      cover:
+        type: map
+
+  # The canonical document, and a different shape for the same book.
+  edition:
+    id:
+      style: opaque
+      field: "-"
+      carried_by: key
+    fields:
+      key:
+        type: string
+      title:
+        type: string
+      # References. [{key: /authors/OL18319A}] and no name anywhere.
+      authors:
+        type: list
+      works:
+        type: list
+      # A reference as well: {key: /type/edition}.
+      type:
+        type: map
+      isbn_10:
+        type: list
+      number_of_pages:
+        type: integer
+      publish_date:
+        type: string
+      # Two fields, one number.
+      revision:
+        type: integer
+      latest_revision:
+        type: integer
+      # Typed objects, with microseconds and no timezone.
+      created:
+        type: map
+      last_modified:
+        type: map
+
+routes:
+  - method: GET
+    path: /api/books
+    resource: bibentry
+    operation: list
+    list:
+      style: wrapped
+      # The caller's own query string, prefix and colon included.
+      key: "ISBN:0451526538"
+      # One book comes back as the object rather than as a list of one.
+      collapse_single: true
+      # And no book comes back as {} rather than as an empty list.
+      omit_when_empty: true
+
+  - method: GET
+    path: /books/{id}.json
+    resource: edition
+    operation: get
+    not_found: page_missing
+
+  # The happy path is a redirect.
+  - method: GET
+    path: /isbn/0451526538.json
+    error: isbn_found
+
+  # And the unhappy one is a web page.
+  - method: GET
+    path: /isbn/0000000000404.json
+    error: page_missing
+
+errors:
+  # A 302 with no body, in answer to a successful lookup.
+  isbn_found:
+    status: 302
+    headers:
+      Location: https://openlibrary.org/books/OL1017798M.json
+    message: ""
+
+  # A full HTML page, from a path ending in .json.
+  page_missing:
+    status: 404
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: |-
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="utf-8">
+          <meta name="format-detection" content="telephone=no">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <meta name="theme-color" content="#e2dcc5">
+      </head>
+      </html>
+
+fixtures:
+  empty: {}
+
+  tomsawyer:
+    bibentry:
+      - id: "/books/OL1017798M"
+        # http://, on the API's own canonical link, served over https.
+        url: http://openlibrary.org/books/OL1017798M/The_adventures_of_Tom_Sawyer
+        key: /books/OL1017798M
+        title: The adventures of Tom Sawyer
+        # Resolved: a name and a URL. The canonical document below has a
+        # reference under the same key.
+        authors:
+          - url: http://openlibrary.org/authors/OL18319A/Mark_Twain
+            name: Mark Twain
+        number_of_pages: 216
+        pagination: "xxi, 216 p. ;"
+        by_statement: Mark Twain ; with an introduction by Robert S. Tilton.
+        identifiers:
+          # Arrays, all of them, including the ones that cannot repeat.
+          librarything:
+            - "2236"
+          project_gutenberg:
+            - "74"
+          goodreads:
+            - "1929684"
+          isbn_10:
+            - "0451526538"
+          lccn:
+            - "96072233"
+          oclc:
+            - "36792831"
+          openlibrary:
+            - OL1017798M
+        publishers:
+          - name: Signet Classic
+        publish_date: "1997"
+        subjects:
+          # https://, in the same document as the http:// above.
+          - name: The Adventures of Tom Sawyer
+            url: https://openlibrary.org/subjects/the_adventures_of_tom_sawyer
+          - name: Mark Twain
+            url: https://openlibrary.org/subjects/mark_twain
+        cover:
+          small: https://covers.openlibrary.org/b/id/11403183-S.jpg
+          medium: https://covers.openlibrary.org/b/id/11403183-M.jpg
+          large: https://covers.openlibrary.org/b/id/11403183-L.jpg
+
+    edition:
+      - id: OL1017798M
+        key: /books/OL1017798M
+        title: The adventures of Tom Sawyer
+        # A pointer, and no name anywhere in the document.
+        authors:
+          - key: /authors/OL18319A
+        works:
+          - key: /works/OL53919W
+        type:
+          key: /type/edition
+        isbn_10:
+          - "0451526538"
+        number_of_pages: 216
+        publish_date: "1997"
+        # Two fields carrying one number.
+        revision: 14
+        latest_revision: 14
+        created:
+          type: /type/datetime
+          # Microseconds, and no timezone at all.
+          value: "2008-04-01T03:28:50.625462"
+        last_modified:
+          type: /type/datetime
+          value: "2021-10-08T20:02:44.638815"
+
+conformance:
+  - name: the answer is keyed by the string you sent
+    source: https://openlibrary.org/api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    expect:
+      status: 200
+      body:
+        # Reading the answer means rebuilding the query string, prefix and
+        # colon included, to index your own response.
+        "ISBN:0451526538.key": /books/OL1017798M
+        "ISBN:0451526538.title": The adventures of Tom Sawyer
+        "ISBN:0451526538.number_of_pages": 216
+
+  - name: and a lookup that matched nothing is an empty object with a 200
+    source: https://openlibrary.org/api/books?bibkeys=ISBN:0000000000404&format=json&jscmd=data
+    verified: "2026-08-28"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/books?bibkeys=ISBN:0000000000404&format=json&jscmd=data
+    expect:
+      # Not a null under the key, and not a 404. The difference between found
+      # and not found is whether a key you built yourself is there.
+      status: 200
+      absent:
+        - "ISBN:0451526538"
+        - "ISBN:0000000000404"
+
+  - name: authors is resolved on one endpoint and a reference on the other
+    source: https://openlibrary.org/books/OL1017798M.json
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /books/OL1017798M.json
+    expect:
+      status: 200
+      body:
+        # A pointer that costs another request, under the same key that
+        # carries a name and a URL on /api/books.
+        "authors[0].key": /authors/OL18319A
+        "works[0].key": /works/OL53919W
+        "type.key": /type/edition
+      absent:
+        - authors[0].name
+        - authors[0].url
+
+  - name: the timestamps are typed objects with no timezone
+    source: https://openlibrary.org/books/OL1017798M.json
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /books/OL1017798M.json
+    expect:
+      status: 200
+      body:
+        # record.created is an object. The type is a path, and the value has
+        # microseconds and no offset.
+        "created.type": /type/datetime
+        "created.value": "2008-04-01T03:28:50.625462"
+        "last_modified.value": "2021-10-08T20:02:44.638815"
+        # Two fields, one number.
+        revision: 14
+        latest_revision: 14
+
+  - name: two schemes in one document
+    source: https://openlibrary.org/api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    expect:
+      status: 200
+      body:
+        # The record links are the insecure ones, on an API served over TLS.
+        "ISBN:0451526538.url": http://openlibrary.org/books/OL1017798M/The_adventures_of_Tom_Sawyer
+        "ISBN:0451526538.authors[0].url": http://openlibrary.org/authors/OL18319A/Mark_Twain
+        "ISBN:0451526538.subjects[0].url": https://openlibrary.org/subjects/the_adventures_of_tom_sawyer
+        "ISBN:0451526538.cover.small": https://covers.openlibrary.org/b/id/11403183-S.jpg
+
+  - name: every identifier is an array, including the ones that cannot repeat
+    source: https://openlibrary.org/api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /api/books?bibkeys=ISBN:0451526538&format=json&jscmd=data
+    expect:
+      status: 200
+      body:
+        # A book has one Open Library identifier and it arrives in a list.
+        "ISBN:0451526538.identifiers.openlibrary[0]": OL1017798M
+        "ISBN:0451526538.identifiers.isbn_10[0]": "0451526538"
+        "ISBN:0451526538.identifiers.lccn[0]": "96072233"
+
+  - name: an ISBN that exists answers with a redirect
+    source: https://openlibrary.org/isbn/0451526538.json
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /isbn/0451526538.json
+    expect:
+      # The happy path. A client that does not follow redirects gets an empty
+      # body and a status it probably treats as an error.
+      status: 302
+      headers:
+        Location: https://openlibrary.org/books/OL1017798M.json
+
+  - name: and an ISBN that does not is a web page from a .json path
+    source: https://openlibrary.org/isbn/0000000000404.json
+    verified: "2026-08-28"
+    fixture: tomsawyer
+    request:
+      method: GET
+      path: /isbn/0000000000404.json
+    expect:
+      # text/html, from a path ending in .json, so .json() throws a parse
+      # error rather than reading a status.
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: '^<!DOCTYPE html>'

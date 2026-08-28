@@ -3744,3 +3744,49 @@ func TestDetectNominatimClientsAndNotTheSoftwareOrItsHosts(t *testing.T) {
 		}
 	}
 }
+
+// The name is the two commonest words in a package description. Searching "open
+// library" on Packagist returns PHPWord, openspout, bootstrap-icons, geophp,
+// casbin and nelexa/zip -- eight libraries that are open source and none about
+// this provider.
+//
+// openlibrary-scraper does reach openlibrary.org, at /isbn/ and /search, and
+// parses what comes back with cheerio: the HTML site rather than the API.
+func TestDetectOpenLibraryClientsAndNotEveryOpenLibrary(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"beezus/openlibrary-php": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"open-library-client": "^1.0.0"}}`},
+		// Builds openlibrary.org${authorRef.key}.json to resolve an author.
+		{"package.json": `{"dependencies": {"alexandria-worker": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/exlibris-fed/openlibrary-go v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openlibrary") {
+			t.Errorf("%v did not detect openlibrary: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The same host, parsed with cheerio: the site, not the API.
+		{"package.json": `{"dependencies": {"openlibrary-scraper": "^1.0.0"}}`},
+		// What "open library" returns on Packagist.
+		{"composer.json": `{"require": {"phpoffice/phpword": "^1.0"}}`},
+		{"composer.json": `{"require": {"openspout/openspout": "^4.0"}}`},
+		{"composer.json": `{"require": {"twbs/bootstrap-icons": "^1.0"}}`},
+		// Agent tooling, three of them for this provider alone.
+		{"package.json": `{"devDependencies": {"@cyanheads/openlibrary-mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openlibrary") {
+			t.Errorf("%v offered the openlibrary Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
