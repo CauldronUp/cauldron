@@ -55,7 +55,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 | Area | State |
 |---|---|
-| Detection engine (Composer, npm, Go modules) | Working. 218 of 242 Recipes are reachable from a dependency |
+| Detection engine (Composer, npm, Go modules) | Working. 219 of 243 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe. Of the 102 Recipes that emit events, 44 declare one and 58 fall back to a default modelled on Stripe's and not equal to it -- Stripe's own Recipe now declares the fuller real thing -- so the fallback is a convention rather than a claim about any provider |
@@ -65,11 +65,11 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 2528 cases, 213 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 2537 cases, 222 of them checked against a live API |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 242: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter |
+| Recipes shipped | 243: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter, Nominatim |
 
 ## Try it
 
@@ -319,12 +319,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 2528 cases, 213 run against
+That second line is the honest one. Of every Recipe: 2537 cases, 222 run against
 a live account and 2315 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-The two hundred and thirteen are the cases whose provider can be asked without a key. Six are
+The two hundred and twenty-two are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -750,6 +750,29 @@ answers `{"status": 404, "message": "not found"}` -- the same words with a statu
 added, so code branching on `body.status` finds a number when it mistyped the
 URL and undefined when it mistyped the currency.
 
+Nine are Nominatim's, where nothing found is an empty array on one path and an
+error object on the other, and both are 200. `GET /search?q=...` with no matches
+answers `[]`; `GET /reverse?lat=0&lon=0` with no match answers
+`{"error": "Unable to geocode"}`. Same service, same `format=jsonv2`, same
+status, and the reverse one is the expensive shape: an object with an error key
+where an object of results should be, so `response.lat` is undefined and
+`response.ok` is true. **And search answers with an array while reverse answers
+with a bare object** -- not an array of one, an object -- so the two endpoints of
+one geocoder cannot share a parser.
+
+The rest is what OpenStreetMap's data model does to a JSON API. `lat` and `lon`
+are **strings**, so arithmetic concatenates and comparison sorts lexically.
+`boundingbox` is four strings in the order south, north, west, east -- neither
+GeoJSON's `[west, south, east, north]` nor a pair of coordinates in sequence.
+The keys of `address` depend on the place, and one of them carries an
+administrative level inside its own name: `ISO3166-2-lvl4`, where the 4 is the
+depth at which that country keeps its subdivisions and is 3 or 6 elsewhere.
+`importance` arrives in scientific notation. `place_id` is local to the
+installation and changes when the database is rebuilt, so the stable identity is
+`osm_type` and `osm_id`, two fields. And a request without a `User-Agent` is
+refused in **plain text** -- 403 and one line pointing at the usage policy --
+from an endpoint that was asked for JSON.
+
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
 
@@ -908,7 +931,7 @@ These are the decisions the project intends to be held to.
 
 A project can also say so itself. `cauldron add mercury` writes a `cauldron.yaml` listing the providers it talks to, which is how a project reaches a Recipe no dependency maps to, or one it talks to over raw HTTP with no library at all. The first `add` copies whatever detection already found into the file, so starting one loses nothing, and from then on the file is the answer rather than the guess.
 
-The table reaches 218 of the 242 Recipes. The other 24 ship and can be named
+The table reaches 219 of the 243 Recipes. The other 24 ship and can be named
 directly. Every one of them was looked for: some publish no client at all,
 and some publish a package whose name matches the provider and whose contents
 do not -- `basecamp` on npm is a set of Astro components for somebody's scout

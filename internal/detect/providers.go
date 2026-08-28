@@ -1098,6 +1098,35 @@ func providers() []provider {
 			},
 		},
 		{
+			// Nominatim is software as well as a service, so the neighbourhood has
+			// three kinds of thing that are not clients of the public instance.
+			// @mailwoman/nominatim is "a Nominatim-compatible HTTP geocoding API"
+			// -- it serves /search and /reverse and its tarball holds no
+			// nominatim.openstreetmap.org at all, which is the product rather than
+			// a client of it, where gosub-goproxy and unleash-server went.
+			//
+			// geo-golang/mapquest/nominatim is the same software hosted by
+			// MapQuest, behind open.mapquestapi.com and an API key -- so neither
+			// the missing-User-Agent 403 nor the no-credential reading this Recipe
+			// is built on applies there. A third party running the vendor's
+			// software is a new kind, and it is not the vendor.
+			//
+			// codemacher/tile_proxy is the same project's other service: raster
+			// tiles from tile.openstreetmap.org, images rather than JSON, which is
+			// the vendor's-other-product kind again.
+			//
+			// Mapped: geocoder-php/nominatim-provider, at 4.9 million installs the
+			// most used client of this API anywhere, and the rest that name the
+			// public host outright.
+			recipe: "nominatim",
+			composer: []string{
+				"geocoder-php/nominatim-provider",
+				"maxh/php-nominatim",
+			},
+			npm:   []string{"nominatim-client", "nominatim-ts"},
+			gomod: []string{"github.com/doppiogancio/go-nominatim"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
