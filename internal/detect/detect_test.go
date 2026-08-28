@@ -3604,3 +3604,51 @@ func TestDetectOpenMeteoJSONClientsAndNotTheVendorsOwnSDK(t *testing.T) {
 		}
 	}
 }
+
+// One host, three URL families, and only one of them is this API.
+// dat-usgs-earthquakes reads the pre-baked summary feeds under
+// /earthquakes/feed/v1.0/, which take no query parameters and therefore always
+// carry metadata.count -- the behaviour this Recipe leads with cannot happen
+// there. usgs-earthquake-reports parses the pages under /earthquakes/.
+//
+// And four npm packages share one description under unrelated names, one of
+// them a commercial device-detection product's. A package whose name,
+// description and code refer to three different things is not evidence that a
+// project meant to reach this provider.
+func TestDetectUSGSEventClientsAndNotTheSummaryFeeds(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"okierazorback/usgs": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"usgs-earthquake-api": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/jasonmoo/usgs v0.0.0-20180101000000-abcdefabcdef\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "usgs") {
+			t.Errorf("%v did not detect usgs: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The pre-baked summary feeds, which take no query parameters.
+		{"package.json": `{"dependencies": {"dat-usgs-earthquakes": "^1.0.0"}}`},
+		// The pages under /earthquakes/, parsed.
+		{"package.json": `{"dependencies": {"usgs-earthquake-reports": "^1.0.0"}}`},
+		// Agent tooling, for the fourth Recipe running from one publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-usgs-earthquakes": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"usgs-quakes-mcp": "^1.0.0"}}`},
+		// Name, description and code referring to three different things.
+		{"package.json": `{"dependencies": {"deviceatlas-clientside": "^5.81.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "usgs") {
+			t.Errorf("%v offered the usgs Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
