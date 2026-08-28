@@ -1040,6 +1040,33 @@ func providers() []provider {
 			},
 		},
 		{
+			// The same host serves three URL families and only one of them is this
+			// API. dat-usgs-earthquakes reads
+			// /earthquakes/feed/v1.0/summary/all_hour.geojson, the pre-baked
+			// summary feeds: identical GeoJSON, no query parameters, and because
+			// there is no limit to send they always carry metadata.count -- so the
+			// behaviour this Recipe leads with cannot happen there at all.
+			// usgs-earthquake-reports parses the pages under /earthquakes/.
+			// Neither is mapped.
+			//
+			// Five MCP servers carry the name, the most for any Recipe here, and
+			// one is @pipeworx/mcp-usgs-earthquakes -- the fourth Recipe running
+			// for that publisher after goproxy, deps.dev and Open-Meteo.
+			//
+			// And a shape worth recording rather than mapping: four npm packages
+			// carry the identical description "weather and gis aggregation library
+			// with a simple API" under unrelated names, one of them the name of a
+			// commercial device-detection product. That one does call this API,
+			// from a file called quakes.js, beside an install-time script. A
+			// package whose name, description and code refer to three different
+			// things is not evidence that a project meant to reach this provider,
+			// which is what detection is for, so none of the four is mapped.
+			recipe:   "usgs",
+			composer: []string{"okierazorback/usgs"},
+			npm:      []string{"usgs-earthquake-api"},
+			gomod:    []string{"github.com/jasonmoo/usgs"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
