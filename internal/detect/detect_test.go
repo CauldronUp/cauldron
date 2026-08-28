@@ -4146,3 +4146,46 @@ func TestDetectTVmazePublicClientsAndNotTheUserAPI(t *testing.T) {
 		}
 	}
 }
+
+// Matched on a semantic, the ninth, and the first time it is the entire
+// neighbourhood rather than one package in it. The sun's position is a
+// closed-form calculation, so almost everything that answers this search
+// computes the answer instead of asking for it -- suncalc on npm, suncalc-php on
+// Packagist, go-sunrise in Go -- and both Go packages named exactly after the
+// provider compute rather than fetch. There is no Go or PHP client of this API
+// anywhere.
+func TestDetectSunriseSunsetClientsAndNotTheCalculators(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"sunrise-sunset-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"n8n-nodes-sunrise-sunset": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "sunrisesunset") {
+			t.Errorf("%v did not detect sunrisesunset: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Trigonometry, all of it.
+		{"package.json": `{"dependencies": {"suncalc": "^1.9.0"}}`},
+		{"package.json": `{"dependencies": {"sunrise-sunset-js": "^2.2.1"}}`},
+		{"composer.json": `{"require": {"tuxonice/suncalc-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"martindilling/sunny": "^1.0"}}`},
+		// Both Go packages named after the provider compute rather than fetch.
+		{"go.mod": "module example.com/app\n\nrequire github.com/kelvins/sunrisesunset v1.0.0\n"},
+		{"go.mod": "module example.com/app\n\nrequire github.com/nathan-osman/go-sunrise v1.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "sunrisesunset") {
+			t.Errorf("%v offered the sunrisesunset Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
