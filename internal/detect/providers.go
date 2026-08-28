@@ -1288,6 +1288,33 @@ func providers() []provider {
 			gomod: []string{"github.com/openfoodfacts/openfoodfacts-go"},
 		},
 		{
+			// "Cross-reference" is a technical term in four unrelated fields, and
+			// the search returns all of them. ttree/crossreference and
+			// carbon/crossreference manage cross-references between content nodes
+			// in Neos; weaviate's crossref package is a reference between objects
+			// in a vector database; @paperist/remark-crossref does pandoc-style
+			// cross-references in Markdown; and only this provider means the
+			// bibliographic one. That is the ordinary-word collision with four
+			// distinct technical senses rather than one word doing double duty.
+			//
+			// bsobbe/ithenticate is the neighbouring service: iThenticate is what
+			// Crossref's Similarity Check runs on, so a project can be reaching
+			// the one because of the other and still never call this API.
+			//
+			// Five MCP servers carry the name.
+			recipe:   "crossref",
+			composer: []string{"renanbr/crossref-client"},
+			npm: []string{
+				"crossref",
+				"crossref-cli",
+				"@jamesgopsill/crossref-client",
+			},
+			gomod: []string{
+				"github.com/caltechlibrary/crossrefapi",
+				"github.com/cgxeiji/crossref",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

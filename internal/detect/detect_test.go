@@ -4019,3 +4019,50 @@ func TestDetectOpenFoodFactsClientsAndNotTheAgentTooling(t *testing.T) {
 		}
 	}
 }
+
+// "Cross-reference" is a technical term in four unrelated fields and the search
+// returns all of them: content nodes in Neos, objects in a vector database,
+// pandoc-style references in Markdown, and only this provider means the
+// bibliographic one.
+//
+// bsobbe/ithenticate is the neighbouring service: iThenticate is what Crossref's
+// Similarity Check runs on, so a project can be reaching the one because of the
+// other and still never call this API.
+func TestDetectCrossrefClientsAndNotEveryCrossReference(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"renanbr/crossref-client": "^0.3"}}`},
+		{"package.json": `{"dependencies": {"crossref": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"crossref-cli": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/caltechlibrary/crossrefapi v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "crossref") {
+			t.Errorf("%v did not detect crossref: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Cross-references between content nodes in a CMS.
+		{"composer.json": `{"require": {"ttree/crossreference": "^1.0"}}`},
+		{"composer.json": `{"require": {"carbon/crossreference": "^1.0"}}`},
+		// Cross-references between objects in a vector database.
+		{"go.mod": "module example.com/app\n\nrequire github.com/weaviate/weaviate-go-client/v4 v4.15.1\n"},
+		// Pandoc-style cross-references in Markdown.
+		{"package.json": `{"dependencies": {"@paperist/remark-crossref": "^1.0.0"}}`},
+		// The neighbouring service, which this provider's Similarity Check runs on.
+		{"composer.json": `{"require": {"bsobbe/ithenticate": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "crossref") {
+			t.Errorf("%v offered the crossref Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
