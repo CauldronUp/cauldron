@@ -4189,3 +4189,43 @@ func TestDetectSunriseSunsetClientsAndNotTheCalculators(t *testing.T) {
 		}
 	}
 }
+
+// A VIN is defined by ISO 3779 and its structure can be read without asking
+// anybody, so most of this neighbourhood decodes locally: sunrise/vin says
+// "based on ISO-3779" in its own description, and @cardog/corgi sells itself on
+// "fast, offline VIN decoding" and holds no nhtsa.dot.gov at all.
+//
+// And "decoder" is a word: the same search returns opus-decoder,
+// mpg123-decoder and text-decoder, none of them about vehicles.
+func TestDetectNHTSAClientsAndNotTheOfflineDecoders(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@shaggytools/nhtsa-api-wrapper": "^3.0.4"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "nhtsa") {
+		t.Errorf("the wrapper did not detect nhtsa: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// Offline by design, and by advertisement.
+		{"package.json": `{"dependencies": {"@cardog/corgi": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"universal-vin-decoder": "^1.0.0"}}`},
+		// The standard, implemented locally, at 152,000 installs.
+		{"composer.json": `{"require": {"sunrise/vin": "^2.0"}}`},
+		// What the word "decoder" returns on its own.
+		{"package.json": `{"dependencies": {"opus-decoder": "^0.7.0"}}`},
+		{"package.json": `{"dependencies": {"text-decoder": "^1.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "nhtsa") {
+			t.Errorf("%v offered the nhtsa Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
