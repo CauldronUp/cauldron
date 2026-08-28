@@ -3652,3 +3652,51 @@ func TestDetectUSGSEventClientsAndNotTheSummaryFeeds(t *testing.T) {
 		}
 	}
 }
+
+// frankfurter-api-status-client is named after the provider and calls
+// frankfurter.instatus.com, a hosted status-page vendor rather than the
+// provider's host: not the vendor's other product, but somebody else's product
+// about the vendor.
+//
+// On Packagist the word is a place and a surname. The service is named after
+// the city, so chuckcms-template-frankfurt is a CMS theme, and
+// frankforte/quantumphp is a JavaScript console logger under a vendor namespace
+// that merely begins the same way.
+func TestDetectFrankfurterClientsAndNotItsStatusPage(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"investbrainapp/frankfurter-client": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"frankfurter-js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"frankfurter-api-client": "^1.0.0"}}`},
+		// Defaults to a /v2 that does not exist, and takes a base URL.
+		{"go.mod": "module example.com/app\n\nrequire github.com/tdrn-org/go-finance v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "frankfurter") {
+			t.Errorf("%v did not detect frankfurter: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Somebody else's product about the vendor.
+		{"package.json": `{"dependencies": {"frankfurter-api-status-client": "^1.0.0"}}`},
+		// The city.
+		{"composer.json": `{"require": {"chuckbe/chuckcms-template-frankfurt": "^1.0"}}`},
+		// A vendor namespace that merely begins the same way.
+		{"composer.json": `{"require": {"frankforte/quantumphp": "^2.0"}}`},
+		// Agent tooling, for the fifth Recipe running from one publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-frankfurter": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "frankfurter") {
+			t.Errorf("%v offered the frankfurter Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

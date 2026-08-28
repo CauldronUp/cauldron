@@ -1,0 +1,375 @@
+# Frankfurter Recipe for Cauldron
+#
+# Ask for a Sunday and you get Friday, with a 200 and no word about it.
+#
+#   GET /v1/2026-08-23?base=USD   ->  200  {"date": "2026-08-21", ...}
+#
+# The European Central Bank publishes a reference rate on working days, so a
+# weekend or a holiday has none, and this service answers with the most recent
+# one instead. The only thing in the response that says the date moved is the
+# date field itself -- which a client that already knows what it asked for has
+# no reason to read. So a two-day-old rate arrives labelled as the rate for the
+# day you wanted, and everything downstream is off by however long the market
+# was shut. Over Easter that is four days.
+#
+# **And the base is never among the rates.** Ask with base=USD and rates holds
+# EUR, GBP and JPY and no USD at all, so rates[base] is undefined and a loop
+# over rates converting each currency silently skips the identity. Naming it
+# explicitly does not help: symbols=USD,EUR answers with EUR alone. The
+# currency you asked for is removed from your own list without a word.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.frankfurter.dev on the date in its verified field.
+#
+# Five more the Recipe pins:
+#
+#   1. A range changes the shape of the answer under the same key names. A
+#      single date carries date and rates: {"EUR": 0.85874}. A range carries
+#      start_date, end_date and rates: {"2026-08-20": {"EUR": 0.85609}} -- one
+#      level deeper, same key, so rates.EUR works on one and is undefined on
+#      the other.
+#   2. The range you get back is the range that has data. Asking
+#      2026-08-24..2026-12-31 answers end_date 2026-08-27, silently clamped to
+#      the last published day, so a client comparing what it asked for with
+#      what it got has to know to look.
+#   3. And the days between are simply absent. 2026-08-20..2026-08-24 answers
+#      with three keys -- the 20th, the 21st and the 24th -- because the
+#      weekend has no fixing. Iterating the range and indexing rates[date]
+#      finds nothing on two days in seven, and more around a holiday.
+#   4. A currency that does not exist and a date before the series began are
+#      the same answer: 404 with {"message": "not found"}. The message names
+#      neither the currency nor the date, so the two mistakes are
+#      indistinguishable from the response.
+#   5. amount is 1.0, a float, and it is a multiplier rather than part of the
+#      rate. It is 1.0 unless the request said otherwise, which means it is
+#      1.0 in almost every response and easy to read as a rate.
+#   6. The same words come back in two envelopes. A path that does not exist
+#      answers {"status": 404, "message": "not found"}; a currency that does
+#      not exist answers {"message": "not found"} and nothing else. So code
+#      branching on body.status finds a number when it mistyped the URL --
+#      the one mistake it can see in its own source -- and undefined when it
+#      mistyped the currency, which is the one it cannot.
+#
+# One more that is not a trap but is worth writing down: latest is not today.
+# It is the most recent reference date, so on a working morning before the
+# ECB publishes it is yesterday, and on a Sunday it is Friday.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The rates are served rather than computed. A real request converts from
+#     the ECB's euro-denominated series into whatever base was asked for, and
+#     filters by symbols; this Recipe answers with the quotes its fixture
+#     holds. The symbols behaviour is described above and asserted from a
+#     recorded response rather than applied.
+#   - /v1/currencies is not served. It answers a bare object keyed by currency
+#     code -- {"AUD": "Australian Dollar", ...} -- which is data in the key
+#     positions rather than a collection of records, and this format describes
+#     records. What it does is worth knowing anyway: thirty-odd entries, code
+#     to English name, no array and no envelope.
+#   - The identifier is the path segment, and on a dated request that is the
+#     date you asked for while the body carries the date you got. Nothing
+#     carries the former, which is the finding this Recipe leads with.
+#   - amount is 1.0 on the wire and 1 here. Frankfurter writes the decimal
+#     point; a JSON number that happens to be integral loses it passing through
+#     a Go float64, and this format has no way to say "a number that keeps its
+#     point". The value and the type are right and the bytes are not, which is
+#     the same class of difference as the HTML escaping closed alongside the
+#     Open-Meteo Recipe -- and unlike that one, it is in the encoder's floor
+#     rather than in a setting. The case asserts the value; the mutation that
+#     would prove the spelling is dropped rather than left as a survivor.
+#
+# The rates below are public and were recorded on the date in the cases.
+
+recipe: frankfurter
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://frankfurter.dev/
+
+auth:
+  # Public, and no key at all.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  quote:
+    id:
+      style: opaque
+      # The path segment or the base, depending on the route, and on a dated
+      # request it is the date asked for rather than the date returned.
+      field: "-"
+    fields:
+      # A multiplier, and 1.0 in almost every response.
+      amount:
+        type: number
+      base:
+        type: string
+      # On a single-date answer. The date the rates are actually from.
+      date:
+        type: string
+      # On a range answer, instead of date.
+      start_date:
+        type: string
+      end_date:
+        type: string
+      # {"EUR": 0.85874} on a single date, {"2026-08-20": {"EUR": 0.85609}}
+      # on a range. Same key, one more level.
+      rates:
+        type: map
+
+routes:
+  - method: GET
+    path: /v1/latest
+    resource: quote
+    operation: get
+    id_from: query:base
+    not_found: rate_missing
+
+  # One path for a date, a range, and an open-ended range.
+  - method: GET
+    path: /v1/{id}
+    resource: quote
+    operation: get
+    not_found: rate_missing
+
+  # There is no v2. Packages exist that call one, and every path under it
+  # answers with the other 404 shape.
+  - method: GET
+    path: /v2/latest
+    error: path_missing
+
+errors:
+  # The same body for an unknown currency and for a date before the series.
+  rate_missing:
+    status: 404
+    message: not found
+
+  # And the same words with a status beside them, for a path that is not there.
+  path_missing:
+    status: 404
+    message: not found
+    fields:
+      status: 404
+
+fixtures:
+  empty: {}
+
+  ecb:
+    quote:
+      # /v1/latest?base=USD, on a day whose fixing is the previous one.
+      - id: USD
+        amount: 1.0
+        base: USD
+        date: "2026-08-27"
+        # No USD. rates[base] is undefined, and naming USD in symbols does not
+        # add it either.
+        rates:
+          EUR: 0.85874
+          GBP: 0.73628
+          JPY: 159.39
+
+      # /v1/2026-08-23 -- a Sunday. The answer is Friday's.
+      - id: "2026-08-23"
+        amount: 1.0
+        base: USD
+        # Two days before the one in the path, with a 200 and no other signal.
+        date: "2026-08-21"
+        rates:
+          EUR: 0.85477
+          GBP: 0.73228
+
+      # /v1/2026-08-20..2026-08-24 -- a range, and a different shape.
+      - id: 2026-08-20..2026-08-24
+        amount: 1.0
+        base: USD
+        start_date: "2026-08-20"
+        end_date: "2026-08-24"
+        # One level deeper than a single date's rates, under the same key, and
+        # the 22nd and 23rd are simply not here.
+        rates:
+          "2026-08-20":
+            EUR: 0.85609
+          "2026-08-21":
+            EUR: 0.85477
+          "2026-08-24":
+            EUR: 0.85734
+
+      # /v1/2026-08-24..2026-12-31 -- an end four months out, clamped.
+      - id: 2026-08-24..2026-12-31
+        amount: 1.0
+        base: USD
+        start_date: "2026-08-24"
+        # The last published day, not the one in the path.
+        end_date: "2026-08-27"
+        rates:
+          "2026-08-24":
+            EUR: 0.85734
+          "2026-08-25":
+            EUR: 0.85749
+          "2026-08-26":
+            EUR: 0.85697
+          "2026-08-27":
+            EUR: 0.85874
+
+conformance:
+  - name: a Sunday answers with Friday's rate and a 200
+    source: https://api.frankfurter.dev/v1/2026-08-23?base=USD&symbols=EUR,GBP
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/2026-08-23?base=USD&symbols=EUR,GBP
+    expect:
+      status: 200
+      body:
+        # Two days before the date in the path. The date field is the only
+        # thing that says so, and a client that knows what it asked for has no
+        # reason to read it.
+        date: "2026-08-21"
+        base: USD
+        "rates.EUR": 0.85477
+        "rates.GBP": 0.73228
+
+  - name: the base is never among the rates
+    source: https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP,JPY
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/latest?base=USD&symbols=EUR,GBP,JPY
+    expect:
+      status: 200
+      body:
+        # And naming USD in symbols does not add it: symbols=USD,EUR answers
+        # with EUR alone.
+        base: USD
+        "rates.EUR": 0.85874
+        "rates.JPY": 159.39
+      absent:
+        - rates.USD
+
+  - name: latest is the most recent reference date rather than today
+    source: https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP,JPY
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/latest?base=USD&symbols=EUR,GBP,JPY
+    expect:
+      status: 200
+      body:
+        # Recorded on the 28th. The ECB publishes on working days in the
+        # afternoon, so latest trails the clock by a day or by a weekend.
+        date: "2026-08-27"
+        # A multiplier, and a float, and 1.0 in almost every response.
+        amount: 1.0
+
+  - name: a range renames the date and nests the rates one level deeper
+    source: https://api.frankfurter.dev/v1/2026-08-20..2026-08-24?base=USD&symbols=EUR
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/2026-08-20..2026-08-24?base=USD&symbols=EUR
+    expect:
+      status: 200
+      body:
+        # rates.EUR works on a single date and is undefined here, under the
+        # same key.
+        start_date: "2026-08-20"
+        end_date: "2026-08-24"
+        "rates.2026-08-20.EUR": 0.85609
+      absent:
+        - date
+        - rates.EUR
+
+  - name: and the weekend is simply missing from the range
+    source: https://api.frankfurter.dev/v1/2026-08-20..2026-08-24?base=USD&symbols=EUR
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/2026-08-20..2026-08-24?base=USD&symbols=EUR
+    expect:
+      status: 200
+      body:
+        # Three keys for five days. Iterating the range and indexing
+        # rates[date] finds nothing on two days in seven.
+        "rates.2026-08-21.EUR": 0.85477
+        "rates.2026-08-24.EUR": 0.85734
+      absent:
+        - rates.2026-08-22
+        - rates.2026-08-23
+
+  - name: an end four months out comes back as the last published day
+    source: https://api.frankfurter.dev/v1/2026-08-24..2026-12-31?base=USD&symbols=EUR
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/2026-08-24..2026-12-31?base=USD&symbols=EUR
+    expect:
+      status: 200
+      body:
+        # Asked to the 31st of December. Answered to the 27th of August,
+        # silently.
+        start_date: "2026-08-24"
+        end_date: "2026-08-27"
+        "rates.2026-08-25.EUR": 0.85749
+        "rates.2026-08-26.EUR": 0.85697
+        "rates.2026-08-27.EUR": 0.85874
+      absent:
+        - rates.2026-12-31
+
+  - name: a currency that does not exist is not found, and names nothing
+    source: https://api.frankfurter.dev/v1/latest?base=XYZ
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/latest?base=XYZ
+    expect:
+      # The message names neither the currency nor what was wrong with it.
+      status: 404
+      body:
+        message: not found
+
+  - name: and a date before the series began is the same body
+    source: https://api.frankfurter.dev/v1/1990-01-02?base=USD&symbols=EUR
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v1/1990-01-02?base=USD&symbols=EUR
+    expect:
+      # Two different mistakes, one response, and nothing to tell them apart.
+      status: 404
+      body:
+        message: not found
+      absent:
+        - date
+        - rates
+
+  - name: a path that does not exist answers with a status the others omit
+    source: https://api.frankfurter.dev/v2/latest
+    verified: "2026-08-28"
+    fixture: ecb
+    request:
+      method: GET
+      path: /v2/latest
+    expect:
+      # The same words as the two failures above, with a status beside them.
+      # Code branching on body.status finds a number when it mistyped the URL
+      # and undefined when it mistyped the currency.
+      status: 404
+      body:
+        status: 404
+        message: not found
