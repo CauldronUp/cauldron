@@ -3790,3 +3790,51 @@ func TestDetectOpenLibraryClientsAndNotEveryOpenLibrary(t *testing.T) {
 		}
 	}
 }
+
+// Two APIs on one host, and almost everything uses the other one. MediaWiki's
+// Action API lives at /w/api.php and predates this REST API by a decade, so
+// node-wikifetch, symfony/ai-wikipedia-tool and easy-wiki all reach
+// wikipedia.org and none of them reach anything served here.
+//
+// wikifox is the nearest miss: it does call /api/rest_v1/, at page/pdf/{title},
+// which answers a PDF. The right host, the right API family, and a response
+// this Recipe cannot give.
+func TestDetectWikipediaRESTClientsAndNotTheActionAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"wikipedia": "^2.1.2"}}`},
+		{"package.json": `{"dependencies": {"wikipedia-summary": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "wikipedia") {
+			t.Errorf("%v did not detect wikipedia: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Action API at /w/api.php, which is a different API.
+		{"package.json": `{"dependencies": {"node-wikifetch": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"symfony/ai-wikipedia-tool": "^7.0"}}`},
+		{"composer.json": `{"require": {"sophivorus/easy-wiki": "^1.0"}}`},
+		// The right API family, at the endpoint that answers a PDF.
+		{"package.json": `{"dependencies": {"wikifox": "^1.0.0"}}`},
+		// Matched on a URL cited in a description.
+		{"composer.json": `{"require": {"webignition/internet-media-type": "^0.4"}}`},
+		// The vendor's own embeddable widget.
+		{"composer.json": `{"require": {"wikimedia/wikipedia-preview": "^1.0"}}`},
+		// What "wikipedia api" returns on npm.
+		{"package.json": `{"dependencies": {"color-name": "^1.1.4"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "wikipedia") {
+			t.Errorf("%v offered the wikipedia Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
