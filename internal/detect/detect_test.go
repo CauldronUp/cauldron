@@ -3838,3 +3838,49 @@ func TestDetectWikipediaRESTClientsAndNotTheActionAPI(t *testing.T) {
 		}
 	}
 }
+
+// The generic name belongs to somebody else's API of the same data. The npm
+// package called hacker-news-api is a client for hn.algolia.com, the search
+// service Algolia runs over Hacker News, and its tarball holds no firebaseio.com
+// at all: different host, different shapes, same stories.
+//
+// Matched on a semantic, the seventh: hacker-news-api-types is one index.d.ts,
+// declaring the shapes this Recipe serves with nothing in it to run. And
+// hnpwa-api deploys a Hacker News API on your own domain -- the product rather
+// than a client of it.
+func TestDetectHackerNewsClientsAndNotAlgoliasAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"node-hn-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"hn-ts": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/hermanschaaf/hackernews v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "hackernews") {
+			t.Errorf("%v did not detect hackernews: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Somebody else's API of the same data, under the obvious name.
+		{"package.json": `{"dependencies": {"hacker-news-api": "^2.0.0"}}`},
+		// One index.d.ts, with nothing in it to run.
+		{"package.json": `{"devDependencies": {"hacker-news-api-types": "^1.0.0"}}`},
+		// The product rather than a client of it.
+		{"package.json": `{"dependencies": {"hnpwa-api": "^1.0.0"}}`},
+		// Agent tooling.
+		{"package.json": `{"devDependencies": {"@devabdultech/hn-mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "hackernews") {
+			t.Errorf("%v offered the hackernews Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -1182,6 +1182,31 @@ func providers() []provider {
 			npm:    []string{"wikipedia", "wikipedia-summary"},
 		},
 		{
+			// The generic name belongs to somebody else's API of the same data.
+			// The npm package called hacker-news-api -- the name anyone would try
+			// first -- is a client for hn.algolia.com, the search service Algolia
+			// runs over Hacker News, and its tarball holds no firebaseio.com at
+			// all. Different host, different shapes, same stories. That is the
+			// MapQuest-Nominatim kind and sharper, because here the third party has
+			// the obvious name and the vendor's own API does not.
+			//
+			// Matched on a semantic, the seventh: hacker-news-api-types is one
+			// index.d.ts. It cites firebaseio URLs in its README and declares the
+			// shapes this Recipe serves, and there is nothing in it to run. After
+			// @snyk/ruby-semver, @snyk/nuget-semver, golang.org/x/mod,
+			// mvn-artifact-name-parser, ossf/osv-schema and deps.dev/util/semver.
+			//
+			// hnpwa-api deploys a Hacker News API on your own domain: the product
+			// rather than a client of it, where gosub-goproxy, unleash-server and
+			// @mailwoman/nominatim went. Two MCP servers carry the name.
+			//
+			// Packagist has no client that reaches this API, the way it had none
+			// for Hookdeck or deps.dev.
+			recipe: "hackernews",
+			npm:    []string{"node-hn-api", "hn-ts"},
+			gomod:  []string{"github.com/hermanschaaf/hackernews"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
