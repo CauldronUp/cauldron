@@ -3409,3 +3409,54 @@ func TestDetectGoProxyClientsAndNotTheEscapingLibrary(t *testing.T) {
 		}
 	}
 }
+
+// Maven's name is an ordinary English word, and on Packagist it returns three
+// unrelated products: bariew/maven is an Israeli invoicing service, sukohi/maven
+// manages an FAQ in Laravel, and only augmentedlogic/maven-central-api is about
+// the registry.
+//
+// Matched on a semantic, the fourth: mvn-artifact-name-parser parses the
+// coordinate format and contains no URL at all. Its sibling
+// mvn-artifact-download does open a connection, to repo1.maven.org -- the
+// repository rather than the search API, a host this Recipe says it does not
+// serve.
+func TestDetectMavenCentralClientsAndNotTheOtherMavens(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"augmentedlogic/maven-central-api": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"mavencc": "^0.4.3"}}`},
+		{"package.json": `{"dependencies": {"maven-api-client": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/nscuro/cdx-central v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "mavencentral") {
+			t.Errorf("%v did not detect mavencentral: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The word, twice, meaning something else both times.
+		{"composer.json": `{"require": {"bariew/maven": "^1.0"}}`},
+		{"composer.json": `{"require": {"sukohi/maven": "^1.0"}}`},
+		// Parses the coordinates and calls nobody.
+		{"package.json": `{"dependencies": {"mvn-artifact-name-parser": "^6.1.2"}}`},
+		// Reaches repo1.maven.org, which is the repository and not this API.
+		{"package.json": `{"dependencies": {"mvn-artifact-download": "^6.1.2"}}`},
+		// Drives mvn itself, like the Sonar scanners and NuGet's exe wrappers.
+		{"package.json": `{"dependencies": {"node-java-maven": "^0.1.2"}}`},
+		// Agent tooling, for the eighth Recipe running.
+		{"package.json": `{"devDependencies": {"maven-central-mcp": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "mavencentral") {
+			t.Errorf("%v offered the mavencentral Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
