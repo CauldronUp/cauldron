@@ -1258,6 +1258,36 @@ func providers() []provider {
 			gomod:    []string{"github.com/michiwend/gomusicbrainz"},
 		},
 		{
+			// The counter-example to Open-Meteo. There the vendor's own client
+			// spoke a wire format the vendor's documented API does not use; here
+			// the vendor publishes an official client in all three ecosystems --
+			// @openfoodfacts/openfoodfacts-nodejs, openfoodfacts/openfoodfacts-php
+			// and github.com/openfoodfacts/openfoodfacts-go -- and every one of
+			// them calls the JSON API this Recipe serves. The nodejs one covers
+			// v1, v2 and v3 of /product from a single package.
+			//
+			// Six MCP servers carry the name, which is the most for any Recipe in
+			// this collection: USGS had five. One of them is
+			// @pipeworx/mcp-openfoodfacts, the sixth Recipe running for that
+			// publisher after the Go proxy, deps.dev, Open-Meteo, USGS and
+			// Frankfurter.
+			//
+			// @molecule/api-nutrition-database is a "nutrition + barcode lookup
+			// core interface" over several providers rather than a client of this
+			// one, which is the shape already recorded at @agntn/registries.
+			recipe: "openfoodfacts",
+			composer: []string{
+				"openfoodfacts/openfoodfacts-php",
+				"openfoodfacts/openfoodfacts-laravel",
+			},
+			npm: []string{
+				"@openfoodfacts/openfoodfacts-nodejs",
+				"openfoodfacts-nodejs",
+				"openfoodfacts-cli",
+			},
+			gomod: []string{"github.com/openfoodfacts/openfoodfacts-go"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

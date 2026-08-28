@@ -3976,3 +3976,46 @@ func TestDetectMusicBrainzJSONClientsAndNotTheXMLOne(t *testing.T) {
 		}
 	}
 }
+
+// The counter-example to Open-Meteo. There the vendor's own client spoke a wire
+// format the vendor's documented API does not use; here the vendor publishes an
+// official client in all three ecosystems and every one of them calls the JSON
+// API this Recipe serves.
+//
+// Six MCP servers carry the name, the most for any Recipe here.
+// @molecule/api-nutrition-database is an interface over several providers
+// rather than a client of this one.
+func TestDetectOpenFoodFactsClientsAndNotTheAgentTooling(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"openfoodfacts/openfoodfacts-php": "^2.0"}}`},
+		{"composer.json": `{"require": {"openfoodfacts/openfoodfacts-laravel": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@openfoodfacts/openfoodfacts-nodejs": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/openfoodfacts/openfoodfacts-go v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openfoodfacts") {
+			t.Errorf("%v did not detect openfoodfacts: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Six of these carry the name; the sixth Recipe for this publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-openfoodfacts": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"openfoodfacts-mcp": "^1.0.0"}}`},
+		// An interface over several providers rather than a client of this one.
+		{"package.json": `{"dependencies": {"@molecule/api-nutrition-database": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openfoodfacts") {
+			t.Errorf("%v offered the openfoodfacts Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
