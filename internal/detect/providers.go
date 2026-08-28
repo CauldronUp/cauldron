@@ -1231,6 +1231,33 @@ func providers() []provider {
 			gomod: []string{"github.com/mtslzr/pokeapi-go"},
 		},
 		{
+			// The Recipe's headline is the near miss. npm has two clients for one
+			// API, one per wire format: "musicbrainz" describes itself as "a
+			// MusicBrainz XML Web Service Version 2 client" and parses with xml2js,
+			// and "nodebrainz" as "a MusicBrainz JSON Web Service Version 2 client"
+			// and sends fmt=json. Only the second is mapped. The first would in
+			// fact be answered by the XML default this Recipe serves, for the one
+			// path it holds, and that is not emulating an XML client: every
+			// resource and every case here is JSON.
+			//
+			// dhowden/tag/mbz is the sharpest thing in the neighbourhood.
+			// http://musicbrainz.org appears in it as a constant, and it is never
+			// fetched: it is the namespace string inside an ID3 UFID frame, so the
+			// package reads MusicBrainz identifiers out of audio files without ever
+			// asking MusicBrainz anything. The provider's own URL, as data.
+			//
+			// graphbrainz is a GraphQL server over the same database -- somebody
+			// else's interface, and a product rather than a client, both at once.
+			// mikealmond/coverartarchive is the sibling service on
+			// coverartarchive.org. go.uploadedlobster.com/mbtypes is types and
+			// /discid computes a disc identifier locally. And music-tagger is
+			// AcoustID, which is a different service again.
+			recipe:   "musicbrainz",
+			composer: []string{"mikealmond/musicbrainz", "lachlan-00/musicbrainz"},
+			npm:      []string{"nodebrainz", "musicbrainz-api"},
+			gomod:    []string{"github.com/michiwend/gomusicbrainz"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
