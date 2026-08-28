@@ -477,10 +477,21 @@ func (q *webhookQueue) Emit(event string, data store.Record) (Delivery, []Delive
 
 	q.mu.Unlock()
 
-	body, err := json.Marshal(delivery.Payload)
-	if err != nil {
+	// The same rule as the response encoder, and it matters more here: the
+	// bytes are what gets signed, so escaping them would make every signature
+	// disagree with the one a provider would have produced.
+	var encoded bytes.Buffer
+
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+
+	if err := encoder.Encode(delivery.Payload); err != nil {
 		return Delivery{}, nil, err
 	}
+
+	// Encode appends a newline; Marshal does not, and the signature is over
+	// the body as sent.
+	body := bytes.TrimRight(encoded.Bytes(), "\n")
 
 	delivery.Signature = q.sign(delivery.ID, body, delivery.At)
 

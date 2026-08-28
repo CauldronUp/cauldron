@@ -1001,6 +1001,45 @@ func providers() []provider {
 			gomod: []string{"deps.dev"},
 		},
 		{
+			// The sharpest near miss in the collection, and a kind that has not
+			// appeared before: the vendor's own client does not speak the vendor's
+			// documented JSON API. The npm package openmeteo is Open-Meteo's, and
+			// it sets format=flatbuffers on every request unconditionally, so it
+			// receives a binary payload rather than the document this Recipe
+			// describes. @openmeteo/sdk is nothing but the generated FlatBuffers
+			// schema for it. Neither is mapped, because an emulator answering JSON
+			// cannot answer either of them.
+			//
+			// @openmeteo/weather-map-layer and go-omfiles are a third wire format
+			// again, the OMfile tiles. After @renovatebot/osv-offline, where the
+			// database ships as a file, the pattern is that a provider's own
+			// tooling is the least likely thing in its neighbourhood to call its
+			// public API.
+			//
+			// Three MCP servers carry the name, one of them @pipeworx/mcp-open-meteo
+			// -- the third Recipe running for that publisher, after mcp-goproxy and
+			// mcp-deps-dev.
+			//
+			// Mapped: the clients that ask for JSON. symfony/ai-open-meteo-tool and
+			// php-weather/open-meteo both request api.open-meteo.com/v1/forecast
+			// directly, and omgo keeps its forecast, historical and ensemble URLs
+			// in fields a caller can replace.
+			recipe: "openmeteo",
+			composer: []string{
+				"symfony/ai-open-meteo-tool",
+				"php-weather/open-meteo",
+				"flibidi67/open-meteo",
+			},
+			npm: []string{
+				"@agentic/open-meteo",
+				"@molecule/api-weather-open-meteo",
+			},
+			gomod: []string{
+				"github.com/hectormalot/omgo",
+				"github.com/tpryan/openmeteogo",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

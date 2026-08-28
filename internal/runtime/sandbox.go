@@ -386,6 +386,15 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 	encoder := json.NewEncoder(&buffer)
 	encoder.SetIndent("", "  ")
+	// Off, because no provider here escapes for HTML. The standard library
+	// turns <, > and & into <, > and & by default, on the
+	// assumption the result may be pasted into a page, and that assumption is
+	// wrong for every API in this collection. Discourse's fancy_title is an
+	// HTML entity and Akeneo's paging links join two query parameters with an
+	// ampersand; both were going out in a form their provider does not send.
+	// Decoded values are identical either way, which is why no conformance
+	// case could see it.
+	encoder.SetEscapeHTML(false)
 
 	if err := encoder.Encode(body); err != nil {
 		w.Header().Set("Content-Type", "application/json")
