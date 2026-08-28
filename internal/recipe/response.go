@@ -453,5 +453,38 @@ func (r Recipe) ListFor(route Route) ListResponse {
 		spec.CursorNull = true
 	}
 
+	// The five below were declared and dropped. A route-level list override
+	// merged eighteen of the envelope's fields and silently ignored the rest,
+	// so a Recipe saying collapse_single on one route had it read, validated
+	// and thrown away -- and no conformance case could tell the difference,
+	// because the emulator simply behaved as though the line were not there.
+	//
+	// This is the fifth declared-and-ignored field closed in this collection,
+	// after a list key the collection name already supplied, auth.header on
+	// the bearer scheme, a declared Content-Type overwritten by a default, and
+	// an empty object expectation that asserted nothing. The shape is always
+	// the same: the file says something, the runtime does something else, and
+	// nothing in between notices.
+	//
+	// Open Library found it. /api/books answers one book as the object under
+	// the caller's own query string and no books as {}, which is
+	// collapse_single and omit_when_empty on one route -- and only the second
+	// of those was reaching the runtime.
+	if route.List.CollapseSingle {
+		spec.CollapseSingle = true
+	}
+
+	override(&spec.CursorURL, route.List.CursorURL)
+	override(&spec.FinalField, route.List.FinalField)
+	override(&spec.CompleteField, route.List.CompleteField)
+
+	for name, value := range route.List.Fields {
+		if spec.Fields == nil {
+			spec.Fields = map[string]any{}
+		}
+
+		spec.Fields[name] = value
+	}
+
 	return spec
 }

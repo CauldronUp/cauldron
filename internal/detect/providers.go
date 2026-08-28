@@ -1127,6 +1127,36 @@ func providers() []provider {
 			gomod: []string{"github.com/doppiogancio/go-nominatim"},
 		},
 		{
+			// The name is the two commonest words in a package description, and on
+			// Packagist that is the whole result. Searching "open library" returns
+			// PHPWord, openspout, bootstrap-icons, geophp, casbin and nelexa/zip --
+			// eight libraries that are open source and none of them about this
+			// provider. Only searching the word closed up finds anything real. That
+			// is the ordinary-word collision at its limit: not a homonym, just two
+			// adjectives every library in the world applies to itself.
+			//
+			// openlibrary-scraper does reach openlibrary.org, at /isbn/ and
+			// /search, and parses what comes back with cheerio -- the HTML site
+			// rather than the API, which is the same host and a surface this
+			// Recipe does not serve. Not mapped.
+			//
+			// alexandria-worker is mapped and is worth naming: it builds
+			// openlibrary.org${authorRef.key}.json to turn an author reference into
+			// a name, which is exactly the second request this Recipe's headline is
+			// about, written out in somebody's production code.
+			recipe: "openlibrary",
+			composer: []string{
+				"beezus/openlibrary-php",
+				"shiranse/laravel-open-library",
+			},
+			npm: []string{
+				"open-library-client",
+				"openlibrary-cli",
+				"alexandria-worker",
+			},
+			gomod: []string{"github.com/exlibris-fed/openlibrary-go"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
