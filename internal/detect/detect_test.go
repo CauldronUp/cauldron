@@ -3929,3 +3929,50 @@ func TestDetectPokeAPIClientsAndNotTheSpriteBundle(t *testing.T) {
 		}
 	}
 }
+
+// The Recipe's headline is the near miss. npm has two clients for one API, one
+// per wire format: "musicbrainz" is "a MusicBrainz XML Web Service Version 2
+// client" and parses with xml2js; "nodebrainz" is "a MusicBrainz JSON Web
+// Service Version 2 client" and sends fmt=json. Only the second is mapped.
+//
+// dhowden/tag/mbz carries http://musicbrainz.org as a constant that is never
+// fetched: it is the namespace string inside an ID3 UFID frame, so the package
+// reads MusicBrainz identifiers out of audio files without ever asking
+// MusicBrainz anything.
+func TestDetectMusicBrainzJSONClientsAndNotTheXMLOne(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"mikealmond/musicbrainz": "^0.3"}}`},
+		{"package.json": `{"dependencies": {"nodebrainz": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"musicbrainz-api": "^0.15.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/michiwend/gomusicbrainz v0.0.0-20181012083520-6c07e13dd396\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "musicbrainz") {
+			t.Errorf("%v did not detect musicbrainz: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The other wire format, parsed with xml2js.
+		{"package.json": `{"dependencies": {"musicbrainz": "^0.2.0"}}`},
+		// A GraphQL server over the same database.
+		{"package.json": `{"dependencies": {"graphbrainz": "^8.0.0"}}`},
+		// The sibling service, on coverartarchive.org.
+		{"composer.json": `{"require": {"mikealmond/coverartarchive": "^0.1"}}`},
+		// Agent tooling.
+		{"package.json": `{"devDependencies": {"musicbrainz-mcp": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "musicbrainz") {
+			t.Errorf("%v offered the musicbrainz Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
