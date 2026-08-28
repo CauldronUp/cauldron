@@ -4105,3 +4105,44 @@ func TestDetectZippopotamClientsAndNotTheHippopotamus(t *testing.T) {
 		}
 	}
 }
+
+// The vendor's other API, behind the vendor's own paywall. @datafire/tvmaze
+// integrates the TVmaze user API, which lives under a key and covers watchlists,
+// and is reached through www.tvmaze.com/dashboard and /premium. This Recipe is
+// the public keyless one.
+//
+// tvmaze-api-ts calls itself "a tvmaze scraper and api wrapper" and is both: it
+// reaches api.tvmaze.com and also parses www.tvmaze.com pages with cheerio.
+func TestDetectTVmazePublicClientsAndNotTheUserAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"joshpinkney/tv-maze-php-api": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"tvmaze": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-tvmaze": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/tamnd/tvmaze-cli v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "tvmaze") {
+			t.Errorf("%v did not detect tvmaze: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's other API, under a key.
+		{"package.json": `{"dependencies": {"@datafire/tvmaze": "^3.0.0"}}`},
+		// Half a client of the API and half a client of the website.
+		{"package.json": `{"dependencies": {"tvmaze-api-ts": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "tvmaze") {
+			t.Errorf("%v offered the tvmaze Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
