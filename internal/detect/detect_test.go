@@ -4280,3 +4280,51 @@ func TestDetectWikibaseRESTClientsAndNotTheActionAPI(t *testing.T) {
 		}
 	}
 }
+
+// A new way to collide: not a shared word, but a shared edit distance.
+// Packagist's three highest-ranked results for "gbif" are a PHP GIF codec at
+// 34.9 million installs, a payments library at 17.2 million and an Apple
+// sign-in parser at 2.2 million -- fifty-four million installs and not one
+// about biodiversity. The search engine's fuzziness is what matched.
+//
+// gbif-checklistbank reaches api.gbif.org at /dataset and /lookup/name_usage,
+// older endpoint families on the same host, and gbif-map draws tiles from
+// /v2/map/.
+func TestDetectGBIFClientsAndNotTheGIFCodec(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"restelae/php-gbif": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"gbif-crawler": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/HannesOberreiter/gbif-extinct v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "gbif") {
+			t.Errorf("%v did not detect gbif: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// What "gbif" returns on Packagist, by edit distance.
+		{"composer.json": `{"require": {"intervention/gif": "^4.0"}}`},
+		{"composer.json": `{"require": {"mollie/mollie-api-php": "^2.0"}}`},
+		// Older endpoint families on the same host.
+		{"package.json": `{"dependencies": {"gbif-checklistbank": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"gbif-namefinder": "^1.0.0"}}`},
+		// Map tiles rather than JSON.
+		{"package.json": `{"dependencies": {"gbif-map": "^1.0.0"}}`},
+		// Agent tooling, for the eighth Recipe running from one publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-gbif": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "gbif") {
+			t.Errorf("%v offered the gbif Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
