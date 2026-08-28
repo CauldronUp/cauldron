@@ -1336,6 +1336,35 @@ func providers() []provider {
 			gomod: []string{"github.com/johnnypivot/ziplookup"},
 		},
 		{
+			// The vendor's other API, behind the vendor's own paywall.
+			// @datafire/tvmaze is an integration for the TVmaze *user* API, which
+			// lives under a key, covers watchlists and follows, and is reached
+			// through www.tvmaze.com/dashboard and /premium. This Recipe is the
+			// public keyless one, and nothing an emulator of it serves would
+			// answer that package.
+			//
+			// tvmaze-api-ts calls itself "a tvmaze scraper and api wrapper" and is
+			// both: it reaches api.tvmaze.com and also parses
+			// www.tvmaze.com/episodes pages with cheerio. Half of it is a client
+			// of this API and half of it is a client of the website, which is the
+			// line already drawn at openlibrary-scraper -- and there the package
+			// was only ever the second half.
+			//
+			// No agent tooling carries this name, which after six MCP servers on
+			// Open Food Facts and five on USGS is worth writing down.
+			recipe: "tvmaze",
+			composer: []string{
+				"joshpinkney/tv-maze-php-api",
+				"tavy315/tvmaze-api",
+			},
+			npm: []string{
+				"tvmaze",
+				"tvmaze-node",
+				"node-tvmaze",
+			},
+			gomod: []string{"github.com/tamnd/tvmaze-cli"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
