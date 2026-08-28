@@ -1067,6 +1067,37 @@ func providers() []provider {
 			gomod:    []string{"github.com/jasonmoo/usgs"},
 		},
 		{
+			// Two hosts, two version prefixes, and packages written for a version
+			// that is not there. api.frankfurter.app 301s every path to
+			// api.frankfurter.dev with a /v1 prefix added, and the unversioned path
+			// on the new host is a 404 -- so frankfurter-cli, which hardcodes the
+			// old host, works only because its HTTP client follows redirects, and a
+			// PHP cURL client with the defaults would get an HTML redirect page
+			// where it expected JSON. Meanwhile @pontx/frankfurter-v2 calls itself
+			// an SDK for "the official Frankfurter v2 API" and go-finance defaults
+			// to api.frankfurter.dev/v2/, and there is no v2: every path under it
+			// answers 404. go-finance is mapped anyway, because its base URL is
+			// configurable and the project plainly means to reach this provider.
+			//
+			// frankfurter-api-status-client is named after the provider and calls
+			// frankfurter.instatus.com, a hosted status-page vendor rather than the
+			// provider's own host at all. That is a new one: not the vendor's other
+			// product, but somebody else's product about the vendor.
+			//
+			// On Packagist the word is a place and a surname. The service is named
+			// after the city, so chuckcms-template-frankfurt is a CMS theme, and
+			// frankforte/quantumphp is a JavaScript console logger under a vendor
+			// namespace that merely begins the same way. And @pipeworx/mcp-frankfurter
+			// is the fifth Recipe running for that publisher.
+			recipe:   "frankfurter",
+			composer: []string{"investbrainapp/frankfurter-client"},
+			npm:      []string{"frankfurter-js", "frankfurter-api-client"},
+			gomod: []string{
+				"github.com/tdrn-org/go-finance",
+				"github.com/tamnd/frankfurter-cli",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
