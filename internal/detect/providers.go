@@ -1365,6 +1365,30 @@ func providers() []provider {
 			gomod: []string{"github.com/tamnd/tvmaze-cli"},
 		},
 		{
+			// Matched on a semantic, the ninth -- and the first time it is the
+			// entire neighbourhood rather than one package in it. The sun's
+			// position is a closed-form calculation, so almost everything that
+			// answers this search computes the answer instead of asking for it:
+			// suncalc, suncalc2, sunrise-sunset-js and @hebcal/noaa on npm;
+			// ypid/suncalc, tuxonice/suncalc-php, martindilling/sunny,
+			// andrmoel/astronomy-bundle and minube/solar-position on Packagist;
+			// and go-sunrise, kelvins/sunrisesunset, lukasschwab/sunrisesunset,
+			// sixdouglas/suncalc and keep94/sunrise in Go. Every one of them is
+			// trigonometry. Both Go packages named exactly after the provider
+			// compute rather than fetch, and there is no Go or PHP client of this
+			// API anywhere.
+			//
+			// That is the sharpest form of the pattern first recorded at
+			// @snyk/ruby-semver: a provider's answer gets reimplemented far more
+			// often than its API gets called. Here it is not a library or two but
+			// the whole field, and the reason is that the API is the unusual
+			// choice rather than the obvious one.
+			//
+			// Mapped: the two on npm that actually send a request.
+			recipe: "sunrisesunset",
+			npm:    []string{"sunrise-sunset-api", "n8n-nodes-sunrise-sunset"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
