@@ -1437,6 +1437,31 @@ func providers() []provider {
 			npm:    []string{"@wmde/wikibase-rest-api", "wikibase-rest-api-ts"},
 		},
 		{
+			// A new way to collide: not a shared word, but a shared edit distance.
+			// Packagist's three highest-ranked results for "gbif" are
+			// intervention/gif, a PHP GIF codec at 34.9 million installs;
+			// mollie/mollie-api-php, a payments library at 17.2 million; and
+			// griffinledingham/php-apple-signin at 2.2 million. Fifty-four million
+			// installs between them and not one about biodiversity. The word does
+			// not mean anything else -- the search engine's fuzziness is what
+			// matched, which is a first here.
+			//
+			// gbif-checklistbank and gbif-namefinder reach api.gbif.org at
+			// /dataset and /lookup/name_usage: older endpoint families on the same
+			// host, and not the v1 species matcher. gbif-map draws occurrence
+			// density from /v2/map/, which answers tiles rather than JSON. Neither
+			// is mapped.
+			//
+			// Three MCP servers carry the name, one of them @pipeworx/mcp-gbif --
+			// the eighth Recipe running for that publisher, after the Go proxy,
+			// deps.dev, Open-Meteo, USGS, Frankfurter, Open Food Facts and
+			// Zippopotam.
+			recipe:   "gbif",
+			composer: []string{"restelae/php-gbif"},
+			npm:      []string{"gbif-crawler"},
+			gomod:    []string{"github.com/HannesOberreiter/gbif-extinct"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
