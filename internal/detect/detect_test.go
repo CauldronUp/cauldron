@@ -3513,3 +3513,48 @@ func TestDetectOSVClientsAndNotTheOfflineDatabase(t *testing.T) {
 		}
 	}
 }
+
+// deps.dev is the module path of Google's own Go code, and it holds both the
+// API client and deps.dev/util/semver, which compares versions locally and
+// imports net/http nowhere -- matched on a semantic for the sixth time and the
+// first time inside the mapped module. A go.mod names the module rather than
+// the package, so the mapping is right and the note is that two of the module's
+// most useful packages never open a connection.
+//
+// @agntn/registries names this provider in its description and its tarball
+// contains no deps.dev URL. Packagist has no client at all.
+func TestDetectDepsDevClientsAndNotTheDescriptions(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@toiroakr/argent": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@corvalon/lichen": "^1.0.0"}}`},
+		{"package.json": `{"devDependencies": {"@eastagile/dephold": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire deps.dev v0.0.0-20250101000000-abcdefabcdef\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "depsdev") {
+			t.Errorf("%v did not detect depsdev: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Names the provider in its description and calls nobody.
+		{"package.json": `{"dependencies": {"@agntn/registries": "^1.0.0"}}`},
+		// Agent tooling, from the publisher whose mcp-goproxy is already here.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-deps-dev": "^1.0.0"}}`},
+		// What the word "deps" returns on its own.
+		{"package.json": `{"dependencies": {"animated-tailwindcss": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "depsdev") {
+			t.Errorf("%v offered the depsdev Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -969,6 +969,38 @@ func providers() []provider {
 			gomod: []string{"osv.dev", "github.com/google/osv-scanner"},
 		},
 		{
+			// Matched on a semantic for the sixth time, and the first time inside
+			// the mapped module. deps.dev is the module path of Google's own Go
+			// code, and it holds both deps.dev/api/v3 -- the API client -- and
+			// deps.dev/util/semver and deps.dev/util/resolve, which compare
+			// versions and resolve npm, PyPI and Maven manifests locally and
+			// import net/http nowhere. A go.mod names the module rather than the
+			// package, so the mapping is right and the reason to write it down is
+			// that two of the module's most useful packages never open a
+			// connection. After @snyk/ruby-semver, @snyk/nuget-semver,
+			// golang.org/x/mod, mvn-artifact-name-parser and ossf/osv-schema.
+			//
+			// Packagist has no deps.dev client at all, the way it had none for
+			// Hookdeck.
+			//
+			// On npm the three mapped packages all build the same base,
+			// https://api.deps.dev/v3, and @corvalon/lichen documents the three
+			// route shapes this Recipe serves in its own comments.
+			// @agntn/registries calls itself a universal package registry client
+			// and names this provider in its description, and its tarball contains
+			// no deps.dev URL -- the description names it, the code does not call
+			// it. @pipeworx/mcp-deps-dev is agent tooling from the same publisher
+			// as @pipeworx/mcp-goproxy, which is where the Go proxy's near misses
+			// ended, and the word "deps" alone returns tailwind configurations.
+			recipe: "depsdev",
+			npm: []string{
+				"@toiroakr/argent",
+				"@eastagile/dephold",
+				"@corvalon/lichen",
+			},
+			gomod: []string{"deps.dev"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
