@@ -930,6 +930,45 @@ func providers() []provider {
 			},
 		},
 		{
+			// A new near-miss kind, and the cleanest example of it: the vendor
+			// ships its database as a file, so the clients that use it never call
+			// the API. @renovatebot/osv-offline downloads a packed copy and queries
+			// it locally; the tarball contains no osv.dev URL at all, and
+			// @mintmaker/osv-offline is a fork of it. Nothing an emulator serves
+			// would ever be reached.
+			//
+			// Matched on a semantic, the fifth: github.com/ossf/osv-schema is the
+			// schema itself -- twenty-one Go files, none of which import net/http.
+			// It is the definition of the format this Recipe describes and it does
+			// not speak to anything. After @snyk/ruby-semver, @snyk/nuget-semver,
+			// golang.org/x/mod and mvn-artifact-name-parser.
+			//
+			// On Packagist the three letters are somebody's name. osvaldoabel/acl,
+			// osvenson/mailgun-api and osvaldovictor/validate-docs-ao all match on
+			// a vendor namespace beginning "Osv", and rajangdavis/osvc_php is
+			// Oracle Service Cloud, which abbreviates to OSvC. Only
+			// gumslone/laravel-vulns is about this provider, and it is mapped: it
+			// takes a configurable base_url, calls v1/query and v1/querybatch, and
+			// its own comments record the stub shape the cases below pin.
+			//
+			// osv.dev is the module path of the vendor's Go binding, whose
+			// BaseHostURL is configurable and whose three endpoint constants are
+			// exactly the three routes served here. osv-to-sarif reads
+			// osv-scanner's output file rather than the API -- the file-writing
+			// reporter kind, from the other side -- and osv-scanner-mcp wraps the
+			// binary, which is where the Sonar scanners and NuGet's exe wrappers
+			// went.
+			recipe:   "osvdev",
+			composer: []string{"gumslone/laravel-vulns"},
+			npm: []string{
+				"yarn-osv-audit",
+				"@bun-security-scanner/osv",
+				"@absolutejs/vulnerabilities-osv",
+				"osv-ui",
+			},
+			gomod: []string{"osv.dev", "github.com/google/osv-scanner"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

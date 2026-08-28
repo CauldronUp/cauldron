@@ -3460,3 +3460,56 @@ func TestDetectMavenCentralClientsAndNotTheOtherMavens(t *testing.T) {
 		}
 	}
 }
+
+// OSV ships its database as a file, so the packages that use it never call the
+// API: @renovatebot/osv-offline downloads a packed copy and queries it locally,
+// and its tarball contains no osv.dev URL at all.
+//
+// Matched on a semantic, the fifth: github.com/ossf/osv-schema is the schema
+// itself and imports net/http nowhere. On Packagist the three letters are
+// somebody's given name -- osvaldoabel/acl -- and rajangdavis/osvc_php is
+// Oracle Service Cloud, which abbreviates to OSvC.
+func TestDetectOSVClientsAndNotTheOfflineDatabase(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"gumslone/laravel-vulns": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"yarn-osv-audit": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@bun-security-scanner/osv": "^1.0.0"}}`},
+		// The vendor's own Go binding, whose base URL is configurable.
+		{"go.mod": "module example.com/app\n\nrequire osv.dev v2025.12.10+incompatible\n"},
+		{"go.mod": "module example.com/app\n\nrequire github.com/google/osv-scanner/v2 v2.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "osvdev") {
+			t.Errorf("%v did not detect osvdev: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The database as a file. There is no request to redirect.
+		{"package.json": `{"dependencies": {"@renovatebot/osv-offline": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@mintmaker/osv-offline": "^1.0.0"}}`},
+		// The schema, which defines the format and calls nobody.
+		{"go.mod": "module example.com/app\n\nrequire github.com/ossf/osv-schema v1.9.0\n"},
+		// Reads osv-scanner's output file rather than the API.
+		{"go.mod": "module example.com/app\n\nrequire github.com/lachlan-smith/osv-to-sarif v0.1.0\n"},
+		// Wraps the binary, and is agent tooling besides.
+		{"package.json": `{"devDependencies": {"osv-scanner-mcp": "^1.0.0"}}`},
+		// A vendor namespace that begins with somebody's given name.
+		{"composer.json": `{"require": {"osvaldoabel/acl": "^1.0"}}`},
+		// Oracle Service Cloud, which abbreviates to OSvC.
+		{"composer.json": `{"require": {"rajangdavis/osvc_php": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "osvdev") {
+			t.Errorf("%v offered the osvdev Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
