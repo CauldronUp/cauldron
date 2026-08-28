@@ -893,6 +893,43 @@ func providers() []provider {
 			gomod:  []string{"github.com/icholy/gomajor"},
 		},
 		{
+			// The word is an ordinary English one, and on Packagist it returns
+			// three unrelated products. bariew/maven is described as "maven API"
+			// and points at app.invoice-maven.co.il -- an Israeli invoicing
+			// service. sukohi/maven, the most installed of the three, is a Laravel
+			// package for managing an FAQ. Only augmentedlogic/maven-central-api
+			// is about the registry, and it builds the exact URL the cases below
+			// send: search.maven.org/solrsearch/select?q=g:...&core=gav&wt=json.
+			//
+			// Matched on a semantic, the fourth: mvn-artifact-name-parser is
+			// "Parse java artifact names" and contains no URL at all. After
+			// @snyk/ruby-semver, @snyk/nuget-semver and golang.org/x/mod, a
+			// provider's coordinate format keeps getting reimplemented as a
+			// library that never opens a connection.
+			//
+			// Its sibling mvn-artifact-download does open one, to
+			// repo1.maven.org/maven2 -- the repository rather than the search API,
+			// and a host this Recipe says it does not serve. maven-central-mcp
+			// goes further and reads maven.google.com beside it, which is a
+			// different registry. Neither is mapped.
+			//
+			// Four MCP servers carry the name; mvn-repository-mcp-server scrapes
+			// mvnrepository.com, a third-party site rather than the vendor. And
+			// the badge kind is here again: @ephemeris/core and
+			// @dev.atsushieno/mugene match on img.shields.io/maven-central/v/ in
+			// their READMEs.
+			//
+			// node-java-maven and snyk-mvn-plugin drive mvn itself, which is the
+			// line already drawn at the Sonar scanners and NuGet's exe wrappers.
+			recipe:   "mavencentral",
+			composer: []string{"augmentedlogic/maven-central-api"},
+			npm:      []string{"mavencc", "mvns", "maven-api-client"},
+			gomod: []string{
+				"github.com/tamnd/mavencentral-cli",
+				"github.com/nscuro/cdx-central",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
