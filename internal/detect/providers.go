@@ -1389,6 +1389,27 @@ func providers() []provider {
 			npm:    []string{"sunrise-sunset-api", "n8n-nodes-sunrise-sunset"},
 		},
 		{
+			// Two Recipes running, and the same reason both times: a VIN is
+			// defined by ISO 3779 and its structure can be read without asking
+			// anybody. sunrise/vin, at 152,000 installs, says so in its own
+			// description -- "based on ISO-3779" -- and never opens a connection.
+			// @cardog/corgi sells itself on the point: "fast, offline VIN
+			// decoding", and its tarball holds no nhtsa.dot.gov at all. That is
+			// matched-on-a-semantic and the offline-data kind at once.
+			//
+			// What the API adds is the part ISO does not define: the make, the
+			// model and the body class behind a manufacturer's own codes. So the
+			// packages that call it are the ones that want more than the standard,
+			// and there are very few.
+			//
+			// And "decoder" is a word. The same search returns opus-decoder,
+			// mpg123-decoder, ogg-opus-decoder, text-decoder and
+			// @wasm-audio-decoders/opus-ml -- five packages about audio and text
+			// streams, none of them about vehicles.
+			recipe: "nhtsa",
+			npm:    []string{"@shaggytools/nhtsa-api-wrapper"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
