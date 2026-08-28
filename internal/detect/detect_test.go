@@ -4229,3 +4229,54 @@ func TestDetectNHTSAClientsAndNotTheOfflineDecoders(t *testing.T) {
 		}
 	}
 }
+
+// The obvious name is a placeholder: the npm package called "wikidata" is two
+// files whose description reads "this is a placeholder for an incoming
+// package", and nothing has arrived.
+//
+// Then the same split as Wikipedia and MusicBrainz: wikibase-sdk, wikibase-edit
+// and nodemw all reach w/api.php, the Action API that predates this one, and
+// only @wmde/wikibase-rest-api and wikibase-rest-api-ts call rest.php/wikibase.
+//
+// Packagist's whole first page is the vendor's own PHP value-object model --
+// wikibase/data-model, data-values/geo, diff/diff at 1.7 million installs --
+// types and parsers that open no connection at all.
+func TestDetectWikibaseRESTClientsAndNotTheActionAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@wmde/wikibase-rest-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"wikibase-rest-api-ts": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "wikidata") {
+			t.Errorf("%v did not detect wikidata: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A placeholder that has been a placeholder for years.
+		{"package.json": `{"dependencies": {"wikidata": "^0.0.1"}}`},
+		// The Action API at w/api.php, which is a different API.
+		{"package.json": `{"dependencies": {"wikibase-sdk": "^10.0.0"}}`},
+		{"package.json": `{"dependencies": {"nodemw": "^0.20.0"}}`},
+		// The vendor's own value-object model, in PHP, with no HTTP in it.
+		{"composer.json": `{"require": {"wikibase/data-model": "^9.0"}}`},
+		{"composer.json": `{"require": {"data-values/geo": "^4.0"}}`},
+		{"composer.json": `{"require": {"diff/diff": "^3.0"}}`},
+		// The data, shipped as a package or read from the dump.
+		{"package.json": `{"dependencies": {"wikidata-lang": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"wikidata-filter": "^5.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "wikidata") {
+			t.Errorf("%v offered the wikidata Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
