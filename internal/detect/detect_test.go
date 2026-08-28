@@ -3700,3 +3700,47 @@ func TestDetectFrankfurterClientsAndNotItsStatusPage(t *testing.T) {
 		}
 	}
 }
+
+// Nominatim is software as well as a service, so three kinds of neighbour are
+// not clients of the public instance. @mailwoman/nominatim serves /search and
+// /reverse and holds no nominatim.openstreetmap.org at all -- the product
+// rather than a client of it. geo-golang's mapquest/nominatim is the same
+// software hosted behind open.mapquestapi.com and an API key, so neither the
+// missing-User-Agent 403 nor the no-credential reading applies there. And
+// tile_proxy is the same project's other service: raster tiles, not JSON.
+func TestDetectNominatimClientsAndNotTheSoftwareOrItsHosts(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"geocoder-php/nominatim-provider": "^5.0"}}`},
+		{"composer.json": `{"require": {"maxh/php-nominatim": "^3.0"}}`},
+		{"package.json": `{"dependencies": {"nominatim-client": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"nominatim-ts": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/doppiogancio/go-nominatim v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "nominatim") {
+			t.Errorf("%v did not detect nominatim: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A Nominatim-compatible server: the product, not a client of it.
+		{"package.json": `{"dependencies": {"@mailwoman/nominatim": "^1.0.0"}}`},
+		// The same software, hosted by somebody else behind an API key.
+		{"go.mod": "module example.com/app\n\nrequire github.com/codingsince1985/geo-golang v1.8.4\n"},
+		// The same project's other service: raster tiles, not JSON.
+		{"composer.json": `{"require": {"codemacher/tile_proxy": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "nominatim") {
+			t.Errorf("%v offered the nominatim Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
