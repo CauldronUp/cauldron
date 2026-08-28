@@ -1,0 +1,732 @@
+# OSV.dev Recipe for Cauldron
+#
+# One vulnerability is three records, and they disagree.
+#
+# The SQL injection fixed in Django 2.2.28, 3.2.13 and 4.0.4 is in OSV three
+# times, under three identifiers, from three databases. Each names the others in
+# aliases. None of them is a redirect:
+#
+#   GHSA-2gwj-7jmv-h26r  summary, severity, database_specific, 3 affected entries
+#   PYSEC-2022-190       no summary, no severity, no database_specific, 1 entry
+#   CVE-2022-28346       no summary, no severity, and no package at all
+#
+# So the shape of the answer depends on which name you looked it up by, and the
+# CVE -- the name a scanner is most likely to hold -- is the emptiest of the
+# three. Code reading vuln.severity[0].score works on the GitHub record and
+# throws on the other two.
+#
+# **And the ranges disagree about which version fixed it.** The GitHub record
+# splits the three release branches into three affected entries with two events
+# each, ascending; the PyPA record packs all three into one entry with six
+# events in one array, descending. So:
+#
+#   affected[0].ranges[0].events[1].fixed  ==  "2.2.28"   on GHSA-2gwj-7jmv-h26r
+#   affected[0].ranges[0].events[1].fixed  ==  "4.0.4"    on PYSEC-2022-190
+#
+# Same vulnerability, same ecosystem, same schema version on both of those
+# records, and reading "the fixed version" the obvious way gives two different
+# answers.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.osv.dev on the date in its verified field.
+#
+# Seven more the Recipe pins:
+#
+#   1. A query counts each advisory once per database. Asking for django 3.2.0
+#      answers 63 vulns -- 36 GHSA and 27 PYSEC -- and 26 of those are pairs
+#      where one entry lists the other in aliases. There are 37 distinct
+#      advisories. A count read off vulns.length overstates by seventy per
+#      cent, and because the array is sorted by id the two halves of a pair sit
+#      forty entries apart: GHSA-2gwj-7jmv-h26r is index 0 and PYSEC-2022-190
+#      is index 44.
+#   2. versions is sorted as text. 2.2.10 comes before 2.2.2, so the last entry
+#      of the 2.2 branch is 2.2.9 while the highest affected release is 2.2.27.
+#      Anything treating versions[-1] as the newest affected version is
+#      eighteen releases out.
+#   3. The CVE record's affected entry has no package: no name, no ecosystem,
+#      no purl. Its range is type GIT and the events are commit hashes. The
+#      version numbers exist, inside database_specific.extracted_events, which
+#      the schema says is not portable between databases.
+#   4. events flattens pairs into one array. Three introduced/fixed pairs are
+#      six adjacent objects, each with a single key, and the pairing is
+#      positional and nothing else.
+#   5. severity is a list of CVSS vector strings with no number anywhere in it,
+#      while database_specific.severity is the word CRITICAL. The same idea
+#      twice, in two vocabularies, neither of them comparable.
+#   6. The three records are not even on one schema version. The CVE record
+#      says 1.9.0 and the other two say 1.7.3, they carry three different
+#      published dates spanning two days, and modified has nine fractional
+#      digits on one and six on the others.
+#   7. No vulnerabilities is a 200 whose body is {}. Not {"vulns": []} -- the
+#      key is absent, so code iterating response.vulns iterates undefined on
+#      exactly the answer it was hoping for.
+#
+# The error codes are the other half of it. code is a gRPC status on one
+# failure and an HTTP status on another:
+#
+#   404  {"code":5,"message":"Vulnerability not found"}   5 is gRPC NOT_FOUND
+#   400  {"code":3,"message":"invalid ecosystem"}         3 is INVALID_ARGUMENT
+#   400  {"message":"Unexpected end of string. Expected a value.\n\n^","code":400}
+#
+# The third is the HTTP status, with the keys in the other order and a trailing
+# newline the other two do not have -- a different layer answering. It is
+# reached only by sending a body that is not JSON, which a conformance case
+# here cannot do, so it is recorded and not served.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Version ranges are not evaluated. A real query decides which advisories
+#     apply to a version by comparing it with the events; this Recipe answers
+#     with what its fixture holds, the same reading recorded for Google Drive's
+#     q and Maven Central's Solr expressions.
+#   - next_page_token is not served. A query without a version can answer with
+#     three thousand vulns and a token beginning "P:", and the token is opaque.
+#   - The querybatch route below serves the stub shape and the empty result,
+#     which is what the shape is for. What it does not do is derive the stubs
+#     from the same fixture the full query uses, because they are two
+#     collections rather than one collection served two ways.
+#
+# The advisories below are public and were recorded on the date in the cases.
+
+recipe: osvdev
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://google.github.io/osv.dev/api/
+
+auth:
+  # Public.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: vulns
+    # No vulnerabilities is {}, not {"vulns": []}.
+    omit_when_empty: true
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    # 5 and 3 are gRPC statuses; they travel as numbers.
+    code_type: number
+
+resources:
+  vulnerability:
+    id:
+      style: opaque
+      field: id
+    fields:
+      # Absent on the PyPA and CVE records. Present only on GitHub's.
+      summary:
+        type: string
+      details:
+        type: string
+      aliases:
+        type: list
+      modified:
+        type: string
+      published:
+        type: string
+      # Other identifiers for the same issue that are not aliases of it.
+      related:
+        type: list
+      # Whatever the source database wanted to add. The schema says nothing
+      # here is portable, and the human-readable severity lives in it.
+      database_specific:
+        type: map
+      references:
+        type: list
+      # One entry per release branch on GitHub's record, one entry for all
+      # three on the PyPA record.
+      affected:
+        type: list
+      schema_version:
+        type: string
+      # CVSS vector strings. There is no number in this field.
+      severity:
+        type: list
+
+  # One result per query in a batch, and a result carries no identifier of its
+  # own: the caller matches results to queries by position.
+  batchresult:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      vulns:
+        type: list
+
+routes:
+  - method: GET
+    path: /v1/vulns/{id}
+    resource: vulnerability
+    operation: get
+    not_found: vuln_missing
+
+  - method: POST
+    path: /v1/query
+    resource: vulnerability
+    operation: list
+
+  - method: POST
+    path: /v1/querybatch
+    resource: batchresult
+    operation: list
+    list:
+      style: wrapped
+      key: results
+      # A batch always answers one result per query, so this one does not omit.
+      omit_when_empty: false
+
+errors:
+  vuln_missing:
+    status: 404
+    # 5 is gRPC NOT_FOUND, on an HTTP API, beside a 404.
+    code: "5"
+    message: Vulnerability not found
+
+  invalid_ecosystem:
+    status: 400
+    # 3 is gRPC INVALID_ARGUMENT.
+    code: "3"
+    message: invalid ecosystem
+
+fixtures:
+  empty: {}
+
+  # The two records an ecosystem query returns for this advisory. The CVE
+  # record is not among them, because it carries no package to match on.
+  django:
+    vulnerability:
+      - id: GHSA-2gwj-7jmv-h26r
+        summary: SQL Injection in Django
+        details: >-
+          An issue was discovered in Django 2.2 before 2.2.28, 3.2 before
+          3.2.13, and 4.0 before 4.0.4. `QuerySet.annotate()`, `aggregate()`,
+          and `extra()` methods are subject to SQL injection in column aliases
+          via a crafted dictionary (with dictionary expansion) as the passed
+          `**kwargs`.
+        aliases:
+          - BIT-django-2022-28346
+          - CVE-2022-28346
+          # The other record in this same list, forty-four entries below.
+          - PYSEC-2022-190
+        modified: "2025-02-21T05:41:10.759178Z"
+        published: "2022-04-13T00:00:33Z"
+        database_specific:
+          # A word, from a vocabulary the severity field below does not use.
+          severity: CRITICAL
+          cwe_ids:
+            - CWE-89
+          github_reviewed_at: "2022-04-22T20:33:03Z"
+          github_reviewed: true
+          nvd_published_at: "2022-04-12T05:15:00Z"
+        # Three of the seventeen the record carries.
+        references:
+          - type: ADVISORY
+            url: https://nvd.nist.gov/vuln/detail/CVE-2022-28346
+          - type: WEB
+            url: https://github.com/django/django/commit/2044dac5c6968441be6f534c4139bcf48c5c7e48
+          - type: WEB
+            url: https://github.com/django/django/commit/2c09e68ec911919360d5f8502cefc312f9e03c5d
+        # One entry per release branch, ascending.
+        affected:
+          - package:
+              name: django
+              ecosystem: PyPI
+              purl: pkg:pypi/django
+            ranges:
+              - type: ECOSYSTEM
+                events:
+                  - introduced: "2.2"
+                  - fixed: "2.2.28"
+            # Sorted as text: 2.2.10 before 2.2.2, so the last entry is 2.2.9
+            # and the highest affected release is 2.2.27.
+            versions:
+              - "2.2"
+              - "2.2.1"
+              - "2.2.10"
+              - "2.2.11"
+              - "2.2.12"
+              - "2.2.13"
+              - "2.2.14"
+              - "2.2.15"
+              - "2.2.16"
+              - "2.2.17"
+              - "2.2.18"
+              - "2.2.19"
+              - "2.2.2"
+              - "2.2.20"
+              - "2.2.21"
+              - "2.2.22"
+              - "2.2.23"
+              - "2.2.24"
+              - "2.2.25"
+              - "2.2.26"
+              - "2.2.27"
+              - "2.2.3"
+              - "2.2.4"
+              - "2.2.5"
+              - "2.2.6"
+              - "2.2.7"
+              - "2.2.8"
+              - "2.2.9"
+            database_specific:
+              source: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/04/GHSA-2gwj-7jmv-h26r/GHSA-2gwj-7jmv-h26r.json
+          - package:
+              name: django
+              ecosystem: PyPI
+              purl: pkg:pypi/django
+            ranges:
+              - type: ECOSYSTEM
+                events:
+                  - introduced: "3.2"
+                  - fixed: "3.2.13"
+            versions:
+              - "3.2"
+              - "3.2.1"
+              - "3.2.10"
+              - "3.2.11"
+              - "3.2.12"
+              - "3.2.2"
+              - "3.2.3"
+              - "3.2.4"
+              - "3.2.5"
+              - "3.2.6"
+              - "3.2.7"
+              - "3.2.8"
+              - "3.2.9"
+          - package:
+              name: django
+              ecosystem: PyPI
+              purl: pkg:pypi/django
+            ranges:
+              - type: ECOSYSTEM
+                events:
+                  - introduced: "4.0"
+                  - fixed: "4.0.4"
+            versions:
+              - "4.0"
+              - "4.0.1"
+              - "4.0.2"
+              - "4.0.3"
+        schema_version: 1.7.3
+        # Two vector strings and no number.
+        severity:
+          - type: CVSS_V3
+            score: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+          - type: CVSS_V4
+            score: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+
+      # The same vulnerability. No summary, no severity, no database_specific,
+      # and all three branches in one affected entry with the events reversed.
+      - id: PYSEC-2022-190
+        details: >-
+          An issue was discovered in Django 2.2 before 2.2.28, 3.2 before
+          3.2.13, and 4.0 before 4.0.4. QuerySet.annotate(), aggregate(), and
+          extra() methods are subject to SQL injection in column aliases via a
+          crafted dictionary (with dictionary expansion) as the passed **kwargs.
+        aliases:
+          - BIT-django-2022-28346
+          - CVE-2022-28346
+          - GHSA-2gwj-7jmv-h26r
+        modified: "2023-12-06T01:02:11.594317Z"
+        published: "2022-04-12T05:15:00Z"
+        references:
+          - type: WEB
+            url: http://www.openwall.com/lists/oss-security/2022/04/11/1
+          - type: WEB
+            url: https://docs.djangoproject.com/en/4.0/releases/security/
+          - type: ARTICLE
+            url: https://www.djangoproject.com/weblog/2022/apr/11/security-releases/
+        affected:
+          - package:
+              name: django
+              ecosystem: PyPI
+              purl: pkg:pypi/django
+            ranges:
+              # Six events in one array, newest branch first, so events[1] is
+              # 4.0.4 here and 2.2.28 on the record above.
+              - type: ECOSYSTEM
+                events:
+                  - introduced: "4.0"
+                  - fixed: "4.0.4"
+                  - introduced: "3.2"
+                  - fixed: "3.2.13"
+                  - introduced: "2.2"
+                  - fixed: "2.2.28"
+            versions:
+              - "2.2"
+              - "2.2.1"
+              - "2.2.10"
+              - "2.2.11"
+              - "2.2.12"
+              - "2.2.13"
+              - "2.2.14"
+              - "2.2.15"
+              - "2.2.16"
+              - "2.2.17"
+              - "2.2.18"
+              - "2.2.19"
+              - "2.2.2"
+              - "2.2.20"
+              - "2.2.21"
+              - "2.2.22"
+              - "2.2.23"
+              - "2.2.24"
+              - "2.2.25"
+              - "2.2.26"
+              - "2.2.27"
+              - "2.2.3"
+              - "2.2.4"
+              - "2.2.5"
+              - "2.2.6"
+              - "2.2.7"
+              - "2.2.8"
+              - "2.2.9"
+              - "3.2"
+              - "3.2.1"
+              - "3.2.10"
+              - "3.2.11"
+              - "3.2.12"
+              - "3.2.2"
+              - "3.2.3"
+              - "3.2.4"
+              - "3.2.5"
+              - "3.2.6"
+              - "3.2.7"
+              - "3.2.8"
+              - "3.2.9"
+              - "4.0"
+              - "4.0.1"
+              - "4.0.2"
+              - "4.0.3"
+            database_specific:
+              source: https://github.com/pypa/advisory-database/blob/main/vulns/django/PYSEC-2022-190.yaml
+        schema_version: 1.7.3
+
+  # The third record for the same issue, and the one with nothing in it.
+  cve:
+    vulnerability:
+      - id: CVE-2022-28346
+        details: >-
+          An issue was discovered in Django 2.2 before 2.2.28, 3.2 before
+          3.2.13, and 4.0 before 4.0.4. QuerySet.annotate(), aggregate(), and
+          extra() methods are subject to SQL injection in column aliases via a
+          crafted dictionary (with dictionary expansion) as the passed **kwargs.
+        aliases:
+          - BIT-django-2022-28346
+          - GHSA-2gwj-7jmv-h26r
+          - PYSEC-2022-190
+        # Nine fractional digits, where the other two records have six.
+        modified: "2026-08-12T03:51:13.294825765Z"
+        # And a third publication date for one vulnerability.
+        published: "2022-04-12T00:00:00Z"
+        related:
+          - SUSE-SU-2022:3338-1
+          - SUSE-SU-2022:3339-1
+          - SUSE-SU-2024:2817-1
+        database_specific:
+          cna_assigner: mitre
+          osv_generated_from: https://github.com/CVEProject/cvelistV5/tree/main/cves/2022/28xxx/CVE-2022-28346.json
+        references:
+          - type: WEB
+            url: http://www.openwall.com/lists/oss-security/2022/04/11/1
+        affected:
+          # No package key at all: no name, no ecosystem, no purl.
+          - ranges:
+              # Commit hashes rather than versions, and three pairs flattened
+              # into six adjacent single-key objects.
+              - type: GIT
+                repo: https://github.com/django/django
+                events:
+                  - introduced: 2a62cdcfec85938f40abb2e9e6a9ff497e02afe8
+                  - fixed: 5c3300027b30c1b498d99010f7d618316f685045
+                  - introduced: 3591e1c1acbd7c13174275367c3fdf012cb0413b
+                  - fixed: 08e6073f878264a0c091da0d3db456820252ef6c
+                  - introduced: ef62a3a68c9d558486145a42c0d71ea9a76add9e
+                  - fixed: 89807fbde8b7b17d00434bc4695535855e96fe77
+                database_specific:
+                  source: CPE_RANGE
+                  cpe: cpe:2.3:a:djangoproject:django:*:*:*:*:*:*:*:*
+                  # The version numbers, in a namespace the schema says is not
+                  # portable between databases.
+                  extracted_events:
+                    - introduced: "2.2"
+                    - fixed: "2.2.28"
+                    - introduced: "3.2"
+                    - fixed: "3.2.13"
+                    - introduced: "4.0"
+                    - fixed: "4.0.4"
+        # 1.9.0, where the other two records say 1.7.3.
+        schema_version: 1.9.0
+
+  # One result per query, in order. The vulns here carry two fields where the
+  # same key on /v1/query carries the whole advisory.
+  batch:
+    batchresult:
+      - id: query-0
+        vulns:
+          - id: GHSA-2gwj-7jmv-h26r
+            modified: "2025-02-21T05:41:10.759178Z"
+          - id: PYSEC-2022-190
+            modified: "2023-12-06T01:02:11.594317Z"
+      # A query that matched nothing. The key is absent, so the result is {}.
+      - id: query-1
+
+conformance:
+  - name: one advisory is in the list twice, under two ids, forty entries apart
+    source: https://api.osv.dev/v1/query
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: POST
+      path: /v1/query
+      json:
+        package:
+          name: django
+          ecosystem: PyPI
+        version: 3.2.0
+    expect:
+      status: 200
+      body:
+        # The live answer is 63 vulns for this query, of which 26 are pairs
+        # like this one, so there are 37 distinct advisories. vulns.length
+        # overstates by seventy per cent.
+        "vulns[0].id": GHSA-2gwj-7jmv-h26r
+        "vulns[1].id": PYSEC-2022-190
+        # And each names the other, so the duplication is stated in the data.
+        "vulns[0].aliases[2]": PYSEC-2022-190
+        "vulns[1].aliases[2]": GHSA-2gwj-7jmv-h26r
+
+  - name: the two records disagree about which version fixed it
+    source: https://api.osv.dev/v1/vulns/GHSA-2gwj-7jmv-h26r
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/GHSA-2gwj-7jmv-h26r
+    expect:
+      status: 200
+      body:
+        # Three branches, three affected entries, two events each, ascending.
+        "affected[0].ranges[0].events[0].introduced": "2.2"
+        "affected[0].ranges[0].events[1].fixed": "2.2.28"
+        "affected[1].ranges[0].events[0].introduced": "3.2"
+        "affected[2].ranges[0].events[0].introduced": "4.0"
+
+  - name: and the same advisory under its other id answers 4.0.4 there
+    source: https://api.osv.dev/v1/vulns/PYSEC-2022-190
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/PYSEC-2022-190
+    expect:
+      status: 200
+      body:
+        # One entry, six events in one array, newest branch first. Reading
+        # "the fixed version" the same way as above gives a different answer.
+        "affected[0].ranges[0].events[1].fixed": 4.0.4
+        "affected[0].ranges[0].events[5].fixed": 2.2.28
+      absent:
+        - affected[1]
+
+  - name: the PyPA record has no summary and no severity
+    source: https://api.osv.dev/v1/vulns/PYSEC-2022-190
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/PYSEC-2022-190
+    expect:
+      status: 200
+      body:
+        # Same schema version as the record that has both.
+        schema_version: 1.7.3
+      absent:
+        # vuln.severity[0].score throws here and works on GHSA-2gwj-7jmv-h26r.
+        - severity
+        - summary
+        - database_specific
+
+  - name: the CVE record has no package at all
+    source: https://api.osv.dev/v1/vulns/CVE-2022-28346
+    verified: "2026-08-27"
+    fixture: cve
+    request:
+      method: GET
+      path: /v1/vulns/CVE-2022-28346
+    expect:
+      status: 200
+      body:
+        # Commit hashes, and the ecosystem is nowhere in the entry.
+        "affected[0].ranges[0].type": GIT
+        "affected[0].ranges[0].repo": https://github.com/django/django
+      absent:
+        - affected[0].package
+        - severity
+        - summary
+
+  - name: the version numbers are in a namespace that is not portable
+    source: https://api.osv.dev/v1/vulns/CVE-2022-28346
+    verified: "2026-08-27"
+    fixture: cve
+    request:
+      method: GET
+      path: /v1/vulns/CVE-2022-28346
+    expect:
+      status: 200
+      body:
+        # Three introduced/fixed pairs, flattened into six adjacent single-key
+        # objects, so the pairing is positional and nothing else.
+        "affected[0].ranges[0].events[0].introduced": 2a62cdcfec85938f40abb2e9e6a9ff497e02afe8
+        "affected[0].ranges[0].events[1].fixed": 5c3300027b30c1b498d99010f7d618316f685045
+        "affected[0].ranges[0].database_specific.extracted_events[1].fixed": "2.2.28"
+        "affected[0].ranges[0].database_specific.extracted_events[5].fixed": "4.0.4"
+
+  - name: three records for one issue, on two schema versions, published twice
+    source: https://api.osv.dev/v1/vulns/CVE-2022-28346
+    verified: "2026-08-27"
+    fixture: cve
+    request:
+      method: GET
+      path: /v1/vulns/CVE-2022-28346
+    expect:
+      status: 200
+      body:
+        # The other two say 1.7.3. So a client validating against the schema
+        # version it read from one record is validating the wrong one.
+        schema_version: 1.9.0
+        # Midnight, where PYSEC-2022-190 says 05:15:00 and GHSA-2gwj-7jmv-h26r
+        # says the next day.
+        published: "2022-04-12T00:00:00Z"
+        # And nine fractional digits where the others have six.
+        modified: "2026-08-12T03:51:13.294825765Z"
+
+  - name: versions is sorted as text, so the last entry is not the newest
+    source: https://api.osv.dev/v1/vulns/GHSA-2gwj-7jmv-h26r
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/GHSA-2gwj-7jmv-h26r
+    expect:
+      status: 200
+      body:
+        # 2.2.10 sits third, before 2.2.2, and the highest affected release
+        # 2.2.27 sits twenty-first. versions[-1] is 2.2.9.
+        "affected[0].versions[2]": "2.2.10"
+        "affected[0].versions[12]": "2.2.2"
+        "affected[0].versions[20]": "2.2.27"
+        "affected[0].versions[27]": "2.2.9"
+
+  - name: severity is a vector string here and a word over there
+    source: https://api.osv.dev/v1/vulns/GHSA-2gwj-7jmv-h26r
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/GHSA-2gwj-7jmv-h26r
+    expect:
+      status: 200
+      body:
+        # Two CVSS versions, both as vectors. There is no number in the field.
+        "severity[0].type": CVSS_V3
+        "severity[0].score": CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+        "severity[1].type": CVSS_V4
+        # And the readable one is in the namespace the schema calls unportable.
+        "database_specific.severity": CRITICAL
+
+  - name: no vulnerabilities is an empty object rather than an empty list
+    source: https://api.osv.dev/v1/query
+    verified: "2026-08-27"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/query
+      json:
+        package:
+          name: cauldron-not-a-real-package-xyz
+          ecosystem: PyPI
+        version: 1.0.0
+    expect:
+      # 200 with {}. Code iterating response.vulns iterates undefined on
+      # exactly the answer it was hoping for.
+      status: 200
+      body: {}
+      absent:
+        - vulns
+
+  - name: a batch answers with stubs under the same key the full query uses
+    source: https://api.osv.dev/v1/querybatch
+    verified: "2026-08-27"
+    fixture: batch
+    request:
+      method: POST
+      path: /v1/querybatch
+      json:
+        queries:
+          - package:
+              name: django
+              ecosystem: PyPI
+            version: 3.2.0
+          - package:
+              name: cauldron-nope
+              ecosystem: PyPI
+            version: 1.0.0
+    expect:
+      status: 200
+      body:
+        # Two fields where /v1/query sends the whole advisory, and results are
+        # matched to queries by position because they carry no identifier.
+        "results[0].vulns[0].id": GHSA-2gwj-7jmv-h26r
+        "results[0].vulns[0].modified": "2025-02-21T05:41:10.759178Z"
+      absent:
+        # No summary, no affected, no severity -- and the second result is {}.
+        - results[0].vulns[0].summary
+        - results[0].vulns[0].affected
+        - results[1].vulns
+        # A result carries no identifier of its own either, so the only way to
+        # know which query answered is to count.
+        - results[0].id
+
+  - name: a vulnerability that is not there answers with a gRPC status code
+    source: https://api.osv.dev/v1/vulns/GHSA-0000-0000-0000
+    verified: "2026-08-27"
+    fixture: django
+    request:
+      method: GET
+      path: /v1/vulns/GHSA-0000-0000-0000
+    expect:
+      # 5 is NOT_FOUND in gRPC. The HTTP status beside it is 404.
+      status: 404
+      body:
+        code: 5
+        message: Vulnerability not found
+
+  - name: and an ecosystem that does not exist answers with a different one
+    source: https://api.osv.dev/v1/query
+    verified: "2026-08-27"
+    fixture: django
+    arm: invalid_ecosystem
+    request:
+      method: POST
+      path: /v1/query
+      json:
+        package:
+          name: django
+          ecosystem: NotAnEcosystem
+        version: 3.2.0
+    expect:
+      # 3 is INVALID_ARGUMENT. Same field, same API, and neither number is the
+      # HTTP status sitting beside it.
+      status: 400
+      body:
+        code: 3
+        message: invalid ecosystem
