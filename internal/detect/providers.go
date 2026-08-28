@@ -1315,6 +1315,27 @@ func providers() []provider {
 			},
 		},
 		{
+			// The thinnest neighbourhood in this collection, and the funniest near
+			// miss in it. haoteam/hippo-buyer-php-sdk describes itself as a
+			// "hippopotamus buyer php sdk" and matches on -potam-, the Greek root
+			// for river that both names happen to carry. A substring of an animal.
+			//
+			// @pipeworx/mcp-zippopotam is the seventh Recipe running for that
+			// publisher, after the Go proxy, deps.dev, Open-Meteo, USGS,
+			// Frankfurter and Open Food Facts.
+			//
+			// Mapped: two PHP wrappers, a Go package under a ziplookup module, and
+			// @eusilvio/zip-lookup, which calls itself an agnostic US ZIP lookup
+			// and reaches this host for the data.
+			recipe: "zippopotam",
+			composer: []string{
+				"zippopotamus/zippopotamus",
+				"th3fallen/zippopotamus-api",
+			},
+			npm:   []string{"@eusilvio/zip-lookup"},
+			gomod: []string{"github.com/johnnypivot/ziplookup"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
