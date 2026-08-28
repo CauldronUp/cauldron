@@ -4066,3 +4066,42 @@ func TestDetectCrossrefClientsAndNotEveryCrossReference(t *testing.T) {
 		}
 	}
 }
+
+// The thinnest neighbourhood in this collection, and the funniest near miss in
+// it: haoteam/hippo-buyer-php-sdk is a "hippopotamus buyer php sdk" and matches
+// on -potam-, the Greek root for river that both names happen to carry.
+func TestDetectZippopotamClientsAndNotTheHippopotamus(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"composer.json": `{"require": {"zippopotamus/zippopotamus": "^1.0"}}`},
+		{"composer.json": `{"require": {"th3fallen/zippopotamus-api": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@eusilvio/zip-lookup": "^1.0.0"}}`},
+		{"go.mod": "module example.com/app\n\nrequire github.com/johnnypivot/ziplookup v0.1.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "zippopotam") {
+			t.Errorf("%v did not detect zippopotam: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A substring of an animal.
+		{"composer.json": `{"require": {"haoteam/hippo-buyer-php-sdk": "^1.0"}}`},
+		// Agent tooling, for the seventh Recipe running from one publisher.
+		{"package.json": `{"devDependencies": {"@pipeworx/mcp-zippopotam": "^1.0.0"}}`},
+		// Weather, by zip code.
+		{"package.json": `{"devDependencies": {"arunsiv-weather-mcp-server": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "zippopotam") {
+			t.Errorf("%v offered the zippopotam Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
