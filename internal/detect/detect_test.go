@@ -4603,3 +4603,50 @@ func TestDetectOpenBreweryClientsAndNotBreweryDB(t *testing.T) {
 		}
 	}
 }
+
+// "Poetry" in a package registry usually means the Python packaging tool:
+// snyk-poetry-lockfile-parser reads poetry.lock against python-poetry.org, and
+// four semantic-release plugins bump versions in its files. It is also the
+// European Commission's translation service, which ec-europa/oe-poetry-client
+// talks to. And chinese-poetry is three hundred thousand poems shipped as
+// files, which never opens a connection.
+func TestDetectPoetryDBClientsAndNotThePythonTool(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@refkit/provider-poetrydb": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"poemist": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "poetrydb") {
+			t.Errorf("%v did not detect poetrydb: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Python packaging tool.
+		{"package.json": `{"dependencies": {"snyk-poetry-lockfile-parser": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@almapario/vercel-poetry": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@covage/semantic-release-poetry-plugin": "^1.0.0"}}`},
+		// The European Commission's translation service.
+		{"composer.json": `{"require": {"ec-europa/oe-poetry-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"ec-europa/oe-poetry-behat": "^1.0"}}`},
+		// Divination verses, and the bare name.
+		{"composer.json": `{"require": {"destinylab/lottery-poetry-engine": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"poetry": "^1.0.0"}}`},
+		// Poems, shipped as files or scraped from somewhere else.
+		{"package.json": `{"dependencies": {"chinese-poetry": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"balkhiate": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "poetrydb") {
+			t.Errorf("%v offered the poetrydb Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
