@@ -1659,6 +1659,44 @@ func providers() []provider {
 			},
 		},
 		{
+			// One word apart, and a different company: BreweryDB is a commercial
+			// API on api.brewerydb.com that required a key and closed its free
+			// tier. It has more clients than this one does. brewerydb-node,
+			// node-brewerydb, brewerydb-graphql and the bare npm name "brewery"
+			// all call it, and so do ethanclevenger91/brewerydb-php and
+			// liamthegrey/brewerydb-php on Packagist.
+			//
+			// The pair to watch is openbrewerydb-node against brewerydb-node.
+			// Same suffix, same shape, one word of difference, and two different
+			// hosts -- so a prefix or substring match on "brewerydb" maps half the
+			// neighbourhood to the wrong API.
+			//
+			// "Brewery" on npm is also a software project with no beer in it.
+			// @brewery/cli, brewery-core, brewery-core-cli and generator-brewery
+			// belong to a scaffolding tool called The Brewery, and @brewery/cli's
+			// only hosts are AWS and a private GitLab. @spbrewery/log is one
+			// company's logger, @house-agency/brewmail is a mailer, and
+			// @brewnode/server automates brewing hardware.
+			//
+			// Two more are beer and still not this. @umbraculum/brewery-api-client
+			// covers "recipes, water, brew sessions, inventory" -- running a
+			// brewery rather than listing them -- and @unclick/untappd-mcp is
+			// Untappd. On Packagist, brewerwall is a vendor whose name begins with
+			// brewer and whose packages are a barcode generator, beer calculations
+			// and a unit-conversion model; beercalc_php's only host is hbd.org.
+			//
+			// Nothing on Go modules calls this API at all.
+			recipe: "openbrewerydb",
+			composer: []string{
+				"joeymckenzie/openbrewerydb-php-api",
+				"alexjustesen/php-openbrewerydb",
+			},
+			npm: []string{
+				"openbrewerydb-node",
+				"breweries-cli",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
