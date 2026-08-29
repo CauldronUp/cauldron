@@ -4328,3 +4328,47 @@ func TestDetectGBIFClientsAndNotTheGIFCodec(t *testing.T) {
 		}
 	}
 }
+
+// The Sunrise-Sunset shape again: a holiday calendar is a rule set, so the
+// neighbourhood computes rather than asks. date-holidays carries the rules for
+// every country and poland-public-holidays says "compute" in its own
+// description; neither opens a connection.
+//
+// Two more are written for versions that are not there: @pontx/nager-date calls
+// itself a "v4 SDK" and /api/v4/ answers 404, and @thomasc93/holidates builds
+// /api/v2/publicholidays/ which answers 404 too.
+func TestDetectNagerDateClientsAndNotTheRuleSets(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"composer.json": `{"require": {"rolle-marketplace/nager-date-laravel": "^1.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "nagerdate") {
+		t.Errorf("the Laravel wrapper did not detect nagerdate: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// Rules, not requests.
+		{"package.json": `{"dependencies": {"date-holidays": "^3.23.0"}}`},
+		{"package.json": `{"dependencies": {"poland-public-holidays": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@18f/us-federal-holidays": "^4.0.0"}}`},
+		// Somebody else's answer to the same question.
+		{"package.json": `{"dependencies": {"public-holidays": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@festivo-io/festivo-sdk": "^1.0.0"}}`},
+		// Written for versions that are not there.
+		{"package.json": `{"dependencies": {"@pontx/nager-date": "^1.0.0"}}`},
+		// What "nager" returns on Packagist, by edit distance.
+		{"composer.json": `{"require": {"socialiteproviders/naver": "^4.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "nagerdate") {
+			t.Errorf("%v offered the nagerdate Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
