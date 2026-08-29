@@ -4650,3 +4650,56 @@ func TestDetectPoetryDBClientsAndNotThePythonTool(t *testing.T) {
 		}
 	}
 }
+
+// Packagist answers "datamuse" with monolog and doctrine/orm, because nothing
+// matches and the search falls back to popularity -- so a detector reading
+// search results rather than names would map Monolog to a rhyming dictionary.
+//
+// Wordnik is the other dictionary API, and searching for it returns the whole
+// Swagger toolchain: Swagger was created at Wordnik, so swagger-node-express
+// still points at api.wordnik.com. The rest of the neighbourhood computes from
+// the CMU Pronouncing Dictionary or calls onelook.com instead.
+func TestDetectDatamuseClientsAndNotPackagistsPopularityFallback(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"datamuse": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"homophones": "^1.0.0"}}`},
+		// Two Muses, one package.
+		{"package.json": `{"dependencies": {"polymnia": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"melpomene": "^1.0.0"}}`},
+		{"go.mod": "module x\n\nrequire github.com/kostaspt/go-datamuse/v2 v2.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "datamuse") {
+			t.Errorf("%v did not detect datamuse: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// What Packagist returns when nothing matches.
+		{"composer.json": `{"require": {"monolog/monolog": "^3.0"}}`},
+		{"composer.json": `{"require": {"doctrine/orm": "^3.0"}}`},
+		{"composer.json": `{"require": {"spatie/laravel-backup": "^8.0"}}`},
+		// The other dictionary API, and the spec toolchain named after it.
+		{"package.json": `{"dependencies": {"wordnik": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"swagger-node-express": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"swagger-validation": "^1.0.0"}}`},
+		// Computed from a shipped dictionary, or not computed at all.
+		{"package.json": `{"dependencies": {"nounsing-pro": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"rhymes-with": "^1.0.0"}}`},
+		// The same author's other site, which is a different API.
+		{"package.json": `{"dependencies": {"alfred-spell": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "datamuse") {
+			t.Errorf("%v offered the datamuse Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

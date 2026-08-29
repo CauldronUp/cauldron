@@ -214,7 +214,18 @@ func (r *router) matchSelecting(method, path, query, body string, params url.Val
 				continue
 			}
 
-			score += 1000
+			// Per parameter, so a route matching two of them beats a route
+			// matching one. This used to be a flat bonus, which made two
+			// matching routes tie and handed the request to whichever was
+			// declared first -- silently, and with nothing in either route
+			// saying it depended on the order.
+			//
+			// Datamuse is what found it. /words?rel_rhy=blue answers a
+			// syllable count and no tags; adding md=dpsr answers both plus
+			// definitions. Modelled as two routes, the second request matched
+			// them both and got the first one's answer, so the Recipe declared
+			// five fields and served three.
+			score += 1000 * len(candidate.spec.MatchesQuery)
 		}
 
 		if score > bestScore {

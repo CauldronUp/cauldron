@@ -1726,6 +1726,52 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist answers "datamuse" with its most popular packages --
+			// monolog, doctrine/orm, doctrine/dbal, spatie/laravel-backup, phinx --
+			// because nothing matches and the search falls back to popularity. A
+			// detector reading search results rather than names would map Monolog
+			// to a rhyming dictionary.
+			//
+			// The one real candidate there is undeadyetii/datamuse-php-api-wrapper,
+			// and it is deliberately not mapped: its GitHub repository is gone, so
+			// the source cannot be opened, and the only evidence is the registry's
+			// own description. That is exactly the evidence latlon-utils had -- it
+			// carries noaajs's description word for word and calls nothing -- so a
+			// sentence is not enough on its own.
+			//
+			// Wordnik is the other dictionary API, and it needs a key. Searching
+			// for it returns the entire Swagger toolchain, because Swagger was
+			// created at Wordnik: swagger-node-express is "Wordnik swagger
+			// implementation for the express framework" and still points at
+			// api.wordnik.com, and swagger-validation and two forks come with it.
+			// The vendor invented a spec format, so the format's tooling carries
+			// the vendor's name.
+			//
+			// Three more compute or look elsewhere. nounsing-pro is built on the
+			// CMU Pronouncing Dictionary at speech.cs.cmu.edu and ships the data;
+			// rhymes-with decides whether two words rhyme without opening a
+			// connection; and alfred-spell calls onelook.com, which is the same
+			// author's other site and a different API.
+			//
+			// polymnia and melpomene are two Muses and one package: identical
+			// descriptions, identical lib/make_request.js, both mapped.
+			recipe: "datamuse",
+			npm: []string{
+				"datamuse",
+				"datamuse-node",
+				"datamuse-word-utils",
+				"homophones",
+				"wordfuzz",
+				"wordie",
+				"polymnia",
+				"melpomene",
+			},
+			gomod: []string{
+				"github.com/kostaspt/go-datamuse/v2",
+				"github.com/stefanoghinelli/asyn",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

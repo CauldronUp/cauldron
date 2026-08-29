@@ -1,0 +1,465 @@
+# Datamuse Recipe for Cauldron
+#
+# A definition is a part of speech, a tab character and a sentence, in one
+# string.
+#
+#   "defs": ["n\tA large amount. ", "v\t(intransitive) To skid. "]
+#
+# Two fields packed into a JSON string with a control character between them,
+# inside a format that has arrays and objects for exactly this. Reading the
+# definition means splitting on "\t" and taking index 1; reading the part of
+# speech means taking index 0. And every entry ends in a space, so a client that
+# does the split and renders the result shows trailing whitespace it never asked
+# for.
+#
+# **And tags is three vocabularies in one array of strings.** ["n", "v",
+# "pron:S L UW1 "] holds bare part-of-speech codes beside a colon-prefixed
+# key-value pair, so tags.includes("n") works and getting the pronunciation
+# means scanning the same array for a prefix and splitting on a colon. The
+# pronunciation itself carries a trailing space too, and results_type and f
+# arrive the same way.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.datamuse.com on the date in its verified field.
+#
+# Four more the Recipe pins:
+#
+#   1. A bad parameter name, a bad parameter value and a bad parameter sign are
+#      200, 400 and 500. ?nosuchparam=x is an empty array with a 200, so a typo
+#      in a name is indistinguishable from a query that matched nothing.
+#      ?max=abc is a clean 400 naming the parameter. And ?max=-1 is a 500 with
+#      an incident id, because the validation that caught "abc" checks the type
+#      and not the sign.
+#   2. score is an integer with no scale anywhere. 40,041,792 for a synonym of
+#      "ocean" and 10,051 for a spelling suggestion -- three orders of magnitude
+#      apart, on the same host, with nothing saying what either means. It is a
+#      rank, not a measure, and the numbers invite arithmetic that means nothing.
+#   3. Three queries on one endpoint answer three different field sets, and md=
+#      explains only one of the differences. ?ml=ocean gets word, score and
+#      tags; ?rel_rhy=blue gets word, score and numSyllables -- a syllable count
+#      nobody asked for, and no tags at all; adding md=dpsr to the rhyme query
+#      gets all five. So the shape follows the relation as well as the metadata
+#      flag, and a client written against one of them finds undefined on
+#      another.
+#   4. /sug and /words answer different shapes. A suggestion has word and score
+#      and nothing else -- no tags, no numSyllables -- so the two endpoints on
+#      one host do not share a type.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Results are served, not computed. The real API ranks a dictionary against
+#     a query; this answers the fixture's words for the queries it was checked
+#     against.
+#   - "slew" has thirteen definitions and two are served, chosen to carry both
+#     parts of speech.
+#   - The unknown-parameter case is served from an empty store. Cauldron
+#     answers with what a fixture holds, so the case shows the shape of that
+#     answer -- 200 and a bare [] -- and cannot show that the parameter being
+#     unknown is what caused it.
+#   - max is documented at 1000 and ?max=9999 was accepted and answered with all
+#     467 matches rather than a clamp or a refusal. The behaviour is recorded
+#     here and not served, because the fixture has three words.
+#   - The 404 for an unknown path and the 405 for a POST are recorded and not
+#      served: both answer {code, message} with the status written out in prose
+#      inside the sentence -- "HTTP 404 Not Found" -- so the same fact arrives
+#      three times. The 404 is declared as an injectable failure.
+#   - Only /words and /sug are modelled.
+
+recipe: datamuse
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: datamuse
+  docs: https://www.datamuse.com/api/
+
+auth:
+  # Public, and no key for the first hundred thousand requests a day.
+  scheme: none
+
+responses:
+  list:
+    # A bare array. No envelope, no count, no paging of any kind.
+    style: bare
+  error:
+    # A flat {code, message}, and the code repeats the HTTP status.
+    style: flat
+    code_field: code
+    code_type: number
+    message_field: message
+
+resources:
+  word:
+    id:
+      style: opaque
+      # A result carries no identifier; the word is the whole of it.
+      field: "-"
+      carried_by: word
+    fields:
+      word:
+        type: string
+      # An integer with no documented scale.
+      score:
+        type: integer
+      # Part-of-speech codes and colon-prefixed pairs, in one array.
+      tags:
+        type: list
+      # Only present when md= asks for it.
+      numSyllables:
+        type: integer
+      # Tab-delimited, two fields per string.
+      defs:
+        type: list
+
+  suggestion:
+    id:
+      style: opaque
+      field: "-"
+      carried_by: word
+    fields:
+      word:
+        type: string
+      # The same key, three orders of magnitude smaller.
+      score:
+        type: integer
+
+routes:
+  # The refusals come first: a request carrying both a relation and a bad max
+  # matches two routes with one parameter each, and a tie among query-matched
+  # routes goes to whichever is declared first.
+  # max=abc: a 400 with a sentence naming the parameter.
+  - method: GET
+    path: /words
+    matches_query:
+      max: abc
+    error: max_not_a_number
+
+  # max=-1: a 500 with an incident id. The same parameter, checked for its type
+  # and not for its sign.
+  - method: GET
+    path: /words
+    matches_query:
+      max: "-1"
+    error: unhandled
+
+  # Asking what a word means gets tags and no syllable count.
+  - method: GET
+    path: /words
+    resource: word
+    operation: list
+    matches_query:
+      ml: ocean
+    returns: [word, score, tags]
+
+  # Asking what a word rhymes with gets a syllable count and no tags -- the
+  # same endpoint, the same absence of md=, and a different set of fields.
+  - method: GET
+    path: /words
+    resource: word
+    operation: list
+    matches_query:
+      rel_rhy: blue
+    returns: [word, score, numSyllables]
+
+  # And md= adds the two that neither of the others had. It names the relation
+  # as well, so that a request carrying both is answered by this route rather
+  # than by the one above it: two matched parameters beat one.
+  - method: GET
+    path: /words
+    resource: word
+    operation: list
+    matches_query:
+      rel_rhy: blue
+      md: dpsr
+
+  # A fallback, so a query this Recipe was not checked against answers the
+  # empty array the API answers rather than a routing failure.
+  - method: GET
+    path: /words
+    resource: word
+    operation: list
+    returns: [word, score]
+
+  - method: GET
+    path: /sug
+    resource: suggestion
+    operation: list
+
+errors:
+  # A specific, useful sentence: the parameter is named and the problem is
+  # stated.
+  max_not_a_number:
+    status: 400
+    code: "400"
+    message: query param max is not a number.
+
+  # And the same parameter one value later, unhandled. max=-1 is not refused
+  # and not clamped: it is a 500 with an incident id, so the validation that
+  # caught "abc" checks the type and not the sign.
+  unhandled:
+    status: 500
+    code: "500"
+    message: There was an error processing your request. It has been logged (ID 8cef6ca7db3e9cea).
+
+  # A path that does not exist, whose message is the status written out in
+  # prose -- so the same fact arrives three times: in the status line, in the
+  # code field, and inside the sentence.
+  path_not_found:
+    status: 404
+    code: "404"
+    message: HTTP 404 Not Found
+
+fixtures:
+  empty: {}
+
+  ocean:
+    word:
+      - id: sea
+        word: sea
+        score: 40041792
+        # Known, and withheld: ?ml=ocean&md=s answers 1, and ?ml=ocean alone
+        # answers no syllable count at all.
+        numSyllables: 1
+        tags:
+          # A relationship, a part of speech, and a key-value pair, in that
+          # order, in one array of strings.
+          - syn
+          - n
+          - results_type:primary_rel
+
+      - id: expanse
+        word: expanse
+        score: 30041645
+        numSyllables: 2
+        tags:
+          - n
+
+      - id: oceanic
+        word: oceanic
+        score: 30041524
+        numSyllables: 4
+        tags:
+          - adj
+          - n
+          - prop
+
+  slew:
+    word:
+      - id: slew
+        word: slew
+        score: 41039
+        # Absent entirely unless md= asks for it.
+        numSyllables: 1
+        tags:
+          - n
+          - v
+          # ARPAbet, in a tag, with a trailing space.
+          - "pron:S L UW1 "
+        defs:
+          # A part of speech, a tab, a sentence, and a trailing space. Two of
+          # the real thirteen.
+          - "n\tA large amount. "
+          - "v\t(intransitive) To skid. "
+
+      - id: subdue
+        word: subdue
+        score: 31034
+        numSyllables: 2
+        tags:
+          - v
+          - "pron:S AH0 B D UW1 "
+        defs:
+          - "v\t(transitive) To overcome, quieten, or bring under control. "
+
+  suggestions:
+    suggestion:
+      - id: rhythm
+        word: rhythm
+        score: 10051
+      - id: rhythmic
+        word: rhythmic
+        score: 10028
+      - id: rhythmical
+        word: rhythmical
+        score: 6023
+
+conformance:
+  - name: a definition is two fields packed into a string with a tab
+    source: https://api.datamuse.com/words?rel_rhy=blue&md=dpsr&max=2
+    verified: "2026-08-29"
+    fixture: slew
+    request:
+      method: GET
+      path: /words?rel_rhy=blue&md=dpsr&max=2
+    expect:
+      status: 200
+      body:
+        # A part of speech, a literal tab, a sentence, and a trailing space --
+        # inside a format that has arrays and objects for exactly this.
+        "[0].defs[0]": "n\tA large amount. "
+        "[0].defs[1]": "v\t(intransitive) To skid. "
+        "[1].defs[0]": "v\t(transitive) To overcome, quieten, or bring under control. "
+
+  - name: tags is three vocabularies in one array of strings
+    source: https://api.datamuse.com/words?rel_rhy=blue&md=dpsr&max=2
+    verified: "2026-08-29"
+    fixture: slew
+    request:
+      method: GET
+      path: /words?rel_rhy=blue&md=dpsr&max=2
+    expect:
+      status: 200
+      body:
+        # Bare part-of-speech codes.
+        "[0].tags[0]": n
+        "[0].tags[1]": v
+        # And a colon-prefixed pair in the same array, trailing space and all.
+        "[0].tags[2]": "pron:S L UW1 "
+        # The second word has one part of speech and the same kind of pair, so
+        # the position of the colon-prefixed entry moves with the array's
+        # length.
+        "[1].tags[0]": v
+        "[1].tags[1]": "pron:S AH0 B D UW1 "
+
+  - name: a relationship marker and a key-value pair share the array too
+    source: https://api.datamuse.com/words?ml=ocean&max=3
+    verified: "2026-08-29"
+    fixture: ocean
+    request:
+      method: GET
+      path: /words?ml=ocean&max=3
+    expect:
+      status: 200
+      body:
+        # syn is a relationship, n is a part of speech, and results_type is a
+        # key with a value -- three kinds of thing, one array.
+        "[0].tags[0]": syn
+        "[0].tags[1]": n
+        "[0].tags[2]": results_type:primary_rel
+        # And a word with only a part of speech, so the array's length says
+        # nothing about what is in it.
+        "[1].tags[0]": n
+      absent:
+        - "[1].tags[1]"
+
+  - name: three queries on one endpoint answer three different field sets
+    source: https://api.datamuse.com/words?rel_rhy=blue&max=2
+    verified: "2026-08-29"
+    fixture: slew
+    request:
+      method: GET
+      path: /words?rel_rhy=blue&max=2
+    expect:
+      status: 200
+      body:
+        "[0].word": slew
+        "[0].score": 41039
+        # A rhyme query carries the syllable count without anyone asking for it.
+        "[0].numSyllables": 1
+        "[1].numSyllables": 2
+      absent:
+        # And carries no tags at all, where a meaning query carries three.
+        # Neither has defs until md= names them.
+        - "[0].tags"
+        - "[0].defs"
+
+  - name: a meaning query is the other way round
+    source: https://api.datamuse.com/words?ml=ocean&max=3
+    verified: "2026-08-29"
+    fixture: ocean
+    request:
+      method: GET
+      path: /words?ml=ocean&max=3
+    expect:
+      status: 200
+      body:
+        "[0].word": sea
+        "[0].score": 40041792
+        # Tags, and the second word's score, which the rhyme query had no
+        # equivalent of.
+        "[1].score": 30041645
+        "[2].tags[0]": adj
+        "[2].tags[2]": prop
+      absent:
+        # No syllable count here, where the rhyme query had one unasked.
+        - "[0].numSyllables"
+        - "[0].defs"
+
+  - name: an unknown parameter is an empty array and a 200
+    source: https://api.datamuse.com/words?nosuchparam=x
+    verified: "2026-08-29"
+    # The store is empty for this case: Cauldron serves fixtures, so what is
+    # shown is the shape of the answer -- 200 and a bare empty array -- not that
+    # the unknown parameter is what produced it.
+    fixture: empty
+    request:
+      method: GET
+      path: /words?nosuchparam=x
+    expect:
+      # Not a 400, and not ignored-with-results. A typo in a parameter name
+      # looks exactly like a query that matched nothing.
+      status: 200
+      body_matches: '^\[\]\s*$'
+
+  - name: score has no scale, and differs by three orders between endpoints
+    source: https://api.datamuse.com/sug?s=rhy&max=3
+    verified: "2026-08-29"
+    fixture: suggestions
+    request:
+      method: GET
+      path: /sug?s=rhy&max=3
+    expect:
+      status: 200
+      body:
+        # Ten thousand here, forty million on /words, and nothing anywhere says
+        # what either number means.
+        "[0].score": 10051
+        "[2].score": 6023
+
+  - name: a bad parameter value is a 400 and a bad parameter name is a 200
+    source: https://api.datamuse.com/words?ml=ocean&max=abc
+    verified: "2026-08-29"
+    fixture: ocean
+    request:
+      method: GET
+      path: /words?ml=ocean&max=abc
+    expect:
+      # A named parameter, a stated problem, and a real 4xx -- where a
+      # parameter that does not exist at all got 200 and an empty array.
+      status: 400
+      body:
+        code: 400
+        message: query param max is not a number.
+
+  - name: the same parameter one value later is a 500
+    source: https://api.datamuse.com/words?ml=ocean&max=-1
+    verified: "2026-08-29"
+    fixture: ocean
+    request:
+      method: GET
+      path: /words?ml=ocean&max=-1
+    expect:
+      # Not refused and not clamped. The validation that caught "abc" checks
+      # the type and not the sign, so a negative page size is an unhandled
+      # exception with an incident id in the sentence.
+      status: 500
+      body:
+        code: 500
+        message: There was an error processing your request. It has been logged (ID 8cef6ca7db3e9cea).
+
+  - name: a suggestion is two fields where a word is five
+    source: https://api.datamuse.com/sug?s=rhy&max=3
+    verified: "2026-08-29"
+    fixture: suggestions
+    request:
+      method: GET
+      path: /sug?s=rhy&max=3
+    expect:
+      status: 200
+      body:
+        "[0].word": rhythm
+      absent:
+        # Two endpoints on one host, and they do not share a type.
+        - "[0].tags"
+        - "[0].numSyllables"
+        - "[0].defs"
