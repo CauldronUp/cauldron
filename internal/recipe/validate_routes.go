@@ -33,6 +33,17 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 			add("%s: path must start with /", where)
 		}
 
+		// A bare array of one has nowhere to put the Recipe-wide success
+		// fields: they are properties of an object and the body is a list.
+		// PoetryDB is the provider that made the unwrapped array real, and it
+		// declares no success fields; a Recipe declaring both is asking for
+		// two shapes at once, and the runtime would have to drop one in
+		// silence.
+		if route.Envelope != nil && route.Envelope.Array && route.Envelope.Style != "wrapped" &&
+			len(r.Responses.Success.Fields) > 0 {
+			add("%s: answers a bare array and the Recipe declares responses.success.fields, which are object properties with nowhere to go in a list; wrap the array or drop the fields", where)
+		}
+
 		// Selects is part of the identity: a GraphQL Recipe is several routes
 		// on one path, told apart by what the query asks for, and two of them
 		// selecting the same field would still be the duplicate this rule

@@ -424,6 +424,23 @@ func (s *Sandbox) resourceBody(spec recipe.ResourceResponse, idAs, resource stri
 	success := s.recipe.Responses.Success.Fields
 
 	if spec.Style != "wrapped" {
+		// A bare array of one: [{...}], no key and no envelope, and still a
+		// list. PoetryDB answers /title/Ozymandias that way, so client code
+		// reads body[0] exactly as it would read Xero's Invoices[0] -- with
+		// nothing to name it by.
+		//
+		// Array was read only on the wrapped path below, so a Recipe declaring
+		// it here got the object back and nothing said otherwise. That is the
+		// declared-and-ignored shape again, and PoetryDB is the first provider
+		// that needed the unwrapped form.
+		//
+		// The Recipe-wide success fields have nowhere to go once the body is a
+		// list rather than an object, which is why validation refuses the two
+		// together rather than dropping one of them here.
+		if spec.Array {
+			return []store.Record{record}
+		}
+
 		if len(success) == 0 {
 			return record
 		}

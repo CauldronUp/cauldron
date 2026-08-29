@@ -1697,6 +1697,35 @@ func providers() []provider {
 			},
 		},
 		{
+			// "Poetry" in a package registry usually means the Python packaging
+			// tool. snyk-poetry-lockfile-parser reads poetry.lock and
+			// pyproject.toml against python-poetry.org; @almapario/vercel-poetry is
+			// a runtime for it; and four semantic-release plugins bump versions in
+			// its files. None of them is about poems.
+			//
+			// It is also an institution's product. ec-europa/oe-poetry-client is a
+			// "Client library for the European Commission Poetry Service", which is
+			// how translation is requested inside the Commission, and
+			// oe-poetry-behat tests it. Same word, different building.
+			//
+			// The bare npm name "poetry" ships with an empty description and no URL
+			// at all, and destinylab's lottery-poetry packages are Chinese
+			// divination verses -- a fortune-telling engine rather than a library.
+			//
+			// Two more are poems and still not this API. chinese-poetry is a corpus
+			// of three hundred thousand of them shipped as files, which is the
+			// offline shape again, and balkhiate scrapes stands4.com.
+			//
+			// Nothing on Packagist calls poetrydb.org. On Go the only result is a
+			// package inside a gRPC tutorial repository, which is an example rather
+			// than a dependency, so nothing is mapped there either.
+			recipe: "poetrydb",
+			npm: []string{
+				"@refkit/provider-poetrydb",
+				"poemist",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
