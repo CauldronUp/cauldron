@@ -4550,3 +4550,56 @@ func TestDetectOpenTriviaClientsAndNotOpenTBS(t *testing.T) {
 		}
 	}
 }
+
+// One word apart, and a different company: BreweryDB is a commercial API on
+// api.brewerydb.com that required a key. The pair to watch is openbrewerydb-node
+// against brewerydb-node -- same suffix, same shape, two different hosts -- so
+// a substring match on "brewerydb" maps half the neighbourhood to the wrong API.
+//
+// "Brewery" on npm is also a scaffolding tool with no beer in it, and beer
+// packages that are not this API run breweries rather than list them.
+func TestDetectOpenBreweryClientsAndNotBreweryDB(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"openbrewerydb-node": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"breweries-cli": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"joeymckenzie/openbrewerydb-php-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"alexjustesen/php-openbrewerydb": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openbrewerydb") {
+			t.Errorf("%v did not detect openbrewerydb: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The other API, one word away.
+		{"package.json": `{"dependencies": {"brewerydb-node": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-brewerydb": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"brewerydb-graphql": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"brewery": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"ethanclevenger91/brewerydb-php": "^1.0"}}`},
+		// A scaffolding tool called The Brewery.
+		{"package.json": `{"dependencies": {"@brewery/cli": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"brewery-core": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"generator-brewery": "^1.0.0"}}`},
+		// Beer, and still not this: running a brewery, and Untappd.
+		{"package.json": `{"dependencies": {"@umbraculum/brewery-api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@brewnode/server": "^1.0.0"}}`},
+		// A vendor whose name begins with brewer.
+		{"composer.json": `{"require": {"brewerwall/beercalc_php": "^1.0"}}`},
+		{"composer.json": `{"require": {"brewerwall/php-barcode-generator": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openbrewerydb") {
+			t.Errorf("%v offered the openbrewerydb Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
