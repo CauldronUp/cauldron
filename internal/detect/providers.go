@@ -1486,6 +1486,58 @@ func providers() []provider {
 			composer: []string{"rolle-marketplace/nager-date-laravel"},
 		},
 		{
+			// A new near miss, and the sharpest one yet: a Composer vendor
+			// namespace that is the vendor and still is not the product.
+			// internetarchive/virustotalapi is published by the Internet Archive
+			// and wraps VirusTotal. Matching on the vendor prefix would map
+			// somebody else's API to this Recipe with the vendor's own name as
+			// the evidence.
+			//
+			// A different company's product has the same name. @esri/wayback-core,
+			// @rapideditor/wayback-core and maplibre-gl-esri-wayback are all
+			// Esri's World Imagery Wayback -- versions of satellite imagery, on
+			// wayback.maptiles.arcgis.com. Nothing to do with archived web pages.
+			//
+			// And the bare name on npm belongs to a third thing again: wayback is
+			// "Manage sequences of arbitrary data with revisions", and it opens no
+			// connection at all. chrisullyott/wayback-cache is the same metaphor
+			// on Packagist -- "Caches and catalogs a history of API requests".
+			//
+			// The rest of the neighbourhood calls the archive and calls something
+			// else on it. Four other endpoints, none of them availability:
+			//
+			//   - CDX (/cdx/search/cdx): wayback-machine-downloader,
+			//     baraja-core/wayback, odinns/laravel-wayback-machine,
+			//     survos/site-discovery-bundle -- and every Go package that turned
+			//     up, unanimously. gowaybackgo, fgau and blackhorn-modules all
+			//     build /cdx/search/cdx, so there is nothing to map on gomod.
+			//   - Save Page Now (/save/): mapkyca/known-wayback-machine,
+			//     matthiasott/craft-internetarchive, inwebo/save-page-now-2.
+			//   - Items and metadata (advancedsearch.php, /metadata/):
+			//     internetarchive-sdk-js, internet-archive-api,
+			//     votemike/internet-archive-api, inwebo/item-metadata.
+			//   - Undocumented internals (/__wb/calendarcaptures): dawood/wmb-scrapper.
+			//
+			// The vendor's own npm org is nearly all user interface --
+			// @internetarchive/bookreader, ia-icons, modal-manager, ia-dropdown,
+			// shared-resize-observer -- and the one piece of it named wayback,
+			// @internetarchive/ia-wayback-search, is a search *form component*
+			// that builds web.archive.org/web/ links for a browser to follow.
+			//
+			// Two more of the standing kinds. strip-wayback-toolbar processes the
+			// archive's output -- it strips the toolbar out of an already-archived
+			// page and never connects. And the format is shipped as a file:
+			// warcio, warc, node-warc, @webrecorder/wabac and @harvard-lil/js-wacz
+			// read WARC and WACZ off disk.
+			recipe:   "waybackmachine",
+			composer: []string{"f2face/wayback-machine"},
+			npm: []string{
+				"wayback.js",
+				"wayback-machine",
+				"wayback-machine-fixed",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

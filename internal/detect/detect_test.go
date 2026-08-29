@@ -4372,3 +4372,60 @@ func TestDetectNagerDateClientsAndNotTheRuleSets(t *testing.T) {
 		}
 	}
 }
+
+// The sharpest near miss in the collection: internetarchive/virustotalapi is
+// published by the Internet Archive and wraps VirusTotal, so a Composer vendor
+// prefix that is exactly right maps exactly the wrong API.
+//
+// Esri's World Imagery Wayback is a different company's product with the same
+// name, on wayback.maptiles.arcgis.com. The bare npm name "wayback" is
+// revision-tracking for arbitrary data. And the packages that do call the
+// archive call four other endpoints on it -- CDX, Save Page Now, item metadata
+// and an undocumented internal -- none of them /wayback/available.
+func TestDetectWaybackAvailabilityClientsAndNotTheRest(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"wayback.js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"wayback-machine": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"f2face/wayback-machine": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "waybackmachine") {
+			t.Errorf("%v did not detect waybackmachine: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor namespace, and somebody else's API.
+		{"composer.json": `{"require": {"internetarchive/virustotalapi": "^2.0"}}`},
+		// A different company's product with the same name.
+		{"package.json": `{"dependencies": {"@esri/wayback-core": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"maplibre-gl-esri-wayback": "^1.0.0"}}`},
+		// The bare name, and the same metaphor on Packagist.
+		{"package.json": `{"dependencies": {"wayback": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"chrisullyott/wayback-cache": "^1.0"}}`},
+		// The archive, and four other endpoints on it.
+		{"package.json": `{"dependencies": {"wayback-machine-downloader": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"baraja-core/wayback": "^1.0"}}`},
+		{"composer.json": `{"require": {"mapkyca/known-wayback-machine": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"internetarchive-sdk-js": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"dawood/wmb-scrapper": "^1.0"}}`},
+		// The vendor's own, named wayback, and a form component.
+		{"package.json": `{"dependencies": {"@internetarchive/ia-wayback-search": "^1.0.0"}}`},
+		// Processing the output, and reading the format off disk.
+		{"package.json": `{"dependencies": {"strip-wayback-toolbar": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"warcio": "^2.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "waybackmachine") {
+			t.Errorf("%v offered the waybackmachine Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
