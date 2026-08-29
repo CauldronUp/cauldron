@@ -4492,3 +4492,61 @@ func TestDetectWeatherGovClientsAndNotTheRestOfNOAA(t *testing.T) {
 		}
 	}
 }
+
+// Packagist has no client for this API and answers "opentdb" with OpenTBS five
+// times over -- a document-templating library one letter away, D against B.
+// Open Tibia and react/promise-timer ("a trivial implementation of timeouts")
+// fill out the rest of that search.
+//
+// The sharpest miss is named after the API and does not call it:
+// tamnd/opentdb-cli builds opentdb.com/browse.php, the human website, rather
+// than api.php. And the mapped opendtb-wrapper carries the typo in its own
+// published name.
+func TestDetectOpenTriviaClientsAndNotOpenTBS(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"open-trivia-db": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"opentdb-api": "^1.0.0"}}`},
+		// The typo is the package's own name, and it calls the right host.
+		{"package.json": `{"dependencies": {"opendtb-wrapper": "^1.0.0"}}`},
+		{"go.mod": "module x\n\nrequire github.com/handybots/quizzoro v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "opentdb") {
+			t.Errorf("%v did not detect opentdb: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// One letter away, and a document library.
+		{"composer.json": `{"require": {"tinybutstrong/opentbs": "^1.0"}}`},
+		{"composer.json": `{"require": {"jonasarts/opentbs-bundle": "^1.0"}}`},
+		// Open Tibia, and a trivial implementation of timeouts.
+		{"composer.json": `{"require": {"renatorib/otinfo": "^1.0"}}`},
+		{"composer.json": `{"require": {"react/promise-timer": "^1.0"}}`},
+		// A different API on a gateway that no longer exists.
+		{"package.json": `{"dependencies": {"trivia": "^1.0.0"}}`},
+		// A competitor with an almost identical name.
+		{"package.json": `{"dependencies": {"@trivia-api/fetch": "^1.0.0"}}`},
+		// An aggregator's own endpoint, and a scraper.
+		{"package.json": `{"dependencies": {"@apiverve/trivia": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"imdb-trivia": "^1.0.0"}}`},
+		// The questions ship with the package.
+		{"package.json": `{"dependencies": {"@helyx/module-trivia": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"hubot-trivia-game": "^1.0.0"}}`},
+		// Named after the API, and calling the website instead.
+		{"go.mod": "module x\n\nrequire github.com/tamnd/opentdb-cli v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "opentdb") {
+			t.Errorf("%v offered the opentdb Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

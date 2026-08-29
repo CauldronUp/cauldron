@@ -1,0 +1,454 @@
+# Open Trivia DB Recipe for Cauldron
+#
+# The success key is "results" and the rate limit's key is "result".
+#
+#   {"response_code": 0, "results": [ ... ]}     <- 200
+#   {"response_code": 1, "results": []}          <- 200
+#   {"response_code": 2, "results": []}          <- 200
+#   {"response_code": 5, "result":  []}          <- 429
+#
+# One letter, on one of the four. Code reading body.results.length works on
+# three answers and finds undefined on the fourth, and the fourth is the one
+# that arrives when the caller is going too fast -- so the crash appears under
+# load and not before it.
+#
+# **And three of the four are HTTP 200.** No results is 200. An invalid
+# parameter is 200. The status line says the request succeeded and the body says
+# it did not, so response.ok is true for every outcome except the rate limit,
+# and the only way to tell them apart is a number in the body that has no name
+# anywhere in the response.
+#
+# Written against the live API rather than a document: every case below was
+# checked against opentdb.com on the date in its verified field.
+#
+# Four more the Recipe pins:
+#
+#   1. An unknown category is reported as an empty one. ?category=999 does not
+#      answer response_code 2 for an invalid parameter -- it answers 1, for no
+#      results. A typo in a category id is indistinguishable from a category
+#      that happens to be empty.
+#   2. The strings are HTML-encoded inside JSON. A question comes back as
+#      "Kraft &quot;Cheez Whiz&quot; contains cheese culture, but doesn&#039;t
+#      actually contain cheese" -- entities in a format that needs none, so
+#      every string needs an HTML decode after it has already been JSON-decoded,
+#      and code that skips it renders &#039; to a user.
+#   3. incorrect_answers is three entries on a multiple-choice question and one
+#      on a boolean, and nothing but the sibling "type" field says which. A
+#      renderer that assumes four options renders undefined for two of them.
+#   4. encode=base64 encodes the enum values too. type, difficulty and category
+#      come back as bXVsdGlwbGU=, bWVkaXVt and R2VuZXJhbCBLbm93bGVkZ2U=, so
+#      type === "multiple" is false and a switch on difficulty matches nothing
+#      until every field has been decoded -- including the ones a caller would
+#      never think to decode.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Questions are served, not drawn. The real API returns a random sample of a
+#     given size; this answers the fixture's questions in order.
+#   - The base64 answer is a second resource holding encoded values rather than
+#     a transformation of the first, because Cauldron serves what a fixture
+#     holds. The routing on encode=base64 is real; the encoding is recorded.
+#   - Only api.php and the token request are modelled. The token reset, the
+#     category list, the category and global counts answer other documents.
+#   - The rate limit is one request every five seconds per address. It is served
+#     as an injectable failure rather than a clock.
+
+recipe: opentdb
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: opentdb
+  docs: https://opentdb.com/api_config.php
+
+auth:
+  # Public, and no key. A session token is optional and only stops repeats.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    # Plural, on every answer but one.
+    key: results
+    fields:
+      # A second status, in the body, on a response that already had one.
+      response_code: 0
+  error:
+    style: flat
+    # There is no message field at all: the number is the whole explanation.
+    message_field: "-"
+
+resources:
+  question:
+    id:
+      style: opaque
+      # A question carries no identifier of any kind.
+      field: "-"
+    fields:
+      # multiple or boolean, and it decides how long incorrect_answers is.
+      type:
+        type: string
+      difficulty:
+        type: string
+      category:
+        type: string
+      # HTML entities, inside JSON.
+      question:
+        type: string
+      correct_answer:
+        type: string
+      # Three entries on a multiple, one on a boolean.
+      incorrect_answers:
+        type: list
+
+  # The same six fields, base64 including the three that are enums.
+  encoded_question:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      type:
+        type: string
+      difficulty:
+        type: string
+      category:
+        type: string
+      question:
+        type: string
+      correct_answer:
+        type: string
+      incorrect_answers:
+        type: list
+
+  token:
+    constants:
+      # The same number the listings carry, on a resource that is not a list --
+      # so it is a constant here and an envelope field there.
+      response_code: 0
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # A sentence the question endpoint never sends, on the same
+      # response_code: 0.
+      response_message:
+        type: string
+      token:
+        type: string
+      # The command in the query string, which the body does not echo.
+      command:
+        type: string
+        in: "-"
+
+routes:
+  # Asking for something the fixture has: response_code 0.
+  - method: GET
+    path: /api.php
+    resource: question
+    operation: list
+    filters:
+      # The parameter's vocabulary is not the field's. A caller asks
+      # for category 9 and every question comes back saying
+      # "General Knowledge", with nothing in the response linking
+      # the number to the name -- so a client that filtered by id
+      # cannot group by what it got back.
+      - param: category
+        field: category
+        values:
+          "9":
+            - General Knowledge
+      - param: difficulty
+        field: difficulty
+      - param: type
+        field: type
+
+  # Asking for hard questions there are none of: response_code 1, and still a
+  # 200. The filter empties the list; the code says why.
+  - method: GET
+    path: /api.php
+    resource: question
+    operation: list
+    matches_query:
+      difficulty: hard
+    list:
+      fields:
+        response_code: 1
+    filters:
+      - param: category
+        field: category
+        values:
+          "9":
+            - General Knowledge
+      - param: difficulty
+        field: difficulty
+      - param: type
+        field: type
+
+  # An unknown category is reported as an empty category, not a bad parameter.
+  - method: GET
+    path: /api.php
+    resource: question
+    operation: list
+    matches_query:
+      category: "999"
+    list:
+      fields:
+        response_code: 1
+    filters:
+      - param: category
+        field: category
+        values:
+          "9":
+            - General Knowledge
+      - param: difficulty
+        field: difficulty
+      - param: type
+        field: type
+
+  # Asking for none of something: response_code 2, and still a 200.
+  - method: GET
+    path: /api.php
+    resource: question
+    operation: list
+    matches_query:
+      amount: "0"
+    list:
+      fields:
+        response_code: 2
+
+  # The same questions, base64, enums and all.
+  - method: GET
+    path: /api.php
+    resource: encoded_question
+    operation: list
+    matches_query:
+      encode: base64
+
+  - method: GET
+    path: /api_token.php
+    resource: token
+    operation: get
+    id_from: query:command
+    matches_query:
+      command: request
+
+errors:
+  # The one answer that is not a 200, and the one whose key is singular.
+  rate_limited:
+    status: 429
+    # No message, no name, no retry-after: a number and an empty array, under a
+    # key spelled differently from every successful answer's.
+    fields:
+      response_code: 5
+      result: []
+
+fixtures:
+  empty: {}
+
+  general:
+    question:
+      # Multiple choice: three incorrect answers, and entities in four of the
+      # five strings.
+      - id: mountaindew
+        type: multiple
+        difficulty: medium
+        category: General Knowledge
+        question: What was Mountain Dew&#039;s original slogan?
+        correct_answer: Yahoo! Mountain Dew... It&#039;ll tickle your innards!
+        incorrect_answers:
+          - Give Me A Dew
+          - Do The Dew
+          - Get&#039; that barefoot feelin&#039; drinkin&#039; Mountain Dew
+
+      # Boolean: one incorrect answer, and two kinds of entity in one sentence.
+      - id: cheezwhiz
+        type: boolean
+        difficulty: medium
+        category: General Knowledge
+        question: Kraft &quot;Cheez Whiz&quot; contains cheese culture, but doesn&#039;t actually contain cheese
+        correct_answer: "True"
+        incorrect_answers:
+          - "False"
+
+      # And one with no entities at all, so the encoding is visibly a property
+      # of the text rather than of the field.
+      - id: stevejobs
+        type: multiple
+        difficulty: medium
+        category: General Knowledge
+        question: Apple co-founder Steve Jobs died from complications of which form of cancer?
+        correct_answer: Pancreatic
+        incorrect_answers:
+          - Bone
+          - Liver
+          - Stomach
+
+    encoded_question:
+      # bXVsdGlwbGU= is "multiple" and R2VuZXJhbCBLbm93bGVkZ2U= is "General
+      # Knowledge": the enums are encoded along with the prose.
+      - id: astraphobia
+        type: bXVsdGlwbGU=
+        difficulty: bWVkaXVt
+        category: R2VuZXJhbCBLbm93bGVkZ2U=
+        question: QXN0cmFwaG9iaWEgaXMgdGhlIGlycmF0aW9uYWwgZmVhciBvZiB3aGF0Pw==
+        correct_answer: VGh1bmRlcg==
+        incorrect_answers:
+          - UmFpbg==
+          - V2luZA==
+          - U25vdw==
+
+    token:
+      - id: request
+        command: request
+        response_message: Token Generated Successfully!
+        token: 453b1449456f95e5ac375e7839c21b624810b7a3025eb4c267914e0e787efc56
+
+conformance:
+  - name: a hit is response_code 0 under a plural key
+    source: https://opentdb.com/api.php?amount=10&category=9
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=10&category=9
+    expect:
+      status: 200
+      body:
+        response_code: 0
+        "results[0].question": What was Mountain Dew&#039;s original slogan?
+      absent:
+        # Plural here. The rate limit spells it the other way.
+        - result
+
+  - name: no results is response_code 1, and a 200
+    source: https://opentdb.com/api.php?amount=50&category=9&difficulty=hard&type=boolean
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=50&category=9&difficulty=hard&type=boolean
+    expect:
+      # The status line says the request succeeded.
+      status: 200
+      body:
+        # And the body says there is nothing.
+        response_code: 1
+        results: []
+
+  - name: an invalid parameter is response_code 2, and a 200
+    source: https://opentdb.com/api.php?amount=0
+    verified: "2026-08-29"
+    fixture: empty
+    request:
+      method: GET
+      path: /api.php?amount=0
+    expect:
+      # response.ok is true. Nothing about the status distinguishes this from
+      # the answer above it or the one above that.
+      status: 200
+      body:
+        response_code: 2
+        results: []
+
+  - name: an unknown category is reported as an empty one
+    source: https://opentdb.com/api.php?amount=1&category=999
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=1&category=999
+    expect:
+      status: 200
+      body:
+        # 1, for no results -- not 2, for a bad parameter. A typo in a category
+        # id looks exactly like an empty category.
+        response_code: 1
+        results: []
+
+  - name: the strings are HTML-encoded inside JSON
+    source: https://opentdb.com/api.php?amount=10&category=9
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=10&category=9
+    expect:
+      status: 200
+      body:
+        # Two kinds of entity in one sentence, in a format that needs neither.
+        "results[1].question": Kraft &quot;Cheez Whiz&quot; contains cheese culture, but doesn&#039;t actually contain cheese
+        # And one string with none, so this is the text and not the field.
+        "results[2].question": Apple co-founder Steve Jobs died from complications of which form of cancer?
+        # The answers are encoded too, not just the questions -- three
+        # entities in one of them.
+        "results[0].correct_answer": Yahoo! Mountain Dew... It&#039;ll tickle your innards!
+
+  - name: incorrect_answers is three long or one long, and only type says which
+    source: https://opentdb.com/api.php?amount=10&category=9
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=10&category=9
+    expect:
+      status: 200
+      body:
+        "results[0].type": multiple
+        "results[0].incorrect_answers[2]": Get&#039; that barefoot feelin&#039; drinkin&#039; Mountain Dew
+        "results[1].type": boolean
+        "results[1].incorrect_answers[0]": "False"
+      absent:
+        # One entry, where the question above it has three.
+        - results[1].incorrect_answers[1]
+
+  - name: base64 encodes the enum values too
+    source: https://opentdb.com/api.php?amount=1&category=9&type=multiple&encode=base64
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api.php?amount=1&category=9&type=multiple&encode=base64
+    expect:
+      status: 200
+      body:
+        response_code: 0
+        # "multiple", "medium" and "General Knowledge" -- so type === "multiple"
+        # is false until every field has been decoded, including the ones a
+        # caller would not think to decode.
+        "results[0].type": bXVsdGlwbGU=
+        "results[0].difficulty": bWVkaXVt
+        "results[0].category": R2VuZXJhbCBLbm93bGVkZ2U=
+        "results[0].question": QXN0cmFwaG9iaWEgaXMgdGhlIGlycmF0aW9uYWwgZmVhciBvZiB3aGF0Pw==
+
+  - name: the token endpoint sends a sentence the questions never do
+    source: https://opentdb.com/api_token.php?command=request
+    verified: "2026-08-29"
+    fixture: general
+    request:
+      method: GET
+      path: /api_token.php?command=request
+    expect:
+      status: 200
+      body:
+        # The same response_code: 0, and an envelope with prose in it.
+        response_code: 0
+        response_message: Token Generated Successfully!
+        token: 453b1449456f95e5ac375e7839c21b624810b7a3025eb4c267914e0e787efc56
+
+  - name: the rate limit is the one that is not a 200, and the one spelled result
+    source: https://opentdb.com/api.php?amount=1
+    verified: "2026-08-29"
+    fixture: general
+    arm: rate_limited
+    request:
+      method: GET
+      path: /api.php?amount=1
+    expect:
+      status: 429
+      body:
+        response_code: 5
+        # Singular. Code reading body.results.length finds undefined here and
+        # nowhere else, so it breaks under load and not before.
+        result: []
+      absent:
+        - results
