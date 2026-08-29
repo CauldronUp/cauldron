@@ -1611,6 +1611,54 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist has no client for this API at all, and searching it for
+			// "opentdb" returns OpenTBS five times: tinybutstrong/opentbs,
+			// makhov/opentbs and three Symfony bundles wrapping it. One letter
+			// apart, D against B, and it merges LibreOffice and Word documents.
+			// Nothing on Packagist calls opentdb.com, so nothing is mapped there.
+			//
+			// The same search turns up Open Tibia -- renatorib/otinfo and
+			// pandaac/pandaac -- where OT abbreviates a game server, and
+			// react/promise-timer, which describes itself as "a trivial
+			// implementation of timeouts" and matched because trivia is a prefix
+			// of trivial.
+			//
+			// On npm the bare name "trivia" answers a different API on
+			// pareshchouhan-trivia-v1.p.mashape.com, a Mashape gateway that has
+			// not existed since it became RapidAPI. @trivia-api/fetch and
+			// @trivia-api/models are a competitor with an almost identical name,
+			// the-trivia-api.com. @apiverve/trivia is a commercial aggregator's
+			// own endpoint, and imdb-trivia scrapes IMDb.
+			//
+			// Three carry no URL at all, because the questions ship with them:
+			// discord-trivia, @helyx/module-trivia -- "from a saved question
+			// catalogue", in its own description -- and hubot-trivia-game.
+			//
+			// And the sharpest one is named after the API and does not call it.
+			// github.com/tamnd/opentdb-cli builds opentdb.com/browse.php, which is
+			// the human website, so it reads the pages a person would read rather
+			// than api.php. Only quizzoro calls the API on Go, and its two module
+			// paths are a fork pair.
+			//
+			// opendtb-wrapper is mapped and the typo is in its published name:
+			// openDTB, not openTDB. It calls the right host.
+			recipe: "opentdb",
+			npm: []string{
+				"open-trivia-db",
+				"opentdb-api",
+				"opentriviasdk",
+				"opendtb-wrapper",
+				"triviadb",
+				"tdb-api",
+				"trivia-cli",
+				"@brecert/trivia",
+			},
+			gomod: []string{
+				"github.com/handybots/quizzoro",
+				"github.com/DucTheVulpe/quizzoro",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

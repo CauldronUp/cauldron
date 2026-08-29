@@ -478,12 +478,30 @@ func (r Recipe) ListFor(route Route) ListResponse {
 	override(&spec.FinalField, route.List.FinalField)
 	override(&spec.CompleteField, route.List.CompleteField)
 
-	for name, value := range route.List.Fields {
-		if spec.Fields == nil {
-			spec.Fields = map[string]any{}
+	// Copied, not written into. spec is a copy of the struct and Fields was
+	// the same map: writing a route's override into it edited the Recipe-wide
+	// envelope in place, for every other route and for the life of the
+	// process. The first Recipe with two routes overriding the same key found
+	// it immediately -- Open Trivia DB answers response_code 0, 1 and 2 on the
+	// same path, and every one of them came back as whichever route had been
+	// merged last.
+	//
+	// It is the worse half of the declared-and-ignored family. A declaration
+	// that is dropped makes one route wrong; a declaration that leaks makes
+	// every other route wrong, and the route that looks broken is not the one
+	// carrying the mistake.
+	if len(route.List.Fields) > 0 {
+		merged := make(map[string]any, len(spec.Fields)+len(route.List.Fields))
+
+		for name, value := range spec.Fields {
+			merged[name] = value
 		}
 
-		spec.Fields[name] = value
+		for name, value := range route.List.Fields {
+			merged[name] = value
+		}
+
+		spec.Fields = merged
 	}
 
 	return spec

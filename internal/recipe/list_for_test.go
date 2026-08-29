@@ -77,3 +77,40 @@ func TestTheRecipeIsNotMutatedByAnOverride(t *testing.T) {
 		t.Errorf("one route's override leaked into the Recipe: %+v", r.Responses.List)
 	}
 }
+
+// The leak test above covers the scalar fields, which are copied with the
+// struct. Fields is a map, and a copy of a struct shares the map it points at:
+// merging a route's override wrote straight into the Recipe-wide envelope, for
+// every other route and for the life of the process.
+//
+// Open Trivia DB is what found it, being the first Recipe with two routes
+// overriding the same key. It answers response_code 0 for a hit, 1 for no
+// results and 2 for a bad parameter on one path, and every one of them came
+// back as whichever route had been merged last -- so a request that should have
+// said 0 said 2, and the route that looked broken was not the one carrying the
+// mistake.
+func TestOneRoutesExtraFieldDoesNotLeakIntoAnother(t *testing.T) {
+	r := Recipe{Responses: Responses{List: ListResponse{
+		Style:  "wrapped",
+		Key:    "results",
+		Fields: map[string]any{"response_code": 0},
+	}}}
+
+	if got := r.ListFor(Route{List: &ListResponse{Fields: map[string]any{"response_code": 2}}}); got.Fields["response_code"] != 2 {
+		t.Errorf("the route's own override did not apply: %+v", got.Fields)
+	}
+
+	if r.Responses.List.Fields["response_code"] != 0 {
+		t.Errorf("the override leaked into the Recipe: %+v", r.Responses.List.Fields)
+	}
+
+	if got := r.ListFor(Route{}); got.Fields["response_code"] != 0 {
+		t.Errorf("a route with no override saw the other route's value: %+v", got.Fields)
+	}
+}
+
+// A second test was written here for the case where the Recipe declares no
+// fields at all and a route adds one, and it was removed: the old code
+// allocated a fresh map on that path and assigned it to its own copy, so
+// nothing leaked and the test could not fail. An assertion that cannot go red
+// is a claim no test checks.
