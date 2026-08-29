@@ -104,6 +104,52 @@ func (r *Recipe) validateResources(add func(string, ...any)) {
 				add("resource %q field %q sets as to its own name, which is what a top-level field is called anyway", name, field)
 			}
 
+			// Two declarations cannot claim one wire key. The comment above
+			// works through the case where a record keys on something other
+			// than "id" and a field takes "id" for itself -- GitHub's issue
+			// number and id are the example -- and that reasoning only holds
+			// while the identifier is not also being emitted under the same
+			// name. When it is, the record has said twice what goes at that
+			// key, the runtime picks one silently, and no conformance case can
+			// see the loser: the wire is identical either way.
+			//
+			// The National Weather Service is the Recipe that found it. A
+			// point is addressed at /points/39.7456,-97.0892 and its body
+			// carries the whole URL under "id", so the Recipe keys on the
+			// coordinate pair, hides the minted identifier, and renames a
+			// field onto "id". Un-hiding the minted one -- which is a real
+			// mistake, and the kind an edit makes -- changed nothing at all in
+			// the response, which is exactly the shape of a claim nothing
+			// checks.
+			//
+			// Only an explicit "as" counts. A field whose own name matches the
+			// identifier's key is how a Recipe declares the identifier's type
+			// and lines it up against an OpenAPI schema -- id.field: name
+			// beside a declared name field, which three fixtures in
+			// internal/openapi and a runtime test all do deliberately. "as"
+			// has no such reading: it exists to move a field to a key it does
+			// not already have, and that key is taken.
+			//
+			// A field carrying an "in" is emitted under that parent rather
+			// than beside the identifier, so it is not competing either.
+			//
+			// Nothing else needs excluding. A hidden identifier is compared as
+			// the literal "-", which no field is sent as, and a dotted one as
+			// "sys.id", which no top-level field is called -- so both fall out
+			// of the comparison rather than needing a guard, and a guard that
+			// never changes an answer is a claim no test can check.
+			if spec.As != "" && spec.In == "" {
+				id := resource.ID.Field
+				if id == "" {
+					id = "id"
+				}
+
+				if spec.As == id {
+					add("resource %q field %q is sent as %q and the identifier is emitted under %q too, so two declarations claim one key and one of them is silently dropped; hide the identifier with id.field \"-\" if the provider does not send it",
+						name, field, id, id)
+				}
+			}
+
 			// A field that never reaches the wire cannot be renamed on the
 			// way there, and cannot be null there either.
 			if spec.In == "-" {

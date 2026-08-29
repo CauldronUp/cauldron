@@ -1538,6 +1538,79 @@ func providers() []provider {
 			},
 		},
 		{
+			// A new near miss: the description belongs to a different package.
+			// latlon-utils is published as "A JavaScript library for obtaining
+			// data from weather.gov and tidesandcurrents.noaa.gov" -- word for
+			// word noaajs's own description -- and its code contains no
+			// weather.gov anywhere. Detection that reads registry prose would map
+			// it on the strength of a sentence its author copied.
+			//
+			// The abbreviation collides three ways. npm's bare "nws" launches a
+			// static web server and opens no connection at all;
+			// namirasoft-nws-region and its siblings are one company's products,
+			// served from region.nws.namirasoft.com; and vrtnws reads a Belgian
+			// broadcaster's news feed, where the letters are Dutch.
+			//
+			// NOAA is much larger than this API, and most of the neighbourhood is
+			// its other services: tides and currents (uriweb/uri-tides), space
+			// weather, marine buoys, climate stations, NCAT coordinate
+			// conversion, aerodrome METAR (ballen/metar), and GFS model files
+			// pulled from nomads.ncep.noaa.gov (noaa-gfs-js).
+			//
+			// weather.gov itself answers on more hosts than this one, and each has
+			// its own clients. alerts.weather.gov serves CAP in XML, which is what
+			// thtroyer/noaa-cap-alerts, weather-alerts-parser and
+			// weather-alerts-geojson read. forecast.weather.gov serves the human
+			// site, and weather-gov-graph-parse scrapes its markup rather than
+			// calling anything. aviationweather.gov is a different centre again.
+			//
+			// And the predecessors are still in the results. amwhalen/noaa targets
+			// weather.gov/xml/current_obs and graphical.weather.gov's NDFD
+			// service, which is what this API replaced; origindesign/noaa still
+			// documents forecast-v3.weather.gov, the hostname the API carried
+			// before it moved, though its code calls the current one and it maps.
+			//
+			// Two of the standing kinds close it out. @hebcal/noaa computes
+			// sunrise and sunset from a NOAA algorithm and never connects, which
+			// is the third holiday-calendar shape in three Recipes. And a cluster
+			// of near-identical Anax modules -- serbseb/weathermodule,
+			// lioo19/weathermodule, lingul/ramverk1-weathermodule,
+			// bjos19/anax-weathermodule, bjorn/weathermod -- is one course's
+			// coursework; the one opened here calls Dark Sky, ipstack and Google
+			// Maps, and Dark Sky has been off for years.
+			//
+			// On Go, goa.design/clue/example/weather/.../weathergov and its twin
+			// under goa.design/pulse are demo applications vendored inside a
+			// framework's own repository. They are importable and they are not a
+			// dependency anybody adds on purpose.
+			recipe: "nationalweatherservice",
+			composer: []string{
+				"chrisreedio/laravel-weathergov-sdk",
+				"benjaminhansen/nws-php",
+				"projectsaturnstudios/nws",
+				"almostengr/cakephp-nwsapi",
+				"origindesign/noaa",
+			},
+			npm: []string{
+				"weathered",
+				"nws-client-js",
+				"@vavassor/nws-client",
+				"@bdking71/nws-weather-wrapper",
+				"@wkronmiller/weather-api-client",
+				"@paxperscientiam/national-weather-service-api.ts",
+				"@oliverhodge2/weather-wrapper",
+				"@naviaero/winds-aloft",
+				"signalk-nws-alerts",
+				"nws-current-temperature",
+				"noaajs",
+			},
+			gomod: []string{
+				"github.com/icodealot/noaa",
+				"github.com/adamgreenhall/noaa",
+				"github.com/chrisdobbins/noaa",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

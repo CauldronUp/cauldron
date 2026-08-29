@@ -4429,3 +4429,66 @@ func TestDetectWaybackAvailabilityClientsAndNotTheRest(t *testing.T) {
 		}
 	}
 }
+
+// A new near miss: latlon-utils carries noaajs's description word for word --
+// "obtaining data from weather.gov and tidesandcurrents.noaa.gov" -- and its
+// code contains no weather.gov at all. Detection reads names, not prose, which
+// is the only reason it is not mapped.
+//
+// The abbreviation collides three ways: npm's bare "nws" is a static web
+// server, namirasoft-nws-region is one company's product on its own
+// nws.namirasoft.com, and vrtnws is Dutch for news. NOAA's other services --
+// tides, buoys, space weather, GFS files -- and weather.gov's other hosts --
+// alerts.weather.gov in XML, forecast.weather.gov in HTML -- fill out the rest.
+func TestDetectWeatherGovClientsAndNotTheRestOfNOAA(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"weathered": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@vavassor/nws-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"noaajs": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"benjaminhansen/nws-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"chrisreedio/laravel-weathergov-sdk": "^1.0"}}`},
+		{"go.mod": "module x\n\nrequire github.com/icodealot/noaa v1.4.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "nationalweatherservice") {
+			t.Errorf("%v did not detect nationalweatherservice: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// noaajs's description, on somebody else's package.
+		{"package.json": `{"dependencies": {"latlon-utils": "^1.0.0"}}`},
+		// The abbreviation, three ways.
+		{"package.json": `{"dependencies": {"nws": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"namirasoft-nws-region": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"vrtnws": "^1.0.0"}}`},
+		// NOAA's other services.
+		{"package.json": `{"dependencies": {"noaa-gfs-js": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"uriweb/uri-tides": "^1.0"}}`},
+		{"composer.json": `{"require": {"ballen/metar": "^1.0"}}`},
+		// weather.gov's other hosts: CAP in XML, and the human site in HTML.
+		{"composer.json": `{"require": {"thtroyer/noaa-cap-alerts": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"weather-alerts-geojson": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"weather-gov-graph-parse": "^1.0.0"}}`},
+		// The predecessor this API replaced.
+		{"composer.json": `{"require": {"amwhalen/noaa": "^1.0"}}`},
+		// A rule set, not a client.
+		{"package.json": `{"dependencies": {"@hebcal/noaa": "^1.0.0"}}`},
+		// One course's coursework, calling Dark Sky.
+		{"composer.json": `{"require": {"serbseb/weathermodule": "^1.0"}}`},
+		{"composer.json": `{"require": {"bjos19/anax-weathermodule": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "nationalweatherservice") {
+			t.Errorf("%v offered the nationalweatherservice Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

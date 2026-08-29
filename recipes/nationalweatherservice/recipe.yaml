@@ -1,0 +1,561 @@
+# National Weather Service API Recipe for Cauldron
+#
+# The path says lat,lon and the body says lon,lat.
+#
+#   GET /points/39.7456,-97.0892
+#   ->  {"geometry": {"coordinates": [-97.0892, 39.7456]}, ...}
+#
+# The same pair of numbers, in the same exchange, in the opposite order. The
+# path takes latitude first because that is how a person writes a coordinate;
+# the body puts longitude first because that is what GeoJSON requires. Nothing
+# in the response says the order changed. A client that reads coordinates[0]
+# expecting the number it just sent gets the other one, and near the equator or
+# the prime meridian the mistake produces a plausible location rather than an
+# error.
+#
+# **And "type" is in the document three times, in three vocabularies.** The top
+# level says "Feature", which is GeoJSON's. properties.@type says "wx:Point",
+# which is the NWS ontology's. properties.type says "land", which is the NWS's
+# own classification of the point. Three keys named type, three answers, one
+# document -- and only the middle one is namespaced.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.weather.gov on the date in its verified field.
+#
+# Six more the Recipe pins:
+#
+#   1. A request with no User-Agent is refused by the CDN, not the API. It comes
+#      back 403 as an Akamai HTML page, so a client with application/problem+json
+#      error handling parses markup, and there is no correlationId to quote to
+#      support. The API's own documentation asks for a User-Agent and the
+#      enforcement happens a layer above it.
+#   2. Three failures are 404 and mean three different things, and the one whose
+#      title is accurate is the one with the least in it. A point outside
+#      coverage says "Data Unavailable For Requested Point" and is right. A
+#      latitude of 999 says "Not Found" -- title and detail both -- and puts the
+#      real reason in parameterErrors, which RFC 9457 does not define. An unknown
+#      forecast office says "Not Found" too, and its parameterErrors message is
+#      840 characters long because it inlines all 133 valid office codes into an
+#      English sentence.
+#   3. A number with a unit is expressed four ways in one document.
+#      elevation is {"unitCode": "wmoUnit:m", "value": 441.96}. temperature is
+#      the bare number 72 beside a separate temperatureUnit: "F". windSpeed is
+#      the prose "10 to 15 mph" -- a range, with the unit inside the string --
+#      and sometimes the scalar "15 mph", so the same field is two grammars.
+#      And probabilityOfPrecipitation is a unitCode object for a percentage.
+#   4. validTimes is an ISO 8601 interval with a duration on the right:
+#      "2026-08-28T16:00:00+00:00/P7DT9H". Date.parse returns NaN, and splitting
+#      on "/" gives an instant and something that is not one.
+#   5. geometry.coordinates is a number at depth 1 on /points and an array at
+#      depth 3 on /gridpoints, because one is a Point and the other a Polygon.
+#      Same key, same API. The polygon's ring has five entries for four corners,
+#      since GeoJSON closes rings by repeating the first.
+#   6. The envelope is UTC and the contents are local. generatedAt, updateTime
+#      and the start of validTimes all carry +00:00; every period's startTime
+#      and endTime carry -05:00.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Two points are served, not the continental grid: one inside coverage and
+#     one outside it. The grid is a real forecast system and this is a fixture.
+#   - The forecast's fourteen periods are trimmed to three, chosen to show the
+#     two windSpeed grammars and both values of isDaytime.
+#   - @context's second element is trimmed from seventeen keys to five. The
+#     finding is that the array holds a string and an object, not the ontology.
+#   - astronomicalData and nwr are dropped from the point, and only /points and
+#     /gridpoints/{office}/{grid}/forecast are modelled. Observations, stations,
+#     alerts, zones and the hourly forecast answer different documents.
+
+recipe: nationalweatherservice
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: nationalweatherservice
+  docs: https://www.weather.gov/documentation/services-web-api
+
+auth:
+  # A public API run by a government, with no key and no account.
+  scheme: none
+
+required_headers:
+  # Asked for by the documentation, enforced by the CDN, and the failure is not
+  # the API's.
+  User-Agent: no_user_agent
+
+responses:
+  resource:
+    style: bare
+  error:
+    # RFC 9457 problem details, and the fields it defines are the ones that
+    # say the least.
+    style: flat
+    message_field: title
+    status_field: status
+
+resources:
+  point:
+    id:
+      style: opaque
+      # The path carries "39.7456,-97.0892" and the body carries the whole URL,
+      # so the identifier that addresses the record is not the one in it.
+      field: "-"
+    fields:
+      # A JSON-LD array holding a string and an object. Element 0 is a URL,
+      # element 1 is seventeen keys of ontology.
+      "@context":
+        type: list
+      # GeoJSON's word for what this is.
+      type:
+        type: string
+      # A Point here, and a Polygon on the forecast.
+      geometry:
+        type: map
+      properties:
+        type: map
+      # The body's own id, which is the full URL rather than the path segment.
+      uri:
+        type: string
+        as: id
+
+  forecast:
+    id:
+      style: opaque
+      # /gridpoints/TOP/32,81/forecast answers no identifier at all.
+      field: "-"
+    fields:
+      "@context":
+        type: list
+      type:
+        type: string
+      # A Polygon, where the point's was a Point.
+      geometry:
+        type: map
+      properties:
+        type: map
+      # The office in the path, which the body never echoes.
+      office:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /points/{id}
+    resource: point
+    operation: get
+    not_found: invalid_point
+
+  - method: GET
+    path: /gridpoints/{office}/{id}/forecast
+    resource: forecast
+    operation: get
+    scope: [office]
+    not_found: unknown_office
+
+errors:
+  # Not the API's failure at all: an Akamai page, in HTML, with a reference
+  # number that means nothing to the NWS.
+  no_user_agent:
+    status: 403
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |-
+      <HTML><HEAD>
+      <TITLE>Access Denied</TITLE>
+      </HEAD><BODY>
+      <H1>Access Denied</H1>
+
+      You don't have permission to access this server.<P>
+      </BODY></HTML>
+
+  # The accurate one, and the one with the least in it.
+  invalid_point:
+    status: 404
+    message: Data Unavailable For Requested Point
+    fields:
+      correlationId: 12bca02a
+      type: https://api.weather.gov/problems/InvalidPoint
+      detail: Unable to provide data for requested point 51.5074,-0.1278
+      instance: https://api.weather.gov/requests/12bca02a
+
+  # Titled "Not Found" for a number that is out of range, with the real reason
+  # in a field RFC 9457 does not define.
+  out_of_range:
+    status: 404
+    message: Not Found
+    fields:
+      correlationId: 3957f06
+      type: https://api.weather.gov/problems/NotFound
+      detail: Not Found
+      instance: https://api.weather.gov/requests/3957f06
+      parameterErrors:
+        - parameter: path.latitude
+          message: Must have a maximum value of 90
+        - parameter: path.longitude
+          message: Must have a maximum value of 180
+
+  # The same title again, and a validation message that inlines the whole
+  # enumeration. The real one is 840 characters and names 133 offices; this
+  # holds the first eight and the last two, which is the shape.
+  unknown_office:
+    status: 404
+    message: Not Found
+    fields:
+      correlationId: 2669e11d
+      type: https://api.weather.gov/problems/NotFound
+      detail: Not Found
+      instance: https://api.weather.gov/requests/2669e11d
+      parameterErrors:
+        - parameter: path.wfo
+          message: >-
+            Does not have a value in the enumeration
+            ["AKQ","ALY","BGM","BOX","BTV","BUF","CAE","CAR", ... ,"ONA","ONP"]
+
+fixtures:
+  empty: {}
+
+  kansas:
+    point:
+      - id: 39.7456,-97.0892
+        uri: https://api.weather.gov/points/39.7456,-97.0892
+        "@context":
+          # A URL.
+          - https://geojson.org/geojson-ld/geojson-context.jsonld
+          # And an object, in the same array. Trimmed from seventeen keys.
+          - "@version": "1.1"
+            wx: https://api.weather.gov/ontology#
+            s: https://schema.org/
+            geo: http://www.opengis.net/ont/geosparql#
+            unit: http://codes.wmo.int/common/unit/
+        # GeoJSON's type.
+        type: Feature
+        geometry:
+          type: Point
+          # Longitude first. The path that fetched this said 39.7456,-97.0892.
+          coordinates:
+            - -97.0892
+            - 39.7456
+        properties:
+          # The same URL as the top-level id, under a different key.
+          "@id": https://api.weather.gov/points/39.7456,-97.0892
+          # The ontology's type.
+          "@type": wx:Point
+          cwa: TOP
+          # And the NWS's own type, in the same object as the ontology's.
+          type: land
+          forecastOffice: https://api.weather.gov/offices/TOP
+          gridId: TOP
+          gridX: 32
+          gridY: 81
+          forecast: https://api.weather.gov/gridpoints/TOP/32,81/forecast
+          forecastHourly: https://api.weather.gov/gridpoints/TOP/32,81/forecast/hourly
+          forecastGridData: https://api.weather.gov/gridpoints/TOP/32,81
+          observationStations: https://api.weather.gov/gridpoints/TOP/32,81/stations
+          # A GeoJSON Feature nested inside the properties of a GeoJSON
+          # Feature, so type: Feature and geometry.coordinates each appear
+          # twice at two depths.
+          relativeLocation:
+            type: Feature
+            geometry:
+              type: Point
+              coordinates:
+                - -97.0867936
+                - 39.6792898
+            properties:
+              city: Linn
+              state: KS
+              # A unitCode object, which is convention one of four.
+              distance:
+                unitCode: wmoUnit:m
+                value: 6745.3279758024
+              bearing:
+                # A WMO code with brackets in it.
+                unitCode: wmoUnit:degree_(angle)
+                value: 358
+          forecastZone: https://api.weather.gov/zones/forecast/KSZ009
+          county: https://api.weather.gov/zones/county/KSC201
+          fireWeatherZone: https://api.weather.gov/zones/fire/KSZ009
+          timeZone: America/Chicago
+          radarStation: KTWX
+
+  topeka:
+    forecast:
+      - id: 32,81
+        office: TOP
+        "@context":
+          - https://geojson.org/geojson-ld/geojson-context.jsonld
+          - "@version": "1.1"
+            wx: https://api.weather.gov/ontology#
+            geo: http://www.opengis.net/ont/geosparql#
+            unit: http://codes.wmo.int/common/unit/
+            "@vocab": https://api.weather.gov/ontology#
+        type: Feature
+        geometry:
+          # A Polygon, where the point's geometry was a Point -- so
+          # coordinates[0] is an array here and a number there.
+          type: Polygon
+          coordinates:
+            # Five entries for four corners: GeoJSON closes the ring by
+            # repeating the first.
+            - - [-97.0799, 39.7451]
+              - [-97.0803, 39.7672]
+              - [-97.109, 39.7668]
+              - [-97.1085, 39.7448]
+              - [-97.0799, 39.7451]
+        properties:
+          units: us
+          forecastGenerator: BaselineForecastGenerator
+          # UTC, like updateTime and the start of validTimes.
+          generatedAt: "2026-08-29T01:06:49+00:00"
+          updateTime: "2026-08-28T22:56:55+00:00"
+          # An instant, a slash, and a duration. Date.parse gives NaN.
+          validTimes: 2026-08-28T16:00:00+00:00/P7DT9H
+          # Convention one: a unitCode object.
+          elevation:
+            unitCode: wmoUnit:m
+            value: 441.96
+          periods:
+            - number: 1
+              name: Tonight
+              # Local, where the envelope was UTC.
+              startTime: "2026-08-28T20:00:00-05:00"
+              endTime: "2026-08-29T06:00:00-05:00"
+              isDaytime: false
+              # Convention two: a bare number and a separate unit field.
+              temperature: 72
+              temperatureUnit: F
+              temperatureTrend: null
+              # Convention one again, for a percentage.
+              probabilityOfPrecipitation:
+                unitCode: wmoUnit:percent
+                value: 1
+              # Convention three: prose, with a range and a unit in it.
+              windSpeed: 10 to 15 mph
+              windDirection: S
+              icon: https://api.weather.gov/icons/land/night/sct?size=medium
+              shortForecast: Partly Cloudy
+              detailedForecast: Partly cloudy, with a low around 72. South wind 10 to 15 mph, with gusts as high as 25 mph.
+            - number: 2
+              name: Saturday
+              startTime: "2026-08-29T06:00:00-05:00"
+              endTime: "2026-08-29T18:00:00-05:00"
+              isDaytime: true
+              temperature: 94
+              temperatureUnit: F
+              temperatureTrend: null
+              probabilityOfPrecipitation:
+                unitCode: wmoUnit:percent
+                value: 2
+              windSpeed: 15 to 20 mph
+              windDirection: S
+              icon: https://api.weather.gov/icons/land/day/sct?size=medium
+              shortForecast: Sunny
+              detailedForecast: Sunny, with a high near 94. South wind 15 to 20 mph, with gusts as high as 30 mph.
+            - number: 3
+              name: Saturday Night
+              startTime: "2026-08-29T18:00:00-05:00"
+              endTime: "2026-08-30T06:00:00-05:00"
+              isDaytime: false
+              temperature: 77
+              temperatureUnit: F
+              temperatureTrend: null
+              probabilityOfPrecipitation:
+                unitCode: wmoUnit:percent
+                value: 2
+              # The same field, without a range. Two grammars, one key.
+              windSpeed: 15 mph
+              windDirection: S
+              icon: https://api.weather.gov/icons/land/night/sct?size=medium
+              shortForecast: Partly Cloudy
+              detailedForecast: Partly cloudy, with a low around 77. South wind around 15 mph, with gusts as high as 30 mph.
+
+conformance:
+  - name: the path says lat,lon and the body says lon,lat
+    source: https://api.weather.gov/points/39.7456,-97.0892
+    verified: "2026-08-28"
+    fixture: kansas
+    request:
+      method: GET
+      path: /points/39.7456,-97.0892
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # The path sent latitude first. The body answers longitude first, and
+        # says nothing about the swap.
+        "geometry.coordinates[0]": -97.0892
+        "geometry.coordinates[1]": 39.7456
+        "geometry.type": Point
+
+  - name: type means three things in one document
+    source: https://api.weather.gov/points/39.7456,-97.0892
+    verified: "2026-08-28"
+    fixture: kansas
+    request:
+      method: GET
+      path: /points/39.7456,-97.0892
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # GeoJSON's.
+        type: Feature
+        # The ontology's, namespaced.
+        "properties.@type": wx:Point
+        # And the NWS's own, in the same object, not namespaced.
+        "properties.type": land
+        # A fourth, one level further down, on a Feature inside a property.
+        "properties.relativeLocation.type": Feature
+        # And the unit code on that Feature has brackets in it, which is
+        # not a shape a code list usually takes.
+        "properties.relativeLocation.properties.bearing.unitCode": wmoUnit:degree_(angle)
+
+  - name: the id in the body is not the id in the path
+    source: https://api.weather.gov/points/39.7456,-97.0892
+    verified: "2026-08-28"
+    fixture: kansas
+    request:
+      method: GET
+      path: /points/39.7456,-97.0892
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # The path segment was 39.7456,-97.0892 and the body carries the URL --
+        # twice, under two different key names.
+        id: https://api.weather.gov/points/39.7456,-97.0892
+        "properties.@id": https://api.weather.gov/points/39.7456,-97.0892
+        # And @context is an array holding a string and an object.
+        "@context[0]": https://geojson.org/geojson-ld/geojson-context.jsonld
+        "@context[1].@version": "1.1"
+      absent:
+        # And there is no second identifier anywhere: the URL under id is
+        # the only one, and properties.@id repeats it rather than adding.
+        - pointId
+
+  - name: a number with a unit is expressed four ways
+    source: https://api.weather.gov/gridpoints/TOP/32,81/forecast
+    verified: "2026-08-28"
+    fixture: topeka
+    request:
+      method: GET
+      path: /gridpoints/TOP/32,81/forecast
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # One: a unitCode object.
+        "properties.elevation.unitCode": wmoUnit:m
+        "properties.elevation.value": 441.96
+        # Two: a bare number and a separate unit field.
+        "properties.periods[0].temperature": 72
+        "properties.periods[0].temperatureUnit": F
+        # Three: prose, with the unit inside the string, as a range.
+        "properties.periods[0].windSpeed": 10 to 15 mph
+        # And the same key as a scalar two periods later.
+        "properties.periods[2].windSpeed": 15 mph
+        # Four: a unitCode object for a percentage.
+        "properties.periods[0].probabilityOfPrecipitation.unitCode": wmoUnit:percent
+
+  - name: validTimes is an instant and a duration, and the offsets disagree
+    source: https://api.weather.gov/gridpoints/TOP/32,81/forecast
+    verified: "2026-08-28"
+    fixture: topeka
+    request:
+      method: GET
+      path: /gridpoints/TOP/32,81/forecast
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # An interval whose right half is a period, not a time.
+        "properties.validTimes": 2026-08-28T16:00:00+00:00/P7DT9H
+        # The envelope is UTC.
+        "properties.generatedAt": "2026-08-29T01:06:49+00:00"
+        # The contents are local.
+        "properties.periods[0].startTime": "2026-08-28T20:00:00-05:00"
+
+  - name: coordinates is a number on one route and an array on the other
+    source: https://api.weather.gov/gridpoints/TOP/32,81/forecast
+    verified: "2026-08-28"
+    fixture: topeka
+    request:
+      method: GET
+      path: /gridpoints/TOP/32,81/forecast
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 200
+      body:
+        # A Polygon here, a Point on /points -- so this index is an array of
+        # arrays where the other was a number.
+        "geometry.type": Polygon
+        "geometry.coordinates[0][0][0]": -97.0799
+        # Five entries for four corners, first repeated last.
+        "geometry.coordinates[0][4][0]": -97.0799
+        "geometry.coordinates[0][4][1]": 39.7451
+      absent:
+        # The office is in the path and nowhere in the answer.
+        - office
+
+  - name: no User-Agent is refused by the CDN, in HTML
+    source: https://api.weather.gov/points/39.7456,-97.0892
+    verified: "2026-08-28"
+    fixture: kansas
+    request:
+      method: GET
+      path: /points/39.7456,-97.0892
+    expect:
+      # Not 401, not problem+json, and no correlationId to quote to anybody.
+      status: 403
+      headers:
+        Content-Type: text/html
+      body_matches: '(?s)<TITLE>Access Denied</TITLE>.*<H1>Access Denied</H1>'
+
+  - name: a point outside coverage is the accurate failure
+    source: https://api.weather.gov/points/51.5074,-0.1278
+    verified: "2026-08-28"
+    fixture: kansas
+    request:
+      method: GET
+      path: /points/51.5074,-0.1278
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json
+      body:
+        # The title says what happened, and there are no parameterErrors.
+        title: Data Unavailable For Requested Point
+        type: https://api.weather.gov/problems/InvalidPoint
+        detail: Unable to provide data for requested point 51.5074,-0.1278
+        status: 404
+      absent:
+        - parameterErrors
+
+  - name: an unknown office is Not Found, with the enumeration in the message
+    source: https://api.weather.gov/gridpoints/ZZZ/32,81/forecast
+    verified: "2026-08-28"
+    fixture: topeka
+    request:
+      method: GET
+      path: /gridpoints/ZZZ/32,81/forecast
+      headers:
+        User-Agent: cauldron-conformance
+    expect:
+      status: 404
+      body:
+        # Title and detail both say Not Found for a code that is not in a list,
+        # and the real reason is in a field RFC 9457 does not define -- as a
+        # sentence that inlines the list.
+        title: Not Found
+        detail: Not Found
+        "parameterErrors[0].parameter": path.wfo
+        "parameterErrors[0].message": 'Does not have a value in the enumeration ["AKQ","ALY","BGM","BOX","BTV","BUF","CAE","CAR", ... ,"ONA","ONP"]'
