@@ -1462,6 +1462,30 @@ func providers() []provider {
 			gomod:    []string{"github.com/HannesOberreiter/gbif-extinct"},
 		},
 		{
+			// The Sunrise-Sunset shape again: a holiday calendar is a rule set, so
+			// the neighbourhood computes rather than asks. date-holidays and
+			// date-holidays-parser carry the rules for every country;
+			// poland-public-holidays says "compute" in its own description;
+			// @18f/us-federal-holidays, @holiday-jp/holiday_jp and
+			// colombian-holidays each ship one country's. None of them opens a
+			// connection.
+			//
+			// Two more are somebody else's answer to the same question: the npm
+			// package called public-holidays reads Google Calendar, and
+			// @festivo-io/festivo-sdk is a commercial competitor's client.
+			//
+			// And two are written for versions that are not there.
+			// @pontx/nager-date calls itself a "Nager.Date Community API v4 SDK"
+			// and /api/v4/ answers 404; @thomasc93/holidates builds
+			// /api/v2/publicholidays/ and that answers 404 too. The same shape as
+			// Frankfurter's v2, twice on one provider.
+			//
+			// On Packagist "nager" is an edit distance again: nagarajanchinnasamy,
+			// socialiteproviders/naver, donejeh/nuban and mercyware/nigerianstates.
+			recipe:   "nagerdate",
+			composer: []string{"rolle-marketplace/nager-date-laravel"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
