@@ -5731,3 +5731,50 @@ func TestDetectOpenFDAClientAndNotTheOtherOpenProjects(t *testing.T) {
 		}
 	}
 }
+
+// The Open- prefix collides with every other Open- project, and this is the
+// second Recipe in a row where that is the whole Packagist result: openFDA got
+// OpenFeature and OpenLDAP, and this one gets OpenExchangeRates four times
+// over, beside an events API and a list of countries.
+func TestDetectOpenAlexClientsAndNotTheOtherOpenProjects(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"openalex": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@sickrin/openalex-sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"openalex-skill": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "openalex") {
+			t.Errorf("%v did not detect openalex: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A currency API, four times over.
+		{"composer.json": `{"require": {"qbil-software/openexchangerates": "^1.0"}}`},
+		{"composer.json": `{"require": {"dandelionmood/openexchangerates": "^1.0"}}`},
+		{"composer.json": `{"require": {"mrzard/open-exchange-rates-service": "^1.0"}}`},
+		// An events API, and a list of countries.
+		{"composer.json": `{"require": {"openagenda/sdk-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"openclerk/country-list": "^1.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@cyanheads/openalex-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"openalex-mcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"mcp-openalex": "^0.1.0"}}`},
+		// Named for this API and carrying no host.
+		{"package.json": `{"dependencies": {"@univ-lehavre/atlas-biblio-cli": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"mbsoft31/laravel-openalex": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openalex") {
+			t.Errorf("%v offered the openalex Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
