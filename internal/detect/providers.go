@@ -2639,6 +2639,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// Both words in the name pull in a different unrelated cluster. "Rating"
+			// brings star widgets -- @zag-js/rating-group, @fluentui/react-rating,
+			// @smastrom/react-rating, react-simple-star-rating and the bare
+			// react-rating, all UI components for letting somebody click five stars.
+			// "Hygiene" brings danger-plugin-pr-hygiene, which enforces good pull
+			// request hygiene. Neither has anything to do with food.
+			//
+			// And the acronym belongs to a CSS framework. Packagist answers "fhrs"
+			// with twbs/bootstrap, twitter/bootstrap, zurb/foundation,
+			// foundation/foundation-sites and coreui/coreui -- five front-end
+			// frameworks -- beside mjoc1985/fhr-laravel-client, which is an "FHR API
+			// client (search, inventory, cart)" for something else entirely.
+			//
+			// Four MCP servers carry the name, and none is mapped.
+			// @pipeworx/mcp-uk-food-hygiene is the thirteenth Recipe running for that
+			// publisher; three more are @gera-services', one of which exists to let
+			// an agent "check if a UK business is real".
+			recipe: "fhrs",
+			npm: []string{
+				"food-hygiene-ratings",
+				"@wmfs/food-hygiene-blueprint",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

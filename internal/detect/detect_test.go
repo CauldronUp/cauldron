@@ -5924,3 +5924,50 @@ func TestDetectUKPoliceClientsAndNotTheMetaphorOrUkraine(t *testing.T) {
 		}
 	}
 }
+
+// Both words in the name pull in a different unrelated cluster: "rating" brings
+// star widgets for letting somebody click five stars, and "hygiene" brings a
+// plugin that enforces good pull request hygiene. And the acronym belongs to a
+// CSS framework -- Packagist answers "fhrs" with Bootstrap and Foundation.
+func TestDetectFHRSClientsAndNotTheStarWidgets(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"food-hygiene-ratings": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wmfs/food-hygiene-blueprint": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "fhrs") {
+			t.Errorf("%v did not detect fhrs: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Rating as a widget.
+		{"package.json": `{"dependencies": {"react-rating": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@zag-js/rating-group": "^0.50.0"}}`},
+		{"package.json": `{"dependencies": {"react-simple-star-rating": "^5.0.0"}}`},
+		// Hygiene as a code-quality rule.
+		{"package.json": `{"dependencies": {"danger-plugin-pr-hygiene": "^1.0.0"}}`},
+		// The acronym as a CSS framework.
+		{"composer.json": `{"require": {"twbs/bootstrap": "^5.0"}}`},
+		{"composer.json": `{"require": {"zurb/foundation": "^6.0"}}`},
+		{"composer.json": `{"require": {"coreui/coreui": "^5.0"}}`},
+		// A different FHR entirely.
+		{"composer.json": `{"require": {"mjoc1985/fhr-laravel-client": "^1.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-uk-food-hygiene": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@gera-services/mcp-gera-eats": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "fhrs") {
+			t.Errorf("%v offered the fhrs Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
