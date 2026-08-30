@@ -2886,6 +2886,35 @@ func providers() []provider {
 			},
 		},
 		{
+			// Almost every published client is written against the version before
+			// this one. stackexchange-api reaches api.stackexchange.com/2.2;
+			// benatespina/stack-exchange-api-client calls itself a "StackExchange
+			// v2.2 API client"; and nahid/php-stack-api is "a PHP SDK for
+			// StackExchange API version 2.2". This Recipe describes 2.3, which is
+			// declared under upstream.supersedes, so the exclusion is a fact
+			// something can check.
+			//
+			// The npm package simply called stackexchange builds its version from
+			// configuration and reaches no version path in its published output, so
+			// there is nothing to tell which it speaks.
+			//
+			// @userscripters/stackexchange-api-types is types without a client -- a
+			// types generator, which makes no request. @stackoverflow/stacks is the
+			// vendor's own scope holding its CSS and design pattern library, and
+			// stackexchange/pagedown is the vendor's scope again holding a Markdown
+			// converter. room11/stack-chat is a chat client, which is a different
+			// Stack Exchange service on a different host, and
+			// socialiteproviders/stackexchange is a login provider.
+			//
+			// The rest of npm is the popularity fallback: three Google Maps
+			// packages and react-native-navigation, none of which mentions Stack
+			// Exchange.
+			recipe: "stackexchange",
+			npm: []string{
+				"@ossintel/stackoverflow",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the

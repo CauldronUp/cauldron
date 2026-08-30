@@ -6445,3 +6445,43 @@ func TestDetectJishoClientsAndNotTheScraper(t *testing.T) {
 		}
 	}
 }
+
+// Almost every published client speaks the version before this one, so the near
+// miss here is a whole ecosystem rather than one package.
+func TestDetectStackExchangeClientAndNotTheVersionBefore(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@ossintel/stackoverflow": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "stackexchange") {
+		t.Errorf("did not detect stackexchange: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// Written against 2.2, by their own hosts and their own descriptions.
+		{"package.json": `{"dependencies": {"stackexchange-api": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"benatespina/stack-exchange-api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"nahid/php-stack-api": "^1.0"}}`},
+		// No version path anywhere in its published output.
+		{"package.json": `{"dependencies": {"stackexchange": "^4.0.0"}}`},
+		// Types without a client, and the vendor's own scope twice over.
+		{"package.json": `{"dependencies": {"@userscripters/stackexchange-api-types": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@stackoverflow/stacks": "^2.0.0"}}`},
+		{"composer.json": `{"require": {"stackexchange/pagedown": "^1.0"}}`},
+		// A chat client and a login provider.
+		{"composer.json": `{"require": {"room11/stack-chat": "^1.0"}}`},
+		{"composer.json": `{"require": {"socialiteproviders/stackexchange": "^4.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "stackexchange") {
+			t.Errorf("%v offered the stackexchange Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
