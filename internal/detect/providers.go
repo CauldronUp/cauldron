@@ -2690,6 +2690,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// Two packages carry zenodo.org/api in their published output and are
+			// mapped. Four more describe themselves as clients of this API and build
+			// the URL from parts, so nothing in them says where they go: the bare
+			// name "zenodo" ("Node.js library to access the Zenodo API"), zenodo-ts,
+			// zenodraft and @citation-js/plugin-zenodo. Four of six named clients
+			// with no host between them.
+			//
+			// The badge kind is here again: code-health-meter matches on a Zenodo DOI
+			// badge in its README, which is a link to a citation rather than a call.
+			//
+			// Packagist has nothing, and answers the word three ways. zenodorus is a
+			// vendor prefix -- zenodorus/strings, zenodorus/filesystem,
+			// zenodorus/arrays and zenodorus/core, utility libraries by one author.
+			// zenorocha/clipboardjs is a person's name, and clipboard.js is one of
+			// the most installed front-end libraries there is. And zendframework
+			// /zendoauth and zendframework/zendopenid are Zend Framework, where the
+			// letters line up by accident.
+			recipe: "zenodo",
+			npm: []string{
+				"zenodo-lib",
+				"@iomeg/zenodo-upload",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
