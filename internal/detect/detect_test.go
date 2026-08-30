@@ -5683,3 +5683,51 @@ func TestDetectTfLClientsAndNotTheInitialsOrTheLogic(t *testing.T) {
 		}
 	}
 }
+
+// The whole npm neighbourhood is agent tooling: every result for "openfda" is
+// an MCP server or a tool for one, which is the first time that has been true
+// of a provider here. Packagist answers with two other open- projects,
+// OpenFeature and OpenLDAP, and the acronym belongs to more than one country.
+func TestDetectOpenFDAClientAndNotTheOtherOpenProjects(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@pharmatools/drug-data": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "openfda") {
+		t.Errorf("did not detect openfda: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// The neighbourhood, entire.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-openfda": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@cyanheads/openfda-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"mcp-openfda": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"openfda-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"medical-mcp": "^0.1.0"}}`},
+		// OpenFeature, the feature-flag standard.
+		{"composer.json": `{"require": {"open-feature/sdk": "^2.0"}}`},
+		{"composer.json": `{"require": {"launchdarkly/openfeature-server": "^1.0"}}`},
+		// OpenLDAP.
+		{"composer.json": `{"require": {"freedsx/ldap": "^0.9"}}`},
+		{"composer.json": `{"require": {"ldaptools/ldaptools": "^0.9"}}`},
+		// A different regulator with the same three letters.
+		{"composer.json": `{"require": {"aghfatehi/laravel-saudi-fda": "^1.0"}}`},
+		// This agency's rounding rules, and no request.
+		{"composer.json": `{"require": {"montopolis/fda-nutrition-rounding-php": "^1.0"}}`},
+		// Named for this API and carrying no host.
+		{"package.json": `{"dependencies": {"n8n-nodes-openfda-drug-scraper": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"meisam-mulla/laravel-openfda": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "openfda") {
+			t.Errorf("%v offered the openfda Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -2494,6 +2494,41 @@ func providers() []provider {
 			},
 		},
 		{
+			// The whole npm neighbourhood is agent tooling. Every one of the twelve
+			// results for "openfda" is an MCP server or a tool for one --
+			// @ythalorossy/openfda, @cyanheads/openfda-mcp-server,
+			// @pipeworx/mcp-openfda, @pipeworx/mcp-fda-devices, mcp-openfda,
+			// bach-openfda, openfda-mcp-server, @sineai/drug-safety-mcp,
+			// biopharma-catalyst-mcp, @shaddyt/clinical-reference-mcp and
+			// medical-mcp. No ordinary client library appears at all, which is the
+			// first time that has been true of a provider here.
+			//
+			// One package is not an MCP server and is mapped: @pharmatools/drug-data
+			// carries api.fda.gov and resolves drug names against RxNorm beside it.
+			//
+			// Packagist answers "openfda" with two other open- projects.
+			// open-feature/sdk, open-feature/flagd-provider,
+			// launchdarkly/openfeature-server and configcat/openfeature-provider are
+			// OpenFeature, the feature-flag standard; freedsx/ldap,
+			// ldaptools/ldaptools and causal/ig_ldap_sso_auth are OpenLDAP. A prefix
+			// shared with two unrelated specifications.
+			//
+			// And the acronym belongs to more than one country:
+			// aghfatehi/laravel-saudi-fda is the Saudi Food and Drug Authority, a
+			// different regulator with the same three letters.
+			// montopolis/fda-nutrition-rounding-php implements this agency's
+			// rounding rules for nutrition labels and makes no request at all.
+			//
+			// Left out on evidence: meisam-mulla/laravel-openfda is described as a
+			// "Simplified OpenFDA API for Laravel" and its repository cannot be
+			// read, and n8n-nodes-openfda-drug-scraper carries no host in its
+			// published output.
+			recipe: "openfda",
+			npm: []string{
+				"@pharmatools/drug-data",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
