@@ -1809,6 +1809,49 @@ func providers() []provider {
 			},
 		},
 		{
+			// The vendor's own commercial product is the near miss. Ideal
+			// Postcodes runs postcodes.io -- @stevegoossens/postcodes.io names
+			// "ideal-postcodes/postcodes.io" in its own description -- and also
+			// sells a paid UK lookup that needs a key.
+			// @ideal-postcodes/postcode-lookup and its bundled twin call
+			// ideal-postcodes.co.uk, not this. One company, two APIs, and only one
+			// of them free.
+			//
+			// "Postcode" also means South Korea. react-daum-postcode,
+			// vue-daum-postcode, @clroot/react-kakao-postcode and
+			// @types/daum-postcode are all the Daum/Kakao address widget, on
+			// kakaocdn.net, and they outnumber the UK ones in a search for the
+			// bare word.
+			//
+			// Two more are competitors: getaddress-find is GetAddress.io and
+			// @venditan/address-lookup is Google Places wearing a postcode label.
+			//
+			// And three carry no URL at all, because a postcode is a string with a
+			// grammar: the bare npm name "postcode" is "UK Postcode helper
+			// methods", postcode-validator validates by country from patterns, and
+			// aus-postcode-suburbs ships Australia's list as data.
+			//
+			// node-red-contrib-postcodes-io is left out on purpose. It names
+			// postcodes.io and builds no api.postcodes.io URL anywhere its source
+			// can be read, so there is nothing to verify -- the same standard that
+			// left Datamuse's one Packagist candidate unmapped.
+			recipe: "postcodesio",
+			composer: []string{
+				"juststeveking/laravel-postcodes",
+				"jabranr/postcodes-io",
+				"ammaar23/postcodes-io-sdk",
+				"boxuk/postcodes-io-bundle",
+			},
+			npm: []string{
+				"node-postcodes.io",
+				"postcodesio-client",
+				"@cuvva/postcodesio-client",
+				"@stevegoossens/postcodes.io",
+				"@opsydyn/effect-postcodes-client",
+				"@openpets/uk-postcodes",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
