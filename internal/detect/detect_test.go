@@ -6017,3 +6017,53 @@ func TestDetectBoCValetClientAndNotTheDevEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// Four of the six packages that describe themselves as clients of this API
+// build the URL from parts and carry no host at all. Packagist has nothing and
+// answers the word three ways: a vendor prefix, a person's name -- clipboard.js
+// is one of the most installed front-end libraries there is -- and Zend
+// Framework, where the letters line up by accident.
+func TestDetectZenodoClientsAndNotTheVendorPrefixOrThePerson(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"zenodo-lib": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@iomeg/zenodo-upload": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "zenodo") {
+			t.Errorf("%v did not detect zenodo: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Named for this API and carrying no host.
+		{"package.json": `{"dependencies": {"zenodo": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"zenodo-ts": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"zenodraft": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@citation-js/plugin-zenodo": "^0.7.0"}}`},
+		// A DOI badge in a README.
+		{"package.json": `{"dependencies": {"code-health-meter": "^1.0.0"}}`},
+		// A vendor prefix, four packages deep.
+		{"composer.json": `{"require": {"zenodorus/strings": "^1.0"}}`},
+		{"composer.json": `{"require": {"zenodorus/arrays": "^1.0"}}`},
+		// A person's name.
+		{"composer.json": `{"require": {"zenorocha/clipboardjs": "^2.0"}}`},
+		// Zend Framework.
+		{"composer.json": `{"require": {"zendframework/zendoauth": "^2.0"}}`},
+		{"composer.json": `{"require": {"zendframework/zendopenid": "^2.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-zenodo": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "zenodo") {
+			t.Errorf("%v offered the zenodo Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
