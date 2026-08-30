@@ -2663,6 +2663,33 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist has nothing for "bank of canada" and eight packages for
+			// "valet", all of them Laravel Valet: laravel/valet, cpriego/valet-linux,
+			// cretueusebiu/valet-windows, genesisweb/valet-linux-plus,
+			// weprovide/valet-plus, ycodetech/valet-windows, cpriego/valet-ubuntu and
+			// jacerider/valet, which is a Drupal navigation system. A local
+			// development environment, eight ways.
+			//
+			// npm spreads the word further: @archway/valet is a CSS-in-JS engine,
+			// @archway/create-valet-app scaffolds one, @caiokf/valet drives coding
+			// CLIs, and @puffle/secret-valet is a password prompt. Valet is a name
+			// for a helper, and everybody has one.
+			//
+			// boc-exchange-rate and @allratestoday/boc-exchange-rate are the data as
+			// a file, and they call themselves "Official Bank of Canada (Canada)
+			// daily exchange rates" while carrying no host at all -- the rates are
+			// bundled, not fetched.
+			//
+			// @cybrid/cybrid-api-bank-angular and its TypeScript twin are a different
+			// company's bank API entirely. Two MCP servers carry the name, and
+			// @pipeworx/mcp-bank-of-canada is the fourteenth Recipe running for that
+			// publisher.
+			recipe: "bocvalet",
+			npm: []string{
+				"@varve/boc-valet",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
