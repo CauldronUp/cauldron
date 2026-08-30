@@ -2121,6 +2121,29 @@ func providers() []provider {
 			},
 		},
 		{
+			// There are two Chuck Norris APIs and the neighbourhood splits between
+			// them. ICNDb -- the Internet Chuck Norris Database, at icndb.com -- is
+			// the older one and is gone. chucknorris-quotes, chucknorris-joke-node,
+			// chuck-jokes and the npm package called "cn" all call it.
+			//
+			// Packagist has no client for this API at all. Its four results share
+			// one description word for word -- "Create random Chuck Norris jokes" --
+			// across mpociot, zaratedev, vikas5914 and ttnppedr, and the two that
+			// were opened both call icndb.com. Four forks of one package, pointed at
+			// a host that no longer answers.
+			//
+			// Three more open no connection at all. The bare npm name
+			// "chucknorris" -- "Chuck Norris does not need a description" -- has no
+			// host in it; chuck-norris-api is named for ICNDb in its own
+			// description and calls nothing; and chuckscript is an esoteric
+			// programming language whose source is written entirely in zeroes.
+			recipe: "chucknorris",
+			npm: []string{
+				"chucknorris-io",
+				"chuck-norris-jokes",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
