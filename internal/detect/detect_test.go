@@ -4844,3 +4844,45 @@ func TestDetectMetMuseumClientsAndNotTheOtherMuseums(t *testing.T) {
 		}
 	}
 }
+
+// The near miss here is a fandom rather than a homonym: the show has more
+// packages about it than clients of its API. Two fetch GIFs from Giphy, one is
+// a React component library themed after it -- naming rickandmortyapi.com in
+// its README while its code calls React's CDN -- and one is a text mangler
+// named after a catchphrase.
+func TestDetectRickAndMortyClientsAndNotTheFandom(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"rickmortyapi": "^2.0.0"}}`},
+		{"composer.json": `{"require": {"nickbeen/rick-and-morty-api-php": "^2.0"}}`},
+		{"composer.json": `{"require": {"zmaglica/rick-and-morty-api-wrapper": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "rickandmorty") {
+			t.Errorf("%v did not detect rickandmorty: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// GIFs, from Giphy.
+		{"package.json": `{"dependencies": {"rick-and-morty": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"rick-and-morty-cli": "^1.0.0"}}`},
+		// A colour scheme that names the API in its README and calls React.
+		{"package.json": `{"dependencies": {"rick-morty-components-lib": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@zsy1126/dsh-rick-and-morty": "^1.0.0"}}`},
+		// A text mangler named after a catchphrase.
+		{"package.json": `{"dependencies": {"squanch": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "rickandmorty") {
+			t.Errorf("%v offered the rickandmorty Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -1885,6 +1885,37 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss here is a fandom rather than a homonym: the show has
+			// more packages about it than clients of its API.
+			//
+			// rick-and-morty and rick-and-morty-cli both fetch GIFs from
+			// i.giphy.com. rick-morty-components-lib is a React component library
+			// themed after the show -- it names rickandmortyapi.com in its README
+			// and its code calls fb.me, which is React -- so a detector reading
+			// documentation rather than source would map a colour scheme.
+			// @zsy1126/dsh-rick-and-morty is a skin for a web GUI. And "squanch" is
+			// a text mangler named after a catchphrase.
+			//
+			// Two MCP servers are Frinkiac, which is screencap search across the
+			// Simpsons, Futurama and this -- a different API that happens to cover
+			// the same show.
+			//
+			// @giovanihdz/rickandmortyapi is mapped and is one of a small cohort of
+			// Spanish-language coursework -- "Consumiendo API de rickandmorty",
+			// with @imaciasd/rickandmortyapi-axios and @hiramnm14/rickandmortyapi_axios
+			// beside it. It calls the API in simpleGet.js, so the standard that
+			// mapped everything else maps it too; the other two were not opened.
+			recipe: "rickandmorty",
+			composer: []string{
+				"nickbeen/rick-and-morty-api-php",
+				"zmaglica/rick-and-morty-api-wrapper",
+			},
+			npm: []string{
+				"rickmortyapi",
+				"@giovanihdz/rickandmortyapi",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
