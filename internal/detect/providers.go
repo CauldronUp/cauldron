@@ -2837,6 +2837,31 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the dataset rather than the service.
+			// node-red-contrib-oscar-plants-classification and its tensorflow
+			// sibling "classify plant images among 10K species from the iNaturalist
+			// dataset" -- a model trained on iNaturalist's photographs, which never
+			// asks iNaturalist anything. The name is the corpus, not the API.
+			//
+			// Four of the twelve npm results are MCP servers:
+			// @pondlog/mcp-inaturalist, inaturalist-mcp, @pipeworx/mcp-inaturalist
+			// and @skills-il/israel-nature-mcp, the last of which is about Israeli
+			// nature and wraps GBIF beside this. Both of those publishers have
+			// turned up before, on openFDA and ClinicalTrials.gov.
+			//
+			// @citation-js/plugin-zenodo is the search engine reaching: it is a
+			// Zenodo plugin and mentions iNaturalist nowhere.
+			//
+			// Packagist has no result for "inaturalist" at all.
+			recipe: "inaturalist",
+			npm: []string{
+				"@pondlog/source-inaturalist",
+				"@richard-stovall/inat-typescript-client",
+				"inaturalistjs",
+				"react-inaturalist-observation",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

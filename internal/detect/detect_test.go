@@ -6244,3 +6244,43 @@ func TestDetectDeezerClientsAndNotItsLoginProviders(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the dataset rather than the service: a model trained on
+// iNaturalist's photographs never asks iNaturalist anything.
+func TestDetectINaturalistClientsAndNotTheDataset(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"inaturalistjs": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@pondlog/source-inaturalist": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@richard-stovall/inat-typescript-client": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "inaturalist") {
+			t.Errorf("%v did not detect inaturalist: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The corpus, not the API.
+		{"package.json": `{"dependencies": {"node-red-contrib-oscar-plants-classification": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-red-contrib-oscar-plants-classification-tensorflow": "^1.0.0"}}`},
+		// Four of twelve results are MCP servers.
+		{"package.json": `{"dependencies": {"inaturalist-mcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-inaturalist": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@skills-il/israel-nature-mcp": "^0.1.0"}}`},
+		// And a Zenodo plugin, which mentions iNaturalist nowhere.
+		{"package.json": `{"dependencies": {"@citation-js/plugin-zenodo": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "inaturalist") {
+			t.Errorf("%v offered the inaturalist Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
