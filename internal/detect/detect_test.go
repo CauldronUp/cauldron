@@ -5228,3 +5228,45 @@ func TestDetectChuckNorrisIOClientsAndNotICNDb(t *testing.T) {
 		}
 	}
 }
+
+// The one published client hardcodes "http://api.open-notify.org" as its
+// default domain, because there is no https one to reach. Packagist has nothing:
+// searching it for "iss" returns packages about issues, and its one open-notify
+// hit is a WeChat callback SDK. Two MCP servers carry the name, and PeopleInSpace
+// ships as five npm packages holding the same Java jar.
+func TestDetectOpenNotifyClientAndNotTheJarOrTheWord(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"node-red-contrib-iss-location": "^4.6.1"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "opennotify") {
+		t.Errorf("did not detect opennotify: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// MCP servers, the way Open-Meteo's and USGS's were not mapped.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-open-notify": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@mcp-mk/iss": "^0.1.0"}}`},
+		// A Java desktop demo, published per CPU architecture.
+		{"package.json": `{"dependencies": {"jdeploy-peopleinspace": "^5.1.26"}}`},
+		{"package.json": `{"dependencies": {"jdeploy-demo-peopleinspace-win-x64": "^5.1.26"}}`},
+		// The ordinary word.
+		{"package.json": `{"dependencies": {"jetbrains-space-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"deta-space-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"space-station": "^1.0.0"}}`},
+		// A WeChat open-platform callback SDK.
+		{"composer.json": `{"require": {"jjonline/wx-open-notify": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "opennotify") {
+			t.Errorf("%v offered the opennotify Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
