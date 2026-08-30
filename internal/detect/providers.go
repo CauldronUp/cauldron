@@ -1976,6 +1976,30 @@ func providers() []provider {
 			gomod: []string{"github.com/tamnd/mealdb-cli"},
 		},
 		{
+			// Packagist for "world bank" is entirely the word "world". Its results
+			// are pn/swiftcodes ("Banks in the world"), two PayTR gateways where
+			// World is a Turkish credit card brand, two purchasing-power-parity
+			// packages, and laravel-zip -- twice -- described as "the world's
+			// leading zip utility". Nothing there is this API, and one of them
+			// matched on a marketing superlative.
+			//
+			// npm is mostly MCP servers, seven of them, including one that is only
+			// an npx launcher for a hosted service and one scoped to Nigeria.
+			//
+			// world-bank-dataset is the data as a file: "A JSONified dataset of
+			// projects funded by the World Bank", which opens no connection.
+			//
+			// @volks publishes six packages with placeholder descriptions -- "A
+			// worldbank-indicator", "A worldbank-sources", "A worldbank-topics" --
+			// and they are not all the same. countries and indicator call
+			// api.worldbank.org and are mapped; the cli does not, and is not.
+			recipe: "worldbank",
+			npm: []string{
+				"@volks/worldbank-countries",
+				"@volks/worldbank-indicator",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
