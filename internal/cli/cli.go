@@ -93,6 +93,12 @@ func commands() map[string]command {
 			usage:   "cauldron import [--name x] [--out path] <spec.yaml|spec.json>",
 			run:     runImport,
 		},
+		"drift": {
+			name:    "drift",
+			summary: "Report where a provider's description has moved under a Recipe",
+			usage:   "cauldron drift [-q] [--record] [recipe...]",
+			run:     runDrift,
+		},
 		"check": {
 			name:    "check",
 			summary: "Report where a Recipe and an OpenAPI description disagree",

@@ -11,8 +11,62 @@ import (
 // Upstream records which real API version this Recipe targets. Without it, a
 // Recipe silently rots as the provider moves on.
 type Upstream struct {
-	API  string `yaml:"api"`
+	// API is the provider's own version label: v1, v2, 2026-06-30. Ninety-five
+	// Recipes here say v1 and fifty say v2, which is the point -- it is the
+	// provider's word, not ours.
+	API string `yaml:"api"`
+	// Docs is where a person reads about it.
 	Docs string `yaml:"docs"`
+	// Provider says whose API this is, which API alone cannot.
+	//
+	// Two Recipes both saying "v1" describe two different APIs, and until this
+	// existed nothing in the format related a provider's v1 to its v2. The
+	// absence was not academic: the MBTA's v2 clients reach realtime.mbta.com,
+	// ClinicalTrials.gov's reach clinicaltrials.gov/ct2 and DataCite's minting
+	// clients reach mds.datacite.org, and every one of those exclusions lived
+	// in prose beside a detection entry where nothing could check it.
+	//
+	// It is optional, because most Recipes describe the only version there is
+	// and inventing a name for a provider with one API adds nothing.
+	Provider string `yaml:"provider"`
+	// Supersedes names versions of the same API this one replaced, and what
+	// identifies each on the wire.
+	//
+	// The host is the part that does work. A client is told to be a v2 client
+	// by the host it talks to, and detection has nothing else to go on.
+	Supersedes []Superseded `yaml:"supersedes"`
+	// Spec is the URL of the provider's own machine-readable description.
+	//
+	// A Recipe is written once and the provider keeps moving. Its conformance
+	// suite cannot notice, because that suite asserts what the Recipe says
+	// rather than what the provider does: rename a field upstream and every
+	// case still passes, green and wrong.
+	Spec string `yaml:"spec"`
+	// SpecHash fingerprints the parts of that description this Recipe claims,
+	// as openapi.Fingerprint computes them.
+	//
+	// Deliberately not a checksum of the file. Providers republish these
+	// constantly, and a scan that reports drift on every publish gets switched
+	// off, after which the change that mattered arrives unannounced.
+	SpecHash string `yaml:"spec_hash"`
+	// SpecSeen is the date the fingerprint was taken, in the form every other
+	// piece of dated evidence here uses.
+	//
+	// A fingerprint without one says a description once looked like this and
+	// not when, so nobody can tell a Recipe checked yesterday from one checked
+	// three years ago.
+	SpecSeen string `yaml:"spec_seen"`
+}
+
+// Superseded is one earlier version of the same API, and what identifies it.
+type Superseded struct {
+	// Version is the provider's label for it, in the same words API uses.
+	Version string `yaml:"version"`
+	// Host is what a client of that version talks to, which is the only thing
+	// detection can tell versions apart by.
+	Host string `yaml:"host"`
+	// Note is why it matters, for a person reading the Recipe.
+	Note string `yaml:"note"`
 }
 
 // RequiredHeader is one header a request must carry.

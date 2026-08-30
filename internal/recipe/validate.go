@@ -92,6 +92,8 @@ func (r *Recipe) Validate() error {
 		add("upstream.api is required so the Recipe records which API version it targets")
 	}
 
+	r.validateUpstream(add)
+
 	if r.Capability == "" {
 		add("capability is required: a hundred Recipes are only findable by what they do")
 	} else if !contains(validCapabilities, r.Capability) {
