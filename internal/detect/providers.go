@@ -2611,6 +2611,34 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is "police" as a metaphor. case-police is "Make the case
+			// correct, PLEASE!" -- it fixes the capitalisation of words like
+			// javascript -- and eslint-plugin-case-police wraps it for a linter.
+			// openapi-police is OpenAPI validation. Three packages where policing
+			// means enforcing a rule rather than a constabulary.
+			//
+			// And the country code means another country. dictionary-uk is a
+			// Ukrainian spelling dictionary: uk is Ukraine's language code, and the
+			// United Kingdom's is gb. Two letters, two countries, one search.
+			//
+			// Two MCP servers carry the name, neither mapped, and homedata-mcp is
+			// a different UK property API entirely.
+			//
+			// Left out on evidence: bespoke-support/police-api is "API and Data for
+			// Police UK" and its repository cannot be read, and
+			// roadsigns/laravel-police-uk has no description at all.
+			recipe: "ukpolice",
+			composer: []string{
+				"mightymango/data-police-uk",
+			},
+			npm: []string{
+				"pluk",
+				"ukpd",
+				"@pipedream/data_police_uk",
+				"koop-provider-ukcrime",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

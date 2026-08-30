@@ -5876,3 +5876,51 @@ func TestDetectCarbonIntensityClientsAndNotTheDateLibrary(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is "police" as a metaphor: case-police fixes the capitalisation
+// of words like javascript, and openapi-police is schema validation. And the
+// country code means another country -- dictionary-uk is a Ukrainian spelling
+// dictionary, uk being Ukraine's language code where the United Kingdom's is gb.
+func TestDetectUKPoliceClientsAndNotTheMetaphorOrUkraine(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"pluk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"ukpd": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"koop-provider-ukcrime": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"mightymango/data-police-uk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "ukpolice") {
+			t.Errorf("%v did not detect ukpolice: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Policing as enforcing a rule.
+		{"package.json": `{"dependencies": {"case-police": "^0.6.0"}}`},
+		{"package.json": `{"dependencies": {"eslint-plugin-case-police": "^0.6.0"}}`},
+		{"package.json": `{"dependencies": {"openapi-police": "^4.0.0"}}`},
+		// Ukraine, not the United Kingdom.
+		{"package.json": `{"dependencies": {"dictionary-uk": "^3.0.0"}}`},
+		// A different UK data API.
+		{"package.json": `{"dependencies": {"homedata-mcp": "^0.1.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"mcp-server-police-uk": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"ukpolice-mcp": "^0.1.0"}}`},
+		// Named for this API and unreadable, or undescribed.
+		{"composer.json": `{"require": {"bespoke-support/police-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"roadsigns/laravel-police-uk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "ukpolice") {
+			t.Errorf("%v offered the ukpolice Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
