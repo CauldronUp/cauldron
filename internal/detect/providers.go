@@ -2000,6 +2000,34 @@ func providers() []provider {
 			},
 		},
 		{
+			// The clearest example of the data shipped as a file that this
+			// collection has: simple-country-names is "The list of all the
+			// countries in the world", and it is one static JavaScript module
+			// holding disease.sh's country list -- names, iso2, iso3, lat, long,
+			// and every flag URL on disease.sh's own host. The vendor's hostname
+			// appears on every one of its two hundred entries and it never opens a
+			// connection. Grepping for the host maps it; reading what the host is
+			// doing there does not.
+			//
+			// novelcovid is mapped and is named after the API's former name: this
+			// provider was NovelCOVID before it was disease.sh, so the client
+			// carries the old one and the Recipe carries the new.
+			//
+			// Packagist has three packages called module-disease, from three
+			// different vendors, with the same one-line description and the same
+			// typo in it -- "data diasease in klinik or puskesmas" -- which is
+			// Indonesian clinic software forked twice and nothing to do with this.
+			//
+			// And two npm results for "covid api" are icon sets:
+			// @stacksjs/iconify-covid and @ngxi/covid are "Covid Icons".
+			recipe: "diseasesh",
+			npm: []string{
+				"@aero/corona",
+				"novelcovid",
+				"covid19-vn",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
