@@ -66,6 +66,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 2985 cases, 670 of them checked against a live API |
+| Spec drift (`cauldron drift`) | Working. 11 Recipes are checked against their provider's own OpenAPI document, 1 provider publishes one this cannot read, and 286 publish none |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -1990,6 +1991,89 @@ cauldron up --fixture stripe=small-shop,github=small-repo
 A bare name is a convenience, so recipes that do not ship it are listed and left
 at their default rather than failing the run. Name a recipe explicitly and a
 missing fixture is an error, because you asked for something specific.
+
+## When the provider moves
+
+A Recipe is written once and the provider keeps going. Its conformance suite
+cannot notice: that suite asserts what the Recipe says, so renaming a field
+upstream leaves every case green and every case wrong. The suite checks the
+Recipe's internal consistency, and internal consistency is exactly what
+survives the provider changing its mind.
+
+`cauldron drift` fetches the provider's own OpenAPI document and compares it
+with a fingerprint recorded in the Recipe.
+
+```
+$ cauldron drift
+  adyen                    unchanged since 2026-08-30
+  ...
+  mbta                     a format this cannot read: this is Swagger 2.0, and only OpenAPI 3 is read
+
+11 unchanged, 0 moved, 0 unreachable, 1 in a format this cannot read, 0 unrecorded, 286 with no description to check.
+A Recipe with no description this can read is not verified by this. It is unexamined.
+```
+
+**The fingerprint is not a checksum of the file, and that is the whole design.**
+Providers republish these documents constantly -- a reworded summary, a new
+example, an endpoint in a product the Recipe has never heard of -- and a
+checksum calls every one of those drift. A scan that goes red on every publish
+gets switched off, and then the change that mattered arrives unannounced. The
+noisy check and no check at all fail the same way; the noisy one costs more on
+the way there.
+
+So the fingerprint covers the intersection and nothing else: the paths and
+methods the Recipe declares routes for, the response codes those operations
+answer with, and the types of the fields the Recipe itself names. A path
+appearing that the Recipe says nothing about does not move it. A field the
+Recipe claims changing type does.
+
+Six states, and only one of them fails a build:
+
+| State | Means |
+| --- | --- |
+| `unchanged` | The description still says what the Recipe claims |
+| `moved` | It does not. **The only state that exits non-zero** |
+| `unreachable` | The host did not answer, or answered with something that is not a description. Not drift: a docs host returning 503 has said nothing about whether the provider changed anything |
+| `unsupported` | The provider publishes a description in a format this cannot read. Separate from `unreachable` because it is permanent -- api-v3.mbta.com serves Swagger 2.0, answers instantly, and will never once be unreachable |
+| `unrecorded` | A description is named and has never been fingerprinted, so nothing was compared |
+| `undeclared` | The provider publishes nothing to check. 286 of the 298 |
+
+It runs on a schedule rather than on every pull request, in
+`.github/workflows/drift.yml`, because a pull request must not go red because
+somebody else's docs host was restarting.
+
+**What it cannot do is worth saying plainly.** A description will tell you a
+payment has a `status` of type string on the day the provider starts answering
+`"approved"` for payments nobody was paid for, and the fingerprint will not
+move, because nothing the document says has changed. That is what a Recipe is
+for. Drift catches the mechanical half -- a field renamed, a path moved, a
+status dropped -- which is precisely the half a Recipe's own suite is
+structurally unable to catch. A Recipe whose fingerprint has not moved is
+un-contradicted by the description, on the parts it claims. That is a smaller
+sentence than "unchanged", and it is the true one.
+
+### Which version, and which one it replaced
+
+`upstream.api` has always held the provider's version label -- 95 Recipes say
+`v1` and 50 say `v2`. What it never held is whose, so a provider's v1 and its
+v2 were unrelated strings, and the knowledge that one replaced the other lived
+in prose beside a detection entry where nothing could check it.
+
+```yaml
+upstream:
+  api: v3
+  provider: mbta
+  supersedes:
+    - version: v2
+      host: realtime.mbta.com
+      note: the retired realtime interface, whose clients must not be offered this Recipe
+```
+
+The host is the part that does work: a client is told to be a v2 client by what
+it talks to, and that is the only thing detection can tell versions apart by.
+Three Recipes here already knew such a fact and could only write it down as a
+comment -- the MBTA's `realtime.mbta.com`, ClinicalTrials.gov's
+`clinicaltrials.gov/ct2`, and DataCite's `mds.datacite.org`.
 
 ## Recipes
 
