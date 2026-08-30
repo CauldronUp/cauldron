@@ -4703,3 +4703,52 @@ func TestDetectDatamuseClientsAndNotPackagistsPopularityFallback(t *testing.T) {
 		}
 	}
 }
+
+// "artic" is a substring of "article", and that is what the registries return:
+// every Packagist result is article extraction, and npm's bare "artic"
+// describes itself as "Artic. It's for articles." It is also a React component
+// library and a CSS grid, neither of which opens a connection.
+func TestDetectArtInstituteClientsAndNotArticleExtractors(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@refkit/provider-artic": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"art-institute-of-chicago-api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"artic-sdk": "^1.0.0"}}`},
+		// One author's tool under two module names.
+		{"go.mod": "module x\n\nrequire github.com/tamnd/artic-cli v1.0.0\n"},
+		{"go.mod": "module x\n\nrequire github.com/tamnd/artinstitute-cli v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "artinstituteofchicago") {
+			t.Errorf("%v did not detect artinstituteofchicago: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Articles, which is the word this one is a prefix of.
+		{"composer.json": `{"require": {"j0k3r/php-readability": "^1.0"}}`},
+		{"composer.json": `{"require": {"j0k3r/graby": "^2.0"}}`},
+		{"composer.json": `{"require": {"facebook/facebook-instant-articles-sdk-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"mtownsend/read-time": "^2.0"}}`},
+		{"package.json": `{"dependencies": {"artic": "^1.0.0"}}`},
+		// A design system, and a CSS grid.
+		{"package.json": `{"dependencies": {"artic-ui": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"asgrid": "^1.0.0"}}`},
+		// Published with no description and nothing in it.
+		{"package.json": `{"dependencies": {"artic-enuu1": "^1.0.0"}}`},
+		// Art, and a different collection.
+		{"package.json": `{"dependencies": {"art-data-renderer": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "artinstituteofchicago") {
+			t.Errorf("%v offered the artinstituteofchicago Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

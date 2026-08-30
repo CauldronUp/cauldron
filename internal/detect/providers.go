@@ -1772,6 +1772,43 @@ func providers() []provider {
 			},
 		},
 		{
+			// "artic" is a substring of "article", and that is what the registries
+			// return. Packagist's results are all article extraction:
+			// j0k3r/php-readability pulls articles out of HTML, j0k3r/graby does
+			// the same job, facebook/facebook-instant-articles-sdk-php formats
+			// them, georgringer/news publishes them and mtownsend/read-time counts
+			// how long one takes to read. Nothing there touches a museum.
+			//
+			// npm's bare "artic" is the same word cut short -- "Artic. It's for
+			// articles." in its own description -- and its only hosts are two
+			// personal blogs.
+			//
+			// It is also a design system. artic-ui is "a modern React component
+			// library" and asgrid is "Artic Studio CSS grid"; neither opens a
+			// connection at all. And artic-enuu1, artic-enuu3 and
+			// artic-ennnnuuu3 are published with no description and no code worth
+			// the name.
+			//
+			// art-data-renderer is art and still not this: its hosts are
+			// archive.vogue.com and doi.org.
+			//
+			// The two Go modules are one author's tool under two names --
+			// tamnd/artic-cli and tamnd/artinstitute-cli, both calling
+			// api.artic.edu/api/v1 -- and the same author's opentdb-cli, mapped
+			// nowhere in the Open Trivia DB entry above, calls that provider's
+			// website instead of its API. Same person, two habits.
+			recipe: "artinstituteofchicago",
+			npm: []string{
+				"@refkit/provider-artic",
+				"art-institute-of-chicago-api-client",
+				"artic-sdk",
+			},
+			gomod: []string{
+				"github.com/tamnd/artic-cli",
+				"github.com/tamnd/artinstitute-cli",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
