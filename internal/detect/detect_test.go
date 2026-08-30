@@ -5971,3 +5971,49 @@ func TestDetectFHRSClientsAndNotTheStarWidgets(t *testing.T) {
 		}
 	}
 }
+
+// Packagist has nothing for "bank of canada" and eight packages for "valet",
+// all of them Laravel Valet: a local development environment, eight ways. npm
+// spreads the word further -- a CSS-in-JS engine, a coding-CLI adapter, a
+// password prompt. Valet is a name for a helper, and everybody has one.
+func TestDetectBoCValetClientAndNotTheDevEnvironment(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@varve/boc-valet": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "bocvalet") {
+		t.Errorf("did not detect bocvalet: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// A local development environment, eight ways.
+		{"composer.json": `{"require": {"laravel/valet": "^4.0"}}`},
+		{"composer.json": `{"require": {"cpriego/valet-linux": "^2.0"}}`},
+		{"composer.json": `{"require": {"cretueusebiu/valet-windows": "^2.0"}}`},
+		{"composer.json": `{"require": {"weprovide/valet-plus": "^3.0"}}`},
+		{"composer.json": `{"require": {"jacerider/valet": "^1.0"}}`},
+		// A CSS-in-JS engine, and a password prompt.
+		{"package.json": `{"dependencies": {"@archway/valet": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@puffle/secret-valet": "^1.0.0"}}`},
+		// The rates as a bundled file, calling themselves official.
+		{"package.json": `{"dependencies": {"boc-exchange-rate": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@allratestoday/boc-exchange-rate": "^1.0.0"}}`},
+		// A different company's bank API.
+		{"package.json": `{"dependencies": {"@cybrid/cybrid-api-bank-typescript": "^1.0.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-bank-of-canada": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"bank-of-canada-mcp": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "bocvalet") {
+			t.Errorf("%v offered the bocvalet Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
