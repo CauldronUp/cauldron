@@ -2078,6 +2078,49 @@ func providers() []provider {
 			},
 		},
 		{
+			// One API, four hostnames, three response shapes -- and the packages
+			// are split across all of them.
+			//
+			// swapi.co is the original and answers 301 now. swapi.dev and
+			// swapi.info both answer the bare record this Recipe describes.
+			// swapi.tech does not: it wraps everything in
+			// {"message": "ok", "result": {"properties": {...}, "_id": "...",
+			// "description": "A planet."}}, with the same field names three levels
+			// down, a Mongo identifier beside them, and created and edited
+			// timestamps that are today's date because they are generated when the
+			// record is read. A client written against one and pointed at the other
+			// reads body.name and gets undefined.
+			//
+			// So react-swapi is not mapped. It calls swapi.tech, which is a
+			// different API wearing the same name and the same field names.
+			// ts-swapi, star-wars-api and the bare npm "swapi" call swapi.co and
+			// are mapped: the host is gone, the shape they were written against is
+			// this one.
+			//
+			// And @swapi-finance/sdk and @swapi-finance/contracts are a
+			// decentralised exchange -- "An SDK for building applications on top of
+			// Swapi", swap plus API, with a bee for a logo. Its own scope, its own
+			// word, nothing to do with any of this.
+			//
+			// xvrmallafre/swapi is on Packagist with a description that is entirely
+			// about the neighbourhood: "This is a fork of rmasters/swapi that works
+			// again."
+			recipe: "swapi",
+			composer: []string{
+				"gale/swapi",
+				"christiancocco/swapi",
+				"jlgomes/swapi-php",
+			},
+			npm: []string{
+				"swapi",
+				"swapi-node",
+				"swapi-handler",
+				"nuxt-swapi",
+				"ts-swapi",
+				"star-wars-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

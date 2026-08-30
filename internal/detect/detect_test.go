@@ -5140,3 +5140,48 @@ func TestDetectAdviceSlipClientsAndNotTheSerialProtocol(t *testing.T) {
 		}
 	}
 }
+
+// One API, four hostnames, three response shapes. swapi.co is the original and
+// answers 301; swapi.dev and swapi.info answer the bare record; and swapi.tech
+// wraps everything three levels deep with a Mongo identifier beside it, so a
+// client written against one and pointed at the other reads body.name and gets
+// undefined.
+//
+// react-swapi calls swapi.tech and is therefore not mapped. And Swapi Finance
+// is a decentralised exchange -- swap plus API -- with its own npm scope.
+func TestDetectSwapiClientsAndNotSwapiTechOrSwapiFinance(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"swapi-node": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"nuxt-swapi": "^1.0.0"}}`},
+		// Written against swapi.co, which is gone; the shape is this one.
+		{"package.json": `{"dependencies": {"star-wars-api": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"gale/swapi": "^1.0"}}`},
+		{"composer.json": `{"require": {"christiancocco/swapi": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "swapi") {
+			t.Errorf("%v did not detect swapi: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A different API wearing the same name and the same field names.
+		{"package.json": `{"dependencies": {"react-swapi": "^1.0.0"}}`},
+		// A decentralised exchange.
+		{"package.json": `{"dependencies": {"@swapi-finance/sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@swapi-finance/contracts": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "swapi") {
+			t.Errorf("%v offered the swapi Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
