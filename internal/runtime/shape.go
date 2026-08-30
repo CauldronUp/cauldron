@@ -695,6 +695,18 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 				value[field] = held
 			}
 
+			// PDBe answers {"4hhb": [ {...} ]}: the map is keyed by the
+			// identifier and the value is an array holding one record. The
+			// difference is not cosmetic -- res["4hhb"].title is undefined
+			// and res["4hhb"][0].title is the answer -- and without this a
+			// Recipe could only claim the object, which is the reading that
+			// breaks against the real provider.
+			if spec.EntryStyle == "list" {
+				keyed[name] = []any{value}
+
+				continue
+			}
+
 			keyed[name] = value
 		}
 

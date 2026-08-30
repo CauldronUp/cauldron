@@ -574,8 +574,17 @@ func (r *Recipe) Validate() error {
 		add("responses.error.style %q must be one of %s", r.Responses.Error.Style, strings.Join(validErrStyles[1:], ", "))
 	}
 
-	if r.Responses.List.EntryStyle != "" && r.Responses.List.EntryStyle != "wrapped" {
-		add("responses.list.entry_style %q must be wrapped", r.Responses.List.EntryStyle)
+	if r.Responses.List.EntryStyle != "" &&
+		r.Responses.List.EntryStyle != "wrapped" && r.Responses.List.EntryStyle != "list" {
+		add("responses.list.entry_style %q must be wrapped or list", r.Responses.List.EntryStyle)
+	}
+
+	// "list" is only meaningful inside a map: it says each value is an array
+	// rather than an object. In an ordered collection it would mean a list of
+	// lists, which no provider here sends and which would read as a mistake
+	// rather than a claim.
+	if r.Responses.List.EntryStyle == "list" && r.Responses.List.Style != "map" {
+		add("responses.list.entry_style is list and responses.list.style is %q; a list of lists is not a shape any provider here sends, and it only says something inside a map", r.Responses.List.Style)
 	}
 
 	if !contains(validCursorURL, r.Responses.List.CursorURL) {

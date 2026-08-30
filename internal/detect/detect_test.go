@@ -6361,3 +6361,43 @@ func TestDetectRORClientAndNotTheOtherTwoRORs(t *testing.T) {
 		}
 	}
 }
+
+// One viewer, republished four times, each verified to reach
+// ebi.ac.uk/pdbe/api. Packagist's answer is a prefix collision with nothing
+// behind it.
+func TestDetectPDBeClientsAndNotThePrefixCollision(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"pdbe-molstar": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"@3dbionotes/pdbe-molstar": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"molstar-3d": "^3.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "pdbe") {
+			t.Errorf("%v did not detect pdbe: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The other organisation's viewer, on the other protocol.
+		{"package.json": `{"dependencies": {"@rcsb/rcsb-molstar": "^2.0.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-pdbe": "^0.1.0"}}`},
+		// Packagist's prefix collision.
+		{"composer.json": `{"require": {"phpmd/phpmd": "^2.0"}}`},
+		{"composer.json": `{"require": {"pdepend/pdepend": "^2.0"}}`},
+		{"composer.json": `{"require": {"pdezwart/php-amqp": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "pdbe") {
+			t.Errorf("%v offered the pdbe Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

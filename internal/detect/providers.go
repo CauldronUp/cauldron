@@ -2905,6 +2905,25 @@ func providers() []provider {
 			},
 		},
 		{
+			// Every client here is the same viewer, republished four times:
+			// pdbe-molstar and three forks of it, each verified to reach
+			// ebi.ac.uk/pdbe/api. They are mapped for the reason @rcsb/rcsb-molstar
+			// was not -- that one reaches data.rcsb.org/graphql, the other protocol,
+			// and these reach this API.
+			//
+			// Packagist's answer is the prefix collision with nothing behind it:
+			// phpmd/phpmd, pdepend/pdepend, pdezwart/php-amqp, pdewit/nova-external-url,
+			// pbergman/tree-helper and a JWT encryption algorithm called PBES2. Not
+			// one of them is about structures.
+			recipe: "pdbe",
+			npm: []string{
+				"@3dbionotes/pdbe-molstar",
+				"molstar-3d",
+				"pdbe-molstar",
+				"pdbe-molstar-3dbionotes",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
