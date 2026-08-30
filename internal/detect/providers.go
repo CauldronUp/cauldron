@@ -1944,6 +1944,38 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist reads "themealdb" as "theme". Its results are
+			// parallax/filament-syntax-entry ("themeable syntax highlighting"),
+			// yrizzz/adminkit ("themeable admin panel") and
+			// nasirkhan/laravel-sharekit -- the first five letters of the provider
+			// are a word, and that word is what the search matched. Same shape as
+			// artic inside article.
+			//
+			// tamnd is here for the third time. mealdb-cli calls the API, artic-cli
+			// and artinstitute-cli call the Art Institute's, and opentdb-cli --
+			// unmapped in the Open Trivia DB entry above -- calls that provider's
+			// website instead. One author, four CLIs, three providers, and one of
+			// them scraped.
+			//
+			// koishi-plugin-cooke-tmd and koishi-plugin-cooke-mda are the same
+			// Chinese-language bot plugin under two names, with identical
+			// descriptions. Both call the API, so both map.
+			//
+			// a3_os_cooking_recipes is mapped and is not what its name suggests: an
+			// "open-source library" for cooking recipes that turns out to be a
+			// TheMealDB client with an Arma-3-shaped name.
+			recipe:   "themealdb",
+			composer: []string{"xxiv/mealdb"},
+			npm: []string{
+				"mealdb",
+				"meal-api",
+				"a3_os_cooking_recipes",
+				"koishi-plugin-cooke-tmd",
+				"koishi-plugin-cooke-mda",
+			},
+			gomod: []string{"github.com/tamnd/mealdb-cli"},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

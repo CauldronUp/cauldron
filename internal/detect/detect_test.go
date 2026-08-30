@@ -4931,3 +4931,42 @@ func TestDetectDeckOfCardsClientsAndNotTheDataStructure(t *testing.T) {
 		}
 	}
 }
+
+// Packagist reads "themealdb" as "theme": its results are a themeable syntax
+// highlighter and a themeable admin panel, because the first five letters of
+// the provider are a word. The same shape as artic inside article.
+func TestDetectMealDBClientsAndNotTheThemeablePackages(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"mealdb": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"meal-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"a3_os_cooking_recipes": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"xxiv/mealdb": "^1.0"}}`},
+		{"go.mod": "module x\n\nrequire github.com/tamnd/mealdb-cli v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "themealdb") {
+			t.Errorf("%v did not detect themealdb: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// What Packagist returns for "themealdb", having matched "theme".
+		{"composer.json": `{"require": {"parallax/filament-syntax-entry": "^1.0"}}`},
+		{"composer.json": `{"require": {"yrizzz/adminkit": "^1.0"}}`},
+		{"composer.json": `{"require": {"nasirkhan/laravel-sharekit": "^1.0"}}`},
+		{"composer.json": `{"require": {"nickswalker/neuegal": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "themealdb") {
+			t.Errorf("%v offered the themealdb Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
