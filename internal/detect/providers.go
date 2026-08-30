@@ -2862,6 +2862,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the client that scrapes the site instead. jishon --
+			// "take a search term and get json from jisho" -- reaches
+			// jisho.org/search, the web page, not jisho.org/api/v1/search/words.
+			// It promises the same JSON this API already returns and gets it by
+			// reading HTML.
+			//
+			// jisho and jisho-cli mention the host and reach no path on it; the
+			// first is "a japanese kanji dictionary" carrying its own data.
+			// hain-plugin-jisho-org and j-jisho are launcher plugins for Hain and
+			// Cerebro, which open the website rather than query it, and
+			// @pipeworx/mcp-jisho is an MCP server.
+			//
+			// Packagist has no client and answers with the author prefix instead:
+			// jisoft/yii2-sypexgeo, jisheng100/snowflake, jishanhoshen/laravel-sms,
+			// jishanhoshen/laravel-notify and two joshoangtien packages. Not one is
+			// about Japanese.
+			recipe: "jisho",
+			npm: []string{
+				"@andymenderunix/jisho-js",
+				"jisho-sidekick",
+				"unofficial-jisho-api",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the
