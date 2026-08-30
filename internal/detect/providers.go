@@ -2307,6 +2307,46 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss here is an XML namespace. Apple defines an RSS extension
+			// for podcasts -- itunes:author, itunes:category, itunes:explicit -- so
+			// feed libraries carry the word without touching any HTTP API at all.
+			// zetacomponents/feed parses RSS1, RSS2 and ATOM; marcw/rss-writer
+			// writes them; silverorange/castanet generates podcast feeds
+			// "including iTunes-specific fields"; and lukaswhite/itunes-categories
+			// is a list of the category names that extension allows. None of them
+			// is mapped, and none of them makes a request.
+			//
+			// The second cluster is Apple's other APIs, which is most of what
+			// Packagist returns for the word. aporat/store-receipt-validator,
+			// kartina-tv/store-receipt-validator, readdle/app-store-server-api,
+			// yanlongli/app-store-server-api and
+			// readdle/app-store-receipt-verification are all about receipts;
+			// snscripts/itc-reporter downloads sales figures from iTunes Connect.
+			// On npm, @types/apple-music-api and @yujinakayama/apple-music are for
+			// the Apple Music API at api.music.apple.com, which needs a developer
+			// token, and @expo/apple-utils says in its own description that it uses
+			// "the unofficial iTunes APIs" -- a different set again.
+			//
+			// Two MCP servers, neither mapped. @pipeworx/mcp-itunes-search is the
+			// seventh Recipe running for that publisher, after goproxy, deps.dev,
+			// Open-Meteo, USGS, Open Notify and Agify -- and @pipeworx/mcp-movies
+			// wraps this API and TVmaze together, which is two shipped Recipes in
+			// one package.
+			recipe: "itunes",
+			composer: []string{
+				"atomescrochus/laravel-itunes-search-api",
+				"timlebrun/itunes-search",
+			},
+			npm: []string{
+				"itunes",
+				"itunes-search",
+				"node-itunes-search",
+				"itunes-search-api",
+				"itunes-store-api",
+				"app-store-scraper",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

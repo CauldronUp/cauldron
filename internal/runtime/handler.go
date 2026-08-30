@@ -110,6 +110,21 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// emulator that quietly disagrees with the provider about which failure
 	// this is.
 	if name := matched.spec.Error; name != "" {
+		// Before the body, and here rather than only on the paths that answer
+		// with a record, so a route honours the headers it declares whatever
+		// it answers. A route whose whole job is to answer a failure could
+		// declare headers and never send them, silently, with nothing in the
+		// Recipe saying the declaration was inert.
+		//
+		// The iTunes Search API is what found it. A path the application never
+		// sees is answered by the web server instead: Apache's own page, as
+		// text/html; charset=iso-8859-1, on a host whose every other response
+		// is UTF-8 JSON announced as text/javascript. Three content types, and
+		// the only one that is not UTF-8 is the one a client is least ready
+		// for -- and a Recipe that could not declare a content type on an
+		// error route could not pin that at all.
+		s.writeRouteHeaders(w, matched, nil)
+
 		exchange.Status = s.writeRecipeError(w, name)
 
 		return

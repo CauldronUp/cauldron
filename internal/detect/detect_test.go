@@ -5424,3 +5424,56 @@ func TestDetectCoinGeckoClientsAndNotTheEngineOrTheOtherProduct(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is an XML namespace. Apple defines an RSS extension for
+// podcasts -- itunes:author, itunes:category -- so feed libraries carry the
+// word without making any request at all. The second cluster is Apple's other
+// APIs: receipts, iTunes Connect sales figures, and Apple Music at
+// api.music.apple.com, which needs a developer token.
+func TestDetectITunesSearchClientsAndNotTheRSSExtension(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"itunes-search": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-itunes-search": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"itunes-store-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"app-store-scraper": "^0.1.0"}}`},
+		{"composer.json": `{"require": {"atomescrochus/laravel-itunes-search-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"timlebrun/itunes-search": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "itunes") {
+			t.Errorf("%v did not detect itunes: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The RSS extension, which makes no request.
+		{"composer.json": `{"require": {"zetacomponents/feed": "^1.0"}}`},
+		{"composer.json": `{"require": {"marcw/rss-writer": "^1.0"}}`},
+		{"composer.json": `{"require": {"silverorange/castanet": "^1.0"}}`},
+		{"composer.json": `{"require": {"lukaswhite/itunes-categories": "^1.0"}}`},
+		// Apple's other APIs: receipts, sales figures, Apple Music.
+		{"composer.json": `{"require": {"aporat/store-receipt-validator": "^4.0"}}`},
+		{"composer.json": `{"require": {"readdle/app-store-server-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"snscripts/itc-reporter": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"@types/apple-music-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@yujinakayama/apple-music": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@expo/apple-utils": "^1.0.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-itunes-search": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-movies": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"appstore-mcp": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "itunes") {
+			t.Errorf("%v offered the itunes Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
