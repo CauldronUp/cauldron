@@ -698,6 +698,20 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			keyed[name] = value
 		}
 
+		// "-" is no wrapper at all: the map is the whole response. CoinGecko
+		// answers /simple/price with {"bitcoin": {...}, "ethereum": {...}} at
+		// the top level, so there is no property to put it under and no name
+		// the collection could take. The convention is the one id.field and
+		// message_field already use, where "-" means the provider does not
+		// send it.
+		//
+		// Recipe-wide success fields have nowhere to go here, the same way
+		// they have nowhere to go in a bare array, and a validation rule says
+		// so rather than letting the runtime drop one shape in silence.
+		if spec.Key == "-" {
+			return keyed
+		}
+
 		body := map[string]any{}
 		setPath(body, s.collectionName(resource, spec.Key), keyed)
 

@@ -5372,3 +5372,55 @@ func TestDetectBibleAPIClientAndNotTheOtherSixBibleAPIs(t *testing.T) {
 		}
 	}
 }
+
+// The MCP server is the vendor's own this time, published under the same scope
+// as the official library, and it is still not mapped. geckoterm is the
+// vendor's other product and reaches api.geckoterminal.com. And the ordinary
+// word is a browser engine: ua-is-frozen and universal-user-agent match on
+// Gecko as in Mozilla's, in the user-agent string every browser still sends.
+func TestDetectCoinGeckoClientsAndNotTheEngineOrTheOtherProduct(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@coingecko/coingecko-typescript": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"coingecko-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"coingecko-api-v3": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"coingecko": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"codenix-sv/coingecko-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"tigusigalpa/coingecko-php": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "coingecko") {
+			t.Errorf("%v did not detect coingecko: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own MCP server, under the vendor's own scope.
+		{"package.json": `{"dependencies": {"@coingecko/coingecko-mcp": "^1.0.0"}}`},
+		// Types with no client.
+		{"package.json": `{"dependencies": {"@types/coingecko-api": "^1.0.0"}}`},
+		// The vendor's other product, on another host.
+		{"package.json": `{"dependencies": {"geckoterm": "^1.0.0"}}`},
+		// Gecko as in Mozilla's rendering engine.
+		{"package.json": `{"dependencies": {"ua-is-frozen": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"universal-user-agent": "^1.0.0"}}`},
+		// A mascot.
+		{"package.json": `{"dependencies": {"@flatfile/gecko": "^1.0.0"}}`},
+		// A hundred exchanges, mentioning this one in passing.
+		{"composer.json": `{"require": {"ccxt/ccxt": "^4.0"}}`},
+		// No description at all.
+		{"composer.json": `{"require": {"escudo/api-coin-gecko-test": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "coingecko") {
+			t.Errorf("%v offered the coingecko Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
