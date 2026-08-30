@@ -2529,6 +2529,29 @@ func providers() []provider {
 			},
 		},
 		{
+			// The Open- prefix collides with every other Open- project, and this is
+			// the second Recipe in a row where that is the whole Packagist result.
+			// openFDA got OpenFeature and OpenLDAP; openalex gets OpenExchangeRates
+			// four times over -- qbil-software/openexchangeratesbundle,
+			// qbil-software/openexchangerates, dandelionmood/openexchangerates and
+			// mrzard/open-exchange-rates-service -- beside openagenda/sdk-php and
+			// openclerk/country-list. A currency API, an events API and a list of
+			// countries, for a catalogue of academic papers.
+			//
+			// Eight MCP servers carry the name, and none is mapped.
+			//
+			// Left out on evidence: @univ-lehavre/atlas-biblio-cli is a "CLI entry
+			// point for OpenAlex bibliographic data validation" and carries no host
+			// in its published output, and mbsoft31/laravel-openalex names the API
+			// in its description but not in a README that can be read.
+			recipe: "openalex",
+			npm: []string{
+				"openalex",
+				"@sickrin/openalex-sdk",
+				"openalex-skill",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
