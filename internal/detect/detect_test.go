@@ -6323,3 +6323,41 @@ func TestDetectEuropePMCClientsAndNotTheVendorsMinioMiddleware(t *testing.T) {
 		}
 	}
 }
+
+// Three letters, three things: the Research Organization Registry, a Kubernetes
+// project, and Ruby on Rails.
+func TestDetectRORClientAndNotTheOtherTwoRORs(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"@hirakinii-packages/ror-api-typescript": "^0.1.2"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "ror") {
+		t.Errorf("did not detect ror: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// A Kubernetes project of the same name.
+		{"package.json": `{"dependencies": {"@rork8s/ror-resources": "^1.0.0"}}`},
+		// Ruby on Rails, twice.
+		{"package.json": `{"dependencies": {"react-ror": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"luniki/trails": "^1.0"}}`},
+		// Somebody's name, six times over on Packagist.
+		{"composer.json": `{"require": {"roromix/spreadsheetbundle": "^1.0"}}`},
+		{"composer.json": `{"require": {"rorecek/laravel-ulid": "^1.0"}}`},
+		{"composer.json": `{"require": {"rorteg/blingsdk": "^1.0"}}`},
+		// And an MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-ror": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "ror") {
+			t.Errorf("%v offered the ror Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

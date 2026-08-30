@@ -2885,6 +2885,26 @@ func providers() []provider {
 			},
 		},
 		{
+			// Three letters, three things. ROR is the Research Organization
+			// Registry here; @rork8s/ror-resources is "ROR resource models" for a
+			// Kubernetes project of the same name; and luniki/trails is "in the
+			// wake of RoR", meaning Ruby on Rails, as is react-ror -- "write react
+			// code in a rails-like way".
+			//
+			// Packagist adds the author-prefix variety of the same collision. Six
+			// of its eight results begin with somebody's name: roromix/
+			// spreadsheetbundle, rorecek/laravel-ulid, rorecek/laravel-autoincrement,
+			// rorteg/blingsdk, roro/roroform and unknownrori/unknownrori-php. Not
+			// one of them is about organisations.
+			//
+			// @pipeworx/mcp-ror is an MCP server, from the publisher that has
+			// turned up on openFDA, ClinicalTrials.gov, DataCite and iNaturalist.
+			recipe: "ror",
+			npm: []string{
+				"@hirakinii-packages/ror-api-typescript",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
