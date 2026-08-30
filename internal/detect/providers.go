@@ -2552,6 +2552,34 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the same agency's previous API, on its own host, and
+			// the split is even. Three packages reach api-v3.mbta.com and are mapped;
+			// boston-mbta, mbta-data and mbtapi reach realtime.mbta.com, which is the
+			// v2 Realtime API -- a different host, a different shape, and one of them
+			// says "v2" in its own description.
+			//
+			// The bare name is taken by the documentation. npm's "mbta" describes
+			// itself as "an api for your api" and the only host in it is
+			// developer.mbta.com, the portal rather than the service.
+			//
+			// Packagist has nothing, and what it answers with is metadata:
+			// jms/metadata, symfony/property-info, composer/metadata-minifier and
+			// cmb2/cmb2, a WordPress metabox library. Two more are mutation-testing
+			// frameworks, infection/infection and pestphp/pest-plugin-mutate, matched
+			// on the same four letters in a different order.
+			//
+			// Left out on evidence: @swittuth/mbta-tracker-sdk and where-is-mbta both
+			// describe themselves as clients of this API and neither carries a host
+			// in its published output. One MCP server, @pipeworx/mcp-mbta, is the
+			// eleventh Recipe running for that publisher.
+			recipe: "mbta",
+			npm: []string{
+				"mbta-client",
+				"mbta-api",
+				"mbta-vis",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
