@@ -6152,3 +6152,50 @@ func TestDetectClinicalTrialsGovClientAndNotTheRetiredInterface(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the vendor's other API: mds.datacite.org is the older
+// Metadata Store, and this Recipe describes api.datacite.org. The vendor's own
+// namespace is not its client either -- datacite-rest is named after this API
+// and is, in full, "React components".
+func TestDetectDataCiteClientsAndNotTheMetadataStore(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"datacite-ts": "^0.1.5"}}`},
+		{"composer.json": `{"require": {"vincentauger/datacite-php-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "datacite") {
+			t.Errorf("%v did not detect datacite: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's other API, and a client whose host the caller supplies.
+		{"composer.json": `{"require": {"illgrenoble/datacite-doi-bundle": "^1.0"}}`},
+		{"composer.json": `{"require": {"dagstuhl/datacite": "^1.0"}}`},
+		// Types without a client: 24 files, every one a model.
+		{"composer.json": `{"require": {"linuskohl/phpdatacite": "^1.0"}}`},
+		// The vendor's own namespace, which is not the vendor's client.
+		{"package.json": `{"dependencies": {"datacite-rest": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"datacite-components": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@datacite/datacite-tracker": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@datacite/mastiff": "^1.0.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-datacite": "^0.1.0"}}`},
+		// The popularity fallback on "data".
+		{"composer.json": `{"require": {"datacreativa/laravel-presentable": "^1.0"}}`},
+		{"composer.json": `{"require": {"yiisoft/yii-dataview": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "datacite") {
+			t.Errorf("%v offered the datacite Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

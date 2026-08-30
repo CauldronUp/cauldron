@@ -2763,6 +2763,40 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the vendor's other API. DataCite runs two:
+			// api.datacite.org, which this Recipe describes, and mds.datacite.org,
+			// the older Metadata Store used for minting. illgrenoble/
+			// datacite-doi-bundle reaches mds.datacite.org and is left out, and
+			// dagstuhl/datacite takes its host from the caller -- a providerUrl
+			// constructor argument with {{ CREDENTIALS }} interpolated into it --
+			// so there is no host in the package to map at all.
+			//
+			// linuskohl/phpdatacite is types without a client: 24 PHP files, every
+			// one a model under src/models, and nothing that makes a request.
+			//
+			// The vendor's own namespace is not the vendor's client, four times
+			// over. datacite-components, datacite-footer, @datacite/datacite-
+			// tracker ("Frontend Tracker for DataCite Analytics") and @datacite/
+			// mastiff (a server, not a client) are all DataCite's own front-end
+			// work. The sharpest of them is datacite-rest, which is named after
+			// this API and described, in full, as "React components".
+			//
+			// @pipeworx/mcp-datacite is an MCP server, by the same publisher as
+			// the ClinicalTrials.gov one.
+			//
+			// The rest of Packagist is the popularity fallback on "data":
+			// datacreativa/laravel-presentable, xaben/datafilter, velocity-sports-
+			// labs/datacenter-php-sdk, datacodetech/phpcs-ruleset and
+			// yiisoft/yii-dataview, none of which mentions DOIs.
+			recipe: "datacite",
+			composer: []string{
+				"vincentauger/datacite-php-sdk",
+			},
+			npm: []string{
+				"datacite-ts",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

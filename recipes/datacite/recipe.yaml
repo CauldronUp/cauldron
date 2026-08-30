@@ -1,0 +1,406 @@
+# DataCite Recipe for Cauldron
+#
+# The same key holds a list in one failure and an object in another.
+#
+#   GET /dois/10.9999/nope   ->  404  {"errors": [{"status": "404",
+#                                                  "title": "The resource ..."}]}
+#   GET /dois?query=:::      ->  400  {"errors": {"title": "parse_exception ..."}}
+#
+# A client reading errors[0].title gets the sentence on the first and undefined
+# on the second. A client reading errors.title gets it the other way round.
+# There is no expression that reads both, and nothing in either response says
+# which shape it is -- the key is spelled the same, plural, in both.
+#
+# And the object one is a parser's own dump. The 400's title is 318 characters
+# of Lucene grammar, newlines and all:
+#
+#   parse_exception: Encountered " ":" ": "" at line 1, column 0.
+#   Was expecting one of:
+#       <NOT> ...
+#       "+" ...
+#       ...
+#
+# The token names are the query parser's internal grammar, forwarded to whoever
+# typed the URL.
+#
+# **And the listing says there are 133,915,241 records and 10,000 pages of one.**
+#
+#   /dois?page[size]=1     ->  {"total": 133915241, "totalPages": 10000, "page": 1}
+#   /dois?page[size]=100   ->  {"total": 133915241, "totalPages": 100,   "page": 1}
+#
+# totalPages is not the total divided by the page size. It is ten thousand
+# records' worth, whatever the page size, and the number beside it is four
+# orders of magnitude larger. A client that pages until page > totalPages reads
+# 10,000 of 133 million and stops, having been told both numbers by the same
+# object and contradicted by neither.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.datacite.org on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. Asking past the end gives you the last page, and says so. page[number]
+#      =10001 answers 200 with "page": 10000 -- a different number from the one
+#      asked for, in the field named after it, with no error and no flag.
+#   2. A page size that is not a number empties the collection. ?page[size]=abc
+#      answers 200 with "data": [] and "totalPages": 0, beside a total still
+#      reading 133,915,241. Nought pages and 133 million records, in one object,
+#      at 200.
+#   3. Absence is spelled three ways in one record: "container": {},
+#      "formats": [] and "reason": null. Three different empties, three
+#      different checks, one object.
+#   4. Every identifier contains a slash. "10.5061/dryad.8515" is one DOI, and
+#      its fetch path is /dois/10.5061/dryad.8515 -- two path segments for one
+#      identifier. A client routing on /dois/{id} matches none of them, and a
+#      client interpolating one into a URL without escaping produces a path
+#      that happens to work, which is why the mistake survives.
+#
+# And the same year is sent twice in two types -- "publicationYear": 2011 as an
+# integer and "published": "2011" as a string -- while the record's type is
+# sent six times, in six spellings, one of which disagrees:
+#
+#   "types": {"ris": "DATA", "bibtex": "misc", "citeproc": "dataset",
+#             "schemaOrg": "Dataset", "resourceType": "dataset",
+#             "resourceTypeGeneral": "Dataset"}
+#
+# Five of the six say dataset, in three capitalisations. The sixth says misc.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The fetch path is a literal rather than a template, because a DOI
+#     contains a slash and a path parameter cannot. That is the finding rather
+#     than a workaround: the identifier really does span two segments.
+#   - One DOI is served, of 133,915,241, and the listing's own first record
+#     changes between requests, so the listing is served from the same fixture
+#     rather than from whatever is newest.
+#   - meta.total and meta.totalPages are declared constants rather than counts
+#     derived from the fixture. That is the finding: upstream they are not
+#     derived from each other either, and a Recipe that computed them from one
+#     record would report 1 and 1 and pin nothing.
+#   - The empty page is served by serving an empty collection. The emulator has
+#     no notion of a page size that is not a number; the bytes match, and the
+#     reason they match differs.
+#   - The record's counters -- viewCount, downloadCount, citationCount -- are
+#     left out. They move, and a case asserting them would fail for the one
+#     reason that is not a finding.
+
+recipe: datacite
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: datacite
+  docs: https://support.datacite.org/docs/api
+
+auth:
+  # Public for reads, no key.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # JSON:API says errors is an array. On the 404 it is.
+    style: list
+    key: errors
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  doi:
+    id:
+      style: opaque
+    fields:
+      type:
+        type: string
+      attributes:
+        type: map
+
+routes:
+  # The listing, saying both numbers.
+  - method: GET
+    path: /dois
+    resource: doi
+    operation: list
+    fields:
+      meta.total: 133915241
+      # Ten thousand records' worth, whatever the page size.
+      meta.totalPages: 10000
+      meta.page: 1
+
+  # Asking past the end gives you the last page, in the field named after it.
+  - method: GET
+    path: /dois
+    resource: doi
+    operation: list
+    matches_query:
+      "page[number]": "10001"
+    fields:
+      meta.total: 133915241
+      meta.totalPages: 10000
+      # Not the page that was asked for.
+      meta.page: 10000
+
+  # A page size that is not a number empties the collection.
+  - method: GET
+    path: /dois
+    resource: doi
+    operation: list
+    matches_query:
+      "page[size]": abc
+    fields:
+      # Still 133 million.
+      meta.total: 133915241
+      # And nought pages.
+      meta.totalPages: 0
+      meta.page: 1
+
+  # Every identifier contains a slash, so the fetch path has two segments where
+  # a template has one. A router declaring /dois/{id} never matches a DOI.
+  - method: GET
+    path: /dois/10.5061/dryad.8515
+    resource: doi
+    operation: get
+    id_from: auth
+
+  # A path that does not exist: the list shape.
+  - method: GET
+    path: /nosuchthing
+    error: not_found
+
+  # A query that will not parse: the object shape.
+  - method: GET
+    path: /dois-unparseable-query
+    error: unparseable_query
+
+errors:
+  not_found:
+    status: 404
+    message: "The resource you are looking for doesn't exist."
+    fields:
+      # The HTTP status again, inside the body, as a string.
+      status: "404"
+
+  unparseable_query:
+    # The same key, holding an object instead of an array.
+    style: nested
+    status: 400
+    message: "parse_exception: Encountered \" \":\" \": \"\" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    \"+\" ...\n    \"-\" ...\n    <BAREOPER> ...\n    \"(\" ...\n    \"*\" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    \"[\" ...\n    \"{\" ...\n    <NUMBER> ...\n    <TERM> ...\n    "
+
+fixtures:
+  empty: {}
+
+  registry:
+    doi:
+      - id: "10.5061/dryad.8515"
+        type: dois
+        attributes:
+          doi: "10.5061/dryad.8515"
+          titles:
+            - title: "Data from: A new malaria agent in African hominids."
+          publisher: Dryad
+          # The same year, as an integer...
+          publicationYear: 2011
+          # ...and as a string, four fields apart.
+          published: "2011"
+          # Six spellings of one fact, and the fourth disagrees.
+          types:
+            ris: DATA
+            bibtex: misc
+            citeproc: dataset
+            schemaOrg: Dataset
+            resourceType: dataset
+            resourceTypeGeneral: Dataset
+          # Three spellings of absence, in one record.
+          container: {}
+          formats: []
+          reason: null
+          # A number and its unit, inside one string, inside an array.
+          sizes:
+            - "128717 bytes"
+          version: "1"
+          state: findable
+          isActive: true
+          language: en
+          # Created nine months after it was registered.
+          created: "2011-11-22T18:34:51.000Z"
+          registered: "2011-02-01T17:32:02.000Z"
+          # One version is an integer and the other is a URL.
+          metadataVersion: 28
+          schemaVersion: "http://datacite.org/schema/kernel-4"
+          source: mds
+          url: "https://datadryad.org/dataset/doi:10.5061/dryad.8515"
+
+conformance:
+  - name: the listing says there are 133 million records and 10,000 pages
+    source: "https://api.datacite.org/dois?page[size]=1"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois
+    expect:
+      status: 200
+      body:
+        # The array's own name, pinned without pinning which record upstream
+        # happens to put first: every entry's type is the same word.
+        "data[0].type": dois
+        # A hundred and thirty-three million...
+        meta.total: 133915241
+        # ...and ten thousand pages of one, which is not that divided by this.
+        meta.totalPages: 10000
+        meta.page: 1
+
+  - name: asking past the end gives you the last page and says so
+    source: "https://api.datacite.org/dois?page[size]=1&page[number]=10001"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois
+      query:
+        "page[number]": "10001"
+    expect:
+      status: 200
+      # A different number from the one asked for, in the field named after it.
+      body:
+        meta.page: 10000
+        meta.totalPages: 10000
+
+  - name: a page size that is not a number empties the collection at 200
+    source: "https://api.datacite.org/dois?page[size]=abc"
+    verified: "2026-08-30"
+    fixture: empty
+    request:
+      method: GET
+      path: /dois
+      query:
+        "page[size]": abc
+    expect:
+      status: 200
+      # Nought pages and 133 million records, in one object.
+      body:
+        meta.totalPages: 0
+        meta.total: 133915241
+        meta.page: 1
+      absent:
+        # And the collection really is empty, beside that total.
+        - "data[0].type"
+
+  - name: the same year is sent twice in two types
+    source: "https://api.datacite.org/dois/10.5061/dryad.8515"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois/10.5061/dryad.8515
+    expect:
+      status: 200
+      body:
+        # One identifier, two path segments: a router declaring /dois/{id}
+        # matches none of them.
+        data.id: "10.5061/dryad.8515"
+        # An integer...
+        data.attributes.publicationYear: 2011
+        # ...and a string, for the same year.
+        data.attributes.published: "2011"
+        data.attributes.publisher: Dryad
+        "data.attributes.titles[0].title": "Data from: A new malaria agent in African hominids."
+
+  - name: the record's type is sent six times and one of them disagrees
+    source: "https://api.datacite.org/dois/10.5061/dryad.8515"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois/10.5061/dryad.8515
+    expect:
+      status: 200
+      body:
+        # Five say dataset, in three capitalisations...
+        data.attributes.types.citeproc: dataset
+        data.attributes.types.resourceType: dataset
+        data.attributes.types.schemaOrg: Dataset
+        data.attributes.types.resourceTypeGeneral: Dataset
+        data.attributes.types.ris: DATA
+        # ...and the sixth says misc.
+        data.attributes.types.bibtex: misc
+
+  - name: absence is spelled three ways in one record
+    source: "https://api.datacite.org/dois/10.5061/dryad.8515"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois/10.5061/dryad.8515
+    expect:
+      status: 200
+      body:
+        # An empty object, an empty array...
+        data.attributes.container: {}
+        data.attributes.formats: []
+        # A number and its unit inside one string.
+        "data.attributes.sizes[0]": "128717 bytes"
+        # And the record was created nine months after it was registered.
+        data.attributes.created: "2011-11-22T18:34:51.000Z"
+        data.attributes.registered: "2011-02-01T17:32:02.000Z"
+        # One version is an integer and the other is a URL.
+        data.attributes.metadataVersion: 28
+        data.attributes.schemaVersion: "http://datacite.org/schema/kernel-4"
+
+  - name: and the third spelling of absence is null
+    source: "https://api.datacite.org/dois/10.5061/dryad.8515"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois/10.5061/dryad.8515
+    expect:
+      status: 200
+      body:
+        # null, four fields from the {} and the [].
+        data.attributes.reason: null
+        data.attributes.state: findable
+        data.attributes.isActive: true
+        data.attributes.version: "1"
+        data.attributes.source: mds
+
+  - name: a missing resource puts errors in a list
+    source: "https://api.datacite.org/dois/10.9999/nope-does-not-exist"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /nosuchthing
+    expect:
+      status: 404
+      body:
+        # An array, which is what JSON:API says.
+        "errors[0].title": "The resource you are looking for doesn't exist."
+        # And the HTTP status again, inside it, as a string.
+        "errors[0].status": "404"
+      absent:
+        # The reading that works on the 400 finds nothing here.
+        - errors.title
+
+  - name: and an unparseable query puts the same key on an object
+    source: "https://api.datacite.org/dois?query=:::"
+    verified: "2026-08-30"
+    fixture: registry
+    request:
+      method: GET
+      path: /dois-unparseable-query
+    expect:
+      status: 400
+      # Not an array, under the same key. The query parser's own grammar,
+      # forwarded to whoever typed the URL.
+      matches:
+        errors.title: '(?s)^parse_exception: Encountered.*Was expecting one of:.*<REGEXPTERM>'
+      absent:
+        # The reading that works on the 404 finds nothing here.
+        - "errors[0].title"
