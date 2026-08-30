@@ -5778,3 +5778,51 @@ func TestDetectOpenAlexClientsAndNotTheOtherOpenProjects(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the same agency's previous API on its own host, and the
+// split is even: three packages reach api-v3.mbta.com and three reach
+// realtime.mbta.com, the retired v2. The bare name is taken by the
+// documentation portal, and Packagist answers "mbta" with metadata libraries.
+func TestDetectMBTAv3ClientsAndNotTheRetiredRealtimeAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"mbta-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"mbta-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"mbta-vis": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "mbta") {
+			t.Errorf("%v did not detect mbta: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The same agency's v2 Realtime API, on realtime.mbta.com.
+		{"package.json": `{"dependencies": {"boston-mbta": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"mbta-data": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"mbtapi": "^1.0.0"}}`},
+		// The documentation portal, not the service.
+		{"package.json": `{"dependencies": {"mbta": "^1.0.0"}}`},
+		// Named for this API and carrying no host.
+		{"package.json": `{"dependencies": {"@swittuth/mbta-tracker-sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"where-is-mbta": "^1.0.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-mbta": "^0.1.0"}}`},
+		// Metadata, and mutation testing.
+		{"composer.json": `{"require": {"jms/metadata": "^2.0"}}`},
+		{"composer.json": `{"require": {"composer/metadata-minifier": "^1.0"}}`},
+		{"composer.json": `{"require": {"infection/infection": "^0.27"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "mbta") {
+			t.Errorf("%v offered the mbta Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
