@@ -6067,3 +6067,47 @@ func TestDetectZenodoClientsAndNotTheVendorPrefixOrThePerson(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is a substring inside a word about protection: Packagist
+// answers "uniprot" with two Silverstripe spam-protection modules, a WordPress
+// unprotect plugin and a CSRF bundle. The bare npm name is a text-file parser
+// linking the website rather than the REST host, and the rest of npm is one
+// viewer with six adapters that carry no host at all.
+func TestDetectUniProtClientAndNotTheProtectionModules(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"uniprotparserjs": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "uniprot") {
+		t.Errorf("did not detect uniprot: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// A substring inside a word about protection.
+		{"composer.json": `{"require": {"unisolutions/silverstripe-uniprotect": "^1.0"}}`},
+		{"composer.json": `{"require": {"gelysis/gs4-uniprotect": "^1.0"}}`},
+		{"composer.json": `{"require": {"soderlind/unprotect-protected-posts": "^1.0"}}`},
+		{"composer.json": `{"require": {"dkplus/csrf-api-unprotection-bundle": "^1.0"}}`},
+		{"composer.json": `{"require": {"iconic/uniproperty": "^1.0"}}`},
+		// A text-file parser, and the older query interface.
+		{"package.json": `{"dependencies": {"uniprot": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"vsm-dictionary-uniprot": "^1.0.0"}}`},
+		// A viewer and its adapters, carrying no host.
+		{"package.json": `{"dependencies": {"protvista-uniprot": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"uniprot-entry-data-loader": "^1.0.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-uniprot": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "uniprot") {
+			t.Errorf("%v offered the uniprot Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

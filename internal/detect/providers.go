@@ -2714,6 +2714,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is a substring inside a word about protection. Packagist
+			// answers "uniprot" with unisolutions/silverstripe-uniprotect and
+			// gelysis/gs4-uniprotect, two spam-protection modules for Silverstripe,
+			// beside soderlind/unprotect-protected-posts, cacing69/uxcel (which
+			// protects and unprotects spreadsheets) and
+			// dkplus/csrf-api-unprotection-bundle. iconic/uniproperty gets in the
+			// same way, on a different word.
+			//
+			// The bare npm name is a file parser: "uniprot" is a "Uniprot text file
+			// parser" and links www.uniprot.org, the website, rather than the REST
+			// host -- the data as a file again. vsm-dictionary-uniprot reaches
+			// www.uniprot.org too, which is the older query interface rather than
+			// rest.uniprot.org, so it is left out for the reason the MBTA's v2
+			// clients were.
+			//
+			// The rest of npm is one viewer: ProtVista and its six adapters and data
+			// loaders, which display UniProt annotations and take their entries from
+			// whatever is handed to them. None carries a host.
+			recipe: "uniprot",
+			npm: []string{
+				"uniprotparserjs",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
