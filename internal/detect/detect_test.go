@@ -6199,3 +6199,48 @@ func TestDetectDataCiteClientsAndNotTheMetadataStore(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is a client that reaches the right host for the one endpoint
+// this Recipe does not have: Deezer's login providers call
+// https://api.deezer.com/user/me and nothing else, and there is no user
+// resource here to answer them with.
+func TestDetectDeezerClientsAndNotItsLoginProviders(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"deezer-public-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"deezer-ts-api": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"pouler/deezer-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"deezer/deezer-php-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "deezer") {
+			t.Errorf("%v did not detect deezer: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// On this host, and only under /user, which this Recipe does not serve.
+		{"composer.json": `{"require": {"socialiteproviders/deezer": "^4.0"}}`},
+		{"composer.json": `{"require": {"julienbornstein/oauth2-deezer": "^1.0"}}`},
+		{"composer.json": `{"require": {"chrishemmings/oauth2-deezer": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"passport-deezer": "^1.0.0"}}`},
+		// Discord playback plugins, resolving a link on the way to audio.
+		{"package.json": `{"dependencies": {"@distube/deezer": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"erela.js-deezer": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"play-dl": "^1.0.0"}}`},
+		// Types without a client, for the browser SDK rather than this API.
+		{"package.json": `{"dependencies": {"@types/deezer-sdk": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "deezer") {
+			t.Errorf("%v offered the deezer Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
