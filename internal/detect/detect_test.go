@@ -5185,3 +5185,46 @@ func TestDetectSwapiClientsAndNotSwapiTechOrSwapiFinance(t *testing.T) {
 		}
 	}
 }
+
+// There are two Chuck Norris APIs and the neighbourhood splits between them.
+// ICNDb -- the Internet Chuck Norris Database -- is the older one and is gone,
+// and Packagist has no client for this API at all: its four results share one
+// description word for word, and the two that were opened both call icndb.com.
+// Four forks of one package, pointed at a host that no longer answers.
+func TestDetectChuckNorrisIOClientsAndNotICNDb(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"chucknorris-io": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chuck-norris-jokes": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "chucknorris") {
+			t.Errorf("%v did not detect chucknorris: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The other Chuck Norris API, which is gone.
+		{"package.json": `{"dependencies": {"chucknorris-quotes": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"cn": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"mpociot/chuck-norris-jokes": "^1.0"}}`},
+		{"composer.json": `{"require": {"zaratedev/chuck-norris-jokes": "^1.0"}}`},
+		// No host at all.
+		{"package.json": `{"dependencies": {"chucknorris": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chuck-norris-api": "^1.0.0"}}`},
+		// A programming language written in zeroes.
+		{"package.json": `{"dependencies": {"chuckscript": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "chucknorris") {
+			t.Errorf("%v offered the chucknorris Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
