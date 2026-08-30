@@ -1,0 +1,350 @@
+# iNaturalist Recipe for Cauldron
+#
+# One field, two schemes, and the only broken one is the record you asked for.
+#
+# GET /v1/taxa/47219 answers with forty-five wikipedia_url values -- the taxon,
+# its ancestors and its children. Twenty-one begin http://, twenty-four begin
+# https://, same host, same shape, in one document. And exactly one of the
+# forty-five contains a raw space:
+#
+#   top-level : "https://en.wikipedia.org/wiki/Apis mellifera"
+#   ancestor  : "http://en.wikipedia.org/wiki/Animal"
+#   child     : "http://en.wikipedia.org/wiki/Cape_honey_bee"
+#
+# Every nested one is escaped with underscores. The one that is not is the
+# record the request was for -- the only one a client reading results[0] will
+# ever touch. new URL() accepts it and fetch() sends the space raw; most HTTP
+# clients reject it; and an <a href> works, because browsers repair it, so the
+# bug survives every manual check and fails in the code path nobody watches.
+#
+# **And every fetch is a search.** There is no route here that answers with a
+# record:
+#
+#   /v1/taxa/47219             -> 200 {"total_results": 1, "page": 1,
+#                                      "per_page": 30, "results": [ ... ]}
+#   /v1/observations/99999...  -> 200 {"total_results": 0, "page": 1,
+#                                      "per_page": 1,  "results": []}
+#
+# A thing that does not exist is not a 404; it is an empty page of results. A
+# client doing res.results[0].name throws on undefined rather than reading a
+# status. And the two disagree about the page size: the fetch that found
+# something reports per_page 30, the default, while the fetch that found
+# nothing reports per_page 1.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.inaturalist.org on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. The one real 404 is the framework's. /v1/nosuchthing answers 404 with
+#      text/html and Express's default page -- "Cannot GET /v1/nosuchthing"
+#      inside a <pre> -- on a host whose every other response is JSON. The
+#      framework is named by its idiom in an error page it was never meant to
+#      serve.
+#   2. wikipedia_summary is HTML in a field called summary. It opens "The
+#      <b>western honey bee</b> or <b>European honey bee</b> (<i>Apis
+#      mellifera</i>)", so rendering it as text shows the tags and rendering it
+#      as HTML is an injection surface, and nothing in the name says which.
+#      Its range of species counts is written with an en dash rather than a
+#      hyphen, so the field is HTML and typography and JSON at once, and a
+#      client comparing it byte-wise against a hyphen never matches.
+#   3. The ancestry is sent twice, in two types. ancestor_ids is
+#      [48460, 1, 47120, ...] and ancestry is "48460/1/47120/..." -- the same
+#      list, once as integers and once as a string that has to be split on a
+#      slash and parsed back.
+#
+# And conservation_status is null beside a conservation_statuses holding
+# fourteen entries: the singular says there is none, the plural lists them.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - One taxon is served, with two of its fifteen ancestors and none of its
+#     children, and the counts on it move. The forty-five wikipedia_url values
+#     the headline counts are the whole document's; three of them are served.
+#   - total_results on the observations listing is a declared constant. It rose
+#     by fourteen between two requests seconds apart while this was being
+#     written, so no recorded number could be right for long, and the Recipe
+#     records the shape rather than pretending to the figure.
+#   - The photo licence fields are left out. default_photo carries
+#     license_code: null beside an attribution reading "all rights reserved",
+#     which is worth a Recipe of its own attention and is not pinned here.
+#   - Only the first sentence of wikipedia_summary is served. It is that
+#     sentence exactly, byte for byte; the paragraphs after it are dropped.
+#   - conservation_statuses has fourteen entries upstream and one here, and
+#     only the four fields that do not move.
+
+recipe: inaturalist
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: inaturalist
+  docs: https://api.inaturalist.org/v1/docs/
+
+auth:
+  # Public for reads, no key.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    key: results
+  resource:
+    style: wrapped
+    key: results
+  error:
+    # The only real failure is the framework's own page, so there is no JSON
+    # error shape to declare. text is what it sends.
+    style: text
+
+resources:
+  taxon:
+    id:
+      style: numeric
+      field: id
+      type: number
+    fields:
+      name:
+        type: string
+      preferred_common_name:
+        type: string
+      rank:
+        type: string
+      rank_level:
+        type: integer
+      # The only unescaped URL in the document, on the record asked for.
+      wikipedia_url:
+        type: string
+      # HTML, in a field called summary.
+      wikipedia_summary:
+        type: string
+      # The same list as ancestor_ids, as a string to be split.
+      ancestry:
+        type: string
+      ancestor_ids:
+        type: list
+      ancestors:
+        type: list
+      extinct:
+        type: boolean
+      is_active:
+        type: boolean
+      vision:
+        type: boolean
+      # The singular says there is none...
+      conservation_status:
+        type: string
+      # ...and the plural lists fourteen.
+      conservation_statuses:
+        type: list
+      iconic_taxon_name:
+        type: string
+      observations_count:
+        type: integer
+
+routes:
+  # A fetch, answered as a search.
+  - method: GET
+    path: /v1/taxa/{id}
+    resource: taxon
+    operation: list
+    fields:
+      total_results: 1
+      page: 1
+      # The default page size, on a request for one record.
+      per_page: 30
+
+  # A fetch of something absent, answered as an empty search with a different
+  # page size from the one above.
+  - method: GET
+    path: /v1/observations/999999999999
+    resource: taxon
+    operation: list
+    fields:
+      total_results: 0
+      page: 1
+      # One, where the fetch that found something said thirty.
+      per_page: 1
+
+  # The one real 404, and it is Express's.
+  - method: GET
+    path: /v1/nosuchthing
+    error: cannot_get
+    headers:
+      Content-Type: text/html; charset=utf-8
+
+errors:
+  cannot_get:
+    status: 404
+    # Express's default page, on a host whose every other response is JSON.
+    message: "Cannot GET /v1/nosuchthing"
+
+fixtures:
+  empty: {}
+
+  bee:
+    taxon:
+      - id: "47219"
+        name: Apis mellifera
+        preferred_common_name: Western Honey Bee
+        rank: species
+        rank_level: 10
+        # A raw space, in the one URL a client reading results[0] will touch.
+        wikipedia_url: "https://en.wikipedia.org/wiki/Apis mellifera"
+        # Markup, in a field called summary.
+        wikipedia_summary: "The <b>western honey bee</b> or <b>European honey bee</b> (<i>Apis mellifera</i>) is the most common of the 7–12 species of honey bee worldwide."
+        # The same list as ancestor_ids, joined on a slash.
+        ancestry: "48460/1/47120/372739/47158"
+        ancestor_ids:
+          - 48460
+          - 1
+          - 47120
+          - 372739
+          - 47158
+        ancestors:
+          # Escaped, and http, where the record above is unescaped and https.
+          - id: 1
+            rank: kingdom
+            name: Animalia
+            wikipedia_url: "http://en.wikipedia.org/wiki/Animal"
+          - id: 47120
+            rank: phylum
+            name: Arthropoda
+            wikipedia_url: "http://en.wikipedia.org/wiki/Arthropod"
+        extinct: false
+        is_active: true
+        vision: true
+        # The singular says there is none...
+        conservation_status: null
+        # ...and the plural has one in it.
+        conservation_statuses:
+          - id: 567539
+            taxon_id: 47219
+            taxon_name: Apis mellifera
+            taxon_rank: species
+        iconic_taxon_name: Insecta
+        observations_count: 723862
+
+conformance:
+  - name: one field, two schemes, and the broken one is the record you asked for
+    source: https://api.inaturalist.org/v1/taxa/47219
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/taxa/47219
+    expect:
+      status: 200
+      body:
+        # A raw space, in the only URL a client reading results[0] touches.
+        "results[0].wikipedia_url": "https://en.wikipedia.org/wiki/Apis mellifera"
+        # And its ancestors, escaped, on the other scheme.
+        "results[0].ancestors[0].wikipedia_url": "http://en.wikipedia.org/wiki/Animal"
+        "results[0].ancestors[1].wikipedia_url": "http://en.wikipedia.org/wiki/Arthropod"
+
+  - name: a fetch is answered as a search
+    source: https://api.inaturalist.org/v1/taxa/47219
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/taxa/47219
+    expect:
+      status: 200
+      body:
+        # A paging envelope, on a request for one record by its identifier.
+        total_results: 1
+        page: 1
+        # And the default page size, which nobody asked for.
+        per_page: 30
+        "results[0].id": 47219
+        "results[0].name": Apis mellifera
+
+  - name: and a thing that does not exist is an empty page rather than a 404
+    source: https://api.inaturalist.org/v1/observations/999999999999
+    verified: "2026-08-30"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/observations/999999999999
+    expect:
+      # Two hundred, with nothing in it.
+      status: 200
+      body:
+        total_results: 0
+        page: 1
+        # One, where the fetch that found something said thirty.
+        per_page: 1
+      absent:
+        - "results[0].id"
+
+  - name: the one real 404 is the framework's own page
+    source: https://api.inaturalist.org/v1/nosuchthing
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/nosuchthing
+    expect:
+      status: 404
+      headers:
+        # HTML, on a host whose every other response is JSON.
+        Content-Type: text/html
+      # Express, naming itself by its idiom in a page it was never meant to
+      # serve.
+      body_matches: 'Cannot GET /v1/nosuchthing'
+
+  - name: the summary is HTML in a field called summary
+    source: https://api.inaturalist.org/v1/taxa/47219
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/taxa/47219
+    expect:
+      status: 200
+      body:
+        # Tags if rendered as text, an injection surface if rendered as HTML,
+        # and nothing in the name says which.
+        "results[0].wikipedia_summary": "The <b>western honey bee</b> or <b>European honey bee</b> (<i>Apis mellifera</i>) is the most common of the 7–12 species of honey bee worldwide."
+        "results[0].preferred_common_name": Western Honey Bee
+
+  - name: the ancestry is sent twice in two types
+    source: https://api.inaturalist.org/v1/taxa/47219
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/taxa/47219
+    expect:
+      status: 200
+      body:
+        # Integers...
+        "results[0].ancestor_ids[0]": 48460
+        "results[0].ancestor_ids[1]": 1
+        "results[0].ancestor_ids[4]": 47158
+        # ...and the same list as a string to be split on a slash.
+        "results[0].ancestry": "48460/1/47120/372739/47158"
+
+  - name: the singular says there is none and the plural lists them
+    source: https://api.inaturalist.org/v1/taxa/47219
+    verified: "2026-08-30"
+    fixture: bee
+    request:
+      method: GET
+      path: /v1/taxa/47219
+    expect:
+      status: 200
+      body:
+        # Null...
+        "results[0].conservation_status": null
+        # ...beside a populated list of the same subject.
+        "results[0].conservation_statuses[0].id": 567539
+        "results[0].conservation_statuses[0].taxon_name": Apis mellifera
+        "results[0].extinct": false
+        "results[0].is_active": true
+        "results[0].vision": true
+        "results[0].rank": species
+        "results[0].rank_level": 10
+        "results[0].iconic_taxon_name": Insecta
