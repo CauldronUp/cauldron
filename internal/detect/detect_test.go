@@ -5325,3 +5325,50 @@ func TestDetectAgifyClientsAndNotItsSiblingsOrApify(t *testing.T) {
 		}
 	}
 }
+
+// "Bible API" names a category rather than this API, and at least seven
+// products answer to it. the-holy-bible-api declares API_ROOT =
+// "https://bible-api.com" and maps here. The near miss is one letter of
+// top-level domain: the @bible-api npm scope ships a translation per package
+// and every one of them points at bible-api.io.
+func TestDetectBibleAPIClientAndNotTheOtherSixBibleAPIs(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"the-holy-bible-api": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "bibleapi") {
+		t.Errorf("did not detect bibleapi: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// One letter of top-level domain away, under a scope named for this API.
+		{"package.json": `{"dependencies": {"@bible-api/bible-api-version-kjv1769": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@bible-api/bible-api-version-vulgate": "^1.0.0"}}`},
+		// Other APIs entirely.
+		{"package.json": `{"dependencies": {"@helloao/tools": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"free-use-bible-sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"holy-bible-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"verse-of-the-day-cli": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"prevailexcel/laravel-bible": "^1.0"}}`},
+		{"composer.json": `{"require": {"ichthus-soft/bible-api": "^1.0"}}`},
+		{"composer.json": `{"require": {"apiverve/bible": "^1.0"}}`},
+		// No host in them at all, so nothing says which of the seven they mean.
+		{"package.json": `{"dependencies": {"bible-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"ngx-bible-api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"axios-bible-api-client": "^1.0.0"}}`},
+		// The other side of the wire: a server, not a client.
+		{"composer.json": `{"require": {"rootxs/sudobible": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "bibleapi") {
+			t.Errorf("%v offered the bibleapi Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

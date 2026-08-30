@@ -2227,6 +2227,44 @@ func providers() []provider {
 			},
 		},
 		{
+			// "Bible API" is the name of a category, not of this API, and the
+			// neighbourhood is the largest yet for one Recipe. At least seven
+			// different products answer to it and each has its own clients.
+			//
+			// One package reaches this one and says so: the-holy-bible-api declares
+			// API_ROOT = "https://bible-api.com" in its compiled output.
+			//
+			// The near miss is one letter of top-level domain. The npm scope
+			// @bible-api publishes a translation per package -- kjv1769, vulgate,
+			// the Polish Biblia Gdanska of 1632 -- and every one of them points at
+			// bible-api.io. The scope is named for this API and calls a different
+			// one, which is the data-shipped-as-a-file kind and the vendor-namespace
+			// kind at once.
+			//
+			// The others are simply other APIs: @helloao/cli, @helloao/tools and
+			// free-use-bible-sdk reach bible.helloao.org; holy-bible-api reaches
+			// holy-bible-api.com and is generated, carrying openapi-generator.tech
+			// and a "your-api-endpoint.com" placeholder nobody replaced;
+			// verse-of-the-day-cli scrapes biblegateway.com; and on Packagist
+			// prevailexcel/laravel-bible is for API.Bible, ichthus-soft/bible-api is
+			// the Romanian Biblia Cornilescu, bkuhl/bible-csb is the Christian
+			// Standard Bible and apiverve/bible is APIVerve's.
+			//
+			// Three more open no connection at all. The bare npm name "bible-api",
+			// whose whole description is "Bible API", contains no host; and
+			// ngx-bible-api-client and axios-bible-api-client -- "A Bible Api Client
+			// for Angular" and "for Axios" -- carry no host either, so there is
+			// nothing in them to say which of the seven they mean.
+			//
+			// Packagist has no client for this API at all, the way it had none for
+			// Chuck Norris or Open Notify. rootxs/sudobible is the closest thing and
+			// it is the other side of the wire: "Open source Bible API", a server.
+			recipe: "bibleapi",
+			npm: []string{
+				"the-holy-bible-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
