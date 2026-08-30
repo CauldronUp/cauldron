@@ -1852,6 +1852,39 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist has nothing at all for this API, and npm's results are
+			// mostly MCP servers -- seven of them, three of which are the same
+			// server republished under three scopes.
+			//
+			// The one worth naming calls itself official and is not.
+			// @dackerman-stainless/met-museum-demo is "The official TypeScript
+			// library for the Met Museum API", published under a personal scope
+			// with "demo" in the package name by an SDK-generation company. It does
+			// call the API, so it is mapped -- but the word "official" in a
+			// description is worth nothing on its own.
+			//
+			// Two more are museums and not this one: archival-imagery-mcp is the
+			// Wellcome Collection and open-museum-mcp spans several.
+			//
+			// On Go, aaronland/go-metmuseum-openaccess is named for the Open Access
+			// CSV dump and calls the API as well, so it maps.
+			// dixieflatline76/Spice does too and is left out: it is a desktop
+			// wallpaper application that happens to be a Go module, not something
+			// anybody adds as a dependency.
+			recipe: "metmuseum",
+			npm: []string{
+				"metmuseum",
+				"met-client",
+				"@mariolazzari/met",
+				"@refkit/provider-met",
+				"@chancehl/met-wallpaper",
+				"@dackerman-stainless/met-museum-demo",
+			},
+			gomod: []string{
+				"github.com/aaronland/go-metmuseum-openaccess",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

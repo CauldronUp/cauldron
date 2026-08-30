@@ -4803,3 +4803,44 @@ func TestDetectPostcodesIOClientsAndNotTheKoreanWidget(t *testing.T) {
 		}
 	}
 }
+
+// Packagist has nothing for this API and npm's results are mostly MCP servers,
+// three of them the same server under three scopes. The one worth naming calls
+// itself "The official TypeScript library for the Met Museum API" and is a
+// demo package under a personal scope -- it does call the API, so it maps, but
+// the word "official" in a description is worth nothing on its own.
+func TestDetectMetMuseumClientsAndNotTheOtherMuseums(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"metmuseum": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"met-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@mariolazzari/met": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@dackerman-stainless/met-museum-demo": "^1.0.0"}}`},
+		{"go.mod": "module x\n\nrequire github.com/aaronland/go-metmuseum-openaccess v1.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "metmuseum") {
+			t.Errorf("%v did not detect metmuseum: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Other museums.
+		{"package.json": `{"dependencies": {"archival-imagery-mcp": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"open-museum-mcp": "^1.0.0"}}`},
+		// A desktop wallpaper application that happens to be a Go module.
+		{"go.mod": "module x\n\nrequire github.com/dixieflatline76/Spice/v2 v2.0.0\n"},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "metmuseum") {
+			t.Errorf("%v offered the metmuseum Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
