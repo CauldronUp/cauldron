@@ -5057,3 +5057,49 @@ func TestDetectDiseaseShClientsAndNotTheFrozenCopy(t *testing.T) {
 		}
 	}
 }
+
+// A near miss that is only a type definition: @mgrzmil-org/api-types is
+// "Generated TypeScript types + OpenAPI spec for dog-api" and contains no
+// reference to dog.ceo anywhere -- not in code, not in documentation. It
+// describes the API's shapes without naming the API.
+//
+// dog-names is the other kind, a list shipped as data. And the rest of what
+// "dog api" returns is the word "api": fast-diff, wrap-ansi and mock-axios all
+// came back for it.
+func TestDetectDogCEOClientsAndNotTheTypesOrTheWordAPI(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"dog-ceo": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"gatsby-source-dog": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"doggo-api-wrapper": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"jomingeorge/dog-ceo": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "dogceo") {
+			t.Errorf("%v did not detect dogceo: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Types for the API, naming the API nowhere.
+		{"package.json": `{"dependencies": {"@mgrzmil-org/api-types": "^1.0.0"}}`},
+		// A list shipped as data.
+		{"package.json": `{"dependencies": {"dog-names": "^1.0.0"}}`},
+		// The word "api".
+		{"package.json": `{"dependencies": {"fast-diff": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"wrap-ansi": "^8.0.0"}}`},
+		{"package.json": `{"dependencies": {"mock-axios": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "dogceo") {
+			t.Errorf("%v offered the dogceo Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

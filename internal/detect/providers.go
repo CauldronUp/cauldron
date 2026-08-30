@@ -2028,6 +2028,38 @@ func providers() []provider {
 			},
 		},
 		{
+			// A near miss that is only a type definition:
+			// @mgrzmil-org/api-types is "Generated TypeScript types + OpenAPI spec
+			// for dog-api" and contains no reference to dog.ceo anywhere in it --
+			// not in code, not in documentation. It describes the API's shapes
+			// without naming the API, so there is nothing to verify and nothing to
+			// map.
+			//
+			// dog-names is the other kind: "Get popular dog names", which is a list
+			// shipped as data and opens no connection.
+			//
+			// The rest of what "dog api" returns is the word "api": fast-diff,
+			// diff-match-patch, wrap-ansi, slice-ansi, mock-axios and frak all came
+			// back for it, and none of them is about dogs at all.
+			//
+			// sabina/project-dogapi is mapped and says what it is in its own
+			// description: "Task - use dogceo API to list all the dog breeds". A
+			// homework assignment that calls the API is still a package that calls
+			// the API.
+			recipe: "dogceo",
+			composer: []string{
+				"jomingeorge/dog-ceo",
+				"sabina/project-dogapi",
+			},
+			npm: []string{
+				"dog-ceo",
+				"random.dog.img",
+				"gatsby-source-dog",
+				"doggo-api-wrapper",
+				"dog-image-generator",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
