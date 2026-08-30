@@ -5582,3 +5582,54 @@ func TestDetectChessComClientsAndNotTheGameOrTheCounty(t *testing.T) {
 		}
 	}
 }
+
+// The near miss corroborates the Recipe: react-currency-localizer advertises
+// "HTTPS-compatible IP geolocation" as a feature and calls ipapi.co, one hyphen
+// away from this host. And ethernet-ip-cip is an industrial automation
+// protocol, where the IP is Industrial rather than Internet.
+func TestDetectIPAPIClientsAndNotTheIndustrialProtocol(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@juicyllama/nestjs-ip-api": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"maciejkrol/ipapicom": "^1.0"}}`},
+		{"composer.json": `{"require": {"pulkitjalan/geoip": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "ipapi") {
+			t.Errorf("%v did not detect ipapi: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// One hyphen away, chosen for the trait this Recipe is about.
+		{"package.json": `{"dependencies": {"react-currency-localizer": "^1.0.0"}}`},
+		// Industrial Protocol, not Internet Protocol.
+		{"package.json": `{"dependencies": {"ethernet-ip-cip": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"shen-rate-limit": "^1.0.0"}}`},
+		// Parsing libraries, which never make a request.
+		{"package.json": `{"dependencies": {"ip-regex": "^5.0.0"}}`},
+		{"package.json": `{"dependencies": {"is-ip": "^5.0.0"}}`},
+		{"package.json": `{"dependencies": {"ip-address": "^9.0.0"}}`},
+		{"package.json": `{"dependencies": {"public-ip": "^7.0.0"}}`},
+		// The rest of the market.
+		{"package.json": `{"dependencies": {"@maxmind/geoip2-node": "^5.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-ipinfo": "^3.0.0"}}`},
+		{"composer.json": `{"require": {"geoip2/geoip2": "^3.0"}}`},
+		{"composer.json": `{"require": {"ip2location/ip2location-php": "^9.0"}}`},
+		{"composer.json": `{"require": {"ipwhois/ipwhois-php": "^1.0"}}`},
+		// Named for this API and carrying no host at all.
+		{"package.json": `{"dependencies": {"ipwhere": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "ipapi") {
+			t.Errorf("%v offered the ipapi Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

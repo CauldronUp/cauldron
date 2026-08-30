@@ -2422,6 +2422,47 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss corroborates the Recipe. react-currency-localizer is "a
+			// React hook to display prices in a user's local currency using
+			// HTTPS-compatible IP geolocation" -- it advertises HTTPS compatibility
+			// as a feature, which is only worth advertising because the obvious
+			// choice is not, and it calls ipapi.co. One hyphen away from this host,
+			// a different company, chosen for the trait this Recipe is about.
+			//
+			// And a new sense of the letters: ethernet-ip-cip is "a simple node.js
+			// Ethernet/IP API focused on CIP implementation". EtherNet/IP is an
+			// industrial automation protocol, and the IP in it is Industrial
+			// Protocol rather than Internet Protocol. shen-rate-limit matches from
+			// the other direction, on "IP/API Key rate-limiting" -- a slash where
+			// the name has a hyphen.
+			//
+			// Then the parsing libraries, which never make a request: ip-regex,
+			// is-ip, ip-address, internal-ip and the bare name ip all match on the
+			// two letters and none of them asks anybody anything. public-ip does
+			// make a request, to somewhere else.
+			//
+			// The rest is a market. MaxMind (@maxmind/geoip2-node, geoip2/geoip2),
+			// IPinfo (node-ipinfo, ipinfo/ipinfo), IP2Location, ipwhois and
+			// apiip.net all answer the same question from different hosts.
+			//
+			// pulkitjalan/geoip is mapped where ccxt/ccxt was not, and the
+			// difference is proportion: it ships src/Drivers/IPApiDriver.php beside
+			// two others, so this API is one of a handful it is built on rather
+			// than one of a hundred it mentions.
+			//
+			// Left out on evidence: ipwhere calls itself a "Geo IP API framework"
+			// and carries no host, and aungmyokyaw/ip-api's repository is gone.
+			recipe: "ipapi",
+			composer: []string{
+				"maciejkrol/ipapicom",
+				"pulkitjalan/geoip",
+				"pulkitjalan/ip-geolocation",
+			},
+			npm: []string{
+				"@juicyllama/nestjs-ip-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
