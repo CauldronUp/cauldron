@@ -4970,3 +4970,46 @@ func TestDetectMealDBClientsAndNotTheThemeablePackages(t *testing.T) {
 		}
 	}
 }
+
+// Packagist for "world bank" is entirely the word "world": Swift codes for
+// "Banks in the world", two PayTR gateways where World is a Turkish credit card
+// brand, and laravel-zip, "the world's leading zip utility". One of them matched
+// on a marketing superlative.
+//
+// @volks publishes six packages with placeholder descriptions and they are not
+// all the same: countries and indicator call the API, the cli does not.
+func TestDetectWorldBankClientsAndNotTheWordWorld(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@volks/worldbank-countries": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@volks/worldbank-indicator": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "worldbank") {
+			t.Errorf("%v did not detect worldbank: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The word "world", four ways.
+		{"composer.json": `{"require": {"pn/swiftcodes": "^1.0"}}`},
+		{"composer.json": `{"require": {"yasinkuyu/omnipay-paytr": "^1.0"}}`},
+		{"composer.json": `{"require": {"zanysoft/laravel-zip": "^1.0"}}`},
+		{"composer.json": `{"require": {"muhammad-umar/ppp-stripe": "^1.0"}}`},
+		// The data as a file, and a sibling that does not call the API.
+		{"package.json": `{"dependencies": {"world-bank-dataset": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@volks/worldbank-cli": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "worldbank") {
+			t.Errorf("%v offered the worldbank Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -706,6 +706,30 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// GitHub and friends return the array itself, with paging in headers.
 		// A caller doing json.Unmarshal into a slice must not receive an object.
 		return items
+	case "tuple":
+		// Two elements: the paging object first, the records second. The World
+		// Bank's v2 API answers [{page, pages, per_page, total}, [...]], so
+		// body[1] is the collection and body[0] is everything about it.
+		//
+		// It is worth having as its own style because of what the failure
+		// looks like. A bad country code answers [{message: [...]}] -- one
+		// element, not two -- with the same HTTP 200, so body[1] is the
+		// collection on success and undefined on failure, and the length of
+		// the outer array is the only structural signal that anything went
+		// wrong.
+		meta := map[string]any{}
+
+		if spec.CountField != "" {
+			setPath(meta, spec.CountField, s.countValue(spec, countTotal(spec, page, limit)))
+		}
+
+		if spec.PageCountField != "" {
+			setPath(meta, spec.PageCountField, s.countValue(spec, len(page.Records)))
+		}
+
+		meta = withFields(meta, s.recipe.Responses.Success.Fields)
+
+		return []any{withFields(meta, spec.Fields), items}
 	case "wrapped":
 		// A dotted key nests, so a collection can sit two levels down.
 		// Segment answers with data.sources rather than a top-level array.

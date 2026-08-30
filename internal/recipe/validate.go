@@ -46,7 +46,7 @@ var (
 	validDeletedBody = []string{"", "receipt", "record", "flagged", "id", "empty"}
 	validCursorURL   = []string{"", "absolute", "path"}
 	validSigning     = []string{"", "none", "hmac-sha256"}
-	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map"}
+	validListStyles  = []string{"", "envelope", "bare", "wrapped", "map", "tuple"}
 	validErrStyles   = []string{"", "nested", "flat", "list", "string_list", "text", "string"}
 	validCodeTypes   = []string{"", "string", "number"}
 	validIDTypes     = []string{"", "string", "number"}
