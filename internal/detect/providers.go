@@ -2179,6 +2179,54 @@ func providers() []provider {
 			},
 		},
 		{
+			// The siblings share a budget but not a hostname, and detection follows
+			// the hostname. demografix calls all three -- api.agify.io,
+			// api.genderize.io and api.nationalize.io -- and calls itself the
+			// official client for them, which is the vendor confirming in public
+			// what the shared counter shows. Its PHP twin is demografix/demografix,
+			// whose Client.php holds HOST_AGIFY alongside the other two and which
+			// ships a Quota model and a RateLimitError to go with them.
+			//
+			// Not mapped: the clients that call only a sibling. The bare npm name
+			// "genderize" reaches api.genderize.io and nothing else;
+			// nationality-guesser reaches api.nationalize.io and nothing else; and
+			// pixelpeter, alexanderpavlov, magdy-hakam, javihgil and barttyrant all
+			// wrap genderize.io on Packagist. One allowance, three hosts, and a
+			// dependency on one of them is not a dependency on this one.
+			//
+			// The near miss is the scope that is not the vendor, the way
+			// internetarchive/virustotalapi was. @agify/n8n-nodes-leadifyv2 and
+			// @agify/n8n-nodes-leadifyv3 sit under the vendor's own npm scope and
+			// are about "Leadify API for lead management": opened, they contain no
+			// API host at all.
+			//
+			// And the edit distance, one character wide. Searching Packagist for
+			// "agify" returns ten packages for Apify -- laravel-apify, megaads
+			// /apify, php-apify-sdk, consoletvs/apify, dantepiazza/apify and
+			// apify/apify-client, which describes itself as "AI-generated and
+			// AI-maintained". A different company, a different product, and a name
+			// that differs by a letter.
+			//
+			// Two MCP servers again, neither mapped: @pipeworx/mcp-agify is the
+			// sixth Recipe running for that publisher, after goproxy, deps.dev,
+			// Open-Meteo, USGS and Open Notify, and @mcp-mk/names covers all three
+			// siblings at once.
+			//
+			// The competitor is Gender-API.com: gender-api.com-client on npm and
+			// gender-api/client on Packagist are a different vendor answering the
+			// same question. genderize-br is the ordinary word -- grammatical
+			// gender inflection in Portuguese, no API in it at all.
+			recipe: "agify",
+			composer: []string{
+				"demografix/demografix",
+			},
+			npm: []string{
+				"demografix",
+				"@demografix/n8n-nodes-agify",
+				"@pipedream/agify",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

@@ -5270,3 +5270,58 @@ func TestDetectOpenNotifyClientAndNotTheJarOrTheWord(t *testing.T) {
 		}
 	}
 }
+
+// The siblings share one daily allowance but not a hostname, and detection
+// follows the hostname: a client of genderize.io is not a client of this API.
+// The near miss is the vendor's own npm scope, @agify, which publishes two
+// packages about lead management that contain no API host at all -- and the
+// edit distance, where searching Packagist for "agify" returns ten packages
+// for Apify, a different company one character away.
+func TestDetectAgifyClientsAndNotItsSiblingsOrApify(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"demografix": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@demografix/n8n-nodes-agify": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@pipedream/agify": "^0.1.0"}}`},
+		{"composer.json": `{"require": {"demografix/demografix": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "agify") {
+			t.Errorf("%v did not detect agify: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A sibling, sharing the allowance and not the host.
+		{"package.json": `{"dependencies": {"genderize": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"nationality-guesser": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"pixelpeter/laravel-genderize-api-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"javihgil/genderize-io-client": "^1.0"}}`},
+		// The vendor's own scope, about something else entirely.
+		{"package.json": `{"dependencies": {"@agify/n8n-nodes-leadifyv2": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@agify/n8n-nodes-leadifyv3": "^1.0.0"}}`},
+		// Apify: a different company, one character away.
+		{"composer.json": `{"require": {"apify/apify-client": "^1.0"}}`},
+		{"composer.json": `{"require": {"megaads/apify": "^1.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-agify": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@mcp-mk/names": "^0.1.0"}}`},
+		// A competitor answering the same question.
+		{"package.json": `{"dependencies": {"gender-api.com-client": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"gender-api/client": "^1.0"}}`},
+		// Portuguese grammatical gender, no API in it.
+		{"package.json": `{"dependencies": {"genderize-br": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "agify") {
+			t.Errorf("%v offered the agify Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
