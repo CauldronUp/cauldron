@@ -2144,6 +2144,41 @@ func providers() []provider {
 			},
 		},
 		{
+			// One client, and it corroborates the Recipe: node-red-contrib-iss-location
+			// hardcodes "http://api.open-notify.org" as its default domain, because
+			// there is no https one to reach. It is also named for a package that was
+			// never published -- npm has no iss-location.
+			//
+			// Packagist has nothing at all. Searching it for "iss" returns ten
+			// packages about issues: composer-dependency-analyser, phpcompatibility,
+			// php-deprecation-detector. The substring again, the way "artic" sat
+			// inside "article". Its one open-notify hit, jjonline/wx-open-notify, is
+			// a WeChat open-platform callback SDK: the ordinary words, not the API.
+			//
+			// Two MCP servers carry the name and neither is mapped, the way the
+			// Open-Meteo and USGS ones were not. @pipeworx/mcp-open-notify is the
+			// fifth Recipe running for that publisher, after goproxy, deps.dev,
+			// Open-Meteo and USGS. @mcp-mk/iss calls this API and Where The ISS At
+			// both, and says so in its own description.
+			//
+			// And the exe wrapper at a scale worth recording: PeopleInSpace ships as
+			// five npm packages, one per CPU architecture, each between forty and
+			// ninety-five megabytes. Every one of them holds the same two files --
+			// compose-desktop-1.0-SNAPSHOT-all.jar and jar-runner.jar -- and the
+			// string "open-notify" appears in none of them, because whatever they
+			// call is compiled into the jar. A Java desktop demo, published to a
+			// JavaScript registry five times over.
+			//
+			// The ordinary word is "space": jetbrains-space-api is a team
+			// collaboration product, deta-space-client is a cloud platform,
+			// ocr-space-api reads text out of images, and space-station is
+			// "Atomic Mission Control for Parallel Operations".
+			recipe: "opennotify",
+			npm: []string{
+				"node-red-contrib-iss-location",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
