@@ -5103,3 +5103,40 @@ func TestDetectDogCEOClientsAndNotTheTypesOrTheWordAPI(t *testing.T) {
 		}
 	}
 }
+
+// "Slip" is a networking standard: @serialport/parser-slip-encoder implements
+// SLIP, the Serial Line Internet Protocol, which has been framing packets since
+// 1988 and has nothing to do with advice.
+func TestDetectAdviceSlipClientsAndNotTheSerialProtocol(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@draggem/adviceslip-wrapper": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"advice-slip-cli": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"random-advice": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"minicli/advice-slip": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "adviceslip") {
+			t.Errorf("%v did not detect adviceslip: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The Serial Line Internet Protocol.
+		{"package.json": `{"dependencies": {"@serialport/parser-slip-encoder": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@metamask/key-tree": "^9.0.0"}}`},
+		{"package.json": `{"dependencies": {"react-i18next": "^14.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "adviceslip") {
+			t.Errorf("%v offered the adviceslip Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
