@@ -5826,3 +5826,53 @@ func TestDetectMBTAv3ClientsAndNotTheRetiredRealtimeAPI(t *testing.T) {
 		}
 	}
 }
+
+// The ordinary word at the largest scale it has reached here: Packagist answers
+// "carbon" with nesbot/carbon, a DateTime library and one of the most installed
+// PHP packages there is, and npm answers it with IBM's Carbon Design System. A
+// date library, a design system and an element, sharing one word.
+func TestDetectCarbonIntensityClientsAndNotTheDateLibrary(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@serodigital/national-grid-api-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"carbon-intensity-plugin": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"homebridge-plugin-uk-nationalgrid-carbonintensity": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"sebrave/laravel-carbon-intensity": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "carbonintensity") {
+			t.Errorf("%v did not detect carbonintensity: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// A DateTime library, and the ecosystem around it.
+		{"composer.json": `{"require": {"nesbot/carbon": "^3.0"}}`},
+		{"composer.json": `{"require": {"carbonphp/carbon-doctrine-types": "^3.0"}}`},
+		{"composer.json": `{"require": {"cmixin/business-day": "^1.0"}}`},
+		{"composer.json": `{"require": {"genealabs/laravel-null-carbon": "^1.0"}}`},
+		// A design system.
+		{"package.json": `{"dependencies": {"@carbon/styles": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@carbon/icons-react": "^11.0.0"}}`},
+		{"package.json": `{"dependencies": {"@carbon/layout": "^11.0.0"}}`},
+		// The data as a file, about the same quantity.
+		{"package.json": `{"dependencies": {"co2-data": "^1.0.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-carbon": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"gridpulse-mcp": "^0.1.0"}}`},
+		// Named for this API and unreadable.
+		{"composer.json": `{"require": {"medigeek/php-carbon-intensity": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "carbonintensity") {
+			t.Errorf("%v offered the carbonintensity Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

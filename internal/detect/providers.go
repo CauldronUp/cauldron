@@ -2580,6 +2580,37 @@ func providers() []provider {
 			},
 		},
 		{
+			// The ordinary word, at the largest scale it has reached here. Packagist
+			// answers "carbon" with nesbot/carbon, one of the most installed PHP
+			// packages there is and a DateTime library, beside
+			// carbonphp/carbon-doctrine-types, cmixin/business-day,
+			// kylekatarnls/laravel-carbon-2 and genealabs/laravel-null-carbon. npm
+			// answers it with IBM's Carbon Design System -- @carbon/layout,
+			// @carbon/styles, @carbon/icons, @carbon/icons-react and
+			// @carbon/icon-helpers. A date library, a design system and an element,
+			// sharing one word.
+			//
+			// co2-data is the data as a file again: "Carbon intensity of 66 countries
+			// and a world average updated to 2020", a dataset with no host in it,
+			// about the same quantity this API measures for one country in real time.
+			//
+			// Two MCP servers, neither mapped -- @pipeworx/mcp-carbon is the twelfth
+			// Recipe running for that publisher.
+			//
+			// Left out on evidence: medigeek/php-carbon-intensity names
+			// carbonintensity.org.uk in its own Packagist description and its
+			// repository cannot be read.
+			recipe: "carbonintensity",
+			composer: []string{
+				"sebrave/laravel-carbon-intensity",
+			},
+			npm: []string{
+				"@serodigital/national-grid-api-client",
+				"carbon-intensity-plugin",
+				"homebridge-plugin-uk-nationalgrid-carbonintensity",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
