@@ -2060,6 +2060,24 @@ func providers() []provider {
 			},
 		},
 		{
+			// "Slip" is a networking standard. @serialport/parser-slip-encoder
+			// implements SLIP, the Serial Line Internet Protocol, which has been
+			// framing packets since 1988 and has nothing to do with advice.
+			//
+			// minicli/advice-slip is mapped and calls itself "Demo - Advice Slip",
+			// which is what most of this neighbourhood is: a small API with an
+			// obvious shape attracts tutorials, and four of the five packages that
+			// call it are one person's example.
+			recipe:   "adviceslip",
+			composer: []string{"minicli/advice-slip"},
+			npm: []string{
+				"@draggem/adviceslip-wrapper",
+				"advice-slip-cli",
+				"random-advice",
+				"@dennisk2025/random-advice-slip",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

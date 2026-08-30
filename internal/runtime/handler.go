@@ -170,8 +170,7 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 
 	s.emitFor(matched.spec.Resource, "created", matched.spec.Emits, created)
 
-	s.writeRouteHeaders(w, matched, created)
-
+	// writeRecord sets the route's headers now, for creates and gets alike.
 	return s.writeRecord(w, matched, created)
 }
 
@@ -184,6 +183,22 @@ func (s *Sandbox) create(w http.ResponseWriter, r *http.Request, matched route, 
 // calling .json() on the real response throws — which is precisely the bug an
 // emulator that helpfully returned the updated record would hide.
 func (s *Sandbox) writeRecord(w http.ResponseWriter, matched route, record store.Record) int {
+	// Here rather than at the call sites, so every route that answers with a
+	// record honours the headers it declares. It used to be called from the
+	// create path and the listing path only, which meant a get declaring
+	// headers had them dropped in silence -- the Recipe said one thing, the
+	// response carried another, and no conformance case existed that could
+	// tell them apart, because the only Recipes using route headers were
+	// creates.
+	//
+	// Advice Slip is what found it: every one of its responses carries two
+	// Cache-Control field lines that contradict each other, and the route that
+	// shows it is a get. Before this, the header simply was not there.
+	//
+	// Ahead of the empty-body branch below, because that writes the status
+	// immediately and nothing can be added to the header map afterwards.
+	s.writeRouteHeaders(w, matched, record)
+
 	status := matched.spec.Status
 	if status == 0 {
 		status = http.StatusOK

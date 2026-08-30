@@ -1,0 +1,257 @@
+# Advice Slip Recipe for Cauldron
+#
+# Every response carries two Cache-Control headers, and they contradict.
+#
+#   Cache-Control: max-age=3600
+#   Cache-Control: max-age=600, private, must-revalidate
+#
+# One says cache this for an hour. The other says cache it privately for ten
+# minutes and revalidate. Both are on the wire, on the same 200, on every
+# request. A recipient that follows RFC 9110 joins repeated field lines with
+# commas and gets "max-age=3600, max-age=600, private, must-revalidate" -- one
+# directive list with two max-ages in it, which is not a thing the grammar has
+# an answer for. fetch's headers.get returns exactly that string, so a client
+# reading its own cache policy has to decide which half to believe, and
+# different caches decide differently.
+#
+# **And three outcomes carry three different top-level keys.** A slip by id
+# answers {"slip": {...}}, a search answers {"slips": [...]} with a query and a
+# count beside it, and a failure answers {"message": {...}}. Singular, plural,
+# and neither -- so there is no key a client can read first to find out what
+# happened.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.adviceslip.com on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. total_results is the string "1" and id is the number 1, in the same
+#      response. A count quoted beside an identifier that is not.
+#   2. The same slip has two field sets. /advice/1 answers {id, advice} and the
+#      search answers {id, advice, date} for the same slip, so the record's
+#      shape depends on how it was asked for and a date exists that one route
+#      never shows.
+#   3. A miss and an empty search are both 200, and the word inside them
+#      differs. A slip that does not exist is {"type": "error"} and a search
+#      with no matches is {"type": "notice"} -- the only signal that one is a
+#      failure and the other an empty result, on a status line that says neither.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Two slips are served, not the collection, and the random endpoint answers
+#     the recorded one rather than a random one.
+#   - The two Cache-Control headers are served as one joined field, which is
+#     what RFC 9110 says a recipient may do and what fetch's headers.get returns.
+#     The wire really carries two lines; a Recipe's headers are a map, so the
+#     joined form is the closest thing to it that can be declared -- and it
+#     preserves the finding, because the two max-ages end up in one list either
+#     way.
+
+recipe: adviceslip
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: adviceslip
+  docs: https://api.adviceslip.com/
+
+auth:
+  # Public, and no key at all.
+  scheme: none
+
+responses:
+  resource:
+    style: wrapped
+    key: slip
+  list:
+    style: wrapped
+    key: slips
+  error:
+    style: nested
+    key: message
+    message_field: text
+    type_field: type
+
+resources:
+  slip:
+    id:
+      style: numeric
+      type: number
+    fields:
+      advice:
+        type: string
+
+  # The same slips, with the field the other route does not show.
+  result:
+    id:
+      style: numeric
+      type: number
+    fields:
+      advice:
+        type: string
+      # Present here and absent from /advice/{id}.
+      date:
+        type: string
+      query:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /advice/{id}
+    resource: slip
+    operation: get
+    not_found: slip_not_found
+    headers:
+      # Two field lines on the wire, joined the way a recipient joins them --
+      # and the join puts two max-ages in one directive list.
+      Cache-Control: max-age=3600, max-age=600, private, must-revalidate
+
+  - method: GET
+    path: /advice/search/{query}
+    resource: result
+    operation: list
+    scope: [query]
+    list:
+      fields:
+        # Quoted, beside identifiers that are not.
+        total_results: "1"
+        query: spider
+    headers:
+      Cache-Control: max-age=3600, max-age=600, private, must-revalidate
+
+errors:
+  # A slip that is not there.
+  slip_not_found:
+    status: 200
+    type: error
+    message: Advice slip not found.
+
+  # And a search that matched nothing, which is a notice rather than an error
+  # -- the only thing distinguishing them, on a status line that says neither.
+  no_matches:
+    status: 200
+    type: notice
+    message: No advice slips found matching that search term.
+
+fixtures:
+  empty: {}
+
+  slips:
+    slip:
+      - id: "1"
+        advice: Remember that spiders are more afraid of you, than you are of them.
+      - id: "31"
+        advice: Never let your Mother cut your hair.
+
+    result:
+      # The same slip as above, with a field the other route does not show.
+      - id: "1"
+        query: spider
+        advice: Remember that spiders are more afraid of you, than you are of them.
+        date: "2015-05-26"
+
+      # Under a different query, so the query in the path is partitioning
+      # rather than decorating.
+      - id: "31"
+        query: hair
+        advice: Never let your Mother cut your hair.
+        date: "2015-05-26"
+
+conformance:
+  - name: two Cache-Control directives, joined, with two max-ages in them
+    source: https://api.adviceslip.com/advice/1
+    verified: "2026-08-30"
+    fixture: slips
+    request:
+      method: GET
+      path: /advice/1
+    expect:
+      status: 200
+      headers:
+        # One says an hour and public; the other says ten minutes, private and
+        # revalidate. Both are sent, and a recipient joining them gets a
+        # directive list the grammar has no answer for.
+        Cache-Control: max-age=3600, max-age=600, private, must-revalidate
+
+  - name: a slip by id is under a singular key
+    source: https://api.adviceslip.com/advice/1
+    verified: "2026-08-30"
+    fixture: slips
+    request:
+      method: GET
+      path: /advice/1
+    expect:
+      status: 200
+      body:
+        "slip.id": 1
+        "slip.advice": Remember that spiders are more afraid of you, than you are of them.
+      absent:
+        # And carries no date, which the search's copy of the same slip does.
+        - slip.date
+
+  - name: a search is under a plural one, with a quoted count
+    source: https://api.adviceslip.com/advice/search/spider
+    verified: "2026-08-30"
+    fixture: slips
+    request:
+      method: GET
+      path: /advice/search/spider
+    expect:
+      status: 200
+      body:
+        # A count, quoted...
+        total_results: "1"
+        query: spider
+        # ...beside an identifier that is not.
+        "slips[0].id": 1
+        # And the field the other route does not show.
+        "slips[0].date": "2015-05-26"
+        "slips[0].advice": Remember that spiders are more afraid of you, than you are of them.
+      absent:
+        # One result for this query, and the other query's is not among them.
+        - slips[1]
+
+  - name: a slip that does not exist is an error, with a 200
+    source: https://api.adviceslip.com/advice/999999
+    verified: "2026-08-30"
+    fixture: slips
+    request:
+      method: GET
+      path: /advice/999999
+    expect:
+      # Neither key from the two successes, and a status line that says the
+      # request worked.
+      status: 200
+      body:
+        "message.type": error
+        "message.text": Advice slip not found.
+
+  - name: and a search with no matches is a notice, with the same status
+    source: https://api.adviceslip.com/advice/search/zzzznotfound
+    verified: "2026-08-30"
+    fixture: slips
+    arm: no_matches
+    request:
+      method: GET
+      path: /advice/1
+    expect:
+      status: 200
+      body:
+        # The only signal that this is an empty result rather than a failure is
+        # one word, in a field called type, inside an object called message.
+        "message.type": notice
+        "message.text": No advice slips found matching that search term.
+
+  - name: the other slip
+    source: https://api.adviceslip.com/advice/31
+    verified: "2026-08-30"
+    fixture: slips
+    request:
+      method: GET
+      path: /advice/31
+    expect:
+      status: 200
+      body:
+        "slip.id": 31
+        "slip.advice": Never let your Mother cut your hair.
