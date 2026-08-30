@@ -1,0 +1,264 @@
+# CoinGecko Recipe for Cauldron
+#
+# The map is keyed by currency, and one of the keys is not a currency.
+#
+#   {"bitcoin": {"usd": 78148, "eur": 67468, "last_updated_at": 1788075830}}
+#
+# last_updated_at sits inside the same object as usd and eur, at the same depth,
+# under the same kind of key. A client that iterates the object to list prices --
+# which is the only way to read a map whose keys are the currencies the caller
+# asked for -- gets a currency called last_updated_at worth 1,788,075,830. The
+# field that says when the prices were taken is shaped exactly like a price.
+#
+# **And anything the API does not recognise is dropped in silence, twice over.**
+# An unknown coin is not an error and not a null; it is simply not in the answer:
+#
+#   ?ids=bitcoin,zzzznotacoin  ->  {"bitcoin": {"usd": 78172}}
+#   ?ids=zzzznotacoin          ->  {}
+#   ?vs_currencies=zzz         ->  {"bitcoin": {}}
+#
+# All three are 200s. A client that asks for five coins and gets four has
+# nothing in the response to say which one was rejected, or that one was --
+# the only way to find out is to compare the keys it asked for against the keys
+# it got back, at both levels.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.coingecko.com on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. One price is an integer and the next is a float, in one response.
+#      bitcoin.usd is 78148 and ethereum.usd is 2456.14, because the value is
+#      truncated by magnitude rather than typed by field. A client with a
+#      declared schema needs the wider type for a field that will often not
+#      need it, and a client without one gets an int today and a float when
+#      the price falls.
+#   2. There are two error shapes. An unknown coin is a flat
+#      {"error": "coin not found"}; exceeding the rate limit is nested,
+#      {"status": {"error_code": 429, "error_message": "..."}}. Same API, same
+#      client, two parsers.
+#   3. The health check is a joke and the version is inside it. /ping answers
+#      {"gecko_says": "(V3) To the Moon!"} -- one field, no status, no
+#      timestamp, and the only statement of which API version answered is the
+#      "(V3)" in the middle of a sentence.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Prices move. The numbers served are the ones recorded on the date in the
+#     cases, and the real endpoint answers different ones every minute.
+#   - Two coins and two currencies are served, of thousands.
+#   - ids= is not modelled, so the sandbox answers the recorded coins whatever
+#     is asked for. The silence is pinned by what is absent from the answer --
+#     an unknown coin has no key and there is no error beside the ones that do
+#     -- rather than by narrowing a collection, which would be a claim about
+#     filtering rather than about the silence.
+#   - For the same reason the two empty answers are recorded above rather than
+#     served: {} for a request naming only unknown coins, and {"bitcoin": {}}
+#     for an unrecognised currency.
+
+recipe: coingecko
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: coingecko
+  docs: https://docs.coingecko.com/reference/introduction
+
+auth:
+  # Public for these endpoints. A key raises the rate limit.
+  scheme: none
+
+responses:
+  list:
+    # An object keyed by coin id, not an array, and not wrapped in anything.
+    style: map
+    key: "-"
+  resource:
+    style: bare
+  error:
+    # The flat one. The rate limit uses the other shape.
+    style: flat
+    message_field: error
+
+resources:
+  price:
+    id:
+      style: opaque
+      # The coin id is the map key. It is not repeated inside the value, which
+      # is what a map keyed by identifier means.
+      field: id
+    fields:
+      # An integer for one coin and a float for the next.
+      usd:
+        type: number
+      eur:
+        type: number
+      # Not a currency, in a map keyed by currency.
+      last_updated_at:
+        type: integer
+
+  health:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # The only field, and the version is inside the sentence.
+      gecko_says:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v3/simple/price
+    resource: price
+    operation: list
+
+  - method: GET
+    path: /api/v3/ping
+    resource: health
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /api/v3/coins/zzzznotacoin
+    error: coin_not_found
+
+  # The other error shape, nested where the first one is flat.
+  - method: GET
+    path: /api/v3/rate-limited
+    error: rate_limited
+
+errors:
+  coin_not_found:
+    status: 404
+    # Three words, lowercase, under a key of its own.
+    message: coin not found
+
+  rate_limited:
+    status: 429
+    # No flat error key here, where the other failure has nothing but one.
+    message_field: "-"
+    # Nested under status, with a numeric code repeating the status line.
+    message: "You've exceeded the Rate Limit. Please visit https://www.coingecko.com/en/api/pricing to subscribe to our API plans for higher rate limits."
+    fields:
+      status:
+        error_code: 429
+        error_message: "You've exceeded the Rate Limit. Please visit https://www.coingecko.com/en/api/pricing to subscribe to our API plans for higher rate limits."
+
+fixtures:
+  empty: {}
+
+  market:
+    price:
+      - id: bitcoin
+        # An integer, because the price is large.
+        usd: 78148
+        eur: 67468
+        last_updated_at: 1788075830
+      - id: ethereum
+        # A float, in the same response, for the same field.
+        usd: 2456.14
+        eur: 2120.47
+        last_updated_at: 1788075830
+
+    health:
+      - id: ping
+        gecko_says: "(V3) To the Moon!"
+
+conformance:
+  - name: the map is keyed by currency and one key is not a currency
+    source: https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur&include_last_updated_at=true
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/simple/price?ids=bitcoin
+    expect:
+      status: 200
+      body:
+        # Two currencies and a timestamp, at the same depth, under the same
+        # kind of key. Iterating the object to list prices finds all three.
+        "bitcoin.usd": 78148
+        "bitcoin.eur": 67468
+        "bitcoin.last_updated_at": 1788075830
+
+  - name: one price is an integer and the next is a float
+    source: https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/simple/price?ids=bitcoin,ethereum
+    expect:
+      status: 200
+      body:
+        # Truncated by magnitude rather than typed by field, so the same field
+        # is an int for one coin and a float for the next.
+        "bitcoin.usd": 78148
+        "ethereum.usd": 2456.14
+
+  - name: an unknown coin is dropped in silence, on a 200
+    source: https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,zzzznotacoin&vs_currencies=usd
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/simple/price?ids=bitcoin,zzzznotacoin
+    expect:
+      status: 200
+      body:
+        "bitcoin.usd": 78148
+      absent:
+        # No error, no null, no key. The only way to notice is to compare what
+        # was asked for against what came back.
+        - zzzznotacoin
+        - error
+
+  - name: the health check is a joke with the version inside it
+    source: https://api.coingecko.com/api/v3/ping
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/ping
+    expect:
+      status: 200
+      body:
+        # One field. The only statement of which version answered is the
+        # "(V3)" in the middle of a sentence.
+        gecko_says: "(V3) To the Moon!"
+      absent:
+        - status
+        - version
+        - timestamp
+
+  - name: an unknown coin on its own path is a flat error
+    source: https://api.coingecko.com/api/v3/coins/zzzznotacoin
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/coins/zzzznotacoin
+    expect:
+      # A 404 here, where the same unknown coin was a silent 200 above. The
+      # path decides whether not existing is an error.
+      status: 404
+      body:
+        error: coin not found
+
+  - name: and the rate limit is a nested one
+    source: https://api.coingecko.com/api/v3/ping
+    verified: "2026-08-30"
+    fixture: market
+    request:
+      method: GET
+      path: /api/v3/rate-limited
+    expect:
+      status: 429
+      body:
+        # Nested under status, where the other error was flat, with a numeric
+        # code repeating the status line.
+        "status.error_code": 429
+        "status.error_message": "You've exceeded the Rate Limit. Please visit https://www.coingecko.com/en/api/pricing to subscribe to our API plans for higher rate limits."
+      absent:
+        # Not the other shape.
+        - error

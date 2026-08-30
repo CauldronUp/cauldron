@@ -584,6 +584,15 @@ func (r *Recipe) Validate() error {
 		add("responses.list.style %q must be one of %s", r.Responses.List.Style, strings.Join(validListStyles[1:], ", "))
 	}
 
+	// A map with no wrapper is the bare array's sibling: the response is the
+	// collection itself, so there is no object left to hang a property on.
+	// CoinGecko is the provider that made it real -- /simple/price answers
+	// {"bitcoin": {...}} at the top level and nothing wraps it.
+	if r.Responses.List.Style == "map" && r.Responses.List.Key == "-" &&
+		len(r.Responses.Success.Fields) > 0 {
+		add("responses.list is a map with no wrapper and responses.success.fields are object properties with nowhere to go beside a collection; wrap the map or drop the fields")
+	}
+
 	if r.Responses.List.Style == "wrapped" && r.Responses.List.Key != "" {
 		// The key is a fallback for resources that do not name their own
 		// collection. When every one of them does, it is unreachable, and an

@@ -2265,6 +2265,48 @@ func providers() []provider {
 			},
 		},
 		{
+			// A crowded neighbourhood for once, and most of it is real. Five npm
+			// packages carry api.coingecko.com in their published output, the
+			// official TypeScript library among them, and two Composer packages do
+			// too: tigusigalpa/coingecko-php holds api.coingecko.com/api/v3 in its
+			// config, and codenix-sv/coingecko-api names the host in its README.
+			//
+			// The MCP server is the vendor's own this time. @coingecko/coingecko-mcp
+			// is published under the same scope as the official library, and it is
+			// still not mapped: every MCP server so far has been somebody else's,
+			// and the reason for leaving them out does not change when the publisher
+			// is the vendor. Installing one means an agent can reach the API, not
+			// that the project does.
+			//
+			// @types/coingecko-api is types with no client -- DefinitelyTyped
+			// declarations for coingecko-api, carrying no host of their own, the way
+			// @mgrzmil-org/api-types did.
+			//
+			// geckoterm is the vendor's other product: "Coin Gecko Terminal Open
+			// Source SDK", and it reaches api.geckoterminal.com. Same company, a
+			// different API, a different host.
+			//
+			// And the ordinary word is a browser engine. Searching npm for
+			// "coin-gecko" returns ua-is-frozen and universal-user-agent, which
+			// match on Gecko as in Mozilla's rendering engine, in the user-agent
+			// string every browser still sends. @flatfile/gecko is a mascot -- "a
+			// green gecko wearing glasses" -- and ccxt/ccxt is a trading library
+			// spanning more than a hundred exchanges that mentions this one in
+			// passing. escudo/api-coin-gecko-test has no description at all.
+			recipe: "coingecko",
+			composer: []string{
+				"codenix-sv/coingecko-api",
+				"tigusigalpa/coingecko-php",
+			},
+			npm: []string{
+				"@coingecko/coingecko-typescript",
+				"coingecko",
+				"coingecko-api",
+				"coingecko-api-v3",
+				"coingecko-api-pro",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
