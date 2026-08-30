@@ -2738,6 +2738,31 @@ func providers() []provider {
 			},
 		},
 		{
+			// Nine of the twelve npm results are MCP servers, which is the openFDA
+			// shape again: clinicaltrialsgov-mcp-server, @pipeworx/mcp-clinicaltrials,
+			// bach-clinical-trials, @akshay89/clinical-trials-mcp,
+			// mcp-server-clinical-trials, heor-agent-mcp, xiaoyibao-clinical-trials
+			// and two more. One of them, @skills-il/israel-clinical-trials-mcp, is
+			// about Israeli hospitals rather than this registry at all.
+			//
+			// The near miss is the retired interface. clinical-trials-gov -- "a way
+			// to interface with the clinicaltrials.gov api" -- reaches
+			// clinicaltrials.gov/ct2, the classic site this API replaced, so it is
+			// left out for the reason the MBTA's realtime.mbta.com clients were.
+			// clinicaltrials-gov-scraper is an Apify actor and carries no host.
+			//
+			// Packagist has three results and none of them is a client of this.
+			// tutor/clinicaltrials is a "ClinicalTrials Web Service Guzzle Client",
+			// which is the SOAP service from before the REST one, and its repository
+			// cannot be read. pixiekat/lumina-ui-symfony-bundle and
+			// pixiekat/hmfp-search-tool-bundle are Symfony bundles about evaluation
+			// entities and search tooling.
+			recipe: "clinicaltrialsgov",
+			npm: []string{
+				"clinicaltrialsgov-ts",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

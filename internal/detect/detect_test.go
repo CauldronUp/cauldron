@@ -6111,3 +6111,44 @@ func TestDetectUniProtClientAndNotTheProtectionModules(t *testing.T) {
 		}
 	}
 }
+
+// Nine of the twelve npm results are MCP servers, which is the openFDA shape
+// again. The near miss is the retired interface: clinical-trials-gov reaches
+// clinicaltrials.gov/ct2, the classic site this API replaced. And Packagist's
+// one candidate is the SOAP service from before the REST one.
+func TestDetectClinicalTrialsGovClientAndNotTheRetiredInterface(t *testing.T) {
+	p, err := Detect(writeProject(t, map[string]string{
+		"package.json": `{"dependencies": {"clinicaltrialsgov-ts": "^1.0.0"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !p.Has(KindRecipe, "clinicaltrialsgov") {
+		t.Errorf("did not detect clinicaltrialsgov: %+v", p.Requirements)
+	}
+
+	for _, manifest := range []map[string]string{
+		// The classic site this API replaced.
+		{"package.json": `{"dependencies": {"clinical-trials-gov": "^1.0.0"}}`},
+		// An Apify actor, carrying no host.
+		{"package.json": `{"dependencies": {"clinicaltrials-gov-scraper": "^1.0.0"}}`},
+		// MCP servers, nine of twelve results.
+		{"package.json": `{"dependencies": {"clinicaltrialsgov-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-clinicaltrials": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"mcp-server-clinical-trials": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@skills-il/israel-clinical-trials-mcp": "^0.1.0"}}`},
+		// The SOAP service from before the REST one, and two Symfony bundles.
+		{"composer.json": `{"require": {"tutor/clinicaltrials": "^1.0"}}`},
+		{"composer.json": `{"require": {"pixiekat/lumina-ui-symfony-bundle": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "clinicaltrialsgov") {
+			t.Errorf("%v offered the clinicaltrialsgov Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
