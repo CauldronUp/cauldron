@@ -5633,3 +5633,53 @@ func TestDetectIPAPIClientsAndNotTheIndustrialProtocol(t *testing.T) {
 		}
 	}
 }
+
+// Packagist has nothing at all, and what it returns is one person's initials:
+// nine packages by tflori, matched on a vendor prefix that happens to spell the
+// acronym. And on npm the letters mean Truth-Functional Logic: tfl-lsp is a
+// proof checker for a formal logic course.
+func TestDetectTfLClientsAndNotTheInitialsOrTheLogic(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"tfl.api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"tfl-ts": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"tfl-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"tfl-unified-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "tfl") {
+			t.Errorf("%v did not detect tfl: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// One person's initials, nine packages deep.
+		{"composer.json": `{"require": {"tflori/orm": "^1.0"}}`},
+		{"composer.json": `{"require": {"tflori/dependency-injector": "^1.0"}}`},
+		{"composer.json": `{"require": {"tflanagan/quickbase": "^1.0"}}`},
+		// Truth-Functional Logic, not Transport for London.
+		{"package.json": `{"dependencies": {"tfl-lsp": "^1.0.0"}}`},
+		// The data as a file, converted for accounting software.
+		{"package.json": `{"dependencies": {"tfl-to-freeagent": "^1.0.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"mcp-tfl-journey": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@daanrongen/tfl-mcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"london-transport-mcp": "^0.1.0"}}`},
+		// Named for this API and carrying no host at all.
+		{"package.json": `{"dependencies": {"tfl": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"tfl-api-wrapper": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@onemedia/tfl-data-module": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "tfl") {
+			t.Errorf("%v offered the tfl Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
