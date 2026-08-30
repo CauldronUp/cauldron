@@ -5013,3 +5013,47 @@ func TestDetectWorldBankClientsAndNotTheWordWorld(t *testing.T) {
 		}
 	}
 }
+
+// The clearest example of the data shipped as a file in this collection.
+// simple-country-names is one static JavaScript module holding disease.sh's
+// country list, with the vendor's hostname on every flag URL in all two hundred
+// entries -- and it never opens a connection. Grepping for the host maps it;
+// reading what the host is doing there does not.
+func TestDetectDiseaseShClientsAndNotTheFrozenCopy(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@aero/corona": "^1.0.0"}}`},
+		// Named after the API's former name.
+		{"package.json": `{"dependencies": {"novelcovid": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"covid19-vn": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "diseasesh") {
+			t.Errorf("%v did not detect diseasesh: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The response, frozen into a module.
+		{"package.json": `{"dependencies": {"simple-country-names": "^1.0.0"}}`},
+		// Icon sets.
+		{"package.json": `{"dependencies": {"@stacksjs/iconify-covid": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@ngxi/covid": "^1.0.0"}}`},
+		// Indonesian clinic software, forked twice, typo and all.
+		{"composer.json": `{"require": {"mvilab/module-disease": "^1.0"}}`},
+		{"composer.json": `{"require": {"hanafalah/module-disease": "^1.0"}}`},
+		{"composer.json": `{"require": {"gii/module-disease": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "diseasesh") {
+			t.Errorf("%v offered the diseasesh Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
