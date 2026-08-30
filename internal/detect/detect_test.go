@@ -4752,3 +4752,54 @@ func TestDetectArtInstituteClientsAndNotArticleExtractors(t *testing.T) {
 		}
 	}
 }
+
+// The vendor's own commercial product is the near miss: Ideal Postcodes runs
+// postcodes.io and also sells a paid UK lookup that needs a key, so
+// @ideal-postcodes/postcode-lookup calls ideal-postcodes.co.uk rather than this.
+//
+// "Postcode" also means South Korea -- the Daum/Kakao address widget outnumbers
+// the UK packages in a search for the bare word -- and three more carry no URL
+// at all, because a postcode is a string with a grammar.
+func TestDetectPostcodesIOClientsAndNotTheKoreanWidget(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"node-postcodes.io": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@cuvva/postcodesio-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@openpets/uk-postcodes": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"juststeveking/laravel-postcodes": "^3.0"}}`},
+		{"composer.json": `{"require": {"boxuk/postcodes-io-bundle": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "postcodesio") {
+			t.Errorf("%v did not detect postcodesio: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The same company's paid API.
+		{"package.json": `{"dependencies": {"@ideal-postcodes/postcode-lookup": "^2.0.0"}}`},
+		// South Korea.
+		{"package.json": `{"dependencies": {"react-daum-postcode": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"vue-daum-postcode": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@clroot/react-kakao-postcode": "^1.0.0"}}`},
+		// Competitors.
+		{"package.json": `{"dependencies": {"getaddress-find": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"venditan/address-lookup": "^1.0"}}`},
+		// A postcode is a string with a grammar, and these only parse it.
+		{"package.json": `{"dependencies": {"postcode": "^5.0.0"}}`},
+		{"package.json": `{"dependencies": {"postcode-validator": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"aus-postcode-suburbs": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "postcodesio") {
+			t.Errorf("%v offered the postcodesio Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
