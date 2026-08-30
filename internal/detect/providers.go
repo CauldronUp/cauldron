@@ -2797,6 +2797,46 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is new: a client that reaches the right host, for the
+			// one endpoint this Recipe does not have.
+			//
+			// Deezer's login providers are not Deezer's API clients, but they are
+			// not innocent of it either. socialiteproviders/deezer reaches exactly
+			// https://api.deezer.com/user/me and nothing else; julienbornstein/
+			// oauth2-deezer reaches that plus a user's flow and image. Both are on
+			// this host, and every path they use is under /user, which this Recipe
+			// has no resource for. Offering it to them would emulate an API that
+			// answers none of their requests. The same goes for passport-deezer,
+			// chrishemmings/oauth2-deezer, magarrent/deezer-laravel-auth,
+			// hwi/oauth-bundle and chillerlan/php-oauth-providers.
+			//
+			// The Discord playback plugins are left out as a family:
+			// erela.js-deezer, @distube/deezer, kazagumo-deezer, stone-deezer,
+			// discord-player-deezer and play-dl resolve a link through the public
+			// API on their way to audio. A project holding one wants a music bot,
+			// and the search it makes is incidental to that.
+			//
+			// @types/deezer-sdk is types without a client twice over: no request
+			// anywhere in it, and the thing it describes is the browser JS SDK
+			// rather than this API at all.
+			recipe: "deezer",
+			composer: []string{
+				"atomescrochus/laravel-deezer-api",
+				"bhanwarpsrathore/deezer-api-php",
+				"clemfromspace/deezer-php-api",
+				"deezer/deezer-php-sdk",
+				"gabrieljmj/deezer-web-api",
+				"pouler/deezer-api",
+				"wasymshykh/deezer-api-php-wrapper",
+			},
+			npm: []string{
+				"deezer-lib",
+				"deezer-public-api",
+				"deezer-ts-api",
+				"deezer-web-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
