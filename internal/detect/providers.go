@@ -2381,6 +2381,47 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the vendor namespace again, and it is not even the
+			// vendor's repository. Packagist has a chesscom namespace, and what it
+			// publishes there is chesscom/honeybadger-php and
+			// chesscom/honeybadger-bundle -- error monitoring for Honeybadger.io,
+			// from github.com/ShonM. chesscom/chess-game is under the same namespace
+			// and "represents a chess game as a php object": the domain, not the
+			// API.
+			//
+			// Then a whole shelf of chess libraries that never make a request.
+			// p-chess/chess, akondas/chess.php, ryanhs/chess.php and onspli/chess
+			// generate and validate moves; amyboyd/pgn-parser reads the notation;
+			// chess.js on npm is the same thing and links lichess.org. Move
+			// generation is not a client of anything.
+			//
+			// And the fuzzy matches, which are the widest yet for one word.
+			// wiserwebsolutions/laravel-chesco-gis is Chester County's ArcGIS
+			// FeatureServer; miripiruni/csscomb sorts CSS properties;
+			// chessio/module-matomo is Magento analytics; elioair/chesscaptcha is a
+			// captcha; chescos/cs-proto has no description at all.
+			//
+			// Four MCP servers, none mapped -- @pipeworx/mcp-chess is the ninth
+			// Recipe running for that publisher -- and two of them, along with
+			// cli-chess-puzzle, cover Lichess as well, which is the other server for
+			// the same game.
+			//
+			// Three clients that look right were left out on evidence:
+			// chess-web-api, libchess and chesster all describe themselves as
+			// wrappers for this API and none of them carries the host in its
+			// published output. Packagist's two, flowtt/chesscom-php and
+			// joebocock/chess-api-php, name it in neither README.
+			recipe: "chesscom",
+			npm: []string{
+				"chess-com",
+				"chess.com.js",
+				"chesscom-ts-client",
+				"chesscom-sdk",
+				"chess-api-typescript",
+				"online-chess-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and

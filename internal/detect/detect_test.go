@@ -5525,3 +5525,60 @@ func TestDetectEPSSClientsAndNotTheCSVOrTheReceiptPrinter(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the vendor namespace that is not even the vendor's
+// repository: Packagist's chesscom namespace publishes Honeybadger error
+// monitoring, from someone else's GitHub account. Then a shelf of chess
+// libraries that never make a request, and the widest set of fuzzy matches yet
+// for one word -- Chester County's GIS among them.
+func TestDetectChessComClientsAndNotTheGameOrTheCounty(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"chess-com": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chess.com.js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chesscom-ts-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chesscom-sdk": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"online-chess-api": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "chesscom") {
+			t.Errorf("%v did not detect chesscom: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor namespace, publishing error monitoring.
+		{"composer.json": `{"require": {"chesscom/honeybadger-php": "^1.0"}}`},
+		{"composer.json": `{"require": {"chesscom/chess-game": "^1.0"}}`},
+		// Move generation and notation, which make no request.
+		{"composer.json": `{"require": {"p-chess/chess": "^1.0"}}`},
+		{"composer.json": `{"require": {"akondas/chess.php": "^1.0"}}`},
+		{"composer.json": `{"require": {"amyboyd/pgn-parser": "^1.0"}}`},
+		{"package.json": `{"dependencies": {"chess.js": "^1.0.0"}}`},
+		// Chester County's GIS, CSS sorting, Magento analytics, a captcha.
+		{"composer.json": `{"require": {"wiserwebsolutions/laravel-chesco-gis": "^1.0"}}`},
+		{"composer.json": `{"require": {"miripiruni/csscomb": "^4.0"}}`},
+		{"composer.json": `{"require": {"chessio/module-matomo": "^1.0"}}`},
+		{"composer.json": `{"require": {"elioair/chesscaptcha": "^1.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-chess": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"chesscom-mcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"chess-com-lichess-org-mcp": "^0.1.0"}}`},
+		// Named for this API and carrying no host at all.
+		{"package.json": `{"dependencies": {"chess-web-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"libchess": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"chesster": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "chesscom") {
+			t.Errorf("%v offered the chesscom Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
