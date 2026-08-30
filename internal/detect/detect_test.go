@@ -6284,3 +6284,42 @@ func TestDetectINaturalistClientsAndNotTheDataset(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the vendor's own npm scope holding something unrelated:
+// @europepmc/express-middleware-minio stores files in Minio.
+func TestDetectEuropePMCClientsAndNotTheVendorsMinioMiddleware(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"node-europmc": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"getpapers": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"epmc": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"biojs-vis-pmccitation": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "europepmc") {
+			t.Errorf("%v did not detect europepmc: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The organisation's own scope, and object-storage plumbing.
+		{"package.json": `{"dependencies": {"@europepmc/express-middleware-minio": "^1.0.0"}}`},
+		// The literature MCP servers, which wrap this beside three other APIs.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-europepmc": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"biomcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@cyanheads/pubmed-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"lit-search": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "europepmc") {
+			t.Errorf("%v offered the europepmc Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

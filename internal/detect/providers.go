@@ -2862,6 +2862,29 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the vendor's own npm scope, holding something with
+			// nothing to do with the API. @europepmc/express-middleware-minio is
+			// "an Express middleware that helps you store files in Minio" -- the
+			// organisation's internal object-storage plumbing, published under the
+			// name a client would search for.
+			//
+			// The literature MCP servers are a crowd by now: @pipeworx/mcp-europepmc,
+			// biomcp, dsh-pubmed, @cyanheads/pubmed-mcp-server, @pharmatools/
+			// pubcrawl, @drvibeai/clinical-apis-mcp, lit-search and
+			// @mengbingrock/labee-protocol-searcher all wrap this beside PubMed,
+			// Semantic Scholar or bioRxiv, and a project holding one wants an agent
+			// rather than an emulator of this host.
+			//
+			// Packagist has no result for "europepmc" at all.
+			recipe: "europepmc",
+			npm: []string{
+				"biojs-vis-pmccitation",
+				"epmc",
+				"getpapers",
+				"node-europmc",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
