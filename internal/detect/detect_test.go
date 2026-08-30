@@ -6401,3 +6401,47 @@ func TestDetectPDBeClientsAndNotThePrefixCollision(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the client that scrapes the site instead: jishon promises
+// "json from jisho" and reaches jisho.org/search, the web page, not the API.
+func TestDetectJishoClientsAndNotTheScraper(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"unofficial-jisho-api": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@andymenderunix/jisho-js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"jisho-sidekick": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "jisho") {
+			t.Errorf("%v did not detect jisho: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The web page, not the API.
+		{"package.json": `{"dependencies": {"jishon": "^1.0.0"}}`},
+		// A dictionary carrying its own data, and a CLI that reaches no path.
+		{"package.json": `{"dependencies": {"jisho": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"jisho-cli": "^1.0.0"}}`},
+		// Launcher plugins, which open the site rather than query it.
+		{"package.json": `{"dependencies": {"hain-plugin-jisho-org": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"j-jisho": "^1.0.0"}}`},
+		// An MCP server.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-jisho": "^0.1.0"}}`},
+		// And Packagist's author prefix.
+		{"composer.json": `{"require": {"jisoft/yii2-sypexgeo": "^1.0"}}`},
+		{"composer.json": `{"require": {"jishanhoshen/laravel-sms": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "jisho") {
+			t.Errorf("%v offered the jisho Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
