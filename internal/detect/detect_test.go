@@ -5477,3 +5477,51 @@ func TestDetectITunesSearchClientsAndNotTheRSSExtension(t *testing.T) {
 		}
 	}
 }
+
+// The sharpest near miss is the package that uses the same data without the
+// API: npm-epss-audit reads the bulk CSV from epss.cyentia.com. Packagist has
+// no client at all, and what it returns for "epss" is a thermal receipt printer
+// library, where the letters sit inside ESC/POS. And cctx exists only to occupy
+// a typo of another package's name.
+func TestDetectEPSSClientsAndNotTheCSVOrTheReceiptPrinter(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"@absolutejs/vulnerabilities-epss": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"breach-gate": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"niyantri": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"fad-checker": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "epss") {
+			t.Errorf("%v did not detect epss: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The same data, from the bulk CSV rather than the API.
+		{"package.json": `{"dependencies": {"npm-epss-audit": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"vulnscope": "^1.0.0"}}`},
+		// MCP servers.
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-epss": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"cve-mcp": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"cve-fix-check": "^0.1.0"}}`},
+		// A package published so that nobody else can publish the typo.
+		{"package.json": `{"dependencies": {"cctx": "^1.0.0"}}`},
+		// A thermal receipt printer, and the "ess" that came with it.
+		{"composer.json": `{"require": {"mike42/escpos-php": "^4.0"}}`},
+		{"composer.json": `{"require": {"essence/essence": "^3.0"}}`},
+		{"composer.json": `{"require": {"nunomaduro/essentials": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "epss") {
+			t.Errorf("%v offered the epss Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

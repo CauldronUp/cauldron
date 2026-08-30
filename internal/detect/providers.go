@@ -2347,6 +2347,40 @@ func providers() []provider {
 			},
 		},
 		{
+			// Four npm packages carry api.first.org/data/v1/epss in their published
+			// output and are mapped. The sharpest near miss is the one that uses the
+			// same data without the API: npm-epss-audit reads the bulk CSV from
+			// epss.cyentia.com and links www.first.org for the documentation, so it
+			// is about EPSS in every sense except the one detection can act on.
+			// vulnscope is the same shape with its database bundled from GitHub --
+			// "OSV + KEV + EPSS", none of them fetched from here.
+			//
+			// Packagist has no client for this API at all, and what it does return
+			// for "epss" is a thermal receipt printer: mike42/escpos-php, where the
+			// letters sit inside ESC/POS. The rest of that page matches on "ess" --
+			// essence/essence, essence/http, essence/dom, essa/api-tool-kit,
+			// nunomaduro/essentials. Searching it for "first.org" returns Firestore
+			// clients and a Magento first-order discount.
+			//
+			// Six MCP servers, the most for any Recipe here, and none mapped:
+			// @pipeworx/mcp-epss is the eighth Recipe running for that publisher,
+			// and cve-mcp, @datanexusmcp/mcp-server, @iflow-mcp/badchars-cve-mcp,
+			// cve-fix-check and @mcpskillsio/server all list this API among their
+			// sources.
+			//
+			// And a new kind of neighbour: cctx exists to occupy a typo. Its whole
+			// description is "Looking for CCXT? You've mistyped the name. Bad guys
+			// could exploit this" -- a package published so that nobody else can
+			// publish it, which turned up here because it contains the word exploit.
+			recipe: "epss",
+			npm: []string{
+				"@absolutejs/vulnerabilities-epss",
+				"breach-gate",
+				"niyantri",
+				"fad-checker",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
