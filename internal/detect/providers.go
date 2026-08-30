@@ -2463,6 +2463,37 @@ func providers() []provider {
 			},
 		},
 		{
+			// Packagist has nothing at all, and what it does return is one person's
+			// initials. Nine packages by tflori -- an ORM, a dependency injector, a
+			// PHPUnit printer, a console library -- plus tflanagan/quickbase, all
+			// matched on a vendor prefix that happens to spell the acronym.
+			//
+			// And the letters mean something else again on npm: tfl-lsp is a
+			// "Language Server Protocol for TFL Fitch-style proofs", where TFL is
+			// Truth-Functional Logic. A proof checker for a formal logic course,
+			// matched on three letters shared with a railway.
+			//
+			// tfl-to-freeagent is the data as a file: it converts an exported CSV of
+			// journeys into accounting software, so it is about this provider and
+			// never calls it.
+			//
+			// Five MCP servers, the most for any Recipe here after EPSS, and none
+			// mapped: mcp-tfl-journey, @daanrongen/tfl-mcp, @rmp/tfl-mcp,
+			// london-transport-mcp and one whose name is nine words long.
+			//
+			// Left out on evidence: the bare name "tfl", tfl-api-wrapper and
+			// @onemedia/tfl-data-module all describe themselves as clients of this
+			// API and none of them carries the host in its published output.
+			recipe: "tfl",
+			npm: []string{
+				"tfl.api",
+				"tfl-ts",
+				"tfl-api",
+				"tfl-client",
+				"tfl-unified-api",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
