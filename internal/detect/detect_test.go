@@ -4886,3 +4886,48 @@ func TestDetectRickAndMortyClientsAndNotTheFandom(t *testing.T) {
 		}
 	}
 }
+
+// A deck of cards is a data structure, so nearly every package with the name is
+// a local implementation -- including the bare name "deckofcards", which is "a
+// standard deck of playing cards" and nothing to do with this API.
+//
+// And a new kind of miss: api-false-success is a dataset about APIs that return
+// HTTP 200 on requests that cannot succeed, which is exactly what this Recipe's
+// headline pins. A package about the finding, not about the provider.
+func TestDetectDeckOfCardsClientsAndNotTheDataStructure(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"deckofcardsapi-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"deckofcards-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"node-deckofcards": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "deckofcards") {
+			t.Errorf("%v did not detect deckofcards: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The most obvious name in the registry, and the wrong one.
+		{"package.json": `{"dependencies": {"deckofcards": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"deck-of-cards": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"card-deck": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"cards.js": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"deck-of-cards-ts": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"preferans-deck-js": "^1.0.0"}}`},
+		// A dataset about the behaviour this Recipe pins.
+		{"package.json": `{"dependencies": {"api-false-success": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "deckofcards") {
+			t.Errorf("%v offered the deckofcards Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}

@@ -1916,6 +1916,34 @@ func providers() []provider {
 			},
 		},
 		{
+			// A deck of cards is a data structure, so nearly every package with
+			// the name is a local implementation that opens no connection:
+			// deck-of-cards, cards.js, card-deck, deckjs, cardgames,
+			// card-games-typescript, deck-of-cards-ts, real-deal-deck-of-cards,
+			// npm-cards, preferans-deck-js, @mikeygough/deck-of-cards, and
+			// @andrewscripts/deck-of-cards.js beside @andrewcreated/deck-of-cards.js,
+			// which are the same library under two scopes.
+			//
+			// The bare name is one of them. npm's "deckofcards" is "a standard deck
+			// of playing cards" and has nothing to do with this API, so the most
+			// obvious name in the registry is the wrong one.
+			//
+			// And a new kind: a package about the finding rather than about the
+			// provider. api-false-success is "Measured behaviour of public APIs on
+			// requests that cannot succeed: which return HTTP 200 anyway, how to
+			// detect it per API, and whether it is a defect or a documented
+			// contract" -- a dataset describing exactly what this Recipe's headline
+			// pins, which opens no connection to anything.
+			//
+			// Packagist has nothing at all.
+			recipe: "deckofcards",
+			npm: []string{
+				"deckofcardsapi-client",
+				"deckofcards-api",
+				"node-deckofcards",
+			},
+		},
+		{
 			// Almost everything the word returns on npm shells out to nuget.exe.
 			// nuget-bin downloads the binary; grunt-nuget, grunt-nuget-pack,
 			// gulp-nuget and gulp-nuget-restore drive it to pack, push and
