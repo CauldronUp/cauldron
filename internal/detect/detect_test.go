@@ -6575,3 +6575,45 @@ func TestDetectScryfallClientsAndNotItsTypeDefinitions(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the vendor's own scope, three times over, and none of them a
+// client: a PGN viewer, a WebAssembly engine and the chessboard itself.
+func TestDetectLichessClientsAndNotTheVendorsOwnPieces(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"lichess": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@ayushwalekar/lichess-js": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"boriskrusteff/lichess-php-sdk": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "lichess") {
+			t.Errorf("%v did not detect lichess: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The vendor's own scope: the pieces of the site, not a client of it.
+		{"package.json": `{"dependencies": {"@lichess-org/chessground": "^9.0.0"}}`},
+		{"package.json": `{"dependencies": {"@lichess-org/pgn-viewer": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@lichess-org/stockfish-web": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"vue-pgn-viewer": "^1.0.0"}}`},
+		// Login providers, reaching /api/account and /api/token.
+		{"package.json": `{"dependencies": {"passport-lichess": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"socialiteproviders/lichess": "^4.0"}}`},
+		{"composer.json": `{"require": {"joseayram/oauth2-lichess": "^1.0"}}`},
+		// And MCP servers.
+		{"package.json": `{"dependencies": {"lichess-mcp": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "lichess") {
+			t.Errorf("%v offered the lichess Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
