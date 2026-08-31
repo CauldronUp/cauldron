@@ -4,6 +4,12 @@ package recipe
 
 // Route binds an HTTP method and path to an operation on a resource.
 type Route struct {
+	// Derived marks a route that came from the provider's own description
+	// rather than from a recorded response, which Augment sets and a Recipe
+	// file cannot. It is the difference between an observation and an
+	// un-contradicted guess, and a user must never have to work out which
+	// kind of answer they are looking at.
+	Derived  bool   `yaml:"-"`
 	Method   string `yaml:"method"`
 	Path     string `yaml:"path"`
 	Resource string `yaml:"resource"`
