@@ -2945,6 +2945,37 @@ func providers() []provider {
 			},
 		},
 		{
+			// cardmonitor/skryfall-api is mapped and its name is a typo: "PHP
+			// Skryfall API", with a K. Its source reaches api.scryfall.com, so the
+			// misspelling is in the package name and nowhere else.
+			//
+			// The near miss is types without a client, twice, and one of them is in
+			// the vendor's own scope. @scryfall/api-types and scryfall-types name
+			// api.scryfall.com in their documentation comments and make no request
+			// anywhere; they are definitions of the shapes this Recipe serves,
+			// which is a description of the API rather than a use of it.
+			//
+			// scryfalldataprocessor "processes data from scryfall into a more
+			// usable format" -- the bulk files, not the API. Four of the ten npm
+			// results are MCP servers: scryfall-mcp-server, @iflow-mcp/scryfall-mcp,
+			// @pipeworx/mcp-scryfall and @kaminaduck/scryfall-mcp-server.
+			//
+			// php-mtg/mtg-api-com-scryfall-interface and its -object sibling live on
+			// GitLab and could not be read, so they are left out rather than
+			// guessed at. viktoras/scryfall has no PHP in its default branch.
+			// lambry/scafall is a WordPress scaffolding plugin, one letter away.
+			recipe: "scryfall",
+			composer: []string{
+				"cardmonitor/skryfall-api",
+				"ypho/scryfall",
+			},
+			npm: []string{
+				"scryfall",
+				"scryfall-client",
+				"scryfall-sdk",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the

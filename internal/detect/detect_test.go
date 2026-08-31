@@ -6531,3 +6531,47 @@ func TestDetectKrakenExchangeClientsAndNotTheOtherFourKrakens(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is types without a client, twice, and one of them is in the
+// vendor's own scope. cardmonitor/skryfall-api is mapped despite its name: the
+// misspelling is in the package name and its source reaches api.scryfall.com.
+func TestDetectScryfallClientsAndNotItsTypeDefinitions(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"scryfall": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"scryfall-client": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"scryfall-sdk": "^4.0.0"}}`},
+		{"composer.json": `{"require": {"ypho/scryfall": "^1.0"}}`},
+		{"composer.json": `{"require": {"cardmonitor/skryfall-api": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "scryfall") {
+			t.Errorf("%v did not detect scryfall: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// Types without a client, one of them in the vendor's own scope.
+		{"package.json": `{"dependencies": {"@scryfall/api-types": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"scryfall-types": "^1.0.0"}}`},
+		// The bulk files, not the API.
+		{"package.json": `{"dependencies": {"scryfalldataprocessor": "^1.0.0"}}`},
+		// Four of ten results are MCP servers.
+		{"package.json": `{"dependencies": {"scryfall-mcp-server": "^0.1.0"}}`},
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-scryfall": "^0.1.0"}}`},
+		// And a WordPress scaffolding plugin, one letter away.
+		{"composer.json": `{"require": {"lambry/scafall": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "scryfall") {
+			t.Errorf("%v offered the scryfall Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
