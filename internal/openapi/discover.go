@@ -228,11 +228,17 @@ func formatOf(doc *Document) string {
 
 // Hosts is where a Recipe was actually seen talking, most-used first.
 //
-// Only the sources of conformance cases are read. A Recipe's documentation
+// Only the sources of conformance cases are read. A Recipe's own documentation
 // link is not the API: reading every URL in the file is what paired a dozen
 // Recipes with GitHub's description, because that is where their documentation
-// lives. A case source is an address a response was recorded from, so it is
-// the API by construction.
+// lives.
+//
+// A case source is a weaker signal than it first appears, and worth being
+// honest about. It cites the documentation or the transcript an expectation
+// came from, so it is usually the address a response was recorded at and
+// sometimes a documentation page -- Neon's cite neon.tech, which is where its
+// docs are. That is why these are candidate hosts and not an answer: the
+// document found at one still has to declare a path the Recipe models.
 func Hosts(r *recipe.Recipe) []string {
 	counts := map[string]int{}
 
