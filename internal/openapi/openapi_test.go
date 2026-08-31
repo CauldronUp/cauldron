@@ -428,8 +428,12 @@ func firstLineOf(s string) string {
 func TestParseRefusesWhatItCannotRead(t *testing.T) {
 	for name, raw := range map[string]string{
 		"not a description": "hello: world\n",
-		"swagger 2":         "swagger: \"2.0\"\ninfo: {title: x, version: y}\npaths: {/a: {get: {responses: {}}}}\n",
 		"no paths":          "openapi: 3.0.0\ninfo: {title: x, version: y}\npaths: {}\n",
+
+		// Swagger 2.0 is no longer here: it is rewritten and read. What
+		// belongs here is a format with no reader at all.
+		"raml":     "#%RAML 1.0\ntitle: Example\n",
+		"asyncapi": "asyncapi: 2.6.0\ninfo: {title: x, version: y}\n",
 	} {
 		if _, err := Parse([]byte(raw)); err == nil {
 			t.Errorf("%s was accepted", name)

@@ -66,7 +66,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 3103 cases, 788 of them checked against a live API |
-| Spec drift (`cauldron drift`) | Working. 11 Recipes are checked against their provider's own OpenAPI document, 1 provider publishes one this cannot read, and 301 publish none |
+| Spec drift (`cauldron drift`) | Working. 12 Recipes are checked against their provider's own OpenAPI document; 301 name none yet |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
@@ -2300,9 +2300,8 @@ with a fingerprint recorded in the Recipe.
 $ cauldron drift
   adyen                    unchanged since 2026-08-30
   ...
-  mbta                     a format this cannot read: this is Swagger 2.0, and only OpenAPI 3 is read
 
-11 unchanged, 0 moved, 0 unreachable, 1 in a format this cannot read, 0 unrecorded, 286 with no description to check.
+12 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 301 with no description to check.
 A Recipe with no description this can read is not verified by this. It is unexamined.
 ```
 
@@ -2327,7 +2326,7 @@ Six states, and only one of them fails a build:
 | `unchanged` | The description still says what the Recipe claims |
 | `moved` | It does not. **The only state that exits non-zero** |
 | `unreachable` | The host did not answer, or answered with something that is not a description. Not drift: a docs host returning 503 has said nothing about whether the provider changed anything |
-| `unsupported` | The provider publishes a description in a format this cannot read. Separate from `unreachable` because it is permanent -- api-v3.mbta.com serves Swagger 2.0, answers instantly, and will never once be unreachable |
+| `unsupported` | The provider publishes a description in a format this cannot read -- RAML, AsyncAPI, WSDL. Separate from `unreachable` because it is permanent: a host answering 503 is a Tuesday, a format with no reader stays true tomorrow. Swagger 2.0 was here until it was rewritten on the way in |
 | `unrecorded` | A description is named and has never been fingerprinted, so nothing was compared |
 | `undeclared` | The provider publishes nothing to check. 301 of the 313 |
 
