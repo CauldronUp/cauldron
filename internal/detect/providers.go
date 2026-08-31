@@ -3000,6 +3000,31 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the name, and it belongs to somebody else on both
+			// registries. Searching npm for "project gutenberg api" returns six
+			// @wordpress packages -- undo-manager, dom-ready, html-entities,
+			// keyboard-shortcuts, wordcount and router -- because WordPress's block
+			// editor is called Gutenberg. Packagist answers "gutendex" with
+			// van-ons/laraberg, mwdelaney/sage-acf-gutenberg-blocks,
+			// humanmade/hm-gutenberg-tools and three more of the same, and has no
+			// client for this API at all.
+			//
+			// So the printing pioneer's digital library loses its own name to a
+			// JavaScript editor on one registry and a PHP plugin ecosystem on the
+			// other.
+			//
+			// npm-demo-gutendex-lrvf and kenzie-gutendex2 reach the host and are
+			// coursework -- "aplicação em node para fazer acesso a API Gutendex" --
+			// published exercises rather than libraries anybody depends on.
+			// @pipeworx/mcp-gutendex and pipeworx-mcp-gutendex are the same MCP
+			// server twice.
+			recipe: "gutendex",
+			npm: []string{
+				"@refkit/provider-gutendex",
+				"gutendex",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the
