@@ -6617,3 +6617,42 @@ func TestDetectLichessClientsAndNotTheVendorsOwnPieces(t *testing.T) {
 		}
 	}
 }
+
+// The near miss is the name: WordPress's block editor is called Gutenberg, so
+// searching either registry for this API returns that ecosystem instead.
+func TestDetectGutendexClientsAndNotWordPressGutenberg(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"gutendex": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@refkit/provider-gutendex": "^1.0.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "gutendex") {
+			t.Errorf("%v did not detect gutendex: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// WordPress's block editor, which owns the word on npm.
+		{"package.json": `{"dependencies": {"@wordpress/dom-ready": "^3.0.0"}}`},
+		{"package.json": `{"dependencies": {"@wordpress/wordcount": "^3.0.0"}}`},
+		// And on Packagist.
+		{"composer.json": `{"require": {"van-ons/laraberg": "^2.0"}}`},
+		{"composer.json": `{"require": {"humanmade/hm-gutenberg-tools": "^1.0"}}`},
+		// Coursework, and an MCP server published twice.
+		{"package.json": `{"dependencies": {"npm-demo-gutendex-lrvf": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@pipeworx/mcp-gutendex": "^0.1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "gutendex") {
+			t.Errorf("%v offered the gutendex Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
