@@ -305,15 +305,73 @@ func Parse(raw []byte) (*Document, error) {
 	}
 
 	if doc.OpenAPI == "" && doc.Swagger == "" {
+		// A document that announces a format this does not read is a
+		// permanent fact about the provider, and worth saying as one. An
+		// unmarked document might be anything, including a login page,
+		// so it gets the vaguer answer it deserves.
+		if format := detectForeignFormat(raw); format != "" {
+			return nil, &FormatError{Format: format}
+		}
+
 		return nil, fmt.Errorf("no openapi or swagger version field, so this is probably not an OpenAPI description")
 	}
 
+	// Swagger 2.0 is rewritten rather than refused. Refusing it was
+	// refusing real providers -- GitLab, LaunchDarkly, Netlify, Polygon,
+	// Postmark, Royal Mail and PDBe publish 2.0 and nothing else, and
+	// every one of them was counted as publishing nothing readable,
+	// which was true of this reader and not of them.
 	if doc.Swagger != "" && doc.OpenAPI == "" {
-		return nil, fmt.Errorf("this is Swagger %s, and only OpenAPI 3 is read; convert it first", doc.Swagger)
+		converted, err := parseSwagger2(raw)
+		if err != nil {
+			return nil, &FormatError{Format: "Swagger " + doc.Swagger, Err: err}
+		}
+
+		doc = *converted
 	}
 
 	if len(doc.Paths) == 0 {
 		return nil, fmt.Errorf("the description declares no paths, so there is nothing to read")
+	}
+
+	return &doc, nil
+}
+
+// parseSwagger2 decodes a 2.0 description, rewrites it, and reads the
+// result as the OpenAPI 3 the rest of this package is written against.
+//
+// The round trip through YAML is deliberate. The alternative is a second
+// set of types modelling 2.0, which would have to be kept in step with the
+// first set forever; this way the converted document is read by exactly the
+// same code as any other, so Draft, Check, Fingerprint and Augment support
+// 2.0 without knowing that 2.0 exists.
+func parseSwagger2(raw []byte) (*Document, error) {
+	var generic map[string]any
+
+	if err := yaml.Unmarshal(raw, &generic); err != nil {
+		converted, jsonErr := viaJSON(raw)
+		if jsonErr != nil {
+			return nil, err
+		}
+
+		if err := yaml.Unmarshal(converted, &generic); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := convertSwagger2(generic); err != nil {
+		return nil, err
+	}
+
+	rewritten, err := yaml.Marshal(generic)
+	if err != nil {
+		return nil, err
+	}
+
+	var doc Document
+
+	if err := yaml.Unmarshal(rewritten, &doc); err != nil {
+		return nil, err
 	}
 
 	return &doc, nil

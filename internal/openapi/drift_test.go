@@ -174,20 +174,15 @@ func TestOnlyAMovedFingerprintCountsAsDrift(t *testing.T) {
 // the same line every day for a Recipe whose provider is perfectly reachable,
 // with nothing to say which of the two it is.
 //
-// The MBTA is the one that found it: api-v3.mbta.com publishes Swagger 2.0,
-// answers instantly, and will never once be unreachable.
+// The MBTA found it: api-v3.mbta.com answers instantly and will never once
+// be unreachable, and it published the one description here that could not
+// be read. Swagger 2.0 is now rewritten and read, so the example has to be
+// a format with no reader -- which is the better test anyway, because the
+// old one stopped being unreadable and took its own premise with it.
 func TestAFormatThatCannotBeReadIsNotAHostThatCannotBeReached(t *testing.T) {
-	swagger := `
-swagger: "2.0"
-info: {title: Old, version: "1"}
-paths:
-  /v1/things:
-    get:
-      responses:
-        "200": {description: ok}
-`
+	raml := "#%RAML 1.0\ntitle: Old\nbaseUri: https://example.test/v1\n"
 
-	report := onlyReport(t, driftRecipeWith("https://example.test/swagger.json", "0123456789abcdef"), serving(swagger))
+	report := onlyReport(t, driftRecipeWith("https://example.test/api.raml", "0123456789abcdef"), serving(raml))
 
 	if report.Status != Unsupported {
 		t.Errorf("status is %q, want %q", report.Status, Unsupported)

@@ -6,7 +6,6 @@ package openapi
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/CauldronUp/cauldron/internal/recipe"
 )
@@ -118,10 +117,18 @@ func driftOf(r *recipe.Recipe, fetch func(url string) ([]byte, error)) DriftRepo
 
 	doc, err := Parse(raw)
 	if err != nil {
-		// A document that announces itself as Swagger 2.0 arrived intact and
-		// said what it is. That is a fact about the provider rather than about
-		// the network, and it stays true tomorrow.
-		if strings.Contains(err.Error(), "Swagger") {
+		// A document that arrived intact and announced a format this does
+		// not read is a fact about the provider rather than about the
+		// network, and it stays true tomorrow.
+		//
+		// This searched the message for the word "Swagger" until Swagger 2.0
+		// stopped being unreadable. The search was wrong both ways: it
+		// caught a network error that happened to mention Swagger in a URL,
+		// and it missed every format that is not Swagger, so a provider
+		// publishing RAML was reported unreachable forever.
+		var format *FormatError
+
+		if errors.As(err, &format) {
 			report.Status = Unsupported
 		} else {
 			report.Status = Unreachable
