@@ -2915,6 +2915,36 @@ func providers() []provider {
 			},
 		},
 		{
+			// "Kraken" names at least five unrelated products, and the exchange
+			// does not hold the bare name on either registry.
+			//
+			// npm's kraken is "Kraken.io Image Optimizer" -- a different company
+			// entirely, confirmed by host: its published output reaches
+			// api.kraken.io, not api.kraken.com. Packagist's kraken-io/kraken-php
+			// is the same image optimiser's official SDK.
+			//
+			// kraken-js, @types/kraken-js, kraken-devtools, generator-kraken and
+			// makara are PayPal's Kraken web framework for Node. kraken-php/util,
+			// throwable, stream, loop, ipc and event are the Kraken PHP Framework,
+			// an asynchronous application framework -- six packages, none about
+			// money. driver-kraken and build-plugin-rax-kraken are Alibaba's Rax
+			// renderer, and @kraken-ai/platform is a fifth thing again.
+			//
+			// ccxt/ccxt reaches this host among more than a hundred others. A
+			// project holding it wants one interface to every exchange, and
+			// offering it the emulator for one of them would be an arbitrary
+			// choice among the hundred.
+			recipe: "kraken",
+			composer: []string{
+				"payward/kraken-api-client",
+			},
+			npm: []string{
+				"@lynx-crypto/kraken-api",
+				"kraken-api-node",
+				"kraken-exc",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the
