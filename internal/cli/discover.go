@@ -103,7 +103,7 @@ func runDiscover(ctx *context, args []string) int {
 					continue
 				}
 
-				found := openapi.Discover(r, hosts, fetchSpec)
+				found := openapi.Discover(r, hosts, fetchProbe)
 
 				mu.Lock()
 				tally.Searched++
@@ -116,7 +116,14 @@ func runDiscover(ctx *context, args []string) int {
 		}()
 	}
 
-	for _, name := range names {
+	// A scan of the whole collection is thousands of requests over several
+	// minutes. Something has to say it is still running, and it goes to
+	// stderr so that piping the proposals somewhere is unaffected.
+	for i, name := range names {
+		if len(names) > 20 && i%25 == 0 {
+			fmt.Fprintf(ctx.stderr, "  searching %d of %d...\n", i, len(names))
+		}
+
 		work <- name
 	}
 
