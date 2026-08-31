@@ -67,6 +67,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 3103 cases, 788 of them checked against a live API |
 | Spec drift (`cauldron drift`) | Working. 11 Recipes are checked against their provider's own OpenAPI document, 1 provider publishes one this cannot read, and 301 publish none |
+| Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
@@ -2343,6 +2344,70 @@ status dropped -- which is precisely the half a Recipe's own suite is
 structurally unable to catch. A Recipe whose fingerprint has not moved is
 un-contradicted by the description, on the parts it claims. That is a smaller
 sentence than "unchanged", and it is the true one.
+
+### Borrowing breadth from a description
+
+A Recipe models what somebody sat down and checked. That is a small number of
+endpoints, and it always will be:
+
+| Recipe | Paths the description declares | Routes the Recipe models |
+| --- | --- | --- |
+| Box | 186 | 7 |
+| OpenAI | 182 | 5 |
+| Asana | 175 | 11 |
+| Twilio | 121 | 4 |
+| Intercom | 79 | 9 |
+| ShipEngine | 70 | 7 |
+| Adyen | 26 | 4 |
+
+Hand-writing the remainder is not going to happen. `serve --with-spec` fetches
+the description a Recipe already names, drafts routes from it, and mounts them
+for the paths the Recipe is silent about:
+
+```
+$ cauldron serve --with-spec asana
+...
+221 route(s) added from provider descriptions, 9 already modelled and left alone.
+  asana                    +221 derived
+
+A derived route is what the provider says it does.
+A Recipe route is what it was seen doing.
+```
+
+**The Recipe always wins.** A description may add an endpoint the Recipe does
+not have; it may never change one the Recipe does, nor an error the Recipe
+declares. Where a description's resource name collides with a Recipe's, the
+route is dropped rather than guessed at, and the reason is printed.
+
+**A derived route is a smaller claim, and the output says so every time.** This
+is not modesty. Asana's own description omits `completed` and `due_on` from the
+task listing -- they are `opt_fields`, real and undeclared -- so a mock built
+from that description serves tasks without them, and the Recipe that pins them
+is right exactly where the description is wrong. Kraken's description says
+`error` is an array of string; nothing in OpenAPI can say that the array is
+empty on success and that an empty array is *true*. Deezer's declares
+`200: Artist`; it cannot declare that every failure is also a 200.
+
+Three rules keep the addition honest rather than merely large:
+
+- **It cannot break a Recipe.** The merged Recipe is validated, and if it does
+  not validate the written Recipe is served unchanged with the reason printed.
+  Adyen found that one: its Recipe wraps listings without a key, so every
+  resource owes a collection name and the drafted ones had none.
+- **Derived routes keep the description's base path.** Adyen declares
+  `/sessions` beside a server of `.../v71`, so without this every derived route
+  mounts at a path no client would call -- reported as added, and missing.
+  Serving a route at the wrong path is worse than not serving it.
+- **A derived resource follows the Recipe's own envelope where the Recipe is
+  unanimous.** Asana wraps every listing in `data` and all three written
+  resources say so, so a derived resource says `data` too rather than naming
+  itself after its path. Where the written resources disagree there is no
+  convention to follow and the path stands.
+
+It is off by default, and has to be: reaching for a description is a network
+call in a tool whose whole value is that it works without one. A Recipe whose
+provider publishes nothing -- 301 of the 313 here -- is served exactly as it
+always was, and told so plainly.
 
 ### Which version, and which one it replaced
 

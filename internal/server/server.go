@@ -53,6 +53,16 @@ func (s *Server) Mount(name string, seed int64, fixture string) error {
 		return err
 	}
 
+	return s.MountRecipe(r, seed, fixture)
+}
+
+// MountRecipe mounts a Recipe already in hand, which Mount cannot do because it
+// opens one by name.
+//
+// It exists for the augmented case: serving a Recipe that has had routes added
+// from the provider's own description means serving a value that is not on
+// disk and never will be.
+func (s *Server) MountRecipe(r *recipe.Recipe, seed int64, fixture string) error {
 	sandbox, err := runtime.New(r, runtime.Options{Seed: seed, Clock: s.clock})
 	if err != nil {
 		return err

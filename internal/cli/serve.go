@@ -48,6 +48,14 @@ type serveOptions struct {
 	// emulated providers and nothing else: the application, its database and
 	// its web server belong to whoever is already running them.
 	headless bool
+	// WithSpec adds routes from each Recipe's declared OpenAPI description
+	// for paths the Recipe does not model.
+	//
+	// Off by default, and it has to be. Reaching for a description is a
+	// network call in a tool whose whole value is that it works without one,
+	// and a derived route is a smaller claim than a written one -- so it is
+	// something a person asks for, once, knowing which they are getting.
+	withSpec bool
 	recipes  []string
 }
 
@@ -63,6 +71,7 @@ func parseServeFlags(args []string, stderr io.Writer) (serveOptions, error) {
 	fs.StringVar(&opts.dir, "dir", ".", "project directory to detect recipes from")
 	fs.StringVar(&opts.host, "host", opts.host, "interface to bind, e.g. 0.0.0.0 to be reachable from a container")
 	fs.BoolVar(&opts.headless, "headless", false, "emulate the providers only: one line of JSON instead of a banner, nothing assumed about how the application runs")
+	fs.BoolVar(&opts.withSpec, "with-spec", false, "add routes from each Recipe's declared OpenAPI description for paths it does not model; the Recipe always wins")
 
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: cauldron serve [flags] [recipe...]\n\nWith no recipes named, Cauldron detects them from the project.\n\nFlags:\n")
@@ -164,8 +173,10 @@ func runServe(ctx *context, args []string) int {
 
 	var unseeded []string
 
+	var outcomes []specOutcome
+
 	for _, name := range mount {
-		if err := srv.Mount(name, opts.seed, ""); err != nil {
+		if err := mountOne(srv, name, opts, &outcomes); err != nil {
 			fmt.Fprintf(ctx.stderr, "cauldron: %v\n", err)
 			return 1
 		}
@@ -222,6 +233,12 @@ func runServe(ctx *context, args []string) int {
 		writeServeJSON(ctx.stdout, addr, host, bound, srv.Names(), missing, unseeded)
 	} else {
 		writeServeBanner(ctx.stdout, addr, srv.Names(), missing, opts)
+
+		// After the banner, because a derived route is a caveat on what was
+		// just announced rather than a thing of its own.
+		if opts.withSpec {
+			reportSpecOutcomes(ctx.stdout, outcomes)
+		}
 
 		if len(unseeded) > 0 {
 			fmt.Fprintf(ctx.stdout, "\nNot seeded, no %q fixture: %s. Name one with --fixture %s=<fixture>.\n",

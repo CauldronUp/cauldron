@@ -41,6 +41,9 @@ type Recipe struct {
 	Responses  Responses           `yaml:"responses"`
 	Errors     map[string]Error    `yaml:"errors"`
 	Fixtures   map[string]Fixture  `yaml:"fixtures"`
+	// DerivedFrom names the description some of this Recipe's routes were
+	// taken from, when Augment added any. A Recipe file cannot set it.
+	DerivedFrom string `yaml:"-"`
 	// RequiredHeaders are headers a request must carry, mapped to the error
 	// name to raise when one is missing. Forgetting Notion-Version is the
 	// classic Notion integration bug, and a fake that does not enforce it lets
