@@ -99,6 +99,12 @@ func commands() map[string]command {
 			usage:   "cauldron drift [-q] [--record] [recipe...]",
 			run:     runDrift,
 		},
+		"discover": {
+			name:    "discover",
+			summary: "Look for a published description for the Recipes that name none",
+			usage:   "cauldron discover [-a] [recipe...]",
+			run:     runDiscover,
+		},
 		"check": {
 			name:    "check",
 			summary: "Report where a Recipe and an OpenAPI description disagree",

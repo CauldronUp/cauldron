@@ -26,7 +26,24 @@ const specFetchLimit = 64 << 20
 // variable so the test can answer without a network, because everything
 // interesting about this command is what it does when a host misbehaves.
 var fetchSpec = func(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
+	return fetchSpecWithin(url, 60*time.Second)
+}
+
+// fetchProbe is how discovery guesses at a URL.
+//
+// The deadline is the whole difference. drift fetches twelve descriptions
+// somebody wrote down, and waiting a minute for one is right. Discovery
+// fetches thousands of addresses nobody promised anything about, and almost
+// all of them are wrong -- so a minute spent on each is hours spent learning
+// that a host does not serve a file. A description either answers promptly
+// or is not there, and a provider slow enough to miss this is one somebody
+// can record by hand.
+var fetchProbe = func(url string) ([]byte, error) {
+	return fetchSpecWithin(url, 8*time.Second)
+}
+
+func fetchSpecWithin(url string, timeout time.Duration) ([]byte, error) {
+	client := &http.Client{Timeout: timeout}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

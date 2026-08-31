@@ -66,7 +66,8 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 3103 cases, 788 of them checked against a live API |
-| Spec drift (`cauldron drift`) | Working. 12 Recipes are checked against their provider's own OpenAPI document; 301 name none yet |
+| Spec drift (`cauldron drift`) | Working. 33 Recipes are checked against their provider's own OpenAPI document; 280 name none yet |
+| Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
@@ -2285,6 +2286,62 @@ A bare name is a convenience, so recipes that do not ship it are listed and left
 at their default rather than failing the run. Name a recipe explicitly and a
 missing fixture is an error, because you asked for something specific.
 
+### Finding the descriptions nobody recorded
+
+Twelve Recipes named a provider's description, and the README reported that as
+though 301 providers publish nothing. It was never a measurement. It was how
+many somebody had happened to find by hand.
+
+`cauldron discover` looks for the rest, and the hard part is not looking. It is
+refusing to believe what you find.
+
+```
+$ cauldron discover
+  clerk                    10 of 10 route(s) declared, in 185 path(s), OpenAPI 3.0.3
+                             spec: https://clerk.com/openapi.json
+  royalmail                4 of 4 route(s) declared, in 11 path(s), Swagger 2.0
+                             spec: https://api.parcel.royalmail.com/swagger/v1/swagger.json
+  monday                   1 of 1 route(s) declared, in 2 path(s), OpenAPI 3.1.0
+                             spec: https://monday.com/openapi.json
+                             (weak: one route in a 2-path document -- check this
+                              is the API and not a docs site)
+
+35 proposed, 266 searched and nothing found, 0 with no verified host to search from, 12 already recorded.
+```
+
+**A URL resolving says nothing, and a 200 says nothing.** Documentation
+platforms serve a generic `openapi.json` at the vendor's marketing domain:
+`ramp.com` and `circleci.com` both answer one, with two and five paths,
+describing the docs site rather than the API. Matching by domain instead scored
+98 hits across this collection, a dozen of which were Recipes whose
+documentation lives on github.com being paired with GitHub's own description.
+Matching on a public directory's declared hosts paired Bugsnag with ClickSend.
+
+So a proposal requires the document to declare a path the Recipe already
+models -- the same intersection the fingerprint takes. Because the test is on
+the document rather than the address, the search can afford to be wide: hosts
+come from conformance sources and then widen to the siblings a description is
+commonly published on. Attio is verified at `api.attio.com` and publishes at
+`attio.com`; neither it nor Monday is reachable without that.
+
+**Nothing is written.** The output is lines to paste, the same bargain `drift
+--record` makes and for a sharper reason: a wrong spec URL does not fail
+loudly. It reports drift against a document that was never this provider's,
+every morning, until somebody works out why.
+
+Of the 29 proposals declaring every route, `cauldron check` found nothing to
+disagree with in 18, and those are recorded. Five disagree and are deliberately
+not recorded -- Resend's description declares `SendEmailResponse` as `{id}`
+alone where the Recipe answers `POST /emails` with a whole email, which is a
+question about the Recipe that wants a live call to settle. Recording a
+description a Recipe contradicts files the argument as a fingerprint and loses
+it.
+
+**The number will not reach 313.** Most providers publish nothing, and this
+search reaches only descriptions served at a conventional URL -- a provider
+publishing in a GitHub repository, which is how eleven of the first twelve here
+were found, still needs a person to say where it is.
+
 ## When the provider moves
 
 A Recipe is written once and the provider keeps going. Its conformance suite
@@ -2301,7 +2358,7 @@ $ cauldron drift
   adyen                    unchanged since 2026-08-30
   ...
 
-12 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 301 with no description to check.
+33 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 280 with no description to check.
 A Recipe with no description this can read is not verified by this. It is unexamined.
 ```
 
@@ -2328,7 +2385,7 @@ Six states, and only one of them fails a build:
 | `unreachable` | The host did not answer, or answered with something that is not a description. Not drift: a docs host returning 503 has said nothing about whether the provider changed anything |
 | `unsupported` | The provider publishes a description in a format this cannot read -- RAML, AsyncAPI, WSDL. Separate from `unreachable` because it is permanent: a host answering 503 is a Tuesday, a format with no reader stays true tomorrow. Swagger 2.0 was here until it was rewritten on the way in |
 | `unrecorded` | A description is named and has never been fingerprinted, so nothing was compared |
-| `undeclared` | The provider publishes nothing to check. 301 of the 313 |
+| `undeclared` | No description is recorded for this Recipe. 280 of the 313, and falling -- see `cauldron discover` |
 
 It runs on a schedule rather than on every pull request, in
 `.github/workflows/drift.yml`, because a pull request must not go red because
@@ -2405,7 +2462,7 @@ Three rules keep the addition honest rather than merely large:
 
 It is off by default, and has to be: reaching for a description is a network
 call in a tool whose whole value is that it works without one. A Recipe whose
-provider publishes nothing -- 301 of the 313 here -- is served exactly as it
+provider publishes nothing -- 280 of the 313 here -- is served exactly as it
 always was, and told so plainly.
 
 ### Which version, and which one it replaced
