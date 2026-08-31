@@ -2976,6 +2976,30 @@ func providers() []provider {
 			},
 		},
 		{
+			// The near miss is the vendor's own scope, three times over, and none
+			// of them a client. @lichess-org/pgn-viewer renders game notation,
+			// @lichess-org/stockfish-web is a WebAssembly build of an engine, and
+			// @lichess-org/chessground is the chessboard itself -- the pieces of
+			// the site, published under the name a client would search for, and not
+			// one of them reaches lichess.org/api at all. vue-pgn-viewer is an
+			// adapter for the first of them.
+			//
+			// The login providers are the Deezer shape again: passport-lichess,
+			// socialiteproviders/lichess and joseayram/oauth2-lichess reach
+			// lichess.org/api/account and lichess.org/api/token, which is this host
+			// and not the endpoint this Recipe serves.
+			//
+			// lichess-mcp, @unclick/lichess-mcp and llm-chess-mcp are MCP servers.
+			recipe: "lichess",
+			composer: []string{
+				"boriskrusteff/lichess-php-sdk",
+			},
+			npm: []string{
+				"@ayushwalekar/lichess-js",
+				"lichess",
+			},
+		},
+		{
 			// The near miss is the vendor's own npm scope, holding something with
 			// nothing to do with the API. @europepmc/express-middleware-minio is
 			// "an Express middleware that helps you store files in Minio" -- the
