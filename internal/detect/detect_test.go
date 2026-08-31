@@ -6485,3 +6485,49 @@ func TestDetectStackExchangeClientAndNotTheVersionBefore(t *testing.T) {
 		}
 	}
 }
+
+// "Kraken" names at least five unrelated products, and the exchange does not
+// hold the bare name: npm's kraken reaches api.kraken.io, the image optimiser.
+func TestDetectKrakenExchangeClientsAndNotTheOtherFourKrakens(t *testing.T) {
+	for _, manifest := range []map[string]string{
+		{"package.json": `{"dependencies": {"kraken-api-node": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"@lynx-crypto/kraken-api": "^1.0.0"}}`},
+		{"package.json": `{"dependencies": {"kraken-exc": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"payward/kraken-api-client": "^1.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if !p.Has(KindRecipe, "kraken") {
+			t.Errorf("%v did not detect kraken: %+v", manifest, p.Requirements)
+		}
+	}
+
+	for _, manifest := range []map[string]string{
+		// The image optimiser, which holds the bare name on both registries.
+		{"package.json": `{"dependencies": {"kraken": "^1.0.0"}}`},
+		{"composer.json": `{"require": {"kraken-io/kraken-php": "^1.0"}}`},
+		// PayPal's web framework for Node.
+		{"package.json": `{"dependencies": {"kraken-js": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"@types/kraken-js": "^2.0.0"}}`},
+		{"package.json": `{"dependencies": {"generator-kraken": "^1.0.0"}}`},
+		// The Kraken PHP Framework, six packages of it.
+		{"composer.json": `{"require": {"kraken-php/stream": "^0.4"}}`},
+		{"composer.json": `{"require": {"kraken-php/event": "^0.4"}}`},
+		// Alibaba's Rax renderer.
+		{"package.json": `{"dependencies": {"driver-kraken": "^1.0.0"}}`},
+		// And one interface to a hundred exchanges.
+		{"composer.json": `{"require": {"ccxt/ccxt": "^4.0"}}`},
+	} {
+		p, err := Detect(writeProject(t, manifest))
+		if err != nil {
+			t.Fatalf("Detect(%v): %v", manifest, err)
+		}
+
+		if p.Has(KindRecipe, "kraken") {
+			t.Errorf("%v offered the kraken Recipe: %+v", manifest, p.Requirements)
+		}
+	}
+}
