@@ -1,0 +1,515 @@
+# OpenAQ Recipe for Cauldron
+#
+# Two-thirds of this Recipe was checked against the live host on 2026-08-31,
+# without a key and without creating an account, because the interesting
+# behaviour here is what OpenAQ does to a caller who never gets that far.
+# The other third -- what a key actually unlocks -- was only ever read in
+# openapi.json, and every case built from it says so by carrying no
+# `verified:` date.
+#
+# **The same failure has two different bodies depending on which layer of
+# OpenAQ answers it.** Send no key at all and CloudFront itself refuses the
+# request:
+#
+#   {"message": "Unauthorized. A valid API key must be provided in the
+#    X-API-Key header."}
+#
+# Send a key that is merely wrong and the request reaches OpenAQ's own API
+# Gateway, which refuses it in a different shape entirely:
+#
+#   {"detail": "Invalid credentials"}
+#
+# Both are 401. A client distinguishing "I forgot the header" from "my key is
+# bad" by parsing the body has to know both shapes exist, and the second one
+# only appears once a key -- any key -- is present at all. Cauldron's own auth
+# model cannot reproduce this: it has one pass/fail check and one resulting
+# error, so this Recipe pins the wrong-key shape with `arm`, which is the
+# honest way of saying so rather than picking one shape and calling it the
+# Recipe.
+#
+# **The CloudFront gate matches `/v3/...` and not bare `/v3`.** Ask for
+# `/v3/anything` with no key and CloudFront answers the 401 above, for paths
+# that exist and paths that do not alike -- the check runs before routing.
+# Ask for `/v3` with no trailing segment and CloudFront lets it through
+# unchallenged, straight to OpenAQ's own gateway, which has never heard of a
+# bare version segment and answers 404 `{"detail": "Not Found"}` -- the
+# API-Gateway shape, on a request that carried no credential of any kind.
+# Whether a caller is refused for its key or refused for its path depends on
+# a trailing slash CloudFront's pattern was written to catch and did not
+# quite.
+#
+# **v1 and v2 are not slow or deprecated. They are gone, and gone needs no
+# key to see.** `/v2/parameters`, `/v2/locations` and a path that has never
+# existed on any version all answer the same 410, byte for byte:
+#
+#   {"message": "Gone. Version 1 and Version 2 API endpoints are retired and
+#    no longer available. Please migrate to Version 3 endpoints."}
+#
+# That is a real, checkable, keyless surface, and a better one than another
+# authentication failure would have been -- it is the one place this
+# Recipe can show OpenAQ actually doing something besides refusing a request
+# for want of a credential.
+#
+# One more, read rather than observed: a location or parameter fetched by
+# its numeric id answers with the same list envelope the collection does --
+# `{"meta": ..., "results": [...]}`, zero or one entries long -- rather than
+# unwrapping to the object itself. The spec documents 200 and 422 for that
+# route and nothing in between, so there is no path from the spec to what a
+# missing id does; this Recipe does not claim one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing behind the key is observed. Every field on parameter and
+#     location, and the shape of a 422, comes from openapi.json, and no
+#     request in this Recipe's history has ever carried a key that worked.
+#   - Cauldron's auth model has one shape for "not authorised", which is why
+#     the wrong-key and bad-path-plus-wrong-key cases below have to be
+#     armed rather than triggered by omitting a header. The Recipe's own
+#     authentication_error models the far more common no-key case instead,
+#     which needs no arming at all.
+#   - The `meta` envelope's `found` is a real field -- documented as an
+#     integer, a string, or absent, depending on how the count was arrived
+#     at -- and is left off the constant this Recipe stamps on every list,
+#     because a single fixed value would claim a precision the field does
+#     not have.
+#   - Every id but one on a location is a required, non-null integer:
+#     owner, provider, and each entry in instruments and sensors. The one
+#     exception is the country reference, whose id is documented nullable
+#     while its code and name stay required -- so a location can name its
+#     country and still have nothing to join it by.
+#   - Only parameters and locations are modelled. Instruments, manufacturers,
+#     owners, licenses, sensors and the measurement-by-time-bucket routes --
+#     31 of the 39 paths in openapi.json -- are not.
+
+recipe: openaq
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://docs.openaq.org
+  spec: https://api.openaq.org/openapi.json
+
+auth:
+  # A header credential, checked at the edge before a request ever reaches
+  # OpenAQ's own gateway -- which is exactly what the two different 401
+  # shapes are evidence of.
+  scheme: header
+  header: X-API-Key
+  keys:
+    - cauldron-openaq-api-key
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # A constant rather than a modelled field: real values move with the
+    # query, and `found` beside it does not have one fixed shape to begin
+    # with (see the header).
+    fields:
+      meta:
+        name: openaq-api
+        website: "/"
+        page: 1
+        limit: 100
+  error:
+    # The shape CloudFront itself sends when no key is present at all --
+    # the far more reachable of OpenAQ's two authentication failures, and the
+    # one this Recipe's built-in auth check can produce without arming
+    # anything.
+    style: flat
+    message_field: message
+
+resources:
+  parameter:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      units:
+        type: string
+      displayName:
+        type: string
+      description:
+        type: string
+
+  location:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      locality:
+        type: string
+      timezone:
+        type: string
+      # Nested reference objects. country, owner and provider are declared as
+      # opaque maps rather than expanded, because the one fact worth pinning
+      # about them -- that country's id may be null while owner's and
+      # provider's may not -- is stated in the header rather than enforced by
+      # the vocabulary, which has no way to say "this one nested id is
+      # nullable and these two are not" without a resource of its own for
+      # each.
+      country:
+        type: map
+      owner:
+        type: map
+      provider:
+        type: map
+      isMobile:
+        type: boolean
+      isMonitor:
+        type: boolean
+      instruments:
+        type: list
+      sensors:
+        type: list
+      coordinates:
+        type: map
+      licenses:
+        type: list
+      # Fixed at four entries by the spec (minItems and maxItems both 4), and
+      # modelled as an untyped list because the vocabulary has no fixed-length
+      # tuple of numbers.
+      bounds:
+        type: list
+      distance:
+        type: number
+      # Two clocks for one instant, not one. utc and local are both required
+      # whenever this is present, and a client reading only one loses whether
+      # "first seen" was in the timezone the station reports in or the one
+      # the caller is in.
+      datetimeFirst:
+        type: map
+      datetimeLast:
+        type: map
+
+routes:
+  - method: GET
+    path: /v3/parameters
+    resource: parameter
+    operation: list
+
+  - method: GET
+    path: /v3/locations
+    resource: location
+    operation: list
+
+errors:
+  authentication_error:
+    status: 401
+    style: flat
+    message_field: message
+    message: "Unauthorized. A valid API key must be provided in the X-API-Key header."
+
+  # A key that is present and wrong, which is not the same failure as no key
+  # at all -- it comes from OpenAQ's own gateway rather than the CloudFront
+  # edge, and says so in a completely different shape. Has to be armed: this
+  # format's auth check has no "wrong" distinct from "absent".
+  invalid_key:
+    status: 401
+    style: flat
+    message_field: detail
+    message: "Invalid credentials"
+
+  # The API-Gateway shape for a path nothing recognises, reachable only once
+  # a key -- any key, wrong included -- gets a request past the edge.
+  not_found_gateway:
+    status: 404
+    style: flat
+    message_field: detail
+    message: "Not Found"
+
+  # v1 and v2, wholesale. No key needed to find this: it is the same 410 with
+  # or without one, on a path that used to work and on one that never did.
+  gone_v1v2:
+    status: 410
+    style: flat
+    message_field: message
+    message: "Gone. Version 1 and Version 2 API endpoints are retired and no longer available. Please migrate to Version 3 endpoints."
+
+  # Read from the spec, not observed: FastAPI's own shape for a path
+  # parameter that fails to parse, for a route this Recipe does not
+  # otherwise model. loc, msg and type are pydantic's names, not this
+  # format's, and type_field has to be turned on by hand to reach the
+  # nested error style's default of leaving it off list-styled ones alone.
+  validation_error:
+    status: 422
+    style: list
+    key: detail
+    message_field: msg
+    message: "Input should be a valid integer, unable to parse string as an integer"
+    # type has no dedicated field on a named error (only style, key,
+    # message_field and code_field do), so it travels as a plain constant
+    # here instead -- which lands inside the same list entry as msg either
+    # way.
+    fields:
+      type: int_parsing
+      loc:
+        - path
+        - locations_id
+
+fixtures:
+  empty: {}
+
+  # Every id, coordinate and date below is invented for illustration. None of
+  # it was fetched with a working key, because this Recipe was never given
+  # one.
+  sample:
+    # Resource ids below are quoted even where the wire type is a JSON
+    # number: the store keys every record by the string form of its id
+    # (an int in the YAML is not one, so it goes unrecognised and the record
+    # is minted a fresh id instead), and id.type: number converts the string
+    # back to a bare number when it renders each response.
+    parameter:
+      - id: "2"
+        name: pm25
+        units: "µg/m³"
+        displayName: "PM2.5"
+        description: "Fine particulate matter, 2.5 microns or smaller"
+      - id: "1"
+        name: co
+        units: ppm
+        displayName: "CO"
+        description: "Carbon monoxide"
+
+    location:
+      - id: "3"
+        name: "US Diplomatic Post: Toronto"
+        locality: Toronto
+        timezone: America/Toronto
+        country:
+          id: 9
+          code: CA
+          name: Canada
+        owner:
+          id: 4
+          name: "U.S. Department of State"
+        provider:
+          id: 119
+          name: AirNow
+        isMobile: false
+        isMonitor: true
+        instruments:
+          - id: 2
+            name: "Government Monitor"
+        sensors:
+          - id: 100
+            name: "pm25 sensor"
+            parameter:
+              id: 2
+              name: pm25
+              units: "µg/m³"
+        coordinates:
+          latitude: 43.6532
+          longitude: -79.3832
+        licenses:
+          - id: 1
+            name: "CC BY 4.0"
+            attribution:
+              name: "U.S. EPA AirNow"
+              url: "https://www.airnow.gov"
+            dateFrom: "2018-01-01"
+        bounds:
+          - -79.3832
+          - 43.6532
+          - -79.3832
+          - 43.6532
+        datetimeFirst:
+          utc: "2018-01-01T00:00:00Z"
+          local: "2017-12-31T19:00:00-05:00"
+        datetimeLast:
+          utc: "2026-08-30T23:00:00Z"
+          local: "2026-08-30T19:00:00-04:00"
+
+conformance:
+  # --- Observed against api.openaq.org, without a key, without an account ---
+
+  - name: no key at all is refused by CloudFront before the request goes anywhere
+    source: https://api.openaq.org/v3/parameters
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/parameters
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. A valid API key must be provided in the X-API-Key header."
+
+  - name: the same refusal reaches a second endpoint identically
+    # Not a per-route message: the edge does not know which endpoint was
+    # asked for yet, so /v3/locations refuses exactly like /v3/parameters.
+    source: https://api.openaq.org/v3/locations
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/locations
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. A valid API key must be provided in the X-API-Key header."
+
+  - name: a wrong key is refused by a different service in a different shape
+    source: https://api.openaq.org/v3/parameters
+    verified: "2026-08-31"
+    fixture: sample
+    arm: invalid_key
+    request:
+      method: GET
+      path: /v3/parameters
+      headers:
+        X-API-Key: not-a-real-key-12345
+    expect:
+      status: 401
+      body:
+        detail: "Invalid credentials"
+      absent:
+        - message
+
+  - name: an unrecognised path with no key is still CloudFront's refusal, not a 404
+    # The edge gate runs before routing: a path nothing serves is refused
+    # for its missing key before OpenAQ's own gateway ever sees it.
+    source: https://api.openaq.org/v3/totallyBogusPath
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/totallyBogusPath12345
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. A valid API key must be provided in the X-API-Key header."
+
+  - name: the same unrecognised path with a wrong key reaches the gateway's own 404
+    # Once past the edge -- any key, wrong included, is enough to get past it
+    # -- the path itself is what fails, in the gateway's shape rather than
+    # CloudFront's.
+    source: https://api.openaq.org/v3/totallyBogusPath
+    verified: "2026-08-31"
+    arm: not_found_gateway
+    request:
+      method: GET
+      path: /v3/totallyBogusPath12345
+      headers:
+        X-API-Key: not-a-real-key-12345
+    expect:
+      status: 404
+      body:
+        detail: "Not Found"
+
+  - name: bare /v3 slips past the edge pattern that catches /v3/anything
+    # No key, and no 401. The gate is written for a path under the version
+    # segment, not the segment alone, so this one lands on OpenAQ's own
+    # gateway with no credential at all and is refused for its path instead
+    # of its key.
+    source: https://api.openaq.org/v3
+    verified: "2026-08-31"
+    arm: not_found_gateway
+    request:
+      method: GET
+      path: /v3
+    expect:
+      status: 404
+      body:
+        detail: "Not Found"
+
+  - name: v1 and v2 are retired, and no key is needed to find that out
+    source: https://api.openaq.org/v2/parameters
+    verified: "2026-08-31"
+    arm: gone_v1v2
+    request:
+      method: GET
+      path: /v2/parameters
+    expect:
+      status: 410
+      body:
+        message: "Gone. Version 1 and Version 2 API endpoints are retired and no longer available. Please migrate to Version 3 endpoints."
+
+  - name: the retirement answers identically for a path that never existed
+    # /v2/bogus, checked live, answers the same 410 as /v2/parameters and
+    # /v2/locations -- the whole version is gone, not individual endpoints.
+    source: https://api.openaq.org/v2/bogus
+    verified: "2026-08-31"
+    arm: gone_v1v2
+    request:
+      method: GET
+      path: /v2/bogus
+    expect:
+      status: 410
+      body:
+        message: "Gone. Version 1 and Version 2 API endpoints are retired and no longer available. Please migrate to Version 3 endpoints."
+
+  # --- Read from openapi.json. No case below was run against a key that worked ---
+
+  - name: a parameter carries units and an optional display name
+    source: https://api.openaq.org/openapi.json
+    fixture: sample
+    request:
+      method: GET
+      path: /v3/parameters
+      headers:
+        X-API-Key: cauldron-openaq-api-key
+    expect:
+      status: 200
+      body:
+        "results[0].id": 2
+        "results[0].name": pm25
+        "results[0].units": "µg/m³"
+        "results[0].displayName": "PM2.5"
+        "meta.name": openaq-api
+        "meta.limit": 100
+
+  - name: a location nests its country, owner and provider rather than flattening them
+    source: https://api.openaq.org/openapi.json
+    fixture: sample
+    request:
+      method: GET
+      path: /v3/locations
+      headers:
+        X-API-Key: cauldron-openaq-api-key
+    expect:
+      status: 200
+      body:
+        "results[0].country.code": CA
+        "results[0].country.name": Canada
+        "results[0].owner.name": "U.S. Department of State"
+        "results[0].provider.name": AirNow
+        "results[0].isMonitor": true
+
+  - name: first-seen carries a UTC time and a local time, not one or the other
+    source: https://api.openaq.org/openapi.json
+    fixture: sample
+    request:
+      method: GET
+      path: /v3/locations
+      headers:
+        X-API-Key: cauldron-openaq-api-key
+    expect:
+      status: 200
+      body:
+        "results[0].datetimeFirst.utc": "2018-01-01T00:00:00Z"
+        # Five hours apart from the UTC value above, because Toronto in
+        # January is not on daylight time -- and both fields are required
+        # together rather than either standing in for the other.
+        "results[0].datetimeFirst.local": "2017-12-31T19:00:00-05:00"
+
+  - name: a path parameter that fails to parse is FastAPI's own shape, not this Recipe's
+    # No route in this Recipe answers this path at all -- the fetch-by-id
+    # endpoints are not modelled -- so this is armed directly rather than
+    # routed, the same way the two gateway-shaped cases above are.
+    source: https://api.openaq.org/openapi.json
+    arm: validation_error
+    request:
+      method: GET
+      path: /v3/locations/not-a-number
+      headers:
+        X-API-Key: cauldron-openaq-api-key
+    expect:
+      status: 422
+      body:
+        "detail[0].msg": "Input should be a valid integer, unable to parse string as an integer"
+        "detail[0].type": int_parsing
+        "detail[0].loc[0]": path
+        "detail[0].loc[1]": locations_id
