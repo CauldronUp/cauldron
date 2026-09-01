@@ -1,0 +1,459 @@
+# Descope Recipe for Cauldron
+#
+# A sign-in that succeeds carries no session at all.
+#
+# POST a login id to the enchanted link sign-in endpoint and Descope answers
+# 200 -- an HTTP-level success -- with a pendingRef, a two-digit linkId, and a
+# maskedEmail. No sessionJwt, no refreshJwt, no user object. Descope has just
+# sent three clickable links to that address, each stamped with a different
+# two-digit number, and linkId is how the caller tells the end user which one
+# to click. Nothing about the request failed and nobody is signed in: the
+# poll endpoint, called with the same pendingRef, is what eventually answers
+# with a session -- once a person has read the email and clicked the right
+# link in it, which no fixture can wait around for.
+#
+# Poll before that happens, or poll again after it already has, and Descope
+# answers the identical failure either way: E103202, "Polling status not
+# found... it is probably expired by time or already clicked on." A
+# reference that never existed, one that timed out, and one that already
+# handed over its session look exactly alike on the wire. Nothing in the
+# response tells a client "keep waiting" apart from "give up and start over".
+#
+# Four more, two of them from the only failures this Recipe could actually
+# call without a credential:
+#
+#   1. Two structured codes, and only one of them is documented. Every
+#      Descope error is {"errorCode": "E......", "errorDescription": "..."},
+#      and the two this Recipe hit first -- E011007 for no Authorization
+#      header at all, E011008 for one that does not parse to a project id --
+#      are both absent from Descope's own published error reference at
+#      docs.descope.com/common-errors, which enumerates E011001 through
+#      E011004 and stops there. The codes a client meets on the two simplest
+#      possible mistakes are not in the table documenting what the codes
+#      mean.
+#   2. The credential is one field with five shapes, and which shape a route
+#      wants is not part of the scheme. Every request carries "Authorization:
+#      Bearer <value>", and Descope's own OpenAPI names five different
+#      securitySchemes for that one header: Project ID alone (sign-up and
+#      sign-in), Project ID:RefreshJWT (session-scoped calls like this
+#      Recipe's /v1/auth/me), Project ID:AccessKey, Project ID:SessionJWT,
+#      and Project ID:ManagementKey. A client reading "bearer" off any one
+#      endpoint learns nothing about which of the five the next one expects.
+#   3. Nothing below carries a documented HTTP status except the two codes
+#      this Recipe actually called. Descope's OpenAPI description declares a
+#      200 for every path in this Recipe and no error response for any of
+#      them; the prose error reference states a title and a cause for each
+#      code and never once states a status. E062901 (wrong password), E061103
+#      (too many OTP attempts) and E023001 (disabled account) are all real,
+#      all cited below, and none of them says what number a client should
+#      branch on.
+#   4. Failing the same request twice can mean two different things and get
+#      one answer twice. E062503's own title says a token "was not verified
+#      yet"; its own description says the link "has expired". One code
+#      stands in for at least two states of the world, and a client cannot
+#      tell which one just happened from the code alone.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No credential was ever requested, guessed, or used. Every case below
+#     except the two auth failures is read from Descope's published OpenAPI
+#     description and its prose error reference, not from a live project,
+#     and carries no verified date because none was checked against one.
+#   - Cauldron's own auth check is binary: a credential matches or it does
+#     not, and the runtime raises exactly one named error either way. The
+#     live API answers two different codes for "missing entirely" and
+#     "present but does not parse", and this Recipe can only serve one of
+#     them from the check itself. E011008 is reproduced here by arming it
+#     for one request -- the only way to write down a failure this format's
+#     built-in check cannot distinguish natively.
+#   - The pending reference and the session it eventually resolves to are
+#     modelled as two separate resources rather than one record that changes
+#     state, because nothing here can wait for an email to be read and
+#     clicked. A real pendingRef and the session it unlocks share no fixture
+#     data; each is demonstrated on its own terms.
+#   - maskedEmail is a fixed value on every create call. The real endpoint
+#     derives it from the loginId the caller sent, and there is no field
+#     transform in this format to compute one from the other.
+#   - HTTP statuses on documented-only errors are inferred, not sourced. The
+#     two live failures are confirmed 401 by the response itself. The
+#     enchanted-link reference-gone case is given 404 because its own message
+#     says "not found", not because any Descope document states a status.
+#     Nothing here claims otherwise.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: descope
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.descope.com/api
+  spec: https://docs.descope.com/examples/Descope_API.yaml
+  spec_hash: eceff291c0f9a13a4d496764dbdca9adcbe576a372773e7359612b392acd7d4a
+  spec_seen: "2026-09-01"
+
+auth:
+  # "Authorization: Bearer <value>", every route, but the value's own shape
+  # depends on what the route needs: a bare project id for the two
+  # enchanted-link routes below, project id and refresh JWT joined by a colon
+  # for /v1/auth/me. Both fixture credentials are accepted everywhere here,
+  # which is looser than the real API -- see the fidelity gaps above.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - P2cauldrontestproject00000000000000000
+    - P2cauldrontestproject00000000000000000:refresh-jwt-test-cauldron-0001
+
+responses:
+  resource:
+    style: bare
+  error:
+    # {"errorCode": "E011007", "errorDescription": "..."}. Flat, and the same
+    # two keys on every failure this Recipe has seen, observed or documented.
+    style: flat
+    code_field: errorCode
+    message_field: errorDescription
+    code_type: string
+
+resources:
+  user:
+    id:
+      style: prefixed
+      prefix: "U2"
+      field: userId
+    fields:
+      loginIds:
+        type: list
+      email:
+        type: string
+      # Independent of verifiedPhone below. Not an array of contacts the way
+      # some other providers in this collection model it -- two flat booleans
+      # on the same object -- but the underlying question is the same one:
+      # "is this user verified" still has no single answer.
+      verifiedEmail:
+        type: boolean
+        default: false
+      phone:
+        type: string
+      verifiedPhone:
+        type: boolean
+        default: false
+      # enabled, disabled or invited, per Descope's user management docs.
+      # The OpenAPI schema itself declares this as an open string with no
+      # enum, so a fourth value would not be a bug in this Recipe.
+      status:
+        type: string
+        default: enabled
+      roleNames:
+        type: list
+      # How this user can authenticate is scattered across five separate
+      # top-level fields -- TOTP, SAML, webauthn, password, and an OAuth map
+      # this Recipe does not model -- rather than one array. "Does this user
+      # have a second factor" means checking three of them.
+      TOTP:
+        type: boolean
+        default: false
+      SAML:
+        type: boolean
+        default: false
+      webauthn:
+        type: boolean
+        default: false
+      password:
+        type: boolean
+        default: false
+      createdTime:
+        type: timestamp
+
+  # The response to starting an enchanted-link sign-in. Nothing here proves
+  # anyone is signed in, or ever will be.
+  enchanted_link:
+    id:
+      style: opaque
+      field: pendingRef
+    fields:
+      # The two-digit number shown to the end user, so they click the right
+      # one of the three links Descope just emailed them.
+      linkId:
+        type: string
+        default: "42"
+      # Fixed here. The real endpoint derives this from the loginId the
+      # caller sent; this Recipe has no way to compute one from the other.
+      maskedEmail:
+        type: string
+        default: "a***@e***.com"
+
+  # What the poll endpoint hands back once the link has actually been
+  # clicked. A pendingRef is how a caller asks for one, but it is never
+  # itself part of the answer -- field: "-" says so on purpose, the same way
+  # Marqeta's balance token never appears in the balance it looks up.
+  session:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      sessionJwt:
+        type: string
+      refreshJwt:
+        type: string
+      # True only the first time this identity ever completed a sign-in --
+      # the enchanted-link signup-or-in route creates an account rather than
+      # matching one, and this is the only field that says which happened.
+      firstSeen:
+        type: boolean
+        default: false
+      cookieDomain:
+        type: string
+      cookieMaxAge:
+        type: integer
+      user_id:
+        type: string
+        in: user
+        as: userId
+      user_email:
+        type: string
+        in: user
+        as: email
+      user_verified_email:
+        type: boolean
+        in: user
+        as: verifiedEmail
+
+routes:
+  - method: GET
+    path: /v1/auth/me
+    resource: user
+    operation: get
+    id_from: auth
+
+  - method: POST
+    path: /v1/auth/enchantedlink/signin/email
+    resource: enchanted_link
+    operation: create
+
+  - method: POST
+    path: /v1/auth/enchantedlink/pending-session
+    resource: session
+    operation: get
+    id_from: body:pendingRef
+    # A pendingRef this sandbox has never seeded reads exactly like one that
+    # expired or was already consumed -- Descope answers all three the same
+    # way, so the natural "no such record" path is the honest way to reach
+    # this rather than forcing it.
+    not_found: link_reference_gone
+
+errors:
+  # What every route above answers when Cauldron's own auth check fails,
+  # regardless of whether the header was missing or merely wrong -- see the
+  # fidelity gap above about why only one of the two live codes can come from
+  # the check itself.
+  authentication_error:
+    status: 401
+    fields:
+      errorCode: E011007
+      errorDescription: "Request is missing a valid bearer token"
+
+  # Reached only by arming it: the live failure this reproduces is a bearer
+  # value that is present but does not parse to a project id, which
+  # Cauldron's binary auth check cannot tell apart from an absent one.
+  project_invalid:
+    status: 401
+    fields:
+      errorCode: E011008
+      errorDescription: "Request project is invalid or missing"
+
+  # Never valid, timed out, or already consumed -- one code for all three.
+  # Descope's own message says "not found", so this Recipe infers 404 rather
+  # than inventing a status with no source at all.
+  link_reference_gone:
+    status: 404
+    fields:
+      errorCode: E103202
+      errorDescription: "Polling status not found. Magic Link / Enchanted Link reference not found, it is probably expired by time or already clicked on. Try sending it again."
+
+fixtures:
+  empty: {}
+
+  one-project:
+    user:
+      - id: U2cauldrontestuser0000000001
+        loginIds:
+          - ada@example.com
+        email: ada@example.com
+        verifiedEmail: true
+        phone: "+15550100"
+        verifiedPhone: false
+        status: enabled
+        roleNames:
+          - Admin
+        TOTP: false
+        SAML: false
+        webauthn: false
+        password: true
+        createdTime: 1773217214
+
+    session:
+      # Keyed by the pendingRef a caller would already be holding from a
+      # prior (unmodelled) enchanted-link signin -- this is what polling it
+      # after the right link has been clicked hands back.
+      - id: pending-ref-test-cauldron-0001
+        sessionJwt: session-jwt-test-cauldron-0001
+        refreshJwt: refresh-jwt-test-cauldron-0001
+        firstSeen: false
+        cookieDomain: example.com
+        cookieMaxAge: 604800
+        user_id: U2cauldrontestuser0000000001
+        user_email: ada@example.com
+        user_verified_email: true
+
+# Every case below is read from Descope's published OpenAPI description and
+# its prose error reference, except the auth failures, which this Recipe
+# called live against api.descope.com with no credential of any kind. The
+# verify report says which is which.
+conformance:
+  - name: a login attempt that succeeds at the http level returns a pending reference, not a session
+    source: https://docs.descope.com/api/enchanted-link/sign-in
+    fixture: one-project
+    request:
+      method: POST
+      path: /v1/auth/enchantedlink/signin/email
+      headers:
+        Authorization: "Bearer P2cauldrontestproject00000000000000000"
+      json:
+        loginId: ada@example.com
+    expect:
+      status: 200
+      body:
+        linkId: "42"
+        maskedEmail: "a***@e***.com"
+      matches:
+        pendingRef: ".+"
+      absent:
+        - sessionJwt
+        - refreshJwt
+        - user
+
+  - name: polling a completed reference returns the session, not the pending object again
+    source: https://docs.descope.com/api/enchanted-link/poll-session
+    fixture: one-project
+    request:
+      method: POST
+      path: /v1/auth/enchantedlink/pending-session
+      headers:
+        Authorization: "Bearer P2cauldrontestproject00000000000000000"
+      json:
+        pendingRef: pending-ref-test-cauldron-0001
+    expect:
+      status: 200
+      body:
+        sessionJwt: session-jwt-test-cauldron-0001
+        refreshJwt: refresh-jwt-test-cauldron-0001
+        user.userId: U2cauldrontestuser0000000001
+        user.email: ada@example.com
+        firstSeen: false
+      absent:
+        - pendingRef
+        - linkId
+        - maskedEmail
+
+  - name: a reference nobody has clicked yet fails the same way one already spent does
+    source: https://docs.descope.com/common-errors
+    fixture: one-project
+    request:
+      method: POST
+      path: /v1/auth/enchantedlink/pending-session
+      headers:
+        Authorization: "Bearer P2cauldrontestproject00000000000000000"
+      json:
+        # Never seeded, which is indistinguishable here from expired or
+        # already consumed -- that collapse is the point of this case.
+        pendingRef: pending-ref-never-issued
+    expect:
+      status: 404
+      body:
+        errorCode: E103202
+      matches:
+        errorDescription: "expired by time or already clicked"
+
+  - name: verifiedEmail and verifiedPhone are independent booleans, not one flag
+    source: https://docs.descope.com/examples/Descope_API.yaml
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/auth/me
+      headers:
+        Authorization: "Bearer P2cauldrontestproject00000000000000000:refresh-jwt-test-cauldron-0001"
+    expect:
+      status: 200
+      body:
+        email: ada@example.com
+        verifiedEmail: true
+        phone: "+15550100"
+        verifiedPhone: false
+
+  - name: how this user can sign in is spread across separate fields, not one list
+    source: https://docs.descope.com/examples/Descope_API.yaml
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/auth/me
+      headers:
+        Authorization: "Bearer P2cauldrontestproject00000000000000000:refresh-jwt-test-cauldron-0001"
+    expect:
+      status: 200
+      body:
+        password: true
+        TOTP: false
+        SAML: false
+        webauthn: false
+
+  - name: the simplest possible mistake has a code absent from the error reference documenting it
+    source: https://api.descope.com/v1/auth/me
+    verified: "2026-09-01"
+    fixture: one-project
+    request:
+      method: GET
+      path: /v1/auth/me
+    expect:
+      status: 401
+      body:
+        errorCode: E011007
+        errorDescription: "Request is missing a valid bearer token"
+
+  - name: a bearer value that does not parse to a project id is a different undocumented code
+    # Reproduced by arming it: Cauldron's own auth check cannot distinguish
+    # a missing credential from a malformed one, but this exact body was
+    # observed live for "Authorization: Bearer not-a-real-token".
+    source: https://api.descope.com/v1/auth/me
+    verified: "2026-09-01"
+    fixture: one-project
+    arm: project_invalid
+    request:
+      method: GET
+      path: /v1/auth/me
+      headers:
+        Authorization: "Bearer not-a-real-token"
+    expect:
+      status: 401
+      body:
+        errorCode: E011008
+        errorDescription: "Request project is invalid or missing"
+
+  - name: even a public sign-in endpoint this Recipe does not model enforces the same bearer check
+    # The auth check runs before routing, so this proves the requirement is
+    # API-wide rather than a property of the one route above -- the path
+    # below is real Descope, and no route here needs to know it.
+    source: https://api.descope.com/v1/auth/otp/signin/email
+    verified: "2026-09-01"
+    fixture: one-project
+    request:
+      method: POST
+      path: /v1/auth/otp/signin/email
+      json:
+        loginId: ada@example.com
+    expect:
+      status: 401
+      body:
+        errorCode: E011007
