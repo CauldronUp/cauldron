@@ -1,0 +1,553 @@
+# Workable Recipe for Cauldron
+#
+# Workable's answer to "is a candidate a person, or a person's attempt at
+# one job" is not written in its API schema at all -- it is written in its
+# help centre, in plain English, because the schema alone would let a
+# reader assume the friendlier answer. Quoted directly from Workable's own
+# support article on the subject: "For each job that a candidate is in
+# consideration for, a unique candidate profile will be created based on
+# the candidate's email address... If a candidate applies for Job A and Job
+# B, they will have two profiles in your account - one for each job... Any
+# interaction with the candidate will be unique on each profile." A second
+# article, on finding a candidate's other applications, adds the mechanism:
+# "The system detects multiple applications from the same candidate if the
+# email address is the same across all profiles" -- a client-side,
+# UI-only, string-equality check, not a server-held identifier. And a
+# third: "it's not possible to merge candidate profiles."
+#
+# That is three separate answers rolled into one, and it is the sharpest
+# split in this trio of Recipes. Greenhouse (see greenhouse/recipe.yaml)
+# gives the person a real resource, Candidate, distinct from Application.
+# Lever (see lever/recipe.yaml) gives the person a real resource too,
+# Contact, referenced by a contact field every Opportunity carries. Ashby
+# (see ashby/recipe.yaml) gives the person a real resource, Candidate, that
+# lists every Application id it owns. Workable gives the person nothing:
+# there is no Contact, no shared id, not even a documented cross-reference
+# field on the Candidate object itself -- the API's own field list for
+# Candidate (id, name, firstname, lastname, headline, account, job, stage,
+# disqualified, sourced, profile_url, email, domain, created_at, ...) has
+# no field that names a sibling profile. email is the only thing that ever
+# lines two of them up, and the account that owns them cannot merge what it
+# finds. This Recipe's fixture is built to demonstrate exactly that: two
+# candidate records, two different ids, two different jobs, one identical
+# email, and nothing else connecting them.
+#
+# "sourced" on the Candidate object is Workable's version of the same
+# concept Greenhouse calls a prospect, Lever leaves a posting-less
+# Opportunity, and Ashby calls a Lead: a person under consideration with no
+# application behind the consideration.
+#
+# The wire evidence, checked live against www.workable.com and a second,
+# arbitrary subdomain host, with no account and no token ever created:
+#
+#   GET   /spi/v3/jobs                          no header        -> 401 (Doorkeeper OAuth shape, see below)
+#   GET   /spi/v3/jobs   Authorization: Bearer junktoken12345     -> 401, byte-identical
+#   GET   /spi/v3/jobs   Authorization: junk-basic, junk-plain-string, empty header -> 401, byte-identical, five shapes total
+#   POST  /spi/v3/jobs                          no header        -> 401, byte-identical
+#   PATCH /spi/v3/jobs                          no header        -> 404 {"result":"NOT_FOUND","message":"The requested resource is not found!"}
+#   DELETE /spi/v3/jobs                         no header        -> 404, byte-identical to PATCH
+#   GET   /spi/v3/this-is-not-a-real-endpoint-xyz   no header    -> 404, byte-identical to PATCH
+#   GET   /spi/v3/this-is-not-a-real-endpoint-xyz   Bearer junktoken12345 -> 404, byte-identical
+#   GET   https://cauldrontest123.workable.com/spi/v3/jobs  no header -> 401, byte-identical to www.workable.com
+#
+# Five distinct request shapes carrying no working credential -- absent,
+# a wrong bearer token, a bearer-shaped string with no "Bearer " prefix, a
+# Basic credential, and an empty header value -- all answer the identical
+# 401. There is one tier here, not three, and auth.absent_error,
+# auth.malformed_error and auth.rejected_error are all left unset for the
+# same reason ashby/recipe.yaml leaves them unset: nothing this Recipe
+# struck distinguishes them.
+#
+# The 401 body is worth quoting in full, because it is not a shape this
+# format's flat or nested error styles can produce on their own:
+#
+#   {"error":{"error":{"error":{"name":"invalid_token","state":"unauthorized"},
+#     "exception_class":null,"redirect_uri":null,"response_on_fragment":null,
+#     "reason":"unknown","description":"The access token is invalid"}}}
+#
+# error nested three deep, the innermost carrying name and state, the
+# middle carrying five siblings including the actual human sentence under
+# description -- and a WWW-Authenticate header alongside it:
+# Bearer realm="Doorkeeper", error="invalid_token",
+# error_description="The access token is invalid". That is Doorkeeper, the
+# Ruby OAuth2-provider gem, answering in its own default shape, which is
+# also why the message names a scheme ("Bearer") Workable's own published
+# reference never mentions asking for by that word. This Recipe reproduces
+# the literal body as a declared constant on errors.authentication_error --
+# the name auth.ErrorFor already falls back to for every verdict when
+# absent_error, malformed_error and rejected_error are all left unset,
+# which is exactly the shape this provider needs -- rather than through
+# the message/code/type fields, because no combination of those produces
+# three nested "error" keys.
+#
+# Routing is checked before authentication, for every method and every
+# path, the same ordering lever/recipe.yaml describes and the opposite of
+# Cauldron's own runtime default -- see firehydrant/recipe.yaml for the
+# provider that default was built for. The evidence here is a shade
+# cleaner than Lever's: PATCH and DELETE on a real path answer the exact
+# same 404 an unrouted path does, with no Allow header and no 405 anywhere
+# in five separate wrong-method-or-path probes. Workable does not have a
+# distinct "method not allowed" concept on the wire at all; a path that is
+# real but wrongly addressed and a path that was never real look
+# identical. Cauldron's runtime cannot help synthesising an Allow header
+# whenever it recognises a path under a different method (that mechanism
+# is unconditional, in internal/, and out of bounds for a Recipe to
+# override) -- so the case below reproducing PATCH on a real path carries
+# a stated, structural discrepancy: the status and the body match
+# Workable's own 404 exactly, and an Allow header appears beside them that
+# the live response never carried. Recorded rather than hidden.
+#
+# The ordering itself is declared rather than described. auth.after_routing
+# defers the credential check until a request has matched a route, so both
+# cases below send what the live probes sent -- no Authorization header at
+# all -- and both are verified. Only the synthesised Allow header remains
+# as a discrepancy, and it is a header rather than a status or a body.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The Allow header on the wrong-method case above. See the routing
+#     paragraph.
+#   - The exact list-scoping path for candidates is not fully settled by
+#     this Recipe's research. One documentation source names
+#     /jobs/:shortcode/candidates; a worked pagination example on a
+#     different page shows a "next" URL of the shape
+#     /spi/v3/accounts/{subdomain}/candidates. This Recipe declares the
+#     job-scoped path, which is the one repeated across more than one
+#     source, and states the account-scoped alternative here rather than
+#     guessing which is current.
+#   - Of the documented Candidate fields, this Recipe leaves out address,
+#     phone, resume_metadata, profile_url, stage_kind, withdrew and
+#     hired_at. create, update and disqualify routes are not modelled;
+#     every route below is a GET.
+#   - No worked JSON example for a single candidate or a single job
+#     fetched by itself (rather than listed) was found; the envelope for
+#     those two routes is assumed bare, matching the collection's own
+#     majority convention, and is not itself verified.
+#   - No account was ever created and no API token was ever requested,
+#     guessed or used. Only the five request shapes quoted above, and the
+#     routing-order cases built from them, were actually called; every
+#     resource-shaped case is read from Workable's published reference and
+#     the two help-centre articles cited above, and carries no verified
+#     date. The fixture's people are placeholders, not any example this
+#     Recipe's research actually read.
+#   - This Recipe carries no upstream.spec. Workable's reference is served
+#     through a documentation platform rather than a bare machine-readable
+#     file at a stable, unauthenticated URL this project's research
+#     reached.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: workable
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v3
+  provider: workable
+  docs: https://workable.readme.io/reference
+
+auth:
+  # Routing runs before authentication for every method and every path,
+  # verified across five uncredentialed probes. See the header.
+  after_routing: true
+  # Doorkeeper's default OAuth2 bearer scheme -- WWW-Authenticate: Bearer
+  # realm="Doorkeeper" is the tell. Every credential shape this Recipe
+  # tried collapses to the identical answer; see the header for why no
+  # absent/malformed/rejected split is declared.
+  scheme: bearer
+  prefix: "Bearer "
+  keys:
+    - cauldron_workable_fixture_token_00000000
+
+responses:
+  list:
+    style: wrapped
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  job:
+    collection: jobs
+    id:
+      # Workable's own field name for a job's identifier, addressed and
+      # returned as "shortcode" everywhere, never "id".
+      style: opaque
+      field: shortcode
+    fields:
+      title:
+        type: string
+        required: true
+      state:
+        type: string
+        default: published
+      department:
+        type: string
+        null_when_unset: true
+      url:
+        type: string
+      createdAt:
+        type: datetime
+        as: created_at
+
+  # Job-scoped by construction: see the header for why there is no
+  # person-level resource here at all, and why this one is it.
+  candidate:
+    collection: candidates
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      firstname:
+        type: string
+      lastname:
+        type: string
+      headline:
+        type: string
+        null_when_unset: true
+      # The one field that ever lines two of these up, per Workable's own
+      # help centre -- see the header. Nothing else on this resource
+      # references a sibling profile.
+      email:
+        type: string
+        required: true
+      jobShortcode:
+        type: string
+        in: job
+        as: shortcode
+      jobTitle:
+        type: string
+        in: job
+        as: title
+      stage:
+        type: string
+      disqualified:
+        type: boolean
+        default: false
+      disqualificationReason:
+        type: string
+        as: disqualification_reason
+      # Under consideration, no application behind it -- Workable's own
+      # version of Greenhouse's prospect, Lever's posting-less Opportunity
+      # and Ashby's Lead. See the header.
+      sourced:
+        type: boolean
+        default: false
+      domain:
+        type: string
+      createdAt:
+        type: datetime
+        as: created_at
+      updatedAt:
+        type: datetime
+        null_when_unset: true
+        as: updated_at
+
+routes:
+  - method: GET
+    path: /spi/v3/jobs
+    resource: job
+    operation: list
+    pagination:
+      # Workable's own words: "limit ... default 50, max 100"; since_id and
+      # created_after/updated_after are documented and not modelled as
+      # filters here, only the cursor itself is.
+      style: cursor
+      limit: 50
+      max_limit: 100
+      limit_param: limit
+      cursor_param: since_id
+
+  - method: GET
+    path: /spi/v3/jobs/{id}
+    resource: job
+    operation: get
+
+  - method: GET
+    path: /spi/v3/jobs/{jobShortcode}/candidates
+    resource: candidate
+    operation: list
+    scope: [jobShortcode]
+    pagination:
+      style: cursor
+      limit: 50
+      max_limit: 100
+      limit_param: limit
+      cursor_param: since_id
+    list:
+      # "paging": {"next": "<full URL, not a token>"} -- see the header.
+      cursor_field: paging.next
+      cursor_url: absolute
+
+  - method: GET
+    path: /spi/v3/candidates/{id}
+    resource: candidate
+    operation: get
+
+errors:
+  # The one failure this Recipe's research actually reached, live, on
+  # every credential shape it tried -- see the header for the full body
+  # and why it is declared as a constant rather than through the ordinary
+  # message/code/type fields.
+  authentication_error:
+    status: 401
+    message: The access token is invalid.
+    message_field: "-"
+    headers:
+      WWW-Authenticate: 'Bearer realm="Doorkeeper", error="invalid_token", error_description="The access token is invalid"'
+    fields:
+      error:
+        error:
+          error:
+            name: invalid_token
+            state: unauthorized
+          exception_class: null
+          redirect_uri: null
+          response_on_fragment: null
+          reason: unknown
+          description: The access token is invalid
+
+  # The runtime's own unmatched-route answer, renamed and reworded to
+  # Workable's live shape. See the header: this same body and status
+  # answered both an unrouted path and a wrong method on a real one.
+  unknown_route:
+    status: 404
+    message: The requested resource is not found!
+    fields:
+      result: NOT_FOUND
+
+  # Workable's own wire never distinguishes a wrong method from a wrong
+  # path -- see the header. Overridden to the identical NOT_FOUND shape
+  # rather than left at this runtime's own 405, at the cost of a stated,
+  # unavoidable Allow header Workable's own answer does not carry.
+  method_not_allowed:
+    status: 404
+    message: The requested resource is not found!
+    fields:
+      result: NOT_FOUND
+
+  resource_missing:
+    status: 404
+    message: "Not found."
+
+fixtures:
+  empty: {}
+
+  small-account:
+    job:
+      - shortcode: 4F5A2C0F
+        title: Research Engineer
+        state: published
+        department: Engineering
+        url: https://apply.workable.com/example/j/4F5A2C0F/
+        createdAt: "2026-06-01T09:00:00.000Z"
+      - shortcode: 6D4E1032
+        title: Data Platform Lead
+        state: published
+        department: Data
+        url: https://apply.workable.com/example/j/6D4E1032/
+        createdAt: "2026-05-15T09:00:00.000Z"
+
+    candidate:
+      # Same person, same email, two jobs -- two entirely separate
+      # profiles, two separate ids, and nothing else on either record
+      # points at the other. This pair is the entire finding; see the
+      # header.
+      - id: 2789d6dg
+        name: Rosalind Franklin
+        firstname: Rosalind
+        lastname: Franklin
+        email: r.franklin@example.com
+        jobShortcode: 4F5A2C0F
+        jobTitle: Research Engineer
+        stage: Phone Screen
+        disqualified: false
+        domain: example
+        createdAt: "2026-06-02T10:00:00.000Z"
+
+      - id: 3f91ac7h
+        name: Rosalind Franklin
+        firstname: Rosalind
+        lastname: Franklin
+        email: r.franklin@example.com
+        jobShortcode: 6D4E1032
+        jobTitle: Data Platform Lead
+        stage: Applied
+        disqualified: true
+        disqualificationReason: Not enough experience
+        domain: example
+        createdAt: "2026-07-10T08:00:00.000Z"
+
+      # A different person, sourced rather than applied -- no application
+      # behind this profile at all.
+      - id: 9a2bd410
+        name: Chien-Shiung Wu
+        firstname: Chien-Shiung
+        lastname: Wu
+        email: c.wu@example.com
+        jobShortcode: 4F5A2C0F
+        jobTitle: Research Engineer
+        stage: Sourced
+        disqualified: false
+        sourced: true
+        domain: example
+        createdAt: "2026-07-20T14:00:00.000Z"
+
+# Every case below carries source. A verified date means this Recipe
+# called Workable's live host with exactly the request shown and recorded
+# exactly what came back; its absence means the case was read from
+# Workable's published reference or its help centre, or -- for the two
+# routing cases -- reached only through the fixture credential Cauldron's
+# own unconditional auth check requires, a request this Recipe never made
+# against the live API. See the header.
+conformance:
+  - name: no credential at all gets Doorkeeper's own OAuth shape
+    source: https://www.workable.com/spi/v3/jobs
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /spi/v3/jobs
+    expect:
+      status: 401
+      headers:
+        # Live carries a charset suffix; Cauldron's own JSON writer does
+        # not add one, so only the media type is asserted.
+        Content-Type: application/json
+      header_matches:
+        Www-Authenticate: '^Bearer realm="Doorkeeper"'
+      body:
+        "error.error.error.name": invalid_token
+        "error.error.description": The access token is invalid
+
+  - name: a wrong bearer token answers exactly the same
+    source: https://www.workable.com/spi/v3/jobs
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /spi/v3/jobs
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        "error.error.error.name": invalid_token
+
+  - name: a second, arbitrary subdomain host answers the same way
+    # Struck live against a subdomain nobody registered
+    # (cauldrontest123.workable.com), to confirm the two hosts this Recipe
+    # is asked to cover are the same backend rather than two APIs -- see
+    # the header.
+    source: https://cauldrontest123.workable.com/spi/v3/jobs
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /spi/v3/jobs
+    expect:
+      status: 401
+      body:
+        "error.error.error.name": invalid_token
+
+  - name: a wrong method on a real path is the same 404 an unrouted path gets
+    # Struck live with no Authorization header at all: PATCH and DELETE on
+    # /spi/v3/jobs both answered this exact body, with no Allow header and
+    # no 405 anywhere. Reproducing it through Cauldron needs the fixture
+    # credential attached, because this runtime's own auth check is
+    # unconditional -- see the header. That exact request (credentialed
+    # PATCH) was never made against the live API, so this case carries no
+    # verified date even though the status and the body are the literal
+    # ones observed for the uncredentialed request. An Allow header will
+    # appear here that Workable's own answer does not carry -- see the
+    # header.
+    source: https://www.workable.com/spi/v3/jobs
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: PATCH
+      path: /spi/v3/jobs
+    expect:
+      status: 404
+      body:
+        result: NOT_FOUND
+        message: The requested resource is not found!
+
+  - name: an unrouted path answers the same as a wrong method
+    source: https://www.workable.com/spi/v3/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /spi/v3/this-is-not-a-real-endpoint-xyz
+    expect:
+      status: 404
+      body:
+        result: NOT_FOUND
+        message: The requested resource is not found!
+
+  - name: two profiles share an email and nothing else
+    source: https://help.workable.com/hc/en-us/articles/115013695147
+    fixture: small-account
+    request:
+      method: GET
+      path: /spi/v3/candidates/2789d6dg
+      headers:
+        Authorization: Bearer cauldron_workable_fixture_token_00000000
+    expect:
+      status: 200
+      body:
+        email: r.franklin@example.com
+        "job.shortcode": 4F5A2C0F
+      absent:
+        - candidate_id
+        - contact
+        - person_id
+
+  - name: the same email on the other job is a wholly separate record
+    source: https://help.workable.com/hc/en-us/articles/115013695147
+    fixture: small-account
+    request:
+      method: GET
+      path: /spi/v3/candidates/3f91ac7h
+      headers:
+        Authorization: Bearer cauldron_workable_fixture_token_00000000
+    expect:
+      status: 200
+      body:
+        email: r.franklin@example.com
+        "job.shortcode": 6D4E1032
+        disqualified: true
+        disqualification_reason: Not enough experience
+
+  - name: a sourced candidate is still job-scoped
+    source: https://workable.readme.io/reference/job-candidates-index
+    fixture: small-account
+    request:
+      method: GET
+      path: /spi/v3/candidates/9a2bd410
+      headers:
+        Authorization: Bearer cauldron_workable_fixture_token_00000000
+    expect:
+      status: 200
+      body:
+        sourced: true
+        "job.shortcode": 4F5A2C0F
+
+  - name: a job's candidates page by since_id with a full next URL, not a token
+    source: https://workable.readme.io/reference/job-candidates-index
+    fixture: small-account
+    request:
+      method: GET
+      path: /spi/v3/jobs/4F5A2C0F/candidates
+      headers:
+        Authorization: Bearer cauldron_workable_fixture_token_00000000
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        "candidates[0].email": r.franklin@example.com
+      matches:
+        "paging.next": "^https?://"
+      absent:
+        - "candidates[1]"
