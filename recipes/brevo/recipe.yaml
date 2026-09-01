@@ -1,0 +1,555 @@
+# Brevo Recipe for Cauldron
+#
+# Brevo (formerly Sendinblue) checks a request's credential before it looks
+# at the request. Probed live with no key, a junk path, and the wrong HTTP
+# method, all three came back 401 -- not 404, not 405 -- with the identical
+# body:
+#
+#   {"message":"authentication not found in headers","code":"unauthorized"}
+#
+# A malformed path and a wrong verb are indistinguishable from a missing
+# credential, because none of them are ever routed. Cauldron's own runtime
+# checks auth before matching a route for exactly the same reason, so this
+# is one of the few places an emulator's shortcut happens to be the
+# provider's real behaviour rather than an approximation of it.
+#
+# **Missing and wrong are not the same failure.** A key that is simply
+# absent answers the sentence above. A key that is present and wrong
+# answers a different one, same status, same code:
+#
+#   {"message":"Key not found","code":"unauthorized"}
+#
+# Cauldron's auth check is a single boolean -- authorised or not -- and
+# whichever request failed it, the runtime serves one declared
+# authentication_error. It cannot serve two different messages for two
+# different reasons a credential was rejected, which is exactly the split
+# this pair of Recipes was commissioned to find. Most of this collection's
+# other email Recipes model the missing-credential wording as their
+# canonical authentication_error -- SendGrid, Postmark and Resend's cases
+# all send no credential at all; only Mailgun's models a present-but-wrong
+# one. This Recipe follows Mailgun rather than the majority, because a
+# rejected-but-present credential is the more informative of the two
+# failures to demonstrate. The missing-header wording above is real, was
+# observed the same day, and is simply the one case this format cannot
+# also serve.
+#
+# One more thing the probe found: Brevo's own machine-readable description,
+# published at api.brevo.com/v3/swagger_definition.yml, answers 401 without
+# a key -- the same "Key not found" body, plus a third field this Recipe
+# does not otherwise see, "pod_name", naming the backend pod that answered.
+# The spec is not publicly fetchable without credentials this project must
+# not hold, so no upstream.spec is recorded here and nothing below carries
+# a spec_hash.
+#
+# Two more, from the documentation rather than the wire:
+#
+#   1. A contact create answers 201 with exactly one field: {"id": 21}.
+#      Nothing else about the contact comes back, so an integration reading
+#      the email or the attributes off its own create response reads
+#      undefined and has to fetch the contact again to see what it just
+#      sent.
+#   2. A transactional send answers with a messageId shaped like an email
+#      Message-ID header, angle brackets included:
+#      "<201798300811.5787683@relay.domain.com>". It is not a bare token the
+#      way SendGrid's or Mailgun's ids are, and code that assumes one is
+#      slices a string that starts with a character no identifier parser
+#      expects.
+#
+# And a smaller one, worth pointing at rather than modelling: the delivery
+# webhook's payload carries the correlating id in a field called
+# "message-id" -- a hyphen, not a dot-reachable name, in the same shape EPSS's
+# "status-code" already documents in this collection. `payload.message-id`
+# is a subtraction in JavaScript, silently, to a client that has not looked.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Brevo's OpenAPI description could not be retrieved without a real
+#     key (see above), so every route and field below is either the one
+#     directly observed 401 shape or read from developers.brevo.com's
+#     reference pages, and the conformance cases say which is which.
+#   - No rate-limit header appeared on twenty rapid unauthenticated
+#     requests, and no 429 was returned either; that ceiling, if there is
+#     one, sits above what an unauthenticated 401 path will show and is not
+#     modelled.
+#   - The transactional send's real validation -- sender, and either
+#     htmlContent, textContent or templateId -- is not enforced field by
+#     field. Only subject is required here, the same simplification
+#     SendGrid's Recipe already makes for personalizations.
+#   - Contacts may be looked up by email as well as by numeric id in the
+#     real API; this Recipe models the numeric id only.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: brevo
+capability: email
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.brevo.com/reference
+
+auth:
+  scheme: header
+  header: api-key
+  keys:
+    - xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    code_type: string
+
+resources:
+  # GET /v3/account carries no identifier of its own: the answer is about
+  # whoever the api-key belongs to.
+  account:
+    id:
+      style: opaque
+      field: "-"
+    constants:
+      enterprise: false
+    fields:
+      email:
+        type: string
+        required: true
+      firstName:
+        type: string
+      lastName:
+        type: string
+      companyName:
+        type: string
+      # Street/city/zipCode/country, nested. Declared as a map the way this
+      # collection already models Amazon's ShippingAddress and BuyerInfo:
+      # a fixed shape underneath, but nothing here transforms it.
+      address:
+        type: map
+      # An array of {type, credits, creditsType}. Modelled as a list of
+      # whatever the fixture puts there, not transformed per entry.
+      plan:
+        type: list
+
+  contact:
+    id:
+      style: numeric
+    fields:
+      email:
+        type: string
+        required: true
+      emailBlacklisted:
+        type: boolean
+        default: false
+      smsBlacklisted:
+        type: boolean
+        default: false
+      whatsappBlacklisted:
+        type: boolean
+        default: false
+      createdAt:
+        type: datetime
+      modifiedAt:
+        type: datetime
+      # Free-form: FNAME, LNAME and whatever else the account has defined as
+      # a contact attribute, in capitals, by Brevo's own convention.
+      attributes:
+        type: map
+      listIds:
+        type: list
+
+  contact_list:
+    collection: lists
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      totalSubscribers:
+        type: integer
+        default: 0
+      totalBlacklisted:
+        type: integer
+        default: 0
+      uniqueSubscribers:
+        type: integer
+        default: 0
+      folderId:
+        type: integer
+
+  # A transactional send. The real messageId is not a bare token: it is
+  # shaped like an email Message-ID, angle brackets and an @ included.
+  email:
+    id:
+      field: messageId
+      style: opaque
+    fields:
+      # Brevo takes a sender object and a to array; the single-recipient
+      # case is what almost every transactional send is, the same
+      # simplification SendGrid's Recipe already makes for personalizations.
+      sender:
+        type: map
+        required: true
+      to:
+        type: list
+        required: true
+      subject:
+        type: string
+        required: true
+      htmlContent:
+        type: string
+      textContent:
+        type: string
+      templateId:
+        type: integer
+
+routes:
+  - method: GET
+    path: /v3/account
+    resource: account
+    operation: get
+    id_from: auth
+
+  # A create answers 201 with exactly one field. Not the contact, not the
+  # email it was given back, just the id -- the same shape of surprise
+  # Jira's create hands back an id, a key and a URL for.
+  - method: POST
+    path: /v3/contacts
+    resource: contact
+    operation: create
+    status: 201
+    returns:
+      - id
+
+  - method: GET
+    path: /v3/contacts/{id}
+    resource: contact
+    operation: get
+
+  - method: GET
+    path: /v3/contacts/lists
+    resource: contact_list
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+      limit_param: limit
+      cursor_param: offset
+
+  # Immediate sends answer 201; a scheduledAt send answers 202. Only the
+  # immediate case is modelled.
+  - method: POST
+    path: /v3/smtp/email
+    resource: email
+    operation: create
+    status: 201
+    returns:
+      - id
+    emits: request
+
+webhooks:
+  # Brevo's own names for its transactional events, snake_case, and "sent"
+  # is spelled "request" -- not a word anybody would guess. Delivery,
+  # engagement and failure all arrive on the same webhook.
+  events:
+    - request
+    - delivered
+    - soft_bounce
+    - hard_bounce
+    - invalid_email
+    - blocked
+    - error
+    - unsubscribed
+    - opened
+    - unique_opened
+    - click
+  signing:
+    # Documented nowhere found: no HMAC secret, no signing header. Declaring
+    # one would be a scheme this provider does not describe having.
+    scheme: none
+  payload:
+    event: "{event}"
+    email: ada@example.com
+    id: 26224
+    date: "{created_iso}"
+    ts: "{created}"
+    # The hyphen. Not reachable with a dot in most languages, the same
+    # shape EPSS's status-code already documents in this collection.
+    "message-id": "<201798300811.5787683@relay.domain.com>"
+    ts_event: "{created}"
+    subject: Your receipt
+    tags:
+      - transactional
+
+errors:
+  # The wrong-key wording. See the header: a missing key answers a
+  # different sentence, same status and code, and this format can only
+  # serve one of the two.
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Key not found
+
+  rate_limit:
+    status: 429
+    code: too_many_requests
+    message: Too many requests, please retry later
+
+  resource_missing:
+    status: 404
+    code: document_not_found
+    message: "Contact not found"
+
+  parameter_missing:
+    status: 400
+    code: missing_parameter
+    message: "{detail} is required"
+
+  # A real, documented value: Brevo refuses a second contact at the same
+  # email rather than merging into it silently.
+  duplicate_contact:
+    status: 400
+    code: duplicate_parameter
+    message: "Contact already exists with this email. Email address must be unique."
+
+fixtures:
+  empty: {}
+
+  cauldron-account:
+    account:
+      - id: cauldron
+        email: ada@example.com
+        firstName: Ada
+        lastName: Lovelace
+        companyName: Cauldron Fixtures Ltd
+        address:
+          street: 1 Analytical Engine Row
+          city: London
+          zipCode: "EC1A 1BB"
+          country: United Kingdom
+        plan:
+          - type: payAsYouGo
+            credits: 5000
+            creditsType: sendLimit
+
+  small-account:
+    contact:
+      - id: 21
+        email: ada@example.com
+        emailBlacklisted: false
+        smsBlacklisted: false
+        attributes:
+          FNAME: Ada
+          LNAME: Lovelace
+        listIds:
+          - 4
+    contact_list:
+      - id: 4
+        name: Newsletter subscribers
+        totalSubscribers: 128
+        totalBlacklisted: 3
+        uniqueSubscribers: 125
+
+# Every case citing developers.brevo.com is read from the reference rather
+# than observed against a live account: creating or sending for real is out
+# of scope for this project. The two auth cases and the routing cases were
+# called live on the date in their verified field.
+conformance:
+  - name: no key at all is unauthorized before any route is matched
+    source: https://api.brevo.com/v3/account
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/account
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+
+  - name: a wrong key carries a different message than a missing one
+    # Observed live the same day: no header at all answers "authentication
+    # not found in headers"; a present, wrong key answers "Key not found".
+    # Same status, same code, different sentence -- and this Recipe can only
+    # serve the one below, because Cauldron's auth check has no way to know
+    # which reason a request failed for.
+    source: https://api.brevo.com/v3/account
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/account
+      headers:
+        api-key: junk-not-a-real-key-12345
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+        message: Key not found
+
+  - name: a malformed path is still a credential failure, not a 404
+    source: https://api.brevo.com/v3/this-path-does-not-exist
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/this-path-does-not-exist
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+
+  - name: and the wrong method is refused the same way, not with a 405
+    source: https://api.brevo.com/v3/account
+    verified: "2026-09-01"
+    request:
+      method: DELETE
+      path: /v3/account
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+
+  - name: the account answers about whoever the key belongs to
+    source: https://developers.brevo.com/reference/getaccount
+    fixture: cauldron-account
+    request:
+      method: GET
+      path: /v3/account
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+    expect:
+      status: 200
+      body:
+        email: ada@example.com
+        companyName: Cauldron Fixtures Ltd
+        address.city: London
+        "plan[0].type": payAsYouGo
+        "plan[0].creditsType": sendLimit
+
+  - name: creating a contact answers only an id
+    source: https://developers.brevo.com/reference/createcontact
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/contacts
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+      json:
+        email: grace@example.com
+    expect:
+      status: 201
+      matches:
+        id: '^[0-9]+$'
+      # Not the email, not the attributes, not listIds -- nothing else about
+      # the contact this request just described comes back.
+      absent:
+        - email
+        - attributes
+        - listIds
+
+  - name: a contact's own record carries far more than the create did
+    source: https://developers.brevo.com/reference/get-contact-info
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts/21
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+    expect:
+      status: 200
+      body:
+        email: ada@example.com
+        emailBlacklisted: false
+        attributes.FNAME: Ada
+        "listIds[0]": 4
+
+  - name: a contact list answers wrapped in "lists", counted, not paged in the body
+    source: https://developers.brevo.com/reference/get-lists
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts/lists
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+    expect:
+      status: 200
+      body:
+        count: 1
+        "lists[0].name": Newsletter subscribers
+        "lists[0].totalSubscribers": 128
+      absent:
+        - data
+        - limit
+        - offset
+
+  - name: a transactional send calls its identifier messageId, not id
+    # Real Brevo mints a Message-ID-shaped value here -- angle brackets and
+    # an @, e.g. "<201798300811.5787683@relay.domain.com>" -- and Cauldron's
+    # id vocabulary (prefixed, numeric, timestamp, opaque, uuid, hex,
+    # digits) has no style that produces that shape. This Recipe mints a
+    # bare opaque token instead, which is stated as a fidelity gap in the
+    # header rather than asserted here as if it were the real shape.
+    source: https://developers.brevo.com/reference/sendtransacemail
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/smtp/email
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+      json:
+        sender:
+          email: billing@example.com
+        to:
+          - email: ada@example.com
+        subject: Your receipt
+        htmlContent: "<p>Thanks!</p>"
+    expect:
+      status: 201
+      matches:
+        messageId: '^\S+$'
+      absent:
+        - id
+
+  - name: the send fires the delivery webhook, keyed with a hyphen
+    source: https://developers.brevo.com/docs/how-to-use-webhooks
+    fixture: empty
+    request:
+      method: POST
+      path: /v3/smtp/email
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+      json:
+        sender:
+          email: billing@example.com
+        to:
+          - email: ada@example.com
+        subject: Your receipt
+        htmlContent: "<p>Thanks!</p>"
+    expect:
+      status: 201
+      webhook:
+        event: request
+        matches:
+          # The hyphen. A dot cannot reach this key in most languages, the
+          # same shape as EPSS's status-code elsewhere in this collection.
+          "message-id": '^<201798300811\.5787683@relay\.domain\.com>$'
+        absent:
+          - messageId
+
+  - name: a second contact at the same email is refused, not merged
+    source: https://integrately.com/integrations/brevo/error
+    fixture: small-account
+    arm: duplicate_contact
+    request:
+      method: POST
+      path: /v3/contacts
+      headers:
+        api-key: xkeysib-cauldron0000000000000000000000000000000000000000000000-fixture
+      json:
+        email: ada@example.com
+    expect:
+      status: 400
+      body:
+        code: duplicate_parameter
+        message: Contact already exists with this email. Email address must be unique.

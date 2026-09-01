@@ -1,0 +1,613 @@
+# Lithic Recipe for Cauldron
+#
+# Marqeta splits a card payment into two objects: an authorization and a
+# clearing, minted with two different identifiers, linked only by one field
+# pointing back at the other. Lithic keeps one object. A card_transaction is
+# minted once, keeps its token for its whole life, and moves through a small
+# state machine -- PENDING, then SETTLED (or DECLINED, EXPIRED, VOIDED) -- with
+# the same fields on it the whole time.
+#
+# That is a different shape of trap than Marqeta's, not a smaller one. Where
+# Marqeta's danger is a ledger that sums two rows for one payment, Lithic's is
+# a field that answers two different questions depending on when you ask it.
+# The deprecated `amount` property holds the authorization amount while the
+# transaction is PENDING and silently starts holding the settled amount the
+# moment it becomes SETTLED -- same key, same transaction, same identifier,
+# two meanings. Code that reads `amount` once and caches it is reading a
+# number that is correct until the card network says otherwise, and nothing
+# about the shape of the response changes when that happens.
+#
+# The two amounts are not required to agree, and Lithic says so in its own
+# words on the endpoint that simulates a clearing: the amount to clear
+# "[t]ypically ... will match the amount in the original authorization, but
+# can be higher or lower." A restaurant authorizes the bill and settles the
+# bill plus a tip; a fuel pump authorizes an estimate and settles what was
+# actually pumped. Both are normal, and both break code that treats the
+# authorization amount as the final one.
+#
+# Three more worth modelling exactly:
+#
+#   1. A card's state and a transaction's state are two different axes.
+#      PAUSED is reversible -- the card can be reopened -- and CLOSED is not,
+#      the same distinction Marqeta draws between SUSPENDED and TERMINATED.
+#      PENDING_FULFILLMENT is a real, transactable state for a physical card
+#      that has not been manufactured yet: it can authorize an e-commerce
+#      purchase before it exists as plastic.
+#   2. `status` (PENDING/SETTLED/DECLINED/EXPIRED/VOIDED) and `result`
+#      (APPROVED/DECLINED/...) are not the same field. A transaction can be
+#      APPROVED and PENDING at once -- authorized, not yet settled -- and
+#      reading only one of the two answers a different question than the one
+#      being asked.
+#   3. The card number is never returned. Only `last_four`, the same as
+#      Marqeta, for the same reason: anything storing a card from a response
+#      here is storing four digits and nothing that could be charged.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Lithic answers three different 401 bodies for three different auth
+#     failures, and this was checked against the live API rather than
+#     assumed: no Authorization header answers "Please provide a valid API
+#     key in the Authorization header"; a header present but not shaped like
+#     a Lithic key (this Recipe's probe sent a value with a "Bearer " prefix
+#     and a value containing dashes) answers "Please provide an API key in
+#     the form 'Authorization: [api-key]'"; and a header shaped correctly but
+#     matching no real key answers "Could not find the provided API key".
+#     Three distinct, observed states -- missing, malformed, and
+#     well-formed-but-unknown -- and Cauldron's auth check is a single
+#     boolean (internal/runtime/auth.go: authorised() returns true or false,
+#     with no path from "the shape was wrong" to a different answer than "the
+#     key was wrong"). This Recipe can serve exactly one of the three
+#     messages for every credential that fails, and it serves the one for a
+#     missing header, because that is the state most integrations meet
+#     first. The other two are real and are not modelled.
+#   - Lithic checks whether a path exists before it checks the credential: an
+#     unrecognised path answers 404 whether or not a key is sent at all
+#     (checked live, with and without one). Cauldron's handler checks
+#     authorisation before it ever consults the router
+#     (internal/runtime/handler.go), so the ordering is reversed here: the
+#     conformance case below proving the 404 shape has to send a credential
+#     the real API does not require for that request, or the emulator would
+#     answer 401 instead of demonstrating the 404 body it actually has.
+#   - Every Lithic error carries a fresh `debugging_request_id`, a UUID
+#     minted per request for their support team to look up. Cauldron mints
+#     identifiers for created resources, not for error responses, and an
+#     error's declared fields are fixed constants -- there is nowhere in the
+#     format to say "every failure carries a value that is different every
+#     time." It is left off rather than faked as a constant, which would
+#     teach a client to expect the same debugging id twice.
+#   - Simulation endpoints (`/v1/simulate/authorize`, `/v1/simulate/clearing`,
+#     `/v1/simulate/decline`), account holders, KYC, disputes, digital wallet
+#     tokenization, and the financial account / ledger surface are not
+#     modelled. No card is charged and no transaction is created; which
+#     state a transaction and a card hold is what a fixture puts there.
+#
+# Keys and tokens below are fixtures, not secrets, and every figure is
+# invented.
+
+recipe: lithic
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.lithic.com/reference/authentication
+  spec: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+  spec_hash: d802e227f1ed0ad9e11b047603d9060079596edec86268c85e04375bf4df542e
+  spec_seen: "2026-09-01"
+
+auth:
+  # A raw API key value in the Authorization header, with no "Bearer " prefix
+  # and no other scheme wrapped around it -- confirmed both by the
+  # securitySchemes block (type: apiKey, in: header, name: Authorization) and
+  # by the live probe: a key sent with a "Bearer " prefix is answered as
+  # malformed, not merely wrong.
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldron_lithic_test_api_key0
+
+responses:
+  list:
+    # No key here on purpose, the same reason Marqeta's Recipe gives: both
+    # resources this Recipe lists name their own collection as "data", and a
+    # Recipe-wide key would be redundant with each resource's own
+    # declaration rather than wrong, but there is nowhere for it to add
+    # anything.
+    style: wrapped
+    has_more_field: has_more
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # debugging_request_id is real and is not modelled -- see the header
+    # comment. code_field and type_field are cleared because Lithic's error
+    # object carries neither: {message, debugging_request_id} and nothing
+    # else.
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  card:
+    collection: data
+    id:
+      style: uuid
+      field: token
+    fields:
+      account_token:
+        type: string
+      # VIRTUAL, PHYSICAL, SINGLE_USE, MERCHANT_LOCKED.
+      type:
+        type: string
+        default: VIRTUAL
+      # OPEN, PAUSED, CLOSED, PENDING_FULFILLMENT, PENDING_ACTIVATION. PAUSED
+      # can be reopened; CLOSED cannot, ever, the same line Marqeta draws
+      # between SUSPENDED and TERMINATED.
+      state:
+        type: string
+        default: OPEN
+      # The only two things Lithic ever sends about the card number: never
+      # this field's other half.
+      last_four:
+        type: string
+      spend_limit:
+        type: integer
+      spend_limit_duration:
+        type: string
+        default: TRANSACTION
+      memo:
+        type: string
+      pin_status:
+        type: string
+        default: OK
+      exp_month:
+        type: string
+      exp_year:
+        type: string
+      created:
+        type: datetime
+
+  transaction:
+    collection: data
+    id:
+      style: uuid
+      field: token
+    fields:
+      account_token:
+        type: string
+      card_token:
+        type: string
+      # PENDING, SETTLED, DECLINED, EXPIRED, VOIDED. Where the transaction is
+      # in its life.
+      status:
+        type: string
+        default: PENDING
+      # APPROVED or one of the decline reasons. Whether the authorization was
+      # approved, which is a different question from where it is in its
+      # life: a transaction can be APPROVED and PENDING at once.
+      result:
+        type: string
+        default: APPROVED
+      # Deprecated, and the trap this Recipe exists to show: while PENDING
+      # this holds the authorization amount, and once SETTLED the same field
+      # silently holds the settled amount instead. Same key, same token, two
+      # meanings, and nothing in the response shape says which one is
+      # current.
+      amount:
+        type: integer
+      # The stable, undeprecated pair the field above collapses into one
+      # name. Documented to disagree with each other: "[t]ypically this will
+      # match the amount in the original authorization, but can be higher or
+      # lower."
+      authorization_amount:
+        type: integer
+      settled_amount:
+        type: integer
+      # The modern replacement for both of the above. hold is the pending
+      # amount and closes to zero once the transaction settles; settlement is
+      # zero until it does and then carries the final figure.
+      hold_amount:
+        type: integer
+        in: amounts.hold
+        as: amount
+      hold_currency:
+        type: string
+        default: USD
+        in: amounts.hold
+        as: currency
+      settlement_amount:
+        type: integer
+        in: amounts.settlement
+        as: amount
+      settlement_currency:
+        type: string
+        default: USD
+        in: amounts.settlement
+        as: currency
+      merchant_descriptor:
+        type: string
+        in: merchant
+        as: descriptor
+      # AMEX, INTERLINK, MAESTRO, MASTERCARD, UNKNOWN, VISA.
+      network:
+        type: string
+      created:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/cards
+    resource: card
+    operation: list
+    # starting_after / ending_before, the same convention Stripe uses, which
+    # is why CursorParam is left undeclared -- the runtime's default for
+    # cursor-style paging already reads starting_after.
+    pagination:
+      style: cursor
+      limit: 50
+      max_limit: 100
+      limit_param: page_size
+    filters:
+      - param: state
+        field: state
+
+  - method: GET
+    path: /v1/cards/{id}
+    resource: card
+    operation: get
+
+  - method: GET
+    path: /v1/transactions
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+      max_limit: 100
+      limit_param: page_size
+    filters:
+      - param: card_token
+        field: card_token
+      - param: status
+        field: status
+
+  - method: GET
+    path: /v1/transactions/{id}
+    resource: transaction
+    operation: get
+
+errors:
+  # The one message Cauldron's binary auth check can serve. See the header
+  # comment for the two real, unmodelled others.
+  authentication_error:
+    status: 401
+    message: "Please provide a valid API key in the Authorization header"
+
+  # Lithic's own generic answer for a path it does not have, observed on the
+  # live API with the same body whether or not a credential was sent.
+  resource_missing:
+    status: 404
+    message: "Not Found"
+
+  rate_limit:
+    status: 429
+    message: "Rate limited, too many requests per second"
+
+  parameter_missing:
+    status: 400
+    message: "A parameter in the query given in the request does not match the valid queries for the endpoint."
+
+fixtures:
+  empty: {}
+
+  small-program:
+    card:
+      # Open and transactable.
+      - id: ea33efcc-de98-415d-a558-e0a298c1d177
+        account_token: adb99836-40e7-4f6f-8bdf-9ed484a30d8a
+        type: VIRTUAL
+        state: OPEN
+        last_four: "4291"
+        spend_limit: 100000
+        spend_limit_duration: MONTHLY
+        memo: "Ada's card"
+        pin_status: OK
+        exp_month: "12"
+        exp_year: "2029"
+        created: "2026-02-03T10:00:00Z"
+
+      # Paused, not closed: it can be reopened, and answering it as though it
+      # were CLOSED would be telling a client a live card is gone for good.
+      - id: 51bc9b54-d88b-4bc1-a554-aab3c4e6238b
+        account_token: 6378fb93-f5b0-4aba-974e-7edcceccf09c
+        type: VIRTUAL
+        state: PAUSED
+        last_four: "7734"
+        spend_limit: 50000
+        spend_limit_duration: TRANSACTION
+        pin_status: OK
+        exp_month: "03"
+        exp_year: "2030"
+        created: "2026-05-19T14:22:00Z"
+
+    transaction:
+      # Authorized and not yet settled. The diner's bill, on hold: amount and
+      # authorization_amount agree because nothing has moved yet, and
+      # amounts.hold carries the same figure while amounts.settlement is
+      # still zero.
+      - id: 381358ab-976d-45d4-8a73-de01c7434e60
+        account_token: adb99836-40e7-4f6f-8bdf-9ed484a30d8a
+        card_token: ea33efcc-de98-415d-a558-e0a298c1d177
+        status: PENDING
+        result: APPROVED
+        amount: 4850
+        authorization_amount: 4850
+        settled_amount: 0
+        hold_amount: -4850
+        settlement_amount: 0
+        merchant_descriptor: "Bellwether Diner"
+        network: MASTERCARD
+        created: "2026-08-11T19:04:22Z"
+
+      # The same bill, days later, settled with a tip added. A different
+      # token stands in for what would be the same transaction later in its
+      # life: Cauldron's fixtures are a snapshot, not a clock, so the one
+      # thing a static fixture cannot show is this exact record moving from
+      # the entry above to this one. What it can show, and does, is that the
+      # deprecated `amount` field reads 5840 here and read 4850 above, on a
+      # field whose name never changed.
+      - id: 372967a2-7a26-44e3-8fc8-da1b21c24c6a
+        account_token: adb99836-40e7-4f6f-8bdf-9ed484a30d8a
+        card_token: ea33efcc-de98-415d-a558-e0a298c1d177
+        status: SETTLED
+        result: APPROVED
+        amount: 5840
+        authorization_amount: 4850
+        settled_amount: 5840
+        hold_amount: 0
+        settlement_amount: 5840
+        merchant_descriptor: "Bellwether Diner"
+        network: MASTERCARD
+        created: "2026-08-11T19:04:22Z"
+
+      # Declined, and still a real transaction: it has an amount, it moved no
+      # money, and a total that does not filter on result is 91.20 too high.
+      - id: 39086b3c-bf68-46b8-8a43-c08b2e71fa65
+        account_token: 6378fb93-f5b0-4aba-974e-7edcceccf09c
+        card_token: 51bc9b54-d88b-4bc1-a554-aab3c4e6238b
+        status: DECLINED
+        result: INSUFFICIENT_FUNDS
+        amount: 9120
+        authorization_amount: 9120
+        settled_amount: 0
+        hold_amount: 0
+        settlement_amount: 0
+        merchant_descriptor: "Northgate Fuel"
+        network: VISA
+        created: "2026-08-14T08:52:40Z"
+
+# Two cases were checked against the live API on the date each carries. Every
+# other case is derived from Lithic's published OpenAPI description and
+# documentation; none of those has been run against a real account, and none
+# carries a verified date.
+conformance:
+  - name: no credential explains where to put one
+    source: https://api.lithic.com/v1/cards
+    verified: "2026-09-01"
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/cards
+    expect:
+      status: 401
+      body:
+        message: "Please provide a valid API key in the Authorization header"
+      absent:
+        - code
+        - type
+
+  - name: an unrecognised path answers the same shape as everything else
+    # Checked live with a well-formed credential attached, because the real
+    # API answers this 404 with or without one -- checked both ways -- and
+    # Cauldron checks the credential before the router, so this request has
+    # to carry a key the emulator accepts for the 404 body below to be the
+    # thing under test rather than a 401 the real Lithic would not have sent
+    # for this call.
+    source: https://api.lithic.com/v1/totally-not-a-real-path
+    verified: "2026-09-01"
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/totally-not-a-real-path
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 404
+      body:
+        message: "Not Found"
+
+  - name: an identifier is a token, not an id
+    source: https://docs.lithic.com/reference/getcardbytoken
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/cards/ea33efcc-de98-415d-a558-e0a298c1d177
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        token: ea33efcc-de98-415d-a558-e0a298c1d177
+      absent:
+        - id
+
+  - name: a paused card is not a closed one
+    source: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/cards/51bc9b54-d88b-4bc1-a554-aab3c4e6238b
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        state: PAUSED
+        last_four: "7734"
+
+  - name: the card number never leaves Lithic
+    source: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/cards/ea33efcc-de98-415d-a558-e0a298c1d177
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        last_four: "4291"
+      absent:
+        - pan
+        - card_number
+        - number
+
+  - name: a pending transaction is approved and not yet settled at once
+    # status and result are two different axes: PENDING says where the
+    # transaction is in its life, APPROVED says whether the authorization
+    # went through, and a transaction can be both simultaneously.
+    source: https://docs.lithic.com/reference/gettransactionbytoken
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions/381358ab-976d-45d4-8a73-de01c7434e60
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        status: PENDING
+        result: APPROVED
+        amount: 4850
+        authorization_amount: 4850
+        settled_amount: 0
+
+  - name: the deprecated amount field holds the authorization amount while pending
+    source: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions/381358ab-976d-45d4-8a73-de01c7434e60
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        amount: 4850
+        amounts.hold.amount: -4850
+        amounts.settlement.amount: 0
+
+  - name: the same field silently holds a different number once settled
+    # Same token's later life, standing in as a second fixture record because
+    # a static fixture cannot advance one record through time on its own --
+    # see the fixture comment. The field is still called `amount`, and it no
+    # longer means what it meant three cases up.
+    source: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions/372967a2-7a26-44e3-8fc8-da1b21c24c6a
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        status: SETTLED
+        amount: 5840
+        settled_amount: 5840
+        amounts.settlement.amount: 5840
+        amounts.hold.amount: 0
+
+  - name: the settled amount is not required to equal the authorized one
+    # Lithic's own words, on the endpoint that simulates a clearing: the
+    # amount to clear "[t]ypically ... will match the amount in the original
+    # authorization, but can be higher or lower." A tip added at settlement
+    # is exactly that: normal, and not an error.
+    source: https://docs.lithic.com/reference/postsimulateclearing
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions/372967a2-7a26-44e3-8fc8-da1b21c24c6a
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        authorization_amount: 4850
+        settled_amount: 5840
+
+  - name: a declined transaction is in the listing and moved no money
+    source: https://raw.githubusercontent.com/lithic-com/lithic-openapi/main/lithic-openapi.yml
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions/39086b3c-bf68-46b8-8a43-c08b2e71fa65
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        status: DECLINED
+        result: INSUFFICIENT_FUNDS
+        amount: 9120
+      absent:
+        - id
+
+  - name: a listing narrows by card and counts what it found
+    source: https://docs.lithic.com/reference/gettransactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions?card_token=ea33efcc-de98-415d-a558-e0a298c1d177
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        has_more: false
+        "data[0].card_token": ea33efcc-de98-415d-a558-e0a298c1d177
+        "data[1].card_token": ea33efcc-de98-415d-a558-e0a298c1d177
+      absent:
+        - "data[2]"
+
+  - name: a card listing narrows by state
+    source: https://docs.lithic.com/reference/getcards
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/cards?state=PAUSED
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        has_more: false
+        "data[0].token": 51bc9b54-d88b-4bc1-a554-aab3c4e6238b
+      absent:
+        - "data[1]"
+
+  - name: a transaction listing narrows by status
+    source: https://docs.lithic.com/reference/gettransactions
+    fixture: small-program
+    request:
+      method: GET
+      path: /v1/transactions?status=DECLINED
+      headers:
+        Authorization: cauldron_lithic_test_api_key0
+    expect:
+      status: 200
+      body:
+        has_more: false
+        "data[0].token": 39086b3c-bf68-46b8-8a43-c08b2e71fa65
+      absent:
+        - "data[1]"

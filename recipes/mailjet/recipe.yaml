@@ -1,0 +1,500 @@
+# Mailjet Recipe for Cauldron
+#
+# Mailjet authenticates with HTTP Basic carrying two real secrets rather
+# than one: the API Key as the username and the Secret Key as the password.
+# Every other Basic-auth provider in this collection has one secret and one
+# label -- Mailgun's username is the constant "api" -- so a client that
+# forgets the Secret Key half and sends only the API Key is sending a
+# credential that looks complete and is missing the part that matters.
+# Cauldron's auth model can only compare one half of a Basic pair against a
+# list of accepted values, so this Recipe checks the Secret Key (the
+# password) and states plainly that it cannot also require the API Key to
+# be the one that actually pairs with it -- an unrelated, wrong API Key
+# alongside the right Secret Key is accepted here and would not be by the
+# real service.
+#
+# **Missing, malformed and wrong all look identical.** Probed live with no
+# Authorization header, with a header that is not valid base64, and with a
+# well-formed Basic header carrying junk credentials:
+#
+#   GET /v3/REST/contact, no Authorization           -> 401, empty body
+#   GET /v3/REST/contact, Authorization: Basic !!!   -> 401, empty body
+#   GET /v3/REST/contact, Basic junkuser:junkpass     -> 401, empty body
+#
+# All three came back byte-for-byte the same: an empty text/html body, no
+# JSON, with `WWW-Authenticate: Basic realm="Provide an apiKey and
+# secretKey"` and nothing else distinguishing one failure from another.
+# Unlike Brevo, whose Recipe in this same pair found the opposite --
+# missing and wrong credentials answer different sentences -- Mailjet gives
+# this format nothing to lose: one declared failure genuinely covers all
+# three triggers, because the provider itself does not distinguish them
+# either.
+#
+# A client that calls response.json() on this throws, the same shape of
+# surprise Trello's and Homebrew's Recipes already document elsewhere in
+# this collection under the "text" error style.
+#
+# **The other error shape, observed the same day, on a different path:**
+# an unauthenticated request to a path with no registered handler --
+# /v3/openapi/contact, /v3/api-docs -- answers 500 as real JSON, not 401:
+#
+#   {"ErrorInfo":"EFPWebError","ErrorMessage":"Could not determine HTTP
+#   module for request \"openapi\"","StatusCode":500}
+#
+# That three-field flat shape -- ErrorInfo, ErrorMessage, StatusCode, no
+# ErrorIdentifier and no separate code -- also matches a real production
+# failure reported against the REST API v3 contacts endpoint (a duplicate
+# email, cited below), so it is modelled here as the Recipe-wide error
+# envelope for every ordinary REST v3 failure. Cauldron's own auth check
+# runs before routing on every request (see internal/runtime/handler.go),
+# so this emulator answers 401 to an unauthenticated request on an unknown
+# path the way it answers one on a known path -- it cannot reproduce
+# Mailjet routing first and only gating known modules, and that gap is
+# reported rather than modelled.
+#
+# **The most valuable thing to model is the one that cannot be exercised as
+# ordinary validation.** Mailjet's Send API v3.1 packages one or more
+# messages under a single "Messages" array, and it answers with 200 even
+# when some of them fail: one HTTP response, one status code, and a mix of
+# "Status": "success" and "Status": "error" entries inside it. Community
+# reports agree this is 200, not a per-message 4xx -- confirmed by Mailjet's
+# own documentation, which shows the mixed-outcome example below sitting
+# directly beside the all-success one with no different framing. Compare
+# SendGrid: a 202 with an empty body, one identifier in a header, one
+# outcome per call. Compare Postmark: ErrorCode 0 on success and a nonzero
+# one on failure, but still one outcome per call. Mailjet is the only one
+# of the four email Recipes in this collection where a single call can
+# report both outcomes for different recipients in the same 200.
+#
+# Cauldron's create operation binds one write to one uniform outcome: it
+# validates one record and answers with it, and has no mechanism to loop
+# over an array the caller sent and decide per-entry whether it succeeds.
+# So the happy-path route here answers a fixed, documented single-message
+# success regardless of what "Messages" actually contained, and the mixed
+# success/error shape is demonstrated with `arm`, which replaces a
+# response wholesale rather than deriving it from the request. Both the
+# request and the response in that case are quoted verbatim from Mailjet's
+# own guide; neither was run against a live account, and the case is
+# marked documented rather than verified, on purpose.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The Secret-Key-only check above.
+#   - The always-401-before-routing gap above.
+#   - A successful send always answers the same canned recipient result
+#     (Email, MessageUUID, MessageID, MessageHref) no matter what the
+#     caller's own Messages array contained. Cauldron has no per-array-item
+#     transform: a field can be renamed or nested, not computed from one
+#     array entry into a differently-shaped one, so the real request's To
+#     array is not echoed back as the result array Mailjet actually sends.
+#   - The armed partial-failure case is fixed regardless of what request
+#     triggers it, for the same reason: nothing about which recipient
+#     failed comes from the request that was sent.
+#   - Contacts may also be found by their ID; Mailjet's numeric,
+#     database-assigned ContactID is modelled and the alternate lookups
+#     (by email, by external ID) are not.
+#   - No OpenAPI description could be found for either API version at a
+#     stable, unauthenticated URL, so nothing below carries an
+#     upstream.spec or a spec_hash; every claim is either a live 2026-09-01
+#     probe or a citation to dev.mailjet.com.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: mailjet
+capability: email
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://dev.mailjet.com/email/reference/overview/introduction/
+
+auth:
+  scheme: basic
+  # The Secret Key is the half that actually gates access; see the header.
+  credential: password
+  keys:
+    - cauldron-mailjet-secret-key
+
+responses:
+  list:
+    style: wrapped
+    # Total is the whole matching set; Count is this page's size, sent
+    # beside it under its own name -- see the conformance case.
+    count_field: Total
+    page_count_field: Count
+  # ErrorInfo / ErrorMessage / StatusCode, no separate code and no
+  # ErrorIdentifier at this envelope -- observed directly on an
+  # unauthenticated request to an unregistered path, and matching a real
+  # duplicate-contact failure reported against the REST API v3 (cited
+  # below).
+  error:
+    style: flat
+    message_field: ErrorMessage
+    code_field: "-"
+
+resources:
+  contact:
+    collection: Data
+    id:
+      style: numeric
+      field: ID
+    fields:
+      Email:
+        type: string
+        required: true
+      Name:
+        type: string
+      IsExcludedFromCampaigns:
+        type: boolean
+        default: false
+      IsOptInPending:
+        type: boolean
+        default: false
+      IsSpamComplaining:
+        type: boolean
+        default: false
+      CreatedAt:
+        type: datetime
+      LastUpdateAt:
+        type: datetime
+
+  # The Send API v3.1 body. Real Mailjet nests every field this Recipe could
+  # validate one level down, inside each entry of Messages, and Cauldron
+  # can flatten a single declared sub-object (field.in) but not reach into
+  # an array element -- so nothing about an individual message's own
+  # fields is declared or checked here. What is modelled is that Messages
+  # has to be present at all, and the fixed shape a well-formed call gets
+  # back.
+  message:
+    # Mailjet's send response carries no top-level identifier at all: what
+    # identifies a sent message lives two levels down, at
+    # Messages[].To[].MessageID, one per recipient. Cauldron still keys the
+    # record internally, the same way Marqeta's balance does elsewhere in
+    # this collection, but emits nothing for it.
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      Messages:
+        type: list
+        required: true
+      SandboxMode:
+        type: boolean
+        default: false
+    constants:
+      # A well-formed create always answers this, regardless of what the
+      # caller's own Messages array held -- see the header for why.
+      Messages:
+        - Status: success
+          To:
+            - Email: passenger@mailjet.com
+              MessageUUID: "123"
+              MessageID: 20547681647433000
+              MessageHref: https://api.mailjet.com/v3/message/20547681647433000
+
+routes:
+  - method: GET
+    path: /v3/REST/contact
+    resource: contact
+    operation: list
+    pagination:
+      style: offset
+      limit: 10
+      limit_param: Limit
+      cursor_param: Offset
+
+  - method: POST
+    path: /v3/REST/contact
+    resource: contact
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /v3/REST/contact/{id}
+    resource: contact
+    operation: get
+
+  - method: POST
+    path: /v3.1/send
+    resource: message
+    operation: create
+    status: 200
+
+errors:
+  # Identical for a missing header, a malformed one and a well-formed one
+  # carrying the wrong credentials -- see the header. No JSON at all.
+  # The real body here is zero bytes, and this format cannot say so for a
+  # named error: an empty message string is indistinguishable from an unset
+  # one (internal/runtime/errors.go only overrides the fallback text when
+  # defined.Message != ""), so the closest approximation is whitespace
+  # rather than Cauldron's own hardcoded fallback prose, "Invalid API key
+  # provided." -- which is real JSON-shaped English this provider never
+  # sends here. Stated as a gap rather than asserted as a byte-exact match.
+  authentication_error:
+    status: 401
+    style: text
+    message: " "
+    headers:
+      Content-Type: text/html
+      WWW-Authenticate: 'Basic realm="Provide an apiKey and secretKey"'
+
+  resource_missing:
+    status: 404
+    message: "Object not found"
+    fields:
+      ErrorInfo: ""
+      StatusCode: 404
+
+  parameter_missing:
+    status: 400
+    message: "{detail} is required"
+    fields:
+      ErrorInfo: ""
+      StatusCode: 400
+
+  # A real, reported production failure against REST API v3 contacts: MJ18,
+  # a duplicate email refused rather than merged. ErrorInfo travels empty.
+  # {detail} is not available here: arm replaces a response wholesale and
+  # carries no per-request substitution, so the address is fixed rather
+  # than templated. See the conformance case, which sends this same
+  # address, for why that is not a coincidence.
+  duplicate_contact:
+    status: 400
+    message: 'MJ18 A Contact resource with value "ada@example.com" for Email already exists.'
+    fields:
+      ErrorInfo: ""
+      StatusCode: 400
+
+  # The one HTTP 200 in this table. Not a failure of the request -- the
+  # request succeeded -- but a failure of one message inside it, reported
+  # beside another message's success in the same body. Quoted verbatim from
+  # Mailjet's own guide; see the conformance case for why this is armed
+  # rather than derived from validation.
+  content_missing:
+    status: 200
+    message_field: "-"
+    fields:
+      "Messages[0].Errors":
+        - ErrorIdentifier: 88b5ca9f-5f1f-42e7-a45e-9ecbad0c285e
+          ErrorCode: send-0003
+          StatusCode: 400
+          ErrorMessage: 'At least "HTMLPart", "TextPart" or "TemplateID" must be provided.'
+          ErrorRelatedTo:
+            - HTMLPart
+            - TextPart
+      "Messages[0].Status": error
+      "Messages[1].Status": success
+      "Messages[1].CustomID": ""
+      "Messages[1].To":
+        - Email: passenger2@mailjet.com
+          MessageUUID: cb927469-36fd-4c02-bce4-0d199929a207
+          MessageID: 70650219165027410
+          MessageHref: https://api.mailjet.com/v3/REST/message/70650219165027410
+      "Messages[1].Cc": []
+      "Messages[1].Bcc": []
+
+fixtures:
+  empty: {}
+
+  small-account:
+    contact:
+      - id: 1
+        Email: ada@example.com
+        Name: Ada Lovelace
+        IsExcludedFromCampaigns: false
+      - id: 2
+        Email: bounced@example.com
+        Name: ""
+        IsExcludedFromCampaigns: true
+
+# Every case below citing dev.mailjet.com is read from the documentation
+# rather than observed against a live account: this project must not create
+# a Mailjet account, hold a real API key or secret key, or send an email.
+# The four auth-and-routing cases were called live, unauthenticated, on the
+# date in their verified field.
+conformance:
+  - name: no Authorization header at all is refused, with an empty body
+    source: https://api.mailjet.com/v3/REST/contact
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/REST/contact
+    expect:
+      status: 401
+      # The real body is empty; see the errors table entry for why this
+      # Recipe cannot also assert that against the emulator. Status and the
+      # WWW-Authenticate header are what was actually checked live.
+      headers:
+        WWW-Authenticate: 'Basic realm="Provide an apiKey and secretKey"'
+
+  - name: a header that is not valid base64 fails exactly the same way
+    source: https://api.mailjet.com/v3/REST/contact
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/REST/contact
+      headers:
+        Authorization: "Basic not-valid-base64!!!"
+    expect:
+      status: 401
+      # The real body is empty; see the errors table entry for why this
+      # Recipe cannot also assert that against the emulator. Status and the
+      # WWW-Authenticate header are what was actually checked live.
+      headers:
+        WWW-Authenticate: 'Basic realm="Provide an apiKey and secretKey"'
+
+  - name: well-formed junk credentials fail the identical way too
+    # Basic base64("junkuser:junkpass"). Missing, malformed and wrong are
+    # one failure here, unlike Brevo's Recipe in this same pair, where they
+    # are two.
+    source: https://api.mailjet.com/v3/REST/contact
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/REST/contact
+      headers:
+        Authorization: "Basic anVua3VzZXI6anVua3Bhc3M="
+    expect:
+      status: 401
+      # The real body is empty; see the errors table entry for why this
+      # Recipe cannot also assert that against the emulator. Status and the
+      # WWW-Authenticate header are what was actually checked live.
+      headers:
+        WWW-Authenticate: 'Basic realm="Provide an apiKey and secretKey"'
+
+  - name: the right secret key is accepted
+    # Not verified: this exercises the fixture credential above against the
+    # emulator, not a real account. No source claim about the provider's
+    # acceptance behaviour is made beyond what the three failing cases
+    # above already establish live -- only the shape of a success is new
+    # here, cited from the reference.
+    source: https://dev.mailjet.com/email/reference/contacts/contact/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/REST/contact
+      headers:
+        # Basic base64("anything-at-all:cauldron-mailjet-secret-key"). Only
+        # the password half is actually checked; see the header.
+        Authorization: "Basic YW55dGhpbmctYXQtYWxsOmNhdWxkcm9uLW1haWxqZXQtc2VjcmV0LWtleQ=="
+    expect:
+      status: 200
+      body:
+        "Data[0].Email": ada@example.com
+
+  - name: contacts are wrapped under Data, counted twice, once per page and once for the whole set
+    # Count is this page's size and Total is the whole matching set --
+    # Mailjet sends both, named apart, the same distinction this format
+    # keeps separate as count_field and page_count_field.
+    source: https://dev.mailjet.com/email/guides/contact-management/index.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/REST/contact
+      headers:
+        Authorization: "Basic YW55dGhpbmctYXQtYWxsOmNhdWxkcm9uLW1haWxqZXQtc2VjcmV0LWtleQ=="
+    expect:
+      status: 200
+      body:
+        "Data[0].Email": ada@example.com
+        "Data[1].IsExcludedFromCampaigns": true
+        Count: 2
+        Total: 2
+      absent:
+        - data
+        - contacts
+
+  - name: a duplicate email is refused, not merged, and carries no code field
+    source: https://github.com/mailjet/mailjet-apiv3-nodejs/issues/181
+    fixture: small-account
+    arm: duplicate_contact
+    request:
+      method: POST
+      path: /v3/REST/contact
+      headers:
+        Authorization: "Basic YW55dGhpbmctYXQtYWxsOmNhdWxkcm9uLW1haWxqZXQtc2VjcmV0LWtleQ=="
+      json:
+        Email: ada@example.com
+    expect:
+      status: 400
+      body:
+        ErrorInfo: ""
+        ErrorMessage: 'MJ18 A Contact resource with value "ada@example.com" for Email already exists.'
+      absent:
+        - ErrorIdentifier
+        - ErrorCode
+
+  - name: a well-formed send answers the fixed shape regardless of the real recipient
+    # The request below is Mailjet's own one-recipient example, quoted
+    # verbatim. The response is this Recipe's fixed constant -- see the
+    # header for why it cannot reflect passenger@mailjet.com's own address
+    # in a per-recipient result.
+    source: https://dev.mailjet.com/email/guides/send-api-v31/
+    fixture: empty
+    request:
+      method: POST
+      path: /v3.1/send
+      headers:
+        Authorization: "Basic YW55dGhpbmctYXQtYWxsOmNhdWxkcm9uLW1haWxqZXQtc2VjcmV0LWtleQ=="
+      json:
+        Messages:
+          - From:
+              Email: pilot@mailjet.com
+              Name: Your Mailjet Pilot
+            To:
+              - Email: passenger@mailjet.com
+                Name: Passenger 1
+            Subject: Your email flight plan!
+            TextPart: Dear passenger, welcome to Mailjet! May the delivery force be with you!
+            HTMLPart: "<h3>Dear passenger, welcome to Mailjet!</h3>"
+    expect:
+      status: 200
+      body:
+        "Messages[0].Status": success
+        "Messages[0].To[0].Email": passenger@mailjet.com
+      matches:
+        "Messages[0].To[0].MessageID": '^[0-9]+$'
+
+  - name: one message can fail while another succeeds, in the same 200
+    # Quoted verbatim from Mailjet's own Send API v3.1 guide: two messages
+    # in one request, one missing HTMLPart/TextPart/TemplateID and refused,
+    # the other accepted -- both reported in one 200. This is armed rather
+    # than derived: Cauldron validates one record per create and cannot
+    # decide, per entry of an array the caller sent, which one is which.
+    # Never run against a live account -- sending an email is out of scope
+    # for this project -- so this is documented, not verified.
+    source: https://dev.mailjet.com/email/guides/send-api-v31/
+    fixture: empty
+    arm: content_missing
+    request:
+      method: POST
+      path: /v3.1/send
+      headers:
+        Authorization: "Basic YW55dGhpbmctYXQtYWxsOmNhdWxkcm9uLW1haWxqZXQtc2VjcmV0LWtleQ=="
+      json:
+        Messages:
+          - From:
+              Email: pilot@mailjet.com
+              Name: Mailjet Pilot
+            To:
+              - Email: passenger1@mailjet.com
+          - From:
+              Email: pilot@mailjet.com
+              Name: Mailjet Pilot
+            To:
+              - Email: passenger2@mailjet.com
+            Subject: Your email flight plan!
+            TextPart: Dear passenger 2, welcome to Mailjet!
+    expect:
+      status: 200
+      body:
+        "Messages[0].Status": error
+        "Messages[0].Errors[0].ErrorCode": send-0003
+        "Messages[0].Errors[0].StatusCode": 400
+        "Messages[1].Status": success
+        "Messages[1].To[0].Email": passenger2@mailjet.com
+      matches:
+        "Messages[0].Errors[0].ErrorMessage": 'HTMLPart'
+      absent:
+        - error
+        - errors

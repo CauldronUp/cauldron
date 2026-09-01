@@ -1,0 +1,602 @@
+# Split (Harness FME) Recipe for Cauldron
+#
+# Split answers from two hosts that do not agree on anything: not the shape
+# of a failure, not whether a credential is required to look empty-handed,
+# and not even whether "missing" and "wrong" are the same event.
+#
+#   sdk.split.io      -- the data plane the SDKs sync from. An SDK key goes
+#                        here, and every SDK evaluates flags locally against
+#                        whatever this host last sent it.
+#   api.split.io      -- the Admin API. An Admin API key goes here, and this
+#                        is what a script or a CI job calls to read or change
+#                        a feature flag directly, which is the surface this
+#                        Recipe models as its resource.
+#
+# Neither host was ever sent a real key. No account was created and none of
+# the requests below carries anything but a key this project made up on the
+# spot -- which is itself the finding: sdk.split.io answers identically
+# whether the credential is absent, empty, malformed, or a forty-character
+# string shaped exactly like a real one.
+#
+# **One field, four states, and none of them is a coincidence.** Every
+# failure examined here carries a `transactionId`, or does not, and which of
+# the two -- and whether it is null or a real-looking string -- depends on
+# which host answered and why:
+#
+#   sdk.split.io   400 (no working key)   transactionId: null
+#   sdk.split.io   404 (unknown path)     no transactionId key at all
+#   api.split.io   404 (unknown path)     transactionId: "" (empty string)
+#   api.split.io   401 (no working key)   transactionId: "9ohbr..." (real)
+#
+# Four requests, four different answers to "is there a value here, and if
+# not, which kind of nothing is it" -- absent, null, empty, and populated --
+# and the only way to know which one a given failure carries is to have
+# already sent it and looked.
+#
+# **sdk.split.io cannot tell "you sent nothing" from "you sent garbage."**
+# Checked with no `Authorization` header at all, an empty one, `Bearer ` with
+# nothing after it, a plainly fake key, and a forty-character string shaped
+# like a real SDK key, against `/api/splitChanges`, `/api/segmentChanges` and
+# `/api/mySegments` and against GET, POST and PUT: every one of them is
+#
+#   400  {"code":400,"message":"","details":null,"transactionId":null}
+#
+# byte for byte. The message is empty. Not absent -- present, and empty,
+# which means the one field a client would read to learn *why* the request
+# failed is a zero-length string every single time. Nothing in this Recipe's
+# vocabulary lets an emulator decide, per request, whether a credential was
+# missing or merely wrong, so this is not a gap in modelling: it is Split's
+# real behaviour on this host, reproduced exactly, and reproducing it needed
+# no such mechanism because the real API doesn't have one either.
+#
+# The message is not always empty on this host, though -- only when the
+# failure is "no working key." A path this Recipe has never heard of answers
+# `{"code":404,"message":"HTTP 404 Not Found"}`, with the sentence filled in
+# and, notably, no `details` or `transactionId` keys at all: a *third* shape,
+# on a *third* status, on the *same* host.
+#
+# **api.split.io can tell them apart, and Cauldron cannot serve that.**
+# Called with no `Authorization` header at all: `401
+# {"code":401,"message":"unauthorized","details":null,"transactionId":"<real
+# id>"}`. Called with `Authorization: Bearer totallyfakekey123`: also 401,
+# same four keys, but `"message":"API key unauthorized:
+# xxxxXXXXXXXXXXXXXXXXXXXey123"` -- the credential's own last five characters,
+# unmasked, inside the sentence explaining that it was rejected. Checked
+# against several junk keys of different lengths on 2026-09-01: the reveal is
+# always the last five characters of the raw header value including the
+# `Bearer ` prefix, masked before that with a fixed run of x/X characters
+# regardless of the real key's length. A request with no header, an empty
+# `Bearer `, or an `Authorization` header that is not Bearer-shaped at all
+# gets the plain "unauthorized" sentence instead -- no echo, because there is
+# nothing captured to echo.
+#
+# That is a real, observed, two-shape distinction, and this Recipe serves
+# only the plainer of the two. Cauldron's credential check is one evaluated
+# boolean per Recipe: a request either satisfies it or it does not, and
+# nothing downstream of that boolean learns why. Modelling "missing" and
+# "wrong" as different messages at the same status would need the check to
+# carry a reason, which is not a thing this format has -- so this Recipe
+# picks the shape that needs no submitted key to reproduce ("unauthorized"),
+# and states here, rather than nowhere, that a wrong-but-present Bearer
+# credential really does get a different sentence that quotes part of itself
+# back. No case below asserts that sentence, because asserting a Recipe's own
+# fixed text as though it were the credential-dependent one would be the
+# infidelity this comment exists to avoid.
+#
+# **A third host exists and is not modelled.** auth.split.io, which issues
+# the token the streaming connection authenticates with, actually does
+# distinguish the two cases outright: no `Authorization` header is
+# `400 "Missing auth"`; a present-but-wrong one is `401 "Unauthorized"` --
+# two different statuses, not just two sentences at one status. That is the
+# cleanest missing-vs-wrong split found anywhere in this investigation, and
+# it is left out of the routes below for the same reason api.split.io's
+# sharper distinction is: reaching it needs the credential check to know
+# which failure it is looking at, which this format's `auth:` cannot express
+# for one scheme covering one Recipe, and every route on sdk.split.io already
+# needs that scheme to answer identically no matter what is sent.
+#
+# **Both hosts get the missing/wrong question in a different way than
+# ConfigCat and LaunchDarkly needed to answer it.** LaunchDarkly's Recipe
+# never had to choose: a bad key there is a 401 whatever shape it takes, one
+# message, one status, no observed distinction to give up. ConfigCat's two
+# credentials travel in two different headers, so its missing-vs-wrong
+# question was actually two independent presence checks (`required_headers`
+# answers one, `auth:` the other) and never collided. Split is the first
+# Recipe in this collection, as far as this investigation went looking, where
+# the *same* header genuinely produces *provably identical* output for two
+# semantically different failures on one host, and genuinely *different*
+# output for them on another -- and the second fact cannot be served
+# alongside the routes that prove the first.
+#
+# **Rate limiting is one host's problem, in writing.** Split's own docs say
+# so plainly: "Rate limiting applies only to this public API and does not
+# affect the API used by the SDKs to serve feature evaluations." Observed to
+# match: api.split.io's failures here carry `X-RateLimit-Remaining-IP` and
+# `X-RateLimit-Reset-Seconds-IP`; sdk.split.io's carry neither, on any of the
+# requests this investigation sent it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - auth.split.io is described above and routed nowhere, for the reason
+#     given: its genuine two-status split needs a credential check this
+#     format's `auth:` cannot express twice in one Recipe, and sdk.split.io's
+#     one-shape-for-everything finding is the better-evidenced and more
+#     central claim to keep servable.
+#   - Neither host was ever authenticated successfully. api.split.io's
+#     success shapes below are read from its own published examples
+#     (docs.split.io, which embeds a real OpenAPI 3.1 fragment on every
+#     reference page) and carry no `verified` date for exactly that reason.
+#     sdk.split.io's actual sync payload -- the full list of a project's
+#     flags, rules and treatments an SDK holds in memory -- is not modelled
+#     at all: it is undocumented on docs.split.io, which describes only the
+#     Admin API, and no fixture here claims to know its shape.
+#   - Because auth is `none` at the Recipe level (see the routes below), this
+#     Recipe's own success routes on api.split.io answer without a working
+#     key, which the real host never does. The two `matches_header` routes
+#     per path exist so a missing-or-wrong credential can answer with the
+#     host's real shape instead of a resource the real host would never have
+#     shown it; picking a key this Recipe recognises is what stands in for
+#     "authenticated" here.
+#   - api.split.io's list-feature-flags reference page still shows a 401
+#     example — `{"code":401,"message":"Error listing splitmetadatas",
+#     "transactionId":"9ohbr8wmzf"}`, no `details` key at all — from before
+#     whatever rewrite produced the "unauthorized" / "API key unauthorized:
+#     ..." wording this Recipe observed live on 2026-09-01. The two
+#     disagree on the message and on whether `details` exists, and this
+#     Recipe follows the live wire over the stale example.
+#
+# The workspace, keys and identifiers below are fixtures and belong to no
+# account.
+
+recipe: split
+capability: flags
+version: 0.1.0
+
+upstream:
+  api: "2"
+  docs: https://docs.split.io/reference
+
+auth:
+  # Not none because Split has no credential -- both hosts require one. None
+  # because a single evaluated pass/fail per Recipe cannot serve sdk.split.io's
+  # "identical whatever you send" finding on one path and api.split.io's own
+  # credential-gated resource on another at the same time: whichever direction
+  # that boolean was wired, the other host's evidence would stop being
+  # reachable. See the header comment. Every credential check below is done
+  # by hand instead, with `matches_header` and a fixed failure for everything
+  # that request does not match.
+  scheme: none
+
+responses:
+  list:
+    # api.split.io's own words for it, from list-feature-flags' JSON Received
+    # block: {"objects": [...], "offset", "limit", "totalCount"}.
+    style: wrapped
+    key: objects
+    count_field: totalCount
+    # Both echo what the request actually used rather than a fixed default.
+    limit_field: limit
+    page_field: offset
+  error:
+    # Shared by both hosts' unknown-path failures below, since both use flat
+    # JSON with a numeric code and nothing nested. The auth failures on
+    # either host override message and fields per case, because the four keys
+    # are not always the same four keys -- see the header comment.
+    style: flat
+    code_field: code
+    code_type: number
+    message_field: message
+
+resources:
+  feature_flag:
+    # Addressed by name, the same as LaunchDarkly's flag. Split's own
+    # documented example also carries a separate, genuine "id" -- a UUID,
+    # e.g. "0000cea0-8f4d-11e7-b345-491559441642" -- that identifies the same
+    # record and is not interchangeable with the name; only the name works
+    # in the URL. It is not declared as a field below, because Cauldron's
+    # fixtures key every record by a single "id" value that doubles as
+    # whatever id.field names on the wire (here, "name"), and a fixture has
+    # no second slot to also hold a differently-named, differently-shaped
+    # identifier for the same record. That is a real field this Recipe
+    # cannot carry, not an oversight.
+    id:
+      style: opaque
+      field: name
+    fields:
+      description:
+        type: string
+      trafficType:
+        type: map
+      creationTime:
+        type: timestamp_ms
+      tags:
+        type: list
+      rolloutStatus:
+        type: map
+      rolloutStatusTimestamp:
+        type: timestamp_ms
+      owners:
+        type: list
+
+  feature_flag_definition:
+    # One flag has one of these per environment, fetched at a path that
+    # names both -- and unlike LaunchDarkly, which folds every environment's
+    # state into fields on the flag itself, Split answers each one from a
+    # wholly separate request. The flag name in the path is not scoped here
+    # (matched and ignored, the same way LaunchDarkly's own {project} segment
+    # is): this Recipe's one fixture per environment is enough to demonstrate
+    # the shape without pretending to hold more than one flag's worth of it.
+    id:
+      style: opaque
+      # The environment is what the path actually addresses; the record
+      # carries no flat field of its own to point at, because the real body
+      # nests the same information under "environment" below instead.
+      field: "-"
+    fields:
+      name:
+        type: string
+        required: true
+      environment:
+        type: map
+      trafficType:
+        type: map
+      killed:
+        type: boolean
+        default: false
+      lastTrafficReceivedAt:
+        type: timestamp_ms
+      treatments:
+        type: list
+      defaultTreatment:
+        type: string
+      baselineTreatment:
+        type: string
+      trafficAllocation:
+        type: integer
+      rules:
+        type: list
+      defaultRule:
+        type: list
+      creationTime:
+        type: timestamp_ms
+      lastUpdateTime:
+        type: timestamp_ms
+
+routes:
+  # api.split.io -- the Admin API. Every pair below answers the same path
+  # twice: once for the one Bearer value this Recipe recognises, and once,
+  # with no condition at all, for everything else -- which is how a fixed
+  # failure and a real resource share one path without the Recipe-wide
+  # credential check either route needs to stay off. See the header comment.
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}
+    matches_header:
+      Authorization: "Bearer cauldron-fixture-split-admin-000000000000"
+    resource: feature_flag
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 50
+      limit_param: limit
+      cursor_param: offset
+      # Counted from nought, which offsets are. Without this the echo would
+      # report offset 1 on the first page.
+      first_page: 0
+
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}
+    error: admin_unauthorized
+
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}/{id}
+    matches_header:
+      Authorization: "Bearer cauldron-fixture-split-admin-000000000000"
+    resource: feature_flag
+    operation: get
+
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}/{id}
+    error: admin_unauthorized
+
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}/{flag}/environments/{id}
+    matches_header:
+      Authorization: "Bearer cauldron-fixture-split-admin-000000000000"
+    resource: feature_flag_definition
+    operation: get
+
+  - method: GET
+    path: /internal/api/v2/splits/ws/{workspace}/{flag}/environments/{id}
+    error: admin_unauthorized
+
+  # A path this Recipe never heard of, on this host: four keys, an empty
+  # string rather than null or an absence for transactionId, and no
+  # credential involved at all -- routing happens before authentication does
+  # on the real host, and a request need not carry any Authorization header
+  # to reach this.
+  - method: GET
+    path: /internal/api/v2/nonexistent-resource
+    error: admin_unknown_path
+
+  # sdk.split.io -- the data plane. No matches_header here: real or fake, a
+  # Bearer value changes nothing on this host, so neither does this Recipe.
+  - method: GET
+    path: /api/splitChanges
+    error: sdk_no_credential
+
+  - method: GET
+    path: /api/segmentChanges/{id}
+    error: sdk_no_credential
+
+  - method: GET
+    path: /api/nonexistent-endpoint
+    error: sdk_unknown_path
+
+errors:
+  # api.split.io, no working key, whatever the reason. The real host says
+  # something more specific for a present-but-wrong Bearer value -- see the
+  # header comment for why that shape is not the one served here.
+  admin_unauthorized:
+    status: 401
+    code: "401"
+    message: unauthorized
+    fields:
+      details: null
+      # A real id travels here in earnest -- always populated, never null or
+      # missing, on every 401 this investigation saw. Fixed rather than
+      # random because Cauldron's fixtures are not a request-id generator.
+      transactionId: cauldron-fixture-txn-0000000001
+    headers:
+      X-RateLimit-Remaining-IP: "29"
+      X-RateLimit-Reset-Seconds-IP: "1"
+
+  # api.split.io, a path outside every route above. transactionId is an
+  # empty string here, which is its own answer and not the same as the null
+  # above or the missing key two entries down.
+  admin_unknown_path:
+    status: 404
+    code: "404"
+    message: "HTTP 404 Not Found"
+    fields:
+      details: null
+      transactionId: ""
+
+  # sdk.split.io, no working key, whatever was actually sent -- absent,
+  # empty, malformed, or shaped exactly like a real key. Checked every one of
+  # those ways on 2026-09-01, and every one of them is this, byte for byte.
+  sdk_no_credential:
+    status: 400
+    code: "400"
+    fields:
+      # Present and empty, not omitted -- the field a client would read to
+      # learn why the request failed is a zero-length string. Message is
+      # left undeclared above because an undeclared Message is left alone by
+      # the runtime rather than rendered as this literal empty string; the
+      # override lives here instead, applied after the fallback text, which
+      # is the one route through this format that can produce a message key
+      # holding "" rather than a sentence.
+      message: ""
+      details: null
+      transactionId: null
+
+  # sdk.split.io, a path outside every route above. Two keys, not four: no
+  # details, no transactionId at all, on the same host whose credential
+  # failure two entries up carries both as null. And the message is filled
+  # in here, in contrast to that same failure's empty one -- "the message is
+  # always empty on this host" is false, stated precisely: it is empty for
+  # exactly one failure and not for this one.
+  sdk_unknown_path:
+    status: 404
+    code: "404"
+    message: "HTTP 404 Not Found"
+
+fixtures:
+  empty: {}
+
+  workspace:
+    feature_flag:
+      - id: paywall_beta
+        description: Gates the redesigned paywall.
+        trafficType:
+          id: 4d3405a0-9ca5-11e5-9706-16a11fb02dec
+          name: user
+        creationTime: 1508790002232
+        tags:
+          - name: growth
+        rolloutStatus:
+          id: 35f71d79-0cb1-42d4-b029-5e5468c480e1
+          name: 100% in Production
+        rolloutStatusTimestamp: 1625668535289
+      - id: checkout_v2
+        description: New checkout flow.
+        trafficType:
+          id: 4d3405a0-9ca5-11e5-9706-16a11fb02dec
+          name: user
+        creationTime: 1735689600000
+    feature_flag_definition:
+      - id: production
+        name: paywall_beta
+        environment:
+          id: 2626cf50-73d7-11e7-91fb-0ec612a5b38a
+          name: Production
+        trafficType:
+          id: 4d3405a0-9ca5-11e5-9706-16a11fb02dec
+          name: user
+        killed: false
+        lastTrafficReceivedAt: 1508790002232
+        treatments:
+          - name: "on"
+            configurations: '{"color":"red"}'
+          - name: "off"
+            configurations: '{"color":"blue"}'
+        defaultTreatment: "off"
+        baselineTreatment: "on"
+        trafficAllocation: 100
+        rules:
+          - buckets:
+              - treatment: "on"
+                size: 50
+              - treatment: "off"
+                size: 50
+            condition:
+              combiner: AND
+              matchers:
+                - type: IN_SEGMENT
+                  string: employees
+        defaultRule:
+          - treatment: "off"
+            size: 100
+        creationTime: 1508790002232
+        lastUpdateTime: 1508790002232
+
+conformance:
+  - name: sdk.split.io cannot tell missing from wrong -- no header at all
+    source: https://sdk.split.io/api/splitChanges
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/splitChanges
+    expect:
+      status: 400
+      headers:
+        Content-Type: application/json
+      body:
+        code: 400
+        # Present, and empty -- not the same claim as "absent."
+        message: ""
+        details: null
+        transactionId: null
+
+  - name: and a plainly wrong key gets the identical body
+    source: https://sdk.split.io/api/splitChanges
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/splitChanges
+      headers:
+        Authorization: "Bearer totallyfakekey123"
+    expect:
+      status: 400
+      body:
+        code: 400
+        message: ""
+        details: null
+        transactionId: null
+
+  - name: so does a forty-character key shaped like a real one
+    source: https://sdk.split.io/api/splitChanges
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/splitChanges
+      headers:
+        Authorization: "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    expect:
+      status: 400
+      body:
+        code: 400
+        message: ""
+        details: null
+        transactionId: null
+
+  - name: the same non-distinction holds on segmentChanges
+    source: https://sdk.split.io/api/segmentChanges/employees?since=-1
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/segmentChanges/employees
+    expect:
+      status: 400
+      body:
+        code: 400
+        message: ""
+
+  - name: a path this host has never heard of fills the message in
+    source: https://sdk.split.io/api/nonexistentPath
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/nonexistent-endpoint
+    expect:
+      status: 404
+      body:
+        code: 404
+        message: "HTTP 404 Not Found"
+      # In contrast to the credential failures above, which carry both keys
+      # as null: this failure carries neither key at all.
+      absent:
+        - details
+        - transactionId
+
+  - name: api.split.io answers a missing key with a plain sentence
+    source: https://api.split.io/internal/api/v2/splits/ws/cauldron-fixture-workspace/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /internal/api/v2/splits/ws/cauldron-fixture-workspace
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: unauthorized
+        details: null
+      # Real on every 401 this investigation saw -- never null and never
+      # missing, which is the opposite of sdk.split.io's own 400 above.
+      matches:
+        transactionId: "^.+$"
+      headers:
+        X-RateLimit-Remaining-IP: "29"
+
+  - name: and this Recipe's one recognised key reaches the resource instead
+    source: https://docs.split.io/reference/list-feature-flags
+    fixture: workspace
+    request:
+      method: GET
+      path: /internal/api/v2/splits/ws/cauldron-fixture-workspace
+      headers:
+        Authorization: "Bearer cauldron-fixture-split-admin-000000000000"
+    expect:
+      status: 200
+      body:
+        "objects[0].name": paywall_beta
+        totalCount: 2
+        limit: 20
+        offset: 0
+
+  - name: a feature flag definition names its environment and its treatments
+    source: https://docs.split.io/reference/get-feature-flag-definition-in-environment
+    fixture: workspace
+    request:
+      method: GET
+      path: /internal/api/v2/splits/ws/cauldron-fixture-workspace/paywall_beta/environments/production
+      headers:
+        Authorization: "Bearer cauldron-fixture-split-admin-000000000000"
+    expect:
+      status: 200
+      body:
+        name: paywall_beta
+        killed: false
+        defaultTreatment: "off"
+        "environment.name": Production
+        "treatments[0].name": "on"
+      # The definition carries no flag-name field of its own -- the name
+      # above comes from the resource's declared "name" field, not from an
+      # emitted identifier, because id.field is "-" here. See the resource
+      # comment.
+
+  - name: an unknown path on the admin host carries an empty transactionId
+    source: https://api.split.io/internal/api/v2/bogus
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /internal/api/v2/nonexistent-resource
+    expect:
+      status: 404
+      body:
+        code: 404
+        message: "HTTP 404 Not Found"
+        details: null
+        # Empty, not null and not absent -- the fourth state, distinct from
+        # all three the other hosts and failures produce above.
+        transactionId: ""

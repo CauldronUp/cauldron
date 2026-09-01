@@ -1,0 +1,409 @@
+# Giphy Recipe for Cauldron
+#
+# Giphy has no sandbox and its beta key is rate limited hard enough that a
+# suite calling it on every run would spend the daily allowance on green
+# builds. Everything below the "Known fidelity gaps" heading was checked
+# against api.giphy.com with no credential at all -- Giphy answers every
+# route the same way whether a key is absent or present and wrong, which
+# turns out to be the finding, not a limitation of the check.
+#
+# The one thing worth building a Recipe around:
+#
+#   A 401 carries "data": [] in the body. Checked against
+#   api.giphy.com/v1/gifs/trending on 2026-09-01: no api_key at all and a
+#   twenty-character junk one answer byte-for-byte identically --
+#
+#     {"data": [], "meta": {"status": 401, "msg": "Unauthorized", "response_id": ""}}
+#
+#   -- and "data" is the same key a successful trending call answers with,
+#   holding the same kind of value an empty result set would. Code that
+#   checks status before looking at data is fine. Code that loops over
+#   data and treats "nothing came back" as "no trending gifs right now"
+#   sees exactly that on a call that never authenticated, and reports zero
+#   results forever rather than a credentials problem once.
+#
+# Two more, from the same two calls:
+#
+#   1. meta.status restates the HTTP status inside the body, on every
+#      response, success or failure. It is Giphy's own version of the
+#      three-way restatement EPSS does with status-code, minus the hyphen
+#      -- one fact, said twice, and a client reading meta.status instead
+#      of the response's own status code gets the same number by a
+#      different road.
+#   2. A completely unmapped path -- one outside /v1/gifs entirely --
+#      answers 404 from Kong, Giphy's gateway, in a shape that shares
+#      nothing with the one above: {"message": "no Route matched with
+#      those values", "request_id": "..."}. No data, no meta, and it
+#      arrives with no api_key sent at all, which means the gateway's own
+#      routing failure is checked before Giphy's application ever sees
+#      the request. This Recipe does not model that shape (see gaps): the
+#      finding is recorded here and in the verification report instead,
+#      because forcing it in trades a real but narrow fact for a body
+#      shape nothing in this Recipe's own routes would ever produce.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron checks the credential before it resolves a route (see
+#     internal/runtime/handler.go), so the auth failure above is one
+#     shared body for every route in a Recipe, decided before Cauldron
+#     knows which one was asked for. Real Giphy's own 401 varies by which
+#     endpoint was hit: the same unauthenticated call to a single-GIF
+#     path (/v1/gifs/<a realistic, 11-or-more-character id>) answers
+#     "data": {} -- an empty object, not an array -- checked on 2026-09-01
+#     against half a dozen ids of different lengths, and the split sits at
+#     eleven characters exactly (shorter answers "data": [], eleven or
+#     more answers "data": {}), for reasons this Recipe cannot explain and
+#     does not attempt to: it is almost certainly Kong's own route
+#     matching rather than anything Giphy's application decided, and nine
+#     of the ten shortest values tried are shorter than any id Giphy
+#     actually mints. This Recipe models the list shape, which is the one
+#     the task at hand exercises and the one Giphy's own reference docs
+#     show as the general "Error 4xx/5xx" example on every endpoint page,
+#     including the single-GIF one whose success shape is an object.
+#   - No route here answers "gif not found" for a well-formed id that does
+#     not exist. It could not be observed (every reachable call answered
+#     401 first, credential-free) and Giphy's docs do not say what a
+#     missing id answers beyond the same generic 4xx/5xx block reused
+#     everywhere -- which does not even say whether the status stays 401,
+#     moves to 404, or stays 200 the way a few "no results" APIs do.
+#     Declaring resource_missing here would be a guess wearing a citation,
+#     so the route falls through to Cauldron's own generic default instead
+#     of a Giphy-specific one.
+#   - response_id, the third member of meta, is always the empty string in
+#     every response captured for this Recipe. It is left out: it lives
+#     inside the same nested object as msg and status, and Cauldron's
+#     nested error style has exactly three named slots for that object
+#     (message, code, type) plus a Recipe-wide status field, all spoken
+#     for by msg and status here. Bending code_field into service as a
+#     fourth slot would need every error to force code: "" to keep it
+#     empty, which is more machinery than a field that never varies is
+#     worth.
+#   - No rate-limit headers of any kind were observed on any call, so none
+#     are declared. Giphy's docs describe request-per-day ceilings by key
+#     tier in prose, not as response headers.
+#   - Search, random and translate are not routed. All three were probed
+#     (credential-free, so all three also answered the trending shape) and
+#     nothing distinguishes them from trending at the wire level this
+#     Recipe can see, so adding routes for them would repeat the one
+#     shape under three more paths rather than add a finding.
+#   - Neither api.giphy.com nor developers.giphy.com serves a resolvable
+#     OpenAPI document at any of the conventional paths, so this Recipe
+#     has no upstream.spec and nothing was recorded with `cauldron drift`.
+#     The GIF, Images, Meta and Pagination object shapes below come from
+#     developers.giphy.com/docs/api/schema/ instead, and are marked
+#     documented rather than verified: nothing below that line was ever
+#     answered with a 200, because no credential was used to get one.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: giphy
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.giphy.com/docs/api/
+
+auth:
+  # Giphy takes the credential as a query parameter, not a header, so it
+  # travels in access logs and browser history -- the same reason Vimeo's
+  # equivalent-shaped concern is called out as a comment rather than
+  # reproduced. Reproducing the mechanism is the point of a Recipe.
+  scheme: query
+  param: api_key
+  keys:
+    - cauldron_giphy_fixture_key
+
+responses:
+  # msg/status/response_id travel inside meta on every response this
+  # Recipe answers, success or failure, because that is what Giphy sends.
+  success:
+    fields:
+      meta:
+        status: 200
+        msg: OK
+        response_id: ""
+  list:
+    style: wrapped
+    key: data
+    # Nested, because Giphy's pagination object sits beside data and meta
+    # rather than flattening its two counts to the top level.
+    count_field: pagination.total_count
+    page_count_field: pagination.count
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # {"meta": {"msg": ..., "status": ...}}, not {"error": {...}} -- the
+    # envelope name Giphy chose is the same one success answers use.
+    style: nested
+    key: meta
+    message_field: msg
+    code_field: "-"
+    type_field: "-"
+    # The restatement: every failure's meta.status carries the same number
+    # as the response line, which is the finding worth having a named
+    # mechanism for rather than a constant repeated in every error entry.
+    status_field: status
+
+resources:
+  gif:
+    id:
+      # A bare random string -- SendGrid's shape, not Stripe's prefixed
+      # one. Giphy's real ids run about eighteen characters; the fixtures
+      # below use ids of that length on purpose (see the fidelity gap
+      # above about what shorter ones do to the failure shape).
+      style: opaque
+      length: 18
+    fields:
+      # "By default, this is almost always GIF." -- developers.giphy.com.
+      type:
+        type: string
+        default: gif
+      slug:
+        type: string
+      url:
+        type: string
+      bitly_url:
+        type: string
+      embed_url:
+        type: string
+      username:
+        type: string
+      source:
+        type: string
+      # Y, G, PG, PG-13, R in the docs; Giphy's own examples send it
+      # lowercase on the wire.
+      rating:
+        type: string
+        default: g
+      title:
+        type: string
+      alt_text:
+        type: string
+      # Not RFC 3339: Giphy's own dates are "2026-06-02 10:14:00", a space
+      # rather than a T and no zone marker at all, which is why these are
+      # declared as plain strings rather than as the datetime type -- that
+      # type stamps an RFC 3339 value from the sandbox clock, and doing so
+      # here would silently fix the one thing worth knowing about the
+      # field. Documented from the schema page, not verified against a
+      # live 200.
+      import_datetime:
+        type: string
+      trending_datetime:
+        type: string
+      # Both left as maps rather than enumerated: images alone documents
+      # twenty rendition names, each carrying url/width/height/size/mp4/
+      # webp/frames, and modelling every one would describe a page of
+      # schema without adding a finding. The fixtures below seed three
+      # renditions, which is enough to show width and height travel as
+      # strings -- "480", not 480 -- and leaves the rest as the gap it is.
+      images:
+        type: map
+      user:
+        type: map
+
+routes:
+  - method: GET
+    path: /v1/gifs/trending
+    resource: gif
+    operation: list
+    pagination:
+      style: offset
+      limit: 25
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /v1/gifs/{id}
+    resource: gif
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    fields:
+      # The array a list route answers with, on a route that is not one.
+      # See the header comment for the object-shaped sibling this Recipe
+      # does not model.
+      data: []
+
+fixtures:
+  empty: {}
+
+  trending:
+    gif:
+      - id: l0MYt5jPR6QX5pnqM
+        type: gif
+        slug: cat-knocks-cup-off-table-l0MYt5jPR6QX5pnqM
+        url: https://giphy.com/gifs/l0MYt5jPR6QX5pnqM
+        bitly_url: https://gph.is/l0MYt5jPR6QX5pnqM
+        embed_url: https://giphy.com/embed/l0MYt5jPR6QX5pnqM
+        username: ""
+        source: https://example.com/cat-video
+        rating: g
+        title: Cat Knocks Cup Off Table GIF
+        alt_text: A tabby cat pushes a mug off a kitchen counter
+        import_datetime: "2026-08-30 09:12:00"
+        trending_datetime: "2026-08-31 06:00:00"
+        images:
+          original:
+            url: https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif
+            width: "480"
+            height: "270"
+            size: "1048576"
+          fixed_height:
+            url: https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/200.gif
+            width: "356"
+            height: "200"
+            size: "524288"
+          downsized:
+            url: https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy-downsized.gif
+            width: "480"
+            height: "270"
+            size: "262144"
+        user:
+          username: cauldron-fixtures
+          display_name: Cauldron Fixtures
+          avatar_url: https://media.giphy.com/avatars/cauldron-fixtures/avatar.gif
+      - id: 3o7abKhOpu0NwenH3O
+        type: gif
+        slug: warehouse-forklift-fail-3o7abKhOpu0NwenH3O
+        url: https://giphy.com/gifs/3o7abKhOpu0NwenH3O
+        bitly_url: https://gph.is/3o7abKhOpu0NwenH3O
+        embed_url: https://giphy.com/embed/3o7abKhOpu0NwenH3O
+        username: cauldron-fixtures
+        source: https://example.com/forklift-clip
+        rating: pg
+        title: Warehouse Forklift Fail GIF
+        alt_text: A forklift tips a pallet of boxes in a warehouse aisle
+        import_datetime: "2026-08-29 14:40:00"
+        trending_datetime: "2026-08-31 06:00:00"
+        images:
+          original:
+            url: https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif
+            width: "500"
+            height: "281"
+            size: "2097152"
+          fixed_height:
+            url: https://media.giphy.com/media/3o7abKhOpu0NwenH3O/200.gif
+            width: "356"
+            height: "200"
+            size: "786432"
+          downsized:
+            url: https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy-downsized.gif
+            width: "500"
+            height: "281"
+            size: "393216"
+        user:
+          username: cauldron-fixtures
+          display_name: Cauldron Fixtures
+          avatar_url: https://media.giphy.com/avatars/cauldron-fixtures/avatar.gif
+
+conformance:
+  # -- Verified: the auth failure, and that a missing key and a wrong one
+  #    are the same failure. --
+
+  - name: an unauthenticated trending call answers 401 with an empty array under data
+    source: https://api.giphy.com/v1/gifs/trending?limit=1
+    verified: "2026-09-01"
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/trending
+    expect:
+      status: 401
+      body:
+        # A list route's own key, holding a list route's own empty value --
+        # the shape a client already treats as "no trending gifs right now".
+        data: []
+        "meta.status": 401
+        "meta.msg": Unauthorized
+
+  - name: a junk api_key answers exactly the same failure as no key at all
+    source: https://api.giphy.com/v1/gifs/trending?limit=1&api_key=THIS_IS_JUNK_0000
+    verified: "2026-09-01"
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/trending
+      query:
+        api_key: THIS_IS_JUNK_0000
+    expect:
+      status: 401
+      body:
+        # Byte-for-byte the case above: missing and wrong are not two
+        # failures here, they are one failure reached two ways.
+        data: []
+        "meta.status": 401
+        "meta.msg": Unauthorized
+
+  - name: the same failure reaches a single-GIF route too, with the same array
+    source: https://api.giphy.com/v1/gifs/xyzxyzxyz
+    verified: "2026-09-01"
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/l0MYt5jPR6QX5pnqM
+    expect:
+      # Cauldron checks the credential before it resolves a route, so this
+      # is the one shape every route answers with. See the header comment
+      # for what a realistic-length id answers on the real API instead.
+      status: 401
+      body:
+        data: []
+        "meta.status": 401
+
+  # -- Documented from developers.giphy.com/docs/api/schema/, not
+  #    verified: nothing below this line was ever answered with a 200. --
+
+  - name: meta restates the HTTP status inside a successful body too
+    source: https://developers.giphy.com/docs/api/schema/
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/trending
+      query:
+        api_key: cauldron_giphy_fixture_key
+    expect:
+      status: 200
+      body:
+        "meta.status": 200
+        "meta.msg": OK
+        "data[0].id": l0MYt5jPR6QX5pnqM
+        "data[1].id": 3o7abKhOpu0NwenH3O
+        "pagination.count": 2
+        "pagination.total_count": 2
+
+  - name: image dimensions travel as strings, not numbers
+    source: https://developers.giphy.com/docs/api/schema/
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/trending
+      query:
+        api_key: cauldron_giphy_fixture_key
+    expect:
+      status: 200
+      body:
+        # "480", quoted, the same way EPSS quotes a probability and
+        # Cloudinary's version prefixes a URL: a client comparing this to
+        # a number never matches without parsing it first.
+        "data[0].images.original.width": "480"
+        "data[0].images.original.height": "270"
+
+  - name: a single GIF comes back as an object, not a one-item list
+    source: https://developers.giphy.com/docs/api/schema/
+    fixture: trending
+    request:
+      method: GET
+      path: /v1/gifs/l0MYt5jPR6QX5pnqM
+      query:
+        api_key: cauldron_giphy_fixture_key
+    expect:
+      status: 200
+      body:
+        "data.id": l0MYt5jPR6QX5pnqM
+        "data.rating": g
+        "meta.status": 200

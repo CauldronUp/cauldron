@@ -245,6 +245,7 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 		"UPS":                    "the parcel carrier, which merely spells the first three letters of Upstash",
 		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
 		"Wise Business":          "the business banking product, where wise is the transfers API",
+		"Codat":                  "accounting-data aggregation, an unrelated company that shares four letters with Coda",
 	}
 
 	raw, err := os.ReadFile(backlogPath)
