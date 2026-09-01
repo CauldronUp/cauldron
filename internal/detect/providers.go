@@ -5066,6 +5066,10 @@ func providers() []provider {
 			npm:    []string{"together-ai"},
 		},
 		{
+			recipe: "buttondown",
+			npm:    []string{"buttondown"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
