@@ -1075,7 +1075,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**266 more listings across 170 Recipes declare no paging at all**, and the
+**274 more listings across 174 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1525,7 +1525,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Seventy-four Recipes send at least one identifier as a number now, and each
+Seventy-five Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
