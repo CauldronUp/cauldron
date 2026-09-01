@@ -4106,6 +4106,13 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// A real client of this API. Note that tink on npm is a package
+			// manager sharing the name and nothing else, which is why Tink
+			// itself is in the backlog rather than here.
+			recipe: "openaq",
+			npm:    []string{"openaq"},
+		},
+		{
 			// The vendor's own two packages: hub for the registry API this Recipe
 			// describes, inference for the serving one it does not.
 			recipe: "huggingface",
