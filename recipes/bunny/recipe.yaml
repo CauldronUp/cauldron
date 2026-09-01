@@ -1,0 +1,662 @@
+# Bunny.net Recipe for Cauldron
+#
+# Two hosts, marketed as one product family, that turn out to share nothing
+# underneath. api.bunny.net (the management API -- Video Libraries, Pull
+# Zones, Storage Zones) answers from a server that calls itself
+# "BunnyCDN-MN1" and fails in flat {"ErrorKey", "Field", "Message"} objects.
+# video.bunnycdn.com (Stream -- the actual videos inside a library) answers
+# from "Kestrel" (.NET's own web server) and fails in a completely different
+# {"Success", "Message", "StatusCode"} shape. Different envelopes, different
+# field-name casing (PascalCase on api.bunny.net's Id/Name/VideoCount,
+# camelCase on video.bunnycdn.com's guid/videoLibraryId/status), and, per
+# the header of the CORS response itself, a different application entirely.
+# One Bunny account, two backends, checked live against both on the date
+# below with no account and no key.
+#
+# **This is the async pair the task exists to find.** A Video Library
+# (api.bunny.net) is synchronous: bunny-go, a typed third-party client,
+# documents Add as "On success the created VideoLibrary is returned" -- the
+# full record, immediately, no pending state, because a Video Library is a
+# container and containers do not encode. A Video (video.bunnycdn.com) is
+# not: creating one registers a placeholder that starts at status 0
+# (Created) with no length, no width, no height, no availableResolutions and
+# no encodeProgress, because nothing has been uploaded yet, let alone
+# encoded. Bunny's own reference page states the full enum for what happens
+# next: 0 Created, 1 Uploaded, 2 Processing, 3 Transcoding, 4 Finished,
+# 5 Error, 6 UploadFailed, 7 JitSegmenting, 8 JitPlaylistsCreated -- eight
+# states between "a record exists" and "a caller can play this," and
+# encodeProgress is the field that moves while status sits at Processing or
+# Transcoding. This Recipe cannot animate that percentage -- see the
+# fidelity gaps -- but it can and does serve the states either side of it,
+# because Bunny's own docs name every one of them.
+#
+# Compare the rest of the collection's answers to the same question:
+#
+#   - pandadoc/recipe.yaml is this Recipe's closest relative: the *same*
+#     resource, fetched twice at the *same* id, with one field -- status --
+#     moved between calls, and the provider's own docs naming the field to
+#     watch. Bunny's video.status is PandaDoc's document.status wearing a
+#     number instead of a dotted string.
+#   - temporal/recipe.yaml hands back a *different* object on create -- an
+#     AsyncOperation, polled at a route the created resource merely points
+#     to. Bunny does not: POST .../videos returns the video itself, at
+#     status 0, the same object GET returns later at status 4.
+#   - turso/recipe.yaml's create response is truncated to a projection with
+#     no state field anywhere. Bunny's video.status is the opposite of
+#     careless about this -- it is declared, enumerated, and present on
+#     every video this Recipe found, new or finished.
+#
+# **The playback URL genuinely 404s while status has not reached Finished.**
+# Not observed against a real video -- no account exists to create one --
+# but observed against a video that can never exist: GET
+# iframe.mediadelivery.net/embed/12345/00000000-0000-0000-0000-000000000000,
+# a host outside this Recipe's scope (only api.bunny.net and
+# video.bunnycdn.com are modelled), answered HTTP 200 with an HTML page
+# whose own <title> reads "404" -- the failure is real and lives inside the
+# 200, which is its own small finding about trusting a status code on this
+# vendor. Recorded here for the context it gives the group's question and
+# not modelled as a route, because the host is out of scope and because
+# every real "not yet" case this Recipe can actually verify is on the two
+# hosts it is scoped to.
+#
+# **AccessKey, not Authorization -- verified, not assumed.** Every route on
+# both hosts was probed with `Authorization: Bearer junktoken12345` and
+# answered exactly as if no credential had been sent at all: 401
+# {"ErrorKey":"authentication.failed","Field":null,"Message":"Authentication
+# is required."} on api.bunny.net, {"Success":false,"Message":"Authentication
+# has been denied for this request.","StatusCode":401} on
+# video.bunnycdn.com. Neither host so much as glances at Authorization. The
+# header genuinely checked is AccessKey, and a well-formed-looking junk value
+# there answers byte-identical to no AccessKey header at all, on both hosts,
+# checked both ways -- so absent, malformed and rejected collapse into one
+# sentence per host and this Recipe sets none of auth.absent_error /
+# malformed_error / rejected_error, which is the honest reading of having
+# looked and found no distinction, not of not having looked.
+#
+# **Both hosts route before they authenticate.** A path neither host has at
+# all -- /totally-bogus-endpoint-xyz -- 404s with no AccessKey and with a
+# junk one alike, byte-identical either way, on both hosts. A wrong method
+# on a real path -- PATCH /videolibrary, PATCH .../videos -- answers a real
+# 405 with a real Allow header (GET, POST on both), again with no credential
+# needed to see it. auth.after_routing: true on both hosts, verified in both
+# directions on both.
+#
+# **A bodyless POST on api.bunny.net is a 500, not a 401.** POST
+# /videolibrary with no Authorization, no AccessKey and zero bytes of body
+# answered 500 {"ErrorKey":null,"Field":null,"Message":"Unexpected error
+# occured. Pleast try again later. RequestId: ..."} -- the misspelling
+# ("Pleast") is Bunny's own, quoted verbatim, checked twice to rule out a
+# transcription slip. The instant a body is attached -- even `{"Name":
+# "test"}` with still no credential -- the answer reverts to the ordinary
+# 401 authentication.failed. Something in the request pipeline dereferences
+# the body before the credential is ever checked, and an empty body breaks
+# it. This is a real, reproducible bug rather than a documented contract, so
+# it is declared as a named error and reached only by arming it for one
+# conformance case -- the device mezmo/recipe.yaml and rootly/recipe.yaml
+# each use for a provider's second failure shape this format's routing
+# cannot trigger organically, because Cauldron's router has no concept of
+# "this method matched but the body was zero bytes" to switch on.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No worked JSON example exists anywhere in Bunny's published reference
+#     for either a Video Library or a Video object -- unlike Transloadit,
+#     whose docs supply two complete real bodies (see transloadit/recipe.yaml).
+#     Bunny's pages give field names, types and (for video.status) the full
+#     enum, and nothing else: no example dateUploaded, no example length, no
+#     example availableResolutions string. This Recipe therefore proves the
+#     *shape* -- every field below is real, named and typed from
+#     bunny.net/docs/reference/video_getvideo, video_createvideo and
+#     videolibrarypublic_index/2, cross-checked against
+#     github.com/simplesurance/bunny-go's typed VideoLibrary struct -- and
+#     populates only the values this Recipe can actually defend: the status
+#     enum's meaning, and the identifiers this Recipe itself mints. length,
+#     width, height, framerate, availableResolutions, thumbnailFileName and
+#     encodeProgress are declared and never given a fixture value anywhere,
+#     including on the Finished video, rather than asserting a plausible
+#     number nobody wrote down.
+#   - VideoLibraryModel's real shape is enormous -- DRM, watermarking, per-
+#     resolution bitrates, captions styling, player theming -- and this
+#     Recipe declares nine of roughly sixty documented fields: the ones that
+#     say what a library is, not how its player looks.
+#   - GET /videolibrary without a `page` query parameter is documented, by a
+#     third-party client's own source comment rather than by Bunny itself
+#     ("if [page] isn't [>=1], bunny.net will send a different response JSON
+#     object, that contains only a single Object, without items and
+#     paginations fields" -- github.com/simplesurance/bunny-go's
+#     resource_list.go), to answer a different, undocumented shape than the
+#     paginated one this Recipe serves. Stated rather than served: the exact
+#     shape of that second response was not itself citable anywhere, only
+#     that one exists.
+#   - Update and delete are not modelled on either resource. Every route
+#     here is a GET, a LIST or a CREATE.
+#   - Collections, chapters, moments, captions, DRM, watermark overlays and
+#     the whole webhook-notification side of Stream are entirely absent.
+#   - Pull Zones and Storage Zones, api.bunny.net's other two management
+#     resources, are not modelled. This Recipe is about the Video Library /
+#     Video pair specifically, because that pair is where the async finding
+#     lives.
+#
+# Every case below carrying `verified: "2026-09-01"` was called against
+# api.bunny.net or video.bunnycdn.com exactly as shown, that day, with no
+# account and no key. Every other case was read from bunny.net/docs/reference
+# and github.com/simplesurance/bunny-go and says so by carrying no verified
+# date. Keys below are fixtures, not secrets.
+
+recipe: bunny
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.bunny.net/reference/bunnynet-api-overview
+
+auth:
+  # Genuinely one header (AccessKey) checked after routing on both hosts,
+  # with absent/malformed/rejected all collapsing to one sentence -- see the
+  # header. Expressed as scheme: none plus matches_header on every route,
+  # the device temporal/recipe.yaml uses for the same shape of reason: a
+  # single Recipe-wide scheme could carry only one of the two hosts'
+  # envelopes, and this Recipe needs both, verified, at once.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: Message
+    code_field: ErrorKey
+    fields:
+      Field: null
+  list:
+    style: wrapped
+  resource:
+    style: bare
+
+resources:
+  # api.bunny.net. Field names and casing are Bunny's own (PascalCase),
+  # cross-checked against bunny-go's typed VideoLibrary struct -- see the
+  # header for why no example values exist to cite beyond the ones this
+  # Recipe mints.
+  video_library:
+    collection: Items
+    id:
+      style: numeric
+      field: Id
+      type: number
+    fields:
+      Name:
+        type: string
+      VideoCount:
+        type: integer
+        default: 0
+      TrafficUsage:
+        type: integer
+        default: 0
+      StorageUsage:
+        type: integer
+        default: 0
+      DateCreated:
+        type: datetime
+      ReplicationRegions:
+        type: list
+      PullZoneId:
+        type: integer
+        null_when_unset: true
+      StorageZoneId:
+        type: integer
+        null_when_unset: true
+
+  # video.bunnycdn.com. Field names and casing are Bunny's own (camelCase) --
+  # note the contrast with video_library above, on the same account, on what
+  # marketing presents as the same product.
+  video:
+    collection: items
+    id:
+      style: uuid
+      field: guid
+    fields:
+      videoLibraryId:
+        type: integer
+      title:
+        type: string
+      dateUploaded:
+        type: datetime
+      views:
+        type: integer
+        default: 0
+      isPublic:
+        type: boolean
+        default: false
+      # 0 Created, 1 Uploaded, 2 Processing, 3 Transcoding, 4 Finished,
+      # 5 Error, 6 UploadFailed, 7 JitSegmenting, 8 JitPlaylistsCreated --
+      # the full enum bunny.net/docs/reference/video_getvideo declares. A
+      # freshly created video starts here, at 0, per
+      # bunny.net/docs/reference/video_createvideo.
+      status:
+        type: integer
+        default: 0
+      # Declared, proven absent on a just-created video, and never given a
+      # value on any fixture in this Recipe -- see the fidelity gaps for why
+      # a Finished video's real number is not asserted either. Genuinely
+      # absent rather than null_when_unset: Bunny's own reference gives no
+      # worked example showing whether it sends these as null or omits them,
+      # and this Recipe does not claim the one it did not check.
+      length:
+        type: integer
+      width:
+        type: integer
+      height:
+        type: integer
+      framerate:
+        type: number
+      # "The available resolutions of the video," nullable. Absent until
+      # encoding has produced at least one.
+      availableResolutions:
+        type: string
+      thumbnailFileName:
+        type: string
+      hasMP4Fallback:
+        type: boolean
+        default: false
+      # "The current encode progress of the video." Not modelled with any
+      # value anywhere in this Recipe -- see the fidelity gaps. Declaring it
+      # proves the field is real without asserting a percentage nothing
+      # cited pins.
+      encodeProgress:
+        type: integer
+
+routes:
+  - method: GET
+    path: /videolibrary
+    resource: video_library
+    operation: list
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+    pagination:
+      style: page
+      limit: 1000
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /videolibrary
+    error: authentication_error
+
+  - method: GET
+    path: /videolibrary/{id}
+    resource: video_library
+    operation: get
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+
+  - method: GET
+    path: /videolibrary/{id}
+    error: authentication_error
+
+  # 200, not 201 -- "On success the created VideoLibrary is returned," the
+  # full record, per bunny-go. Synchronous, and the direct contrast this
+  # Recipe exists to draw against the video route below.
+  - method: POST
+    path: /videolibrary
+    resource: video_library
+    operation: create
+    status: 200
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+
+  - method: POST
+    path: /videolibrary
+    error: authentication_error
+
+  - method: GET
+    path: /library/{libraryId}/videos
+    resource: video
+    operation: list
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+    pagination:
+      style: page
+      limit: 100
+      limit_param: itemsPerPage
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /library/{libraryId}/videos
+    error: stream_authentication_error
+
+  - method: GET
+    path: /library/{libraryId}/videos/{id}
+    resource: video
+    operation: get
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+
+  - method: GET
+    path: /library/{libraryId}/videos/{id}
+    error: stream_authentication_error
+
+  # 200, status 0 (Created) -- see the header and the resource default.
+  - method: POST
+    path: /library/{libraryId}/videos
+    resource: video
+    operation: create
+    status: 200
+    matches_header:
+      AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+
+  - method: POST
+    path: /library/{libraryId}/videos
+    error: stream_authentication_error
+
+errors:
+  authentication_error:
+    status: 401
+    message: Authentication is required.
+    code: authentication.failed
+
+  # video.bunnycdn.com's own envelope -- entirely different keys from
+  # api.bunny.net's, on the same account. See the header.
+  stream_authentication_error:
+    status: 401
+    style: flat
+    message_field: Message
+    code_field: "-"
+    message: Authentication has been denied for this request.
+    fields:
+      Success: false
+      StatusCode: 401
+
+  # Real, live, verified, byte-identical Message quoted -- including
+  # Bunny's own misspelling. Reached only by arming it; see the header and
+  # the route above for why routing alone cannot trigger it.
+  empty_body_server_error:
+    status: 500
+    message: "Unexpected error occured. Pleast try again later. RequestId: cauldron000000"
+    code: "-"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    video_library:
+      - id: 308006
+        Id: 308006
+        Name: marketing-clips
+        VideoCount: 2
+        TrafficUsage: 41802193
+        StorageUsage: 992481933
+        DateCreated: "2026-06-01T09:00:00Z"
+        ReplicationRegions:
+          - DE
+          - US-NY
+        PullZoneId: 4110022
+        StorageZoneId: 990011
+
+    video:
+      # Just created, per bunny.net/docs/reference/video_createvideo:
+      # status 0, nothing else populated because nothing has been uploaded
+      # or encoded yet. Not observed -- no account exists to create one.
+      - id: 8f14e45f-ceea-467e-adde-3fb5c96725db
+        guid: 8f14e45f-ceea-467e-adde-3fb5c96725db
+        videoLibraryId: 308006
+        title: onboarding-draft.mov
+        dateUploaded: "2026-08-30T14:02:00Z"
+        views: 0
+        isPublic: false
+        status: 0
+
+      # Finished. The state that actually plays -- see the header for why
+      # length/width/height/availableResolutions still carry no value here
+      # even at this state.
+      - id: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+        guid: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+        videoLibraryId: 308006
+        title: product-launch-2026.mp4
+        dateUploaded: "2026-08-14T10:00:00Z"
+        views: 812
+        isPublic: true
+        status: 4
+        hasMP4Fallback: true
+
+conformance:
+  - name: no AccessKey at all is authentication.failed
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /videolibrary
+    expect:
+      status: 401
+      body:
+        ErrorKey: authentication.failed
+        Message: Authentication is required.
+        Field: null
+
+  - name: a junk AccessKey answers the byte-identical body
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /videolibrary
+      headers:
+        AccessKey: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        ErrorKey: authentication.failed
+        Message: Authentication is required.
+
+  - name: and Authorization is not the header this host checks at all
+    # Bearer junktoken12345 in Authorization -- no AccessKey anywhere --
+    # answers exactly as if nothing had been sent. Live.
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /videolibrary
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        ErrorKey: authentication.failed
+
+  - name: an unrouted path 404s with no credential needed to see it
+    source: https://api.bunny.net/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+    expect:
+      status: 404
+
+  - name: a wrong method on a real path is a real 405 with a real Allow header, no credential needed
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /videolibrary
+    expect:
+      status: 405
+      headers:
+        Allow: "GET, POST"
+
+  - name: a POST with an actual body reverts to the ordinary 401, credential still absent
+    # {"Name":"test"}, no AccessKey. Live -- the contrast case for the
+    # bodyless 500 below.
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /videolibrary
+      json:
+        Name: test
+    expect:
+      status: 401
+      body:
+        ErrorKey: authentication.failed
+
+  - name: a bodyless POST is a 500, not a 401 -- a real bug, armed rather than routed
+    # Live: POST /videolibrary, no Authorization, no AccessKey, zero-byte
+    # body. See the header for why this cannot be reached by ordinary
+    # routing in this format.
+    source: https://api.bunny.net/videolibrary
+    verified: "2026-09-01"
+    fixture: empty
+    arm: empty_body_server_error
+    request:
+      method: POST
+      path: /videolibrary
+    expect:
+      status: 500
+      body:
+        Message: "Unexpected error occured. Pleast try again later. RequestId: cauldron000000"
+
+  - name: video.bunnycdn.com fails with an entirely different envelope, same account
+    source: https://video.bunnycdn.com/library/308006/videos
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /library/308006/videos
+    expect:
+      status: 401
+      body:
+        Success: false
+        Message: Authentication has been denied for this request.
+        StatusCode: 401
+
+  - name: and a junk AccessKey there answers byte-identical too
+    source: https://video.bunnycdn.com/library/308006/videos
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /library/308006/videos
+      headers:
+        AccessKey: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        Success: false
+        Message: Authentication has been denied for this request.
+
+  - name: video.bunnycdn.com also routes before it authenticates
+    source: https://video.bunnycdn.com/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+    expect:
+      status: 404
+
+  - name: and a wrong method there is a real 405 with Allow, no credential needed
+    source: https://video.bunnycdn.com/library/308006/videos
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /library/308006/videos
+    expect:
+      status: 405
+      headers:
+        Allow: "GET, POST"
+
+  - name: a Video Library create returns the full record immediately, synchronous
+    # bunny-go: "On success the created VideoLibrary is returned." Not
+    # observed -- no account exists to create one.
+    source: https://bunny.net/docs/reference/videolibrarypublic_add
+    fixture: empty
+    request:
+      method: POST
+      path: /videolibrary
+      headers:
+        AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+      json:
+        Name: new-library
+    expect:
+      status: 200
+      body:
+        Name: new-library
+        VideoCount: 0
+        TrafficUsage: 0
+
+  - name: a just-created video starts at status 0 with nothing else populated
+    # bunny.net/docs/reference/video_createvideo: initial status is 0
+    # (Created). Not observed -- no account exists to create one.
+    source: https://bunny.net/docs/reference/video_createvideo
+    fixture: empty
+    request:
+      method: POST
+      path: /library/308006/videos
+      headers:
+        AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+      json:
+        title: new-upload.mov
+    expect:
+      status: 200
+      body:
+        status: 0
+      absent:
+        - length
+        - availableResolutions
+        - encodeProgress
+
+  - name: the same video, once Finished, is the only state this Recipe declares as playable
+    # This Recipe's own fixture, not a worked example -- see the fidelity
+    # gaps for why no real Finished video's field values are cited.
+    source: https://bunny.net/docs/reference/video_getvideo
+    fixture: small-account
+    request:
+      method: GET
+      path: /library/308006/videos/3f2504e0-4f89-11d3-9a0c-0305e82c3301
+      headers:
+        AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+    expect:
+      status: 200
+      body:
+        status: 4
+        title: product-launch-2026.mp4
+
+  - name: a video mid-lifecycle is still status 0 -- Created is not Finished
+    source: https://bunny.net/docs/reference/video_getvideo
+    fixture: small-account
+    request:
+      method: GET
+      path: /library/308006/videos/8f14e45f-ceea-467e-adde-3fb5c96725db
+      headers:
+        AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+    expect:
+      status: 200
+      body:
+        status: 0
+        title: onboarding-draft.mov
+      absent:
+        - length
+        - encodeProgress
+
+  - name: the Video Library and the Video use different field-name casing on the same account
+    source: https://bunny.net/docs/reference/videolibrarypublic_index2
+    fixture: small-account
+    request:
+      method: GET
+      path: /videolibrary/308006
+      headers:
+        AccessKey: cauldron-bunny-fixture-accesskey-0000000000
+    expect:
+      status: 200
+      body:
+        Id: 308006
+        Name: marketing-clips
+      absent:
+        - id
+        - name
