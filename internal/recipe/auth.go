@@ -218,13 +218,21 @@ type Auth struct {
 	//   Baserow  is a third thing again: URL pattern first, then the
 	//            credential, then the specific id and the method. A wrong
 	//            method on a real path answers 401 rather than 405.
+	//   Northflank splits within itself. Its shallow routes check the
+	//            credential first; its nested build route checks the
+	//            **body's shape** first and answers 400 to a request
+	//            carrying no credential at all. So whether you are told
+	//            your credential is missing depends on whether your JSON
+	//            parsed, and the answer differs between two routes on one
+	//            host -- which no Recipe-wide setting can express at all.
 	//
-	// The last three would each need the credential's state to survive a
-	// route match without gating it, which is a larger change than a
-	// boolean and is not obviously worth making for three providers. What
-	// is worth doing is what those Recipes do: say so in the file, so the
-	// next reader knows the emulator is approximating rather than that the
-	// provider is simple.
+	// The last four would each need the credential's state to survive a
+	// route match without gating it -- and Northflank's would need it to
+	// survive body validation as well, per route. That is a larger change
+	// than a boolean and is not obviously worth making for four providers.
+	// What is worth doing is what those Recipes do: say so in the file, so
+	// the next reader knows the emulator is approximating rather than that
+	// the provider is simple.
 	AfterRouting bool `yaml:"after_routing"`
 }
 
