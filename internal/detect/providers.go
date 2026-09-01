@@ -4182,6 +4182,18 @@ func providers() []provider {
 			npm:    []string{"cronitor"},
 		},
 		{
+			// A third-party wrapper; Serper ships no SDK of its own.
+			recipe: "serper",
+			npm:    []string{"serper"},
+		},
+		{
+			// A third-party wrapper. Brave publishes no JavaScript client,
+			// and the other results for the name are MCP servers rather
+			// than libraries a project would depend on.
+			recipe: "bravesearch",
+			npm:    []string{"brave-search"},
+		},
+		{
 			// The vendor's own Node SDK.
 			recipe: "scrapingbee",
 			npm:    []string{"scrapingbee"},
