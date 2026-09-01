@@ -1,0 +1,525 @@
+# Optimizely Recipe for Cauldron
+#
+# Optimizely sells three separate products under one name, and this Recipe
+# models exactly one of them: **Optimizely Feature Experimentation** (the
+# current SDK-based flagging-and-experimentation product, formerly "Full
+# Stack"), as reached through its shared account-management host,
+# api.optimizely.com/v2. It is not modelling **Optimizely Web
+# Experimentation** (the older, page-and-campaign-based product -- and see
+# below, its data model leaks through the same host anyway), and it is not
+# modelling **Optimizely CMS** (formerly Episerver, a content-management
+# product with its own separate codebase, admin surface and API, sharing
+# nothing with either experimentation product but the parent company's
+# name). Conflating any of these would be the obvious mistake this header
+# exists to prevent.
+#
+# The question this Recipe's group was sent to answer: does the API expose a
+# visitor's assignment, the rule that produced it, or only the result -- and
+# can a caller reproduce an assignment without calling. For Optimizely
+# Feature Experimentation the answer is that the SDK never calls for it at
+# all.
+#
+# **Bucketing is MurmurHash3 over the user id and the experiment id, seeded
+# with 1, computed in memory, and Optimizely's own documentation says so in
+# these words:** "The SDK uses the MurmurHash function to hash the user ID
+# and experiment ID into an integer... That integer maps to one of 10,000
+# buckets, and each bucket corresponds to a variation (or no variation, if
+# the user falls outside the experiment's traffic allocation)... Because
+# bucketing happens in memory, there is no network call to an external
+# service... Because MurmurHash is deterministic, the same user ID always
+# maps to the same bucket, [so] a returning user always sees the same
+# variation across sessions and devices" -- quoted from
+# https://docs.developers.optimizely.com/feature-experimentation/docs/how-bucketing-works-feature-experimentation.md.
+# A `bucketingId` can stand in for the user id, which is the "salt" half of
+# the question this group was sent to answer: yes, exposed, named, and
+# documented in
+# https://docs.developers.optimizely.com/feature-experimentation/docs/bucketing-ids.md.
+# So a caller who has the datafile (the JSON configuration every SDK
+# downloads once and evaluates against locally) and a user id can reproduce
+# any assignment offline, with no request to Optimizely at all -- the
+# datafile carries the traffic-allocation ranges the hash is compared
+# against, and the algorithm producing the hash is public.
+#
+# **There is no REST decide/activate endpoint on api.optimizely.com.** The
+# only place Optimizely exposes one over HTTP is Optimizely Agent -- "a
+# stand-alone, open-source microservice," POST /v1/decide, request body
+# `{"userId": ..., "userAttributes": ...}`, response an OptimizelyDecision
+# `{flagKey, ruleKey, variationKey, enabled, variables, userContext,
+# reasons}` (https://docs.developers.optimizely.com/feature-experimentation/reference/decide).
+# Agent is not a multi-tenant service reachable without an account the way
+# api.optimizely.com is: it is software a customer deploys themselves,
+# configured with their own SDK key, and there is no public instance this
+# investigation could probe unauthenticated the way every other endpoint in
+# this Recipe was probed. It is documented here and not modelled as a route
+# for exactly that reason -- see the fidelity gaps.
+#
+# **A visitor whose experiment has ended gets nothing preserved -- the SDK
+# has nothing to preserve.** "The JavaScript SDK is stateless and relies on
+# deterministic bucketing to return consistent assignments" by default;
+# implementing a UserProfileService is "only necessary if you want to keep
+# variation assignments sticky even when experiment conditions are changed
+# while it is running" -- quoted from
+# https://docs.developers.optimizely.com/feature-experimentation/docs/implement-a-user-profile-service-for-the-javascript-sdk.md.
+# So without one, calling decide() again for a visitor who was bucketed into
+# an experiment that has since ended does not return their old assignment:
+# it recomputes fresh against the CURRENT datafile, in which the ended
+# experiment's rule no longer exists to be recomputed against. There is no
+# REST endpoint anywhere in this product that answers "what did visitor X
+# see in experiment Y" after the fact -- that is either an analytics-event
+# lookup outside this API, or a UserProfileService a customer built and
+# hosts themselves.
+#
+# The account-management surface this Recipe actually calls turned out to
+# have its own, unrelated finding: **one host, three different shapes of
+# 401, and a fourth response that isn't an auth failure at all wearing an
+# auth-adjacent disguise.**
+#
+# Struck live against api.optimizely.com with no account and no token,
+# 2026-09-01:
+#
+#   GET /v2/projects                 no header    -> 401 {"code":
+#     "invalid_credentials", "message": "Missing authorization header"}
+#   GET /v2/projects                 Bearer junk  -> 401 {"code":
+#     "invalid_credentials", "message": "Malformed or Invalid Authorization
+#     header."}
+#   GET /v2/experiments/{id}         (same two messages, same two shapes)
+#   GET /v2/environments             (same two messages, same two shapes)
+#   GET /v2/this-is-not-a-real-path  (same two messages, same two shapes --
+#     see below)
+#   PATCH, DELETE on a real path     (same two messages, same two shapes --
+#     see below)
+#
+# Every one of those routes and methods answers exactly two messages --
+# absent and wrong are told apart, and malformed and rejected are not: a
+# bearer token with no "Bearer " prefix at all gets the identical "Malformed
+# or Invalid Authorization header." a well-formed-but-wrong bearer token
+# does. That is one clean two-tier split, running the same way across every
+# resource this Recipe tried, old (`projects`) and new (`environments`)
+# alike -- Optimizely's Web-era and Feature-Experimentation-era resources
+# share one credential gate even though (see below) they do not share
+# everything else.
+#
+# **Except GET /v2/experiments without a campaign_id or project_id query
+# parameter, which is gated by neither of those two messages at all:**
+#
+#   GET /v2/experiments              no header    -> 400 {"code": 400,
+#     "message": "Missing required parameters: campaign_id or project_id"}
+#   GET /v2/experiments              Bearer junk  -> the identical 400
+#   GET /v2/experiments?campaign_id=1  no header  -> 401 {"code": 401,
+#     "message": "Missing or invalid authorization"}
+#   GET /v2/experiments?campaign_id=1  Bearer junk -> the identical 401
+#
+# Struck four ways, every time. Without the query parameter, no credential
+# is examined at all -- a missing parameter is a 400 whether or not anything
+# was sent to authenticate. With it, absent and wrong collapse onto ONE
+# message, where every other route in this Recipe tells them apart. `code`
+# is even a different JSON type here -- the integer 400 or 401, where the
+# other three shapes all send the string "invalid_credentials" -- so a
+# client written against one auth failure on this host and handed the other
+# reads a different type out of the same field name. `campaign_id` is also
+# the tell for which product era answers: campaigns are a Web Experimentation
+# concept with no equivalent in Feature Experimentation's flags-and-rules
+# model, and this one route is where that older data model surfaces on a
+# host this Recipe otherwise treats as Feature Experimentation's.
+#
+# **Routing resolves after authentication, unconditionally, and it does not
+# change with the method.** A path this Recipe declares nowhere -- struck
+# with no credential and with a wrong one -- answers the identical 401 a
+# real path with a bad credential does, never a 404: this host will not say
+# whether a path exists until a credential has been presented and accepted.
+# PATCH and DELETE on a real, existing path answer the identical 401 too,
+# never a 405: whether the method is even a subject worth discussing is also
+# gated behind the credential. This is Optimizely's whole ordering in one
+# sentence -- credential first, always, for every path and every method
+# without exception -- the same arrangement FireHydrant's Recipe in this
+# collection already names, and the reverse of Fireworks' and this group's
+# own Elastic Cloud Recipe, both of which resolve routing before ever
+# looking at a credential.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API token was ever requested,
+#     guessed or used. Every route in this Recipe is an auth or
+#     parameter-validation failure, struck live and carrying a `verified:`
+#     date; no success response for any resource (experiment, project, flag,
+#     environment) is modelled, because no worked example of one exists
+#     anywhere this investigation could read without an account, and this
+#     collection's rule is that a schema with no worked example is reported
+#     in prose rather than turned into an invented id or key.
+#   - No upstream.spec is recorded. Optimizely's REST reference pages
+#     (docs.developers.optimizely.com) are rendered from an OpenAPI
+#     description this investigation could not locate as one fetchable
+#     document -- the same gap Census's and FireHydrant's Recipes in this
+#     collection state for the same reason.
+#   - Optimizely Agent's POST /v1/decide is documented above and not routed:
+#     it is self-hosted software with no public multi-tenant instance this
+#     investigation could reach the way every other route here was reached.
+#   - GET /v2/experiments?campaign_id=<value> only reproduces the collapsed
+#     401 for the one literal value this Recipe actually sent
+#     (`campaign_id=1`). Cauldron's matches_query matches one declared
+#     value, not any value of the parameter, so a request naming a different
+#     campaign_id falls through to this Recipe's missing_required_parameters
+#     400 instead of the real host's 401 -- the identical approximation
+#     Flagsmith's Recipe in this collection states for its own `feature`
+#     query parameter.
+#   - Only the exact credential bytes this Recipe actually sent are routed
+#     to their real sentence. An untested wrong Authorization header falls
+#     to the absent-credential fallback rather than the malformed/invalid
+#     one -- the same approximation Koyeb's Recipe in this collection
+#     accepts for the same reason: Cauldron's matches_header compares bytes,
+#     not shape.
+#   - Every response also carries a fresh "uuid" field identifying the
+#     request, different on every call; not reproduced here, the same
+#     omission Fireworks' Recipe in this collection states for its own
+#     per-request id, for the same reason -- a conformance suite needs a
+#     value to assert and this is not one any fixture can hold honestly.
+#   - flags, environments, campaigns, audiences, events and attributes are
+#     real top-level resources on this host and are not modelled beyond the
+#     one auth-gate case each proves. This Recipe is the auth/routing
+#     surface plus the decide/bucketing finding the group it belongs to was
+#     sent to establish, not a full account-management client.
+
+recipe: optimizely
+capability: flags
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.developers.optimizely.com/feature-experimentation/reference
+
+# scheme: none, with every route hand-declaring what it matches on. The
+# ordinary bearer-verdict engine would apply one credential check before
+# every route is even considered, which is right for every route in this
+# Recipe except GET /v2/experiments without its query parameter -- there,
+# the live host answers a 400 that has nothing to do with the credential at
+# all. Elastic Cloud's and Koyeb's Recipes in this collection make the
+# identical trade for the identical reason: a host whose ordering is not one
+# Recipe-wide setting needs every route to say what it does for itself.
+auth:
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+routes:
+  # The one route this Recipe found gated by neither of the host's usual two
+  # messages. No query parameter at all: refused for the parameter, not the
+  # credential, whether or not one was sent.
+  - method: GET
+    path: /v2/experiments
+    error: missing_required_parameters
+
+  # The same path, the parameter satisfied: gated now, but by a THIRD
+  # message that collapses absent and wrong into one, with an integer code
+  # where every other route on this host sends a string. See the header.
+  - method: GET
+    path: /v2/experiments
+    matches_query:
+      campaign_id: "1"
+    error: experiments_list_collapsed
+
+  # /v2/projects -- the plain, Web-era-and-Feature-Experimentation-era-alike
+  # resource collection. More specific matches_header routes outrank the
+  # plain fallback below regardless of write order, the rule Koyeb's and
+  # Census's Recipes in this collection also rely on.
+  - method: GET
+    path: /v2/projects
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: GET
+    path: /v2/projects
+    matches_header:
+      # No "Bearer " prefix at all -- the exact bytes this Recipe sent live.
+      # The identical message the well-formed wrong token above gets.
+      Authorization: junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: GET
+    path: /v2/projects
+    error: missing_auth_header
+
+  # /v2/environments -- a Feature-Experimentation-only resource, to show the
+  # same two-tier gate is not projects-specific.
+  - method: GET
+    path: /v2/environments
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: GET
+    path: /v2/environments
+    error: missing_auth_header
+
+  # /v2/experiments/{id} -- addressed by id, the route this group's
+  # ended-experiment question would have to reach if this product exposed a
+  # per-visitor answer at all. It does not; see the header.
+  - method: GET
+    path: /v2/experiments/{id}
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: GET
+    path: /v2/experiments/{id}
+    error: missing_auth_header
+
+  # A path this Recipe declares nowhere else. Gated the identical way a real
+  # path is -- never a 404 -- which is the routing-vs-auth finding itself.
+  - method: GET
+    path: /v2/this-is-not-a-real-endpoint
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: GET
+    path: /v2/this-is-not-a-real-endpoint
+    error: missing_auth_header
+
+  # A real path, the wrong method. Gated the identical way, never a 405 --
+  # the method is not even a subject until a credential is accepted.
+  - method: PATCH
+    path: /v2/experiments
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_auth_header
+
+  - method: PATCH
+    path: /v2/experiments
+    error: missing_auth_header
+
+  # A second method, to show the ordering is not PATCH-specific.
+  - method: DELETE
+    path: /v2/experiments
+    error: missing_auth_header
+
+  # POST is gated the identical way GET is, once the length quirk nginx
+  # itself imposes on every bodyless POST is worked around -- see the
+  # conformance case.
+  - method: POST
+    path: /v2/experiments
+    error: missing_auth_header
+
+errors:
+  missing_auth_header:
+    status: 401
+    code: invalid_credentials
+    message: Missing authorization header
+
+  invalid_auth_header:
+    status: 401
+    code: invalid_credentials
+    message: Malformed or Invalid Authorization header.
+
+  missing_required_parameters:
+    status: 400
+    code: "400"
+    message: "Missing required parameters: campaign_id or project_id"
+
+  experiments_list_collapsed:
+    status: 401
+    code: "401"
+    message: Missing or invalid authorization
+
+conformance:
+  - name: without its query parameter, the experiments list is refused for the parameter, not the credential
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/experiments
+    expect:
+      status: 400
+      body:
+        code: 400
+        message: "Missing required parameters: campaign_id or project_id"
+
+  - name: and a credential attached changes nothing about that
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/experiments
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 400
+      body:
+        message: "Missing required parameters: campaign_id or project_id"
+
+  - name: with the parameter satisfied, a third message collapses absent and wrong into one
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/experiments
+      query:
+        campaign_id: "1"
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: Missing or invalid authorization
+
+  - name: and a wrong credential gets the identical collapsed message
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/experiments
+      query:
+        campaign_id: "1"
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Missing or invalid authorization
+
+  - name: everywhere else, no credential names the header, not the token
+    source: https://api.optimizely.com/v2/projects
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/projects
+    expect:
+      status: 401
+      body:
+        code: invalid_credentials
+        message: Missing authorization header
+
+  - name: a well-formed wrong token is a different message
+    source: https://api.optimizely.com/v2/projects
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/projects
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        code: invalid_credentials
+        message: Malformed or Invalid Authorization header.
+
+  - name: a header with no Bearer prefix at all gets the identical wrong-token message
+    source: https://api.optimizely.com/v2/projects
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/projects
+      headers:
+        Authorization: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Malformed or Invalid Authorization header.
+
+  - name: the same two-tier gate answers a Feature-Experimentation-only resource identically
+    source: https://api.optimizely.com/v2/environments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/environments
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Malformed or Invalid Authorization header.
+
+  - name: and identically again for a single experiment addressed by id
+    source: https://api.optimizely.com/v2/experiments/12345
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/experiments/12345
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Malformed or Invalid Authorization header.
+
+  - name: a path this Recipe declares nowhere is refused exactly like a real one, never a 404
+    source: https://api.optimizely.com/v2/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/this-is-not-a-real-endpoint
+    expect:
+      status: 401
+      body:
+        code: invalid_credentials
+        message: Missing authorization header
+
+  - name: and a wrong credential on that same unrouted path is the same wrong-token message
+    source: https://api.optimizely.com/v2/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v2/this-is-not-a-real-endpoint
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Malformed or Invalid Authorization header.
+
+  - name: a wrong method on a real path is refused before the method is ever considered, never a 405
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /v2/experiments
+    expect:
+      status: 401
+      body:
+        code: invalid_credentials
+        message: Missing authorization header
+
+  - name: a credential on that same wrong method gets the wrong-token message, still never a 405
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /v2/experiments
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Malformed or Invalid Authorization header.
+
+  - name: a second method confirms the ordering is not PATCH-specific
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: DELETE
+      path: /v2/experiments
+    expect:
+      status: 401
+      body:
+        message: Missing authorization header
+
+  - name: POST is gated the identical way GET is
+    source: https://api.optimizely.com/v2/experiments
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /v2/experiments
+      headers:
+        # nginx demands a Content-Length on any POST before Optimizely's own
+        # application is ever reached; curl supplies one for a bodyless POST
+        # by default, so no route or fixture here needs to carry one.
+        Content-Length: "0"
+    expect:
+      status: 401
+      body:
+        code: invalid_credentials
+        message: Missing authorization header
