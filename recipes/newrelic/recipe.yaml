@@ -1,0 +1,538 @@
+# New Relic Recipe for Cauldron
+#
+# One account, two APIs, and they do not agree on what a failure looks like
+# -- or, on the question this Recipe was written to answer, on whether a
+# failure is even the same kind of thing as a success.
+#
+# NerdGraph is GraphQL, and GraphQL's own contract says a request that
+# reaches execution answers 200 whether or not it succeeded, with failures
+# carried in a body-level "errors" array beside "data" rather than in the
+# status line. That is a real and separately documented behaviour of
+# NerdGraph -- New Relic's own tutorial for managing groups gives the body
+# verbatim:
+#
+#   {"data":{"userManagementUpdateGroup":null},
+#    "errors":[{"extensions":{"errorClass":"SERVER_ERROR"},
+#               "locations":[{"column":3,"line":2}],
+#               "message":"Group could not be found",
+#               "path":["userManagementUpdateGroup"]}]}
+#
+# Two hundred, an empty result nested under the mutation's own name, and the
+# reason sitting beside it rather than in the status line.
+#
+# But that is what happens once a request is authenticated. Unauthenticated,
+# checked live against api.newrelic.com/graphql with no key, a bogus one, an
+# empty body, a malformed body and a GET -- every one of them the same way --
+# NerdGraph answers 401, not 200:
+#
+#   HTTP/1.1 401 Unauthorized
+#   {"errors":[{"message":"authentication required"}]}
+#
+# So the GraphQL-flavoured body survives -- "errors", an array, an object
+# with a message, no top-level "data" at all -- but the transport-level
+# claim a status code makes is the ordinary one. A request that never reaches
+# resolution is refused before GraphQL gets a say, and OPTIONS against the
+# same URL confirms it is reached by an actual gate rather than an edge
+# cache: 403, served-by: nerd-graph, with a full sentence naming the header
+# by name -- "Please provide a user API key via the `Api-Key` header." Two
+# different words for the identical problem, from the identical service, a
+# comma apart in the request line.
+#
+# The REST v2 side disagrees with itself in a different way. Checked live
+# with no key at all:
+#
+#   {"error":{"title":"No API key specified"}}
+#
+# and with a key that is simply wrong:
+#
+#   {"error":{"title":"Invalid API Key","api_key":"<the key that was sent>"}}
+#
+# Same envelope, same status, a different sentence and a field that only
+# shows up on one of the two -- the request's own bad credential, echoed back
+# inside the failure. A client branching on error.title works either way; one
+# reading error.api_key to log what was tried finds it only for a key that
+# was wrong, never for one that was absent.
+#
+# And the REST v2 API's own OpenAPI description disagrees with the provider
+# about the one endpoint most client libraries generate straight off of it.
+# GET /applications.json -- List, the description's own word -- declares its
+# response as $ref: ApplicationResponse, the exact schema $ref'd by GET
+# /applications/{id}.json -- Show -- two paths above it, and ApplicationResponse
+# is {"application": {...}}, singular, an object. New Relic's own worked
+# example for this endpoint, published in a separate document, shows:
+#
+#   {"applications": [{"id": 1129082, "name": "My Web Page", ...}]}
+#
+# Plural, an array, a different key entirely. A client generated from the
+# description alone reads response.application.id off a list endpoint and
+# finds undefined on every call that ever succeeds, because the schema the
+# generator trusted was written for the endpoint one summary line above it.
+# spec_hash below fingerprints the description this was checked against, so a
+# future publish that fixes it is exactly the drift this field exists to
+# catch.
+#
+# Three more, from the same description:
+#
+#   1. One credential, two names, and neither of them Authorization.
+#      securitySchemes.APIKeyHeader names Api-Key, and the document's own
+#      prose adds a second: "a deprecated Account API Key ... can still work
+#      ... by sending the key under the X-API-KEY header". NerdGraph's own
+#      403 names Api-Key by the same spelling. One scheme, one header,
+#      declared here -- the legacy synonym is stated and not served, since
+#      this format checks one header per Recipe.
+#   2. Paging is a page number and a Link header, RFC 5988, with next and
+#      last -- and no page-size parameter is declared anywhere on the path.
+#      A last relation is documented and not servable here for the reason
+#      every Recipe with one states: it needs a total this format does not
+#      keep, so a client that follows next walks the whole collection and one
+#      that reads last finds nothing.
+#   3. reporting is a boolean and health_status is a string with its own
+#      vocabulary -- green, gray, among others -- and gray is what an
+#      application that has stopped reporting shows. Two fields for one
+#      fact, and a client that checks only reporting still has to know gray
+#      is the false its own summary column is spelling out.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron authorises once, Recipe-wide, before any route is matched, so
+#     it can wire exactly one shape as the automatic answer to a missing or
+#     wrong credential. "No API key specified" is wired, because it is what
+#     an empty request answers; "Invalid API Key" and NerdGraph's own
+#     "authentication required" are declared and reachable with `cauldron
+#     fault` rather than automatic, the same reason VTEX's second envelope
+#     and Honeycomb's own /1/auth failure are armed in their Recipes rather
+#     than wired.
+#   - The resolver-level 200-with-errors case is quoted from New Relic's own
+#     tutorial rather than called: it needs an authenticated mutation this
+#     Recipe has no key to run. Sourced and unverified, as the difference
+#     matters here specifically.
+#   - NRQL is not parsed. The one query case below answers the shape New
+#     Relic's own tutorial shows for any query naming a count, not the
+#     result of evaluating what was asked.
+#   - NerdGraph's documented 429 (a 25-concurrent-request ceiling per user)
+#     is not modelled: a concurrency limit is not a fixed shape a single
+#     conformance case demonstrates, and nothing here should be read as a
+#     claim about its body.
+#   - Every other NerdGraph field, every other REST v2 resource (deployments,
+#     hosts, instances, metrics, labels, alerts, mobile applications) and all
+#     of Insights and the Metric API are absent. Two endpoints, read only.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: newrelic
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.newrelic.com/docs/apis/rest-api-v2/get-started/introduction-new-relic-rest-api-v2/
+  spec: https://api.newrelic.com/docs/swagger.yml
+  spec_hash: ab09f7a47a7b810d6ecfdc911d25fc138e82a24a9a6356bb280299b218c9598f
+  spec_seen: "2026-08-31"
+
+auth:
+  scheme: header
+  header: Api-Key
+  keys:
+    - NRAK-CAULDRONFIXTUREKEY0000000
+
+responses:
+  resource:
+    style: wrapped
+    key: application
+  list:
+    style: wrapped
+    key: applications
+  error:
+    # {"error": {"title": ...}}. No code anywhere in it -- code_field and
+    # type_field both suppressed, because nested invents "code" and "type"
+    # when left empty, which the flat style does not and this one has
+    # neither.
+    style: nested
+    key: error
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  application:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+        required: true
+      language:
+        type: string
+      # green, gray and others. gray is what a stopped application shows --
+      # the fact reporting also states, in the other field's vocabulary.
+      health_status:
+        type: string
+        default: green
+      reporting:
+        type: boolean
+        default: true
+      last_reported_at:
+        type: datetime
+      application_summary:
+        type: map
+      end_user_summary:
+        type: map
+      settings:
+        type: map
+      links:
+        type: map
+
+  # NerdGraph answers whatever the query names. Not parsed -- the one route
+  # below answers the shape New Relic's own NRQL tutorial shows, for any
+  # query asking for a count, regardless of what was actually asked. Modelled
+  # as a collection the same way Shopify GraphQL's edges are: the record
+  # Cauldron actually understands is one NRQL result row, four levels down.
+  nrqlResult:
+    collection: data.actor.account.nrql.results
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      count:
+        type: integer
+
+routes:
+  - method: GET
+    path: /v2/applications.json
+    resource: application
+    operation: list
+    list:
+      link_header: true
+    pagination:
+      style: page
+      cursor_param: page
+      # No parameter names a page size anywhere in the description -- the
+      # number here is Cauldron's own requirement, the same way VTEX's
+      # order-group route states one where the provider names none, kept
+      # small enough that the three-application fixture below still spans a
+      # page boundary and has a next link to advertise.
+      limit_param: "-"
+      limit: 2
+      first_page: 1
+
+  - method: GET
+    path: /v2/applications/{id}.json
+    resource: application
+    operation: get
+
+  - method: POST
+    path: /graphql
+    resource: nrqlResult
+    operation: list
+    selects: nrql
+    # No override: the Recipe-wide wrapped style takes its key from the
+    # resource's own declared collection above, which is what nests this
+    # four levels down instead of under "applications".
+
+errors:
+  # The wired default: an empty request. Verified live.
+  authentication_error:
+    status: 401
+    message: No API key specified
+
+  # A key that is simply wrong, rather than absent -- armed, per the fidelity
+  # note above. Verified live: the sent value comes back inside the failure.
+  invalid_api_key:
+    status: 401
+    message: Invalid API Key
+    fields:
+      # Dotted to land inside the "error" envelope beside title, the same way
+      # VTEX's error.exception reaches inside its own nested error.
+      error.api_key: wrong-key-000000000000000000000
+
+  # NerdGraph's own refusal for the identical problem. A different envelope
+  # entirely -- a bare array of message objects, no "error" key, no "data"
+  # key either -- from the same account, one path over. Verified live against
+  # a missing key, an empty body, a malformed body and a bogus Api-Key; all
+  # four answered this, none of them 200.
+  graphql_auth_required:
+    status: 401
+    style: list
+    key: errors
+    message_field: message
+    message: authentication required
+
+  # Quoted from New Relic's own tutorial, not called: this is what an
+  # authenticated mutation answers when the thing it names does not exist.
+  # Two hundred, "data" present with the mutation's own name nulled out, and
+  # the reason beside it rather than in the status line.
+  group_not_found:
+    status: 200
+    style: list
+    key: errors
+    message_field: message
+    message: Group could not be found
+    fields:
+      extensions.errorClass: SERVER_ERROR
+      path:
+        - userManagementUpdateGroup
+
+  unknown_route:
+    status: 404
+    style: text
+    message: "Not Found"
+    headers:
+      Content-Type: text/html
+
+fixtures:
+  empty: {}
+
+  acme:
+    application:
+      - id: "1129082"
+        name: My Web Page
+        language: java
+        health_status: green
+        reporting: true
+        last_reported_at: "2014-07-29T23:45:07+00:00"
+        application_summary:
+          response_time: 304
+          throughput: 4570
+          error_rate: 0.0016
+          apdex_target: 523
+          apdex_score: 0.97
+        end_user_summary:
+          response_time: 3.73
+          throughput: 0.333
+          apdex_target: 0
+          apdex_score: 1
+        settings:
+          app_apdex_threshold: 0.5
+          end_user_apdex_threshold: 7
+          enable_real_user_monitoring: true
+          use_server_side_config: true
+        links:
+          application_instances:
+            - 2928655
+            - 3941052
+          alert_policy: 41534
+          application_hosts:
+            - 2927654
+            - 3940051
+      # A second application, stopped reporting -- gray, and reporting is
+      # false, the same fact in both fields' own vocabularies.
+      - id: "96785"
+        name: GreatTimes Staging
+        language: ruby
+        health_status: gray
+        reporting: false
+        last_reported_at: "2014-06-02T11:03:00+00:00"
+        application_summary: {}
+        end_user_summary: {}
+        settings:
+          app_apdex_threshold: 0.5
+          end_user_apdex_threshold: 7
+          enable_real_user_monitoring: false
+          use_server_side_config: true
+        links:
+          application_instances: []
+          alert_policy: null
+          application_hosts: []
+      # A third, so a page size of two has a next link to advertise and the
+      # first two still fit on the page the envelope case reads.
+      - id: "55501"
+        name: Batch Worker
+        language: go
+        health_status: green
+        reporting: true
+        last_reported_at: "2014-07-30T02:15:00+00:00"
+        application_summary: {}
+        end_user_summary: {}
+        settings: {}
+        links: {}
+
+  nrql-count:
+    nrqlResult:
+      - count: 1000
+
+conformance:
+  - name: NerdGraph refuses an unauthenticated request outright, not with 200
+    source: https://api.newrelic.com/graphql
+    verified: "2026-08-31"
+    arm: graphql_auth_required
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql
+      json:
+        query: "{ actor { user { email } } }"
+    expect:
+      # The central question this Recipe was written to answer: does an
+      # unauthenticated GraphQL call still answer 200, with the refusal
+      # carried only in the body? Checked live, repeatedly, and the answer is
+      # no. This is a genuine HTTP 401.
+      status: 401
+      body:
+        errors[0].message: authentication required
+      absent:
+        - data
+        - error
+
+  - name: and a wrong key answers the identical body, not a different one
+    source: https://api.newrelic.com/graphql
+    verified: "2026-08-31"
+    arm: graphql_auth_required
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Api-Key: wrong-key-000000000000000000000
+      json:
+        query: "{ actor { user { email } } }"
+    expect:
+      # Unlike the REST side two cases below, NerdGraph does not distinguish
+      # a missing credential from a wrong one -- both are "authentication
+      # required", checked live against both.
+      status: 401
+      body:
+        errors[0].message: authentication required
+
+  - name: once authenticated, a resolver-level refusal is 200, not 401
+    source: https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-manage-groups/
+    arm: group_not_found
+    fixture: empty
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+      json:
+        query: "mutation { userManagementUpdateGroup(updateGroupOptions: {id: \"nonexistent\", name: \"x\"}) { group { id } } }"
+    expect:
+      # The other half of the same question. Authenticated and refused on
+      # business grounds, GraphQL's own contract holds: 200, with the reason
+      # in the body rather than the status line. Read from the document, not
+      # called -- there is no key to run a real mutation with.
+      status: 200
+      body:
+        errors[0].message: Group could not be found
+        errors[0].extensions.errorClass: SERVER_ERROR
+
+  - name: an NRQL query nests its answer four levels down
+    source: https://github.com/newrelic/docs-website/blob/develop/src/content/docs/apis/nerdgraph/examples/nerdgraph-nrql-tutorial.mdx
+    fixture: nrql-count
+    request:
+      method: POST
+      path: /graphql
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+      json:
+        query: "{ actor { account(id: 1) { nrql(query: \"SELECT count(*) FROM Transaction\") { results } } } }"
+    expect:
+      status: 200
+      body:
+        data.actor.account.nrql.results[0].count: 1000
+
+  - name: no key at all is its own sentence
+    source: https://api.newrelic.com/v2/applications.json
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/applications.json
+    expect:
+      status: 401
+      body:
+        error.title: No API key specified
+      absent:
+        - error.api_key
+
+  - name: a wrong key answers a different sentence and echoes itself back
+    source: https://api.newrelic.com/v2/applications.json
+    verified: "2026-08-31"
+    arm: invalid_api_key
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/applications.json
+      headers:
+        Api-Key: wrong-key-000000000000000000000
+    expect:
+      status: 401
+      body:
+        error.title: Invalid API Key
+        error.api_key: wrong-key-000000000000000000000
+
+  - name: an unmatched path answers plain text, not the JSON envelope every real failure uses
+    source: https://api.newrelic.com/v2/totally-not-a-real-endpoint.json
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/totally-not-a-real-endpoint.json
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+    expect:
+      # Observed live with no key at all and answered exactly this before
+      # authentication would have mattered; a valid key is sent here only
+      # because Cauldron authorises before it routes, and this Recipe's own
+      # wired default would otherwise pre-empt the case this is about.
+      status: 404
+      body_matches: "^Not Found$"
+      headers:
+        Content-Type: text/html
+
+  - name: the list endpoint's own description names the wrong envelope
+    source: https://github.com/newrelic/docs-website/blob/develop/src/content/docs/apis/rest-api-v2/application-examples-v2/summary-data-examples-v2.mdx
+    fixture: acme
+    request:
+      method: GET
+      path: /v2/applications.json
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+    expect:
+      status: 200
+      body:
+        # Plural, an array -- what the provider's own worked example shows,
+        # and not what api.newrelic.com/docs/swagger.yml declares for this
+        # path. See spec_hash and the header comment above.
+        applications[0].name: My Web Page
+        applications[0].health_status: green
+        applications[1].health_status: gray
+        applications[1].reporting: false
+      absent:
+        - application
+
+  - name: the single-application endpoint is correctly singular
+    source: https://api.newrelic.com/docs/swagger.yml
+    fixture: acme
+    request:
+      method: GET
+      path: /v2/applications/1129082.json
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+    expect:
+      # The same $ref the list endpoint also declares -- correctly, here.
+      # The bug is in one path reusing the other's schema, not in the schema
+      # itself.
+      status: 200
+      body:
+        application.id: 1129082
+        application.name: My Web Page
+      absent:
+        - applications
+
+  - name: paging is a page number and a Link header, and nothing names a page size
+    source: https://api.newrelic.com/docs/swagger.yml
+    fixture: acme
+    request:
+      method: GET
+      path: /v2/applications.json
+      headers:
+        Api-Key: NRAK-CAULDRONFIXTUREKEY0000000
+      query:
+        page: "1"
+    expect:
+      status: 200
+      headers:
+        # RFC 5988, the same mechanism GitHub, Ably, WordPress, Greenhouse
+        # and Buildkite already page by in this collection.
+        Link: rel="next"
