@@ -1,0 +1,430 @@
+# Nuvei Recipe for Cauldron
+#
+# Nuvei's REST 1.0 API does not send a key. Every request carries a checksum
+# -- SHA-256 of merchantId + merchantSiteId + clientRequestId + timeStamp +
+# merchantSecretKey, concatenated with no separators, per Nuvei's own
+# documentation -- computed by the caller and compared by Nuvei. There is no
+# header to hold it. It travels as a field inside the JSON body, alongside
+# the merchant identity it was computed over, which puts it out of reach of
+# every mechanism Cauldron has for a credential: auth.scheme reads a header,
+# a query parameter or a Basic pair, and Nuvei's checksum is none of those.
+# This Recipe declares auth.scheme: none for exactly that reason, stated
+# here rather than left to look like an oversight -- Cauldron cannot check
+# this credential's shape the way it checks an AWS SigV4 header with
+# auth.pattern (see ses/recipe.yaml), because there is no header to hold a
+# pattern against. A syntactically complete request is accepted by
+# construction, the same open door AWS's Recipes leave for an unverified
+# signature, opened one step wider because there is no shape check left to
+# perform at all.
+#
+# Every case below was struck against https://ppp-test.nuvei.com live, with
+# no merchant account, no signup and no real checksum ever computed -- and
+# the same requests were repeated against the legacy hostname
+# secure.safecharge.com, which answers byte-for-byte identically (checked
+# 2026-09-01, POST /ppp/api/v1/getSessionToken.do with an empty body on both
+# hosts: same errCode, same reason text, same version, different only in
+# the field order of the JSON object, which the next finding explains is
+# not a hostname difference at all).
+#
+# Four things worth stating precisely:
+#
+#   1. Every application-level failure is HTTP 200. getSessionToken.do,
+#      openOrder.do and getPaymentStatus.do all answered 200 for every
+#      malformed or unrecognised request this Recipe sent them --
+#      {"status":"ERROR","errCode":...,"reason":"..."} riding a 200, never a
+#      4xx. The only non-200 statuses this Recipe ever saw were routing
+#      failures answered by the edge before Nuvei's own application runs at
+#      all: 404 for a path that does not exist, 405 for a real path with the
+#      wrong method, 501 from Akamai for a method nothing on this host
+#      supports (PATCH). Those three are HTML, not JSON, and Content-Type
+#      says so honestly (text/html;charset=UTF-8) where the 200s say
+#      application/json;charset=UTF-8. So "is a failure an HTTP error or a
+#      200 with a status field" has two different answers on one host,
+#      split exactly along the line between the edge and the application:
+#      the edge still uses HTTP status for what HTTP status is for, and the
+#      application underneath it never does.
+#
+#   2. Merchant identity is checked before the checksum, and this Recipe
+#      cannot tell you what happens after that check passes because it
+#      never did. A completely empty body answers errCode 1019, reason
+#      listing every missing field ("... may not be null" per field) --
+#      merchantId, merchantSiteId, timeStamp and checksum, all four, by
+#      name. Filling in all four with syntactically fine values that name no
+#      real merchant -- twenty-one digit merchantId, six-digit
+#      merchantSiteId, a same-length hex checksum that is not a real SHA-256
+#      of anything -- answers errCode 1022 "Invalid merchant site id"
+#      instead, every time, whether the checksum sent is "deadbeef" or
+#      seventy zeroes or genuinely random hex. The checksum is never
+#      mentioned in that answer, and this Recipe cannot make it be: every
+#      credential shape available without a real account routes to the same
+#      merchant-identity failure before checksum verification is reached, so
+#      the question this whole group exists to answer -- can a caller tell a
+#      wrong signature apart from a key that was never valid -- has a
+#      verified answer for Nuvei, and it is no. A wrong checksum and a
+#      wrong merchant look identical on the wire, because the wrong
+#      merchant check runs first and never lets the checksum matter.
+#
+#   3. The missing-field list is not stable in order, request to request.
+#      The identical empty-body request to POST /ppp/api/v1/getSessionToken.do
+#      was sent twice in this session and came back with two different field
+#      orderings inside the same reason string -- "checksum may not be
+#      null, merchantSiteId may not be null, merchantId may not be null,
+#      timeStamp may not be null" the first time, "merchantId may not be
+#      null, merchantSiteId may not be null, timeStamp may not be null,
+#      checksum may not be null" the second -- and the safecharge.com host
+#      gave a third ordering again. Four fields, four names, no fixed
+#      sequence. A test that pins the exact sentence is pinning something
+#      Nuvei itself does not hold still, which is why the case below matches
+#      on content rather than on the literal string.
+#
+#   4. The same empty POST body means something different on every
+#      endpoint. getSessionToken.do answers the "may not be null" family
+#      above (errCode 1019). openOrder.do, sent the same {}, skips that
+#      entirely and answers errCode 1022 "Invalid merchant site id"
+#      directly -- it never says a field was missing, because by the time it
+#      would say so it has already failed the identity check the empty
+#      merchantId trips. getPaymentStatus.do answers a third code again,
+#      1065 "Invalid token" -- sessionToken absent reads as a token that is
+#      wrong rather than one that is missing. Three endpoints, one empty
+#      body, three unrelated diagnoses, because each one validates its own
+#      fields in its own order and none of them agree about which failure a
+#      caller hits first.
+#
+# Also checked and not modelled as routes: OPTIONS on getSessionToken.do
+# answers 200 with an empty body and CORS headers, no different with or
+# without a body. An Authorization header, bearer or otherwise, changes
+# nothing about any response here -- Nuvei's checksum lives in the body and
+# nothing on this host reads that header at all, checked by sending
+# "Authorization: Bearer totally-junk-token" alongside an empty JSON body
+# and getting the identical 1019 answer an unheadered request gets.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful session was ever created, by construction: doing so
+#     needs a checksum Nuvei accepts, which needs a real merchant secret key
+#     this Recipe was never given and never asked for. A syntactically
+#     complete getSessionToken.do request -- all four required fields
+#     present and non-empty -- is accepted by this emulator and answers a
+#     minted session, the same way an AWS Recipe here accepts an unverified
+#     SigV4 signature. That happy path is not verified against the wire in
+#     any way; live Nuvei refused every shape this Recipe could construct
+#     before reaching it. sessionToken's real format -- length, alphabet --
+#     is unknown for the same reason and is not asserted anywhere below.
+#   - The exact "field may not be null" repetition is not reproduced.
+#     Cauldron's own required-field check joins missing names with commas
+#     and one shared message; Nuvei repeats "may not be null" after every
+#     single name, in an order that finding 3 above shows is not even
+#     stable on Nuvei's own side. The case below asserts errCode and status
+#     and matches the reason text for content rather than pinning either
+#     provider's exact punctuation or a sequence neither provider holds
+#     still.
+#   - openOrder.do and getPaymentStatus.do are recorded for the one input
+#     this Recipe actually sent them -- an empty body -- and answer that
+#     one shape unconditionally here. Whether either endpoint has its own
+#     "may not be null" tier for a partially-filled body, the way
+#     getSessionToken.do does, was not tested and is not claimed.
+#   - The invalid-merchant case (finding 2) is armed rather than reachable
+#     through ordinary routing: Cauldron's required-field check only checks
+#     presence, so a request with all four fields filled in -- even with
+#     fake values -- reads as complete and this emulator would mint a
+#     session for it, which is not what live Nuvei does with any merchant
+#     it does not recognise. The case is real and was called live on the
+#     date it carries; it is armed because nothing about the fields
+#     themselves tells this emulator the merchant is fake the way it tells
+#     live Nuvei.
+#   - internalRequestId is 0 on every case this Recipe can reach (the
+#     field-presence family) and a large, different-every-call integer on
+#     the merchant-identity failure (243265310111 one call, 1788249709065
+#     the next) -- evidently a per-request counter or timestamp-derived id
+#     minted once the request clears the presence check. It is not modelled
+#     on the armed case for that reason: a fixed number there would claim a
+#     stability the field does not have.
+#   - openOrder.do and getPaymentStatus.do accept far more fields than this
+#     Recipe declares -- amounts, currencies, card data, user details. None
+#     of it is modelled. Every field this Recipe names was read from a live
+#     response; none was read from a schema and typed in unseen.
+#   - No spec_hash is recorded. Nuvei publishes REST 1.0 as prose
+#     documentation rather than a machine-readable description, and no
+#     OpenAPI or JSON Schema file for it was found to fingerprint.
+#
+# Values below are fixtures. No merchant, no site id and no checksum here
+# authorizes anything against a real Nuvei account.
+
+recipe: nuvei
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: "REST 1.0"
+  docs: https://docs.nuvei.com/documentation/accept-payment/server-to-server/rest-1-0/
+
+auth:
+  # See the header: the checksum is a body field computed over five
+  # concatenated values including a secret key, and every scheme Cauldron
+  # can check -- bearer, header, query, basic -- reads a header or a query
+  # parameter. There is nowhere here to point auth.header. A syntactically
+  # complete request is accepted by construction; see the fidelity gaps.
+  scheme: none
+
+resources:
+  session:
+    id:
+      # No real sessionToken was ever observed. See the fidelity gaps: this
+      # Recipe does not know the real shape and does not guess one.
+      style: opaque
+      field: "-"
+    fields:
+      merchantId:
+        type: string
+        required: true
+      merchantSiteId:
+        type: string
+        required: true
+      timeStamp:
+        type: string
+        required: true
+      # The credential itself, modelled as an ordinary required field
+      # because that is the only check this format has a mechanism for.
+      # Presence is checked; correctness is not, and cannot be -- see the
+      # header.
+      checksum:
+        type: string
+        required: true
+      # Not required. The empty-body case lists four missing fields and
+      # this is never one of them.
+      clientRequestId:
+        type: string
+
+routes:
+  - method: POST
+    path: /ppp/api/v1/getSessionToken.do
+    resource: session
+    operation: create
+    status: 200
+
+  # Recorded for the one input this Recipe sent it: an empty body. See the
+  # fidelity gaps -- this route answers the same way regardless of what
+  # else the body contains, which is not a claim that live Nuvei does too.
+  - method: POST
+    path: /ppp/api/v1/openOrder.do
+    error: invalid_merchant_site_id_open_order
+
+  - method: POST
+    path: /ppp/api/v1/getPaymentStatus.do
+    error: invalid_token
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: reason
+    code_field: errCode
+    # status carries the string "ERROR" on every failure this Recipe saw,
+    # never the HTTP status -- Nuvei's status field and Cauldron's
+    # status_field are different ideas, and this is the type_field one.
+    type_field: status
+    # Sent on every response, success or failure, and not a status echo.
+    fields:
+      version: "1.0"
+
+errors:
+  # Cauldron's own automatic name for a resource create missing a required
+  # field. Declaring it here means this Recipe owns its status and shape
+  # rather than borrowing the runtime's generic 400 -- see errors.go: a
+  # Recipe that names a builtin failure owns all of it, which is the only
+  # way a 200 status becomes possible for what the runtime otherwise treats
+  # as a 400.
+  parameter_missing:
+    status: 200
+    type: ERROR
+    # All-digit, so it renders as the bare JSON number Nuvei sends rather
+    # than a quoted string.
+    code: "1019"
+    # {detail} is Cauldron's own comma-joined, alphabetically sorted list of
+    # missing names. Live Nuvei repeats "may not be null" after every name
+    # instead, in an order finding 3 in the header shows is not stable even
+    # on its own side -- so the case below matches for content rather than
+    # pinning this sentence.
+    message: "{detail} may not be null"
+    fields:
+      # Present and empty on every case this Recipe reaches. See the
+      # fidelity gaps for why a real value is never modelled.
+      sessionToken: ""
+      internalRequestId: 0
+
+  # Armed on the one case that uses it -- see the fidelity gaps for why
+  # ordinary routing cannot reach this from a well-formed request the way
+  # live Nuvei does.
+  invalid_merchant_site_id:
+    status: 200
+    type: ERROR
+    code: "1022"
+    message: Invalid merchant site id
+    fields:
+      sessionToken: ""
+
+  # openOrder.do's own answer to the same empty body, unconditionally. A
+  # second entry rather than a shared one, because it is missing the
+  # sessionToken key the getSessionToken.do version above carries -- that
+  # field belongs to getSessionToken.do's own envelope and openOrder.do
+  # never sends it, verified below.
+  invalid_merchant_site_id_open_order:
+    status: 200
+    type: ERROR
+    code: "1022"
+    message: Invalid merchant site id
+
+  invalid_token:
+    status: 200
+    type: ERROR
+    code: "1065"
+    message: Invalid token
+
+  # The edge's answer for a path Nuvei has no route for at all, HTML rather
+  # than the JSON every application-level failure above uses. Style text
+  # rather than the Recipe-wide flat style, because this body genuinely is
+  # not JSON and a client calling .json() on it throws -- serving JSON here
+  # would hide exactly that.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html;charset=UTF-8
+    message: "We are experiencing technical difficulties. Please, try again later!"
+
+  # The edge's answer for a real path and the wrong method. Same generic
+  # page as unknown_route, same reason this Recipe does not reproduce the
+  # whole document -- see the header. Allow: POST is the one header worth
+  # pinning, because it is the one piece of this failure that actually says
+  # something route-specific.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: text/html;charset=UTF-8
+      Allow: POST
+    message: "We are experiencing technical difficulties. Please, try again later!"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: an empty body lists all four missing fields, on a 200
+    source: https://ppp-test.nuvei.com/ppp/api/v1/getSessionToken.do
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ppp/api/v1/getSessionToken.do
+      json: {}
+    expect:
+      # Not 400, not 422 -- the application layer here never uses HTTP
+      # status for an application failure. See the header's first finding.
+      status: 200
+      body:
+        status: ERROR
+        errCode: 1019
+        version: "1.0"
+        sessionToken: ""
+      matches:
+        # Content rather than the literal sentence: live Nuvei does not
+        # hold the field order still between two identical calls, checked
+        # by sending this exact request twice. See the header's third
+        # finding.
+        reason: "may not be null"
+
+  - name: a well-formed but fake merchant fails identity, and the checksum is never reached to matter
+    source: https://ppp-test.nuvei.com/ppp/api/v1/getSessionToken.do
+    verified: "2026-09-01"
+    # Armed: see the fidelity gaps. Live, this was called with
+    # merchantId 1234567890123456789, merchantSiteId 123456 and a
+    # seventy-character string of zeroes standing in for a checksum --
+    # every field present, none of them real -- and errCode 1022 came back
+    # with no mention of the checksum at all. Cauldron has no notion of an
+    # unrecognised merchant, so this case installs the answer live Nuvei
+    # gave rather than one this emulator could derive from the fields.
+    arm: invalid_merchant_site_id
+    fixture: empty
+    request:
+      method: POST
+      path: /ppp/api/v1/getSessionToken.do
+      json:
+        merchantId: "1234567890123456789"
+        merchantSiteId: "123456"
+        clientRequestId: cauldron-probe
+        timeStamp: "20260901120000"
+        checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        status: ERROR
+        errCode: 1022
+        reason: Invalid merchant site id
+        version: "1.0"
+        sessionToken: ""
+
+  - name: the same empty body means something else entirely on openOrder.do
+    source: https://ppp-test.nuvei.com/ppp/api/v1/openOrder.do
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ppp/api/v1/openOrder.do
+      json: {}
+    expect:
+      status: 200
+      body:
+        status: ERROR
+        errCode: 1022
+        reason: Invalid merchant site id
+        version: "1.0"
+      absent:
+        # openOrder.do's own empty-body answer never mentions a missing
+        # field, unlike getSessionToken.do's. See the header's fourth
+        # finding.
+        - sessionToken
+
+  - name: and a third diagnosis again on getPaymentStatus.do
+    source: https://ppp-test.nuvei.com/ppp/api/v1/getPaymentStatus.do
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ppp/api/v1/getPaymentStatus.do
+      json: {}
+    expect:
+      status: 200
+      body:
+        status: ERROR
+        errCode: 1065
+        reason: Invalid token
+        version: "1.0"
+
+  - name: a path nothing routes answers HTML from the edge, not JSON from the app
+    source: https://ppp-test.nuvei.com/ppp/api/v1/noSuchRoute.do
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /ppp/api/v1/noSuchRoute.do
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html;charset=UTF-8
+      # Applied to the raw body -- style text serves the message as the
+      # whole response, not wrapped in a JSON field.
+      body_matches: "technical difficulties"
+
+  - name: the right path and the wrong method is a real 405 with Allow, still from the edge
+    source: https://ppp-test.nuvei.com/ppp/api/v1/getSessionToken.do
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /ppp/api/v1/getSessionToken.do
+    expect:
+      status: 405
+      headers:
+        Content-Type: text/html;charset=UTF-8
+        Allow: POST
