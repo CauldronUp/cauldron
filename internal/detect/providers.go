@@ -4161,6 +4161,53 @@ func providers() []provider {
 			npm:    []string{"@splitsoftware/splitio"},
 		},
 		{
+			// The vendor's own Node SDK.
+			recipe: "plivo",
+			npm:    []string{"plivo"},
+		},
+		{
+			// The vendor's own Node client.
+			recipe: "sinch",
+			npm:    []string{"@sinch/sdk-core"},
+		},
+		{
+			// The vendor's own CLI, which calls this API to create and run
+			// checks from a project.
+			recipe: "checkly",
+			npm:    []string{"checkly"},
+		},
+		{
+			// The vendor's own library.
+			recipe: "cronitor",
+			npm:    []string{"cronitor"},
+		},
+		{
+			// The vendor's own Node SDK.
+			recipe: "scrapingbee",
+			npm:    []string{"scrapingbee"},
+		},
+		{
+			// The vendor's own JavaScript SDK.
+			recipe: "mapbox",
+			npm:    []string{"@mapbox/mapbox-sdk"},
+		},
+		{
+			// The project's own JavaScript client.
+			recipe: "openrouteservice",
+			npm:    []string{"openrouteservice-js"},
+		},
+		{
+			// A third-party wrapper; the St. Louis Fed publishes no JavaScript
+			// client of its own.
+			recipe: "fred",
+			npm:    []string{"fred-api"},
+		},
+		{
+			// A third-party wrapper.
+			recipe: "twelvedata",
+			npm:    []string{"twelvedata"},
+		},
+		{
 			// The vendor's own Node library.
 			recipe: "descope",
 			npm:    []string{"@descope/node-sdk"},
