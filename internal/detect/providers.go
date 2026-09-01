@@ -5110,6 +5110,17 @@ func providers() []provider {
 			npm:    []string{"diffbot"},
 		},
 		{
+			recipe: "northflank",
+			npm:    []string{"@northflank/js-client"},
+		},
+		{
+			// Generated from the same description this Recipe fingerprints,
+			// and published within the last week -- unlike most of the Go
+			// clients here, which are years old.
+			recipe: "koyeb",
+			gomod:  []string{"github.com/koyeb/koyeb-api-client-go"},
+		},
+		{
 			recipe: "brightdata",
 			npm:    []string{"@brightdata/sdk"},
 		},
