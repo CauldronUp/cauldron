@@ -5102,6 +5102,25 @@ func providers() []provider {
 			gomod:  []string{"github.com/simplesurance/bunny-go"},
 		},
 		{
+			recipe: "bamboohr",
+			npm:    []string{"bamboohr", "node-bamboohr"},
+		},
+		{
+			recipe: "diffbot",
+			npm:    []string{"diffbot"},
+		},
+		{
+			recipe: "brightdata",
+			npm:    []string{"@brightdata/sdk"},
+		},
+		{
+			// Named for the exact surface this Recipe models: the client for
+			// /v1/extract, which is the plain HTTP extraction half rather
+			// than the browser or search products.
+			recipe: "zyte",
+			npm:    []string{"zyte-api"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
