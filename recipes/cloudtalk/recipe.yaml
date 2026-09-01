@@ -1,0 +1,498 @@
+# CloudTalk Recipe for Cauldron
+#
+# CloudTalk is the second of two cloud phone systems in this group, and it
+# answers the group's central question -- does a call's recording come back
+# inline, as a URL, or as nothing, and is that URL signed and time-limited?
+# -- three different ways on three different surfaces of what is nominally
+# one API, none of which is what pdfmonkey/recipe.yaml (a signed URL, "1
+# hour," stated) or api2pdf/recipe.yaml (a signed URL, "24 hours," stated)
+# do. CloudTalk never states a number either, and it does not need to: it
+# tells you the URL is not the recording at all.
+#
+# THREE MECHANISMS, THREE HOSTS, NONE OF THEM A SIGNED AUDIO LINK:
+#
+#   1. Call History (GET /calls/index.json, the main host, routed below).
+#      Every Cdr carries `recorded` (boolean) and `recording_link` (string).
+#      CloudTalk's own OpenAPI description of recording_link, quoted
+#      verbatim: "Link to the analytics call-detail page for the call,
+#      which hosts the recording. Present only for recorded calls with a
+#      non-zero billed duration." The worked example's value is
+#      "https://analytics.cloudtalk.io/call-details/27" for call id 27 --
+#      a page in CloudTalk's own dashboard, not a media file, not signed,
+#      not queried with anything at all. Getting the audio out of that page
+#      is a human following a link, not an integration parsing a field.
+#   2. Get call details (GET /calls/{callId}, analytics-api.cloudtalk.io --
+#      see below for why this host is described rather than routed). Its
+#      Call schema carries `recorded` (boolean) and NOTHING else about the
+#      recording -- no link property exists on this object at all, checked
+#      against the schema's own full property list, not only its example.
+#      A client that lists calls to get the link and then re-fetches by id
+#      for the rest of the detail loses the link on the second call.
+#   3. Recording media (GET /calls/recording/{callId}.json, the main host,
+#      routed below). "Api endpoint returns media data of recording for
+#      selected call. Media data are returned in WAV format" -- a THIRD
+#      mechanism again, bytes over a dedicated path keyed by the same call
+#      id, not a link anywhere. This is the one place CloudTalk states
+#      anything like a lifetime, and it states it as a code rather than a
+#      duration: a 410 "Recording expired." is a documented response
+#      alongside 404 "Not found." for one that never existed. CloudTalk
+#      commits to "this expires" in writing without ever committing to how
+#      long -- one notch short of PDFMonkey's stated hour and Api2Pdf's
+#      stated day, and the sharpest three-way split this group has found.
+#
+# CALLS AND CALL LEGS ARE BOTH REAL AND NOT BOTH ADDRESSABLE. Get call
+# details' own worked example (its OpenAPI 200 example, described here
+# rather than turned into a fixture, since this host is described and not
+# routed -- see below) nests call_steps -- ivr and queue entries -- and a
+# queue step nests agent_calls, one entry per agent the call was offered
+# to, each
+# carrying its own id, its own status ("missed" for one agent, "answered"
+# for the next) and its own call_times. That per-agent attempt is the
+# thing "call leg" means here. No path in CloudTalk's published API takes
+# one of those ids: there is no /calls/{callId}/legs/{legId} and no
+# /agent-calls/{id}, on this host or the main one. A leg is reachable
+# exactly one way -- fetch the parent call by its own cdr_id/callId and
+# find the attempt inside call_steps[].agent_calls -- which is the same
+# shape Textline's Post has inside a Conversation elsewhere in this
+# collection, reached by a completely different provider for a completely
+# different reason.
+#
+# analytics-api.cloudtalk.io IS DESCRIBED HERE, NOT ROUTED, BECAUSE ITS
+# CREDENTIAL AND ROUTING BEHAVIOUR ARE BOTH GENUINELY DIFFERENT FROM THE
+# MAIN HOST'S, THE SAME REASON mezmo/recipe.yaml GIVES FOR LEAVING
+# api.mezmo.com's EXPORT SURFACE OUT OF ITS ROUTES: Cauldron's auth check is
+# one scheme for the whole Recipe, and a route declared under this host
+# would be checked against the main host's rules and would misdescribe this
+# one. Struck live, 2026-09-01, no account, no credential this task holds:
+#
+#   GET https://analytics-api.cloudtalk.io/api/calls/12345
+#     no Authorization header at all
+#       -> 401 {"statusCode":401,"message":"Authorization header is missing"}
+#     Basic, well-formed, wrong key
+#       -> 401 {"statusCode":401,"message":"Company API key doesn't exist."}
+#     a raw non-Basic Authorization value ("junktoken12345")
+#       -> 401 {"statusCode":401,"message":"Invalid Authorization header - junktoken12345"}
+#
+# Three genuinely different sentences for absent, rejected and malformed --
+# the malformed one echoing the caller's own bad value back, the same device
+# PDFMonkey's Recipe in this collection finds for a completely different
+# provider -- on a host whose main-API sibling collapses all three into one
+# "Unauthorized" (see below). This is exactly the shape auth.absent_error /
+# .malformed_error / .rejected_error exist to name, on the one host in this
+# Recipe that is not wired to receive it.
+#
+# Routing beats the credential here, the opposite of the main host:
+#
+#   GET https://analytics-api.cloudtalk.io/api/this-is-not-a-real-endpoint
+#     -> 404 {"message":"Cannot GET /api/this-is-not-a-real-endpoint","error":"Not Found","statusCode":404}
+#   PATCH https://analytics-api.cloudtalk.io/api/calls/12345
+#     -> 404 {"message":"Cannot PATCH /api/calls/12345","error":"Not Found","statusCode":404}
+#
+# both struck with no credential at all -- NestJS's own default 404 shape
+# (the "Cannot {METHOD} {path}" text is Express's, which Nest wraps as
+# JSON), the same handler family PDFMonkey's Recipe finds wearing Rails'
+# name instead. One account, two hosts, opposite answers to "is the
+# credential checked before or after routing" -- the same finding
+# mezmo/recipe.yaml makes about logs.mezmo.com versus api.mezmo.com, reached
+# independently here.
+#
+# CloudTalk's own published error-codes guide (developers.cloudtalk.io
+# /guides/error-codes) describes this host's 401 as a three-field
+# `{statusCode, message, error}` shape with no `correlationId`. The wire
+# disagrees with the guide about its own shape: all three bodies struck
+# live above carry exactly two keys, statusCode and message, never a
+# third. Documented and observed do not agree here, and this header
+# quotes what was actually struck rather than what the guide describes.
+#
+# THE MAIN HOST COLLAPSES EVERY VERDICT INTO ONE SENTENCE, WHICH IS WHY
+# auth.absent_error, .malformed_error and .rejected_error are left unset
+# below. Struck live against my.cloudtalk.io, 2026-09-01: no Authorization
+# header, a well-formed Basic pair with a wrong key, a raw non-Basic
+# Authorization value, and a header present with an empty value all
+# answered the byte-identical {"responseData":{"status":401,"message":
+# "Unauthorized"}}. CloudTalk's own authentication guide agrees --
+# it shows this exact body under the heading "401 Unauthorized" and lists
+# a missing header, a typo'd key and a revoked key as the same failure.
+#
+# ROUTING AND THE CREDENTIAL SPLIT ON THE MAIN HOST TOO, BUT ON A DIFFERENT
+# AXIS FROM analytics-api'S: WHETHER THE PATH EXISTS AT ALL, NOT WHETHER THE
+# METHOD DOES. Struck live, no credential sent at all:
+#
+#   GET  /this-is-not-a-real-endpoint  -> 401 (identical to a real path)
+#   PATCH /calls/index.json (a real path, wrong method) -> 405, no Allow
+#     header, {"responseData":{"status":405,"message":"Method Not Allowed"}}
+#     -- checked again with a wrong credential attached: byte-identical.
+#
+# An unrouted path is refused for its credential exactly like a routed one,
+# which is auth.after_routing left at its default (false) below and is what
+# every GET case in this Recipe actually exercises. A wrong method skips the
+# credential entirely and answers a real 405 with no Allow header at all --
+# checked with OPTIONS and DELETE too, same shape both times. Cauldron's
+# single after_routing flag cannot hold both halves of this at once: set to
+# false (as declared), Cauldron checks the credential unconditionally before
+# routing is attempted at all, which is right for the unrouted-path case and
+# would force a 401 onto the wrong-method case this host never sends. This
+# is another ordering beside the ones auth.go already names for Census,
+# Rootly, NocoDB, Baserow, Sendcloud, Timescale and Northflank: CloudTalk's
+# main host splits on whether the path exists, not on the method, not on
+# the verdict, and not within one route the way Northflank's does. Recorded
+# here rather than forced into a route this Recipe does not declare a
+# conformance case for, per that file's own instruction to say so in the
+# header when a split does not fit.
+#
+# JustCall's Recipe in this collection finds the same document type
+# disagreeing with its own example over a JSON type; CloudTalk's Cdr does
+# too, and does it worse -- five fields, both directions. The Cdr schema
+# (components.schemas.Cdr in CloudTalk's own openapi.json) declares id and
+# billsec as integers and public_external, public_internal and user_id as
+# strings. The SAME document's own worked example for Call History shows
+# "id": "27" and "billsec": "0" as JSON strings, and "public_external":
+# 421904247371 and "public_internal": 421221291400 as bare JSON numbers --
+# every one of the five the opposite of what the schema beside it declares.
+# This Recipe follows the worked example, because it is the concrete
+# evidence; the schema's types are named here rather than silently
+# preferred.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - analytics-api.cloudtalk.io is described above and not routed -- see
+#     the header. platform-api.cloudtalk.io (CueCard) and
+#     api.cloudtalk.io/v1 (Conversation Intelligence, VoiceAgent, the
+#     Dialer partner API -- a fourth host, a fourth credential surface, and
+#     a fourth error envelope, per CloudTalk's own guide) are real and out
+#     of scope for the same reason and are not described in the same
+#     depth: this group's question is about calls and recordings, which the
+#     two hosts above already answer three ways.
+#   - Make a call and every write endpoint are not modelled. This Recipe
+#     never places a call, sends an SMS or deletes a recording.
+#   - Of the Cdr's roughly twenty documented fields this Recipe declares
+#     about a dozen; Contact, the sibling object every list item also
+#     carries, is not modelled at all.
+#   - Get call details' own object -- contact, call_tags, call_rating,
+#     internal_number, notes, out_of_office, and the full call_steps /
+#     agent_calls tree that shows a leg is nested and unaddressable -- is
+#     quoted in the header rather than turned into a resource or a
+#     fixture, because it is not routed. See above.
+#   - No default page size is documented for Call History, only a ceiling
+#     ("Max. number of items in response data," maximum 1000, minimum 1);
+#     this Recipe declares the ceiling and leaves the default unasserted
+#     rather than guess a number nobody wrote down.
+#   - Rate limiting (60 requests per minute per company, with
+#     X-CloudTalkAPI-ResetTime on a 429) is documented and never triggered
+#     live; no specific header value is asserted for it.
+#
+# The credentials below are fixtures and belong to no account.
+
+recipe: cloudtalk
+capability: voice
+version: 0.1.0
+
+upstream:
+  api: v1.7
+  docs: https://developers.cloudtalk.io/api-reference/overview
+  provider: CloudTalk
+  spec: https://developers.cloudtalk.io/api-reference/openapi.json
+  spec_hash: 1eba6a612835a39d447665a3eec3a01b9d19fc53dccc2d122914c30ca550ffd9
+  spec_seen: "2026-09-01"
+
+auth:
+  # HTTP Basic: API Access Key ID as the username, API Access Key Secret as
+  # the password. Every verdict this task struck against the main host
+  # answered the identical "Unauthorized" -- see the header -- so
+  # absent_error, malformed_error and rejected_error are all left unset on
+  # purpose.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-cloudtalk-fixture-secret-0000000000
+
+responses:
+  list:
+    style: wrapped
+    count_field: responseData.itemsCount
+    pages_field: responseData.pageCount
+    page_field: responseData.pageNumber
+    limit_field: responseData.limit
+  error:
+    style: flat
+    key: responseData
+    message_field: responseData.message
+    status_field: responseData.status
+
+resources:
+  # Call History's own list item -- {Cdr: {...}, Contact: {...}}. Contact is
+  # not modelled; see the header. Every Cdr field nests under "Cdr" on the
+  # wire, which the `in: Cdr` on each field below reproduces.
+  cdr:
+    collection: responseData.data
+    id:
+      # The wire sends a JSON string ("27"), not the integer the schema
+      # beside it declares -- see the header.
+      style: numeric
+      type: string
+      field: Cdr.id
+    fields:
+      # incoming, outgoing or internal, per the schema's own enum.
+      type:
+        type: string
+        in: Cdr
+      # Bare JSON numbers on the wire, not the strings the schema declares
+      # beside them -- see the header.
+      public_external:
+        type: number
+        in: Cdr
+      public_internal:
+        type: number
+        in: Cdr
+      # "Was call recorded?" -- CloudTalk's own words.
+      recorded:
+        type: boolean
+        in: Cdr
+      # "Link to the analytics call-detail page for the call, which hosts
+      # the recording. Present only for recorded calls with a non-zero
+      # billed duration." -- CloudTalk's own words. A dashboard page, not a
+      # media file; see the header for what this is not.
+      recording_link:
+        type: string
+        in: Cdr
+      # A JSON string on the wire ("0"), not the integer the schema beside
+      # it declares -- see the header.
+      billsec:
+        type: string
+        in: Cdr
+      talking_time:
+        type: integer
+        in: Cdr
+      waiting_time:
+        type: integer
+        in: Cdr
+      wrapup_time:
+        type: integer
+        in: Cdr
+      started_at:
+        type: datetime
+        in: Cdr
+      answered_at:
+        type: datetime
+        in: Cdr
+        null_when_unset: true
+      ended_at:
+        type: datetime
+        in: Cdr
+
+routes:
+  - method: GET
+    path: /calls/index.json
+    resource: cdr
+    operation: list
+    pagination:
+      style: page
+      # No default size is documented, only this ceiling -- see the header.
+      max_limit: 1000
+      limit_param: limit
+      cursor_param: page
+
+  # Registered so its own credential gate and its documented terminal
+  # states can be shown. Not modelled beyond that: a 200 here is WAV bytes
+  # per CloudTalk's own description ("Media data are returned in WAV
+  # format"), not JSON, and this task never held a credential to fetch one.
+  - method: GET
+    path: /calls/recording/{callId}.json
+    error: recording_not_modelled
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    headers:
+      Content-Type: "application/json; charset=UTF-8"
+
+  # Reached only by arming it: this task's fixture credential is not a real
+  # one, so every unarmed request to the recording route above reaches the
+  # credential gate first. Documented, not struck live -- reaching either of
+  # these needs a real key and a real recording this task does not have.
+  recording_not_found:
+    status: 404
+    message: "Not found."
+    headers:
+      Content-Type: "application/json; charset=UTF-8"
+
+  recording_expired:
+    status: 410
+    message: "Recording expired."
+    headers:
+      Content-Type: "application/json; charset=UTF-8"
+
+  # The recording route's own unconditional answer for anything that got
+  # past the credential gate, which no case here does. See the route
+  # comment above.
+  recording_not_modelled:
+    status: 501
+    message: This Recipe does not model a successful recording fetch. See the header.
+
+fixtures:
+  empty: {}
+
+  small-account:
+    cdr:
+      # Recorded, answered, and the analytics page link CloudTalk's own
+      # worked example shows -- quoted verbatim, including its odd
+      # billsec-vs-talking_time pairing (0 and 21) exactly as documented.
+      # See the header for why this Recipe does not resolve which duration
+      # field "non-zero billed duration" actually means.
+      - id: "27"
+        type: outgoing
+        public_external: 421904247371
+        public_internal: 421221291400
+        recorded: true
+        recording_link: "https://analytics.cloudtalk.io/call-details/27"
+        billsec: "0"
+        talking_time: 21
+        started_at: "2017-10-04T06:33:37.000Z"
+        answered_at: "2017-10-04T06:33:37.000Z"
+        ended_at: "2017-10-04T06:33:49.000Z"
+      # Not recorded. No recording_link at all -- its absence is the signal
+      # a client actually reads, not a false value.
+      - id: "28"
+        type: incoming
+        public_external: 421904247372
+        public_internal: 421221291400
+        recorded: false
+        billsec: "45"
+        talking_time: 40
+        started_at: "2017-10-04T07:00:00.000Z"
+        answered_at: "2017-10-04T07:00:02.000Z"
+        ended_at: "2017-10-04T07:00:47.000Z"
+
+conformance:
+  - name: no credential at all
+    source: https://my.cloudtalk.io/api/calls/index.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /calls/index.json
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=UTF-8
+      body:
+        responseData.status: 401
+        responseData.message: Unauthorized
+
+  - name: a wrong credential gets the identical sentence, not a different one
+    source: https://my.cloudtalk.io/api/calls/index.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /calls/index.json
+      headers:
+        Authorization: "Basic anVua2tleTpqdW5rc2VjcmV0"
+    expect:
+      status: 401
+      body:
+        responseData.status: 401
+        responseData.message: Unauthorized
+
+  - name: an unrouted path is refused for its credential exactly like a real one, because the credential is checked before routing is even attempted
+    source: https://my.cloudtalk.io/api/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-is-not-a-real-endpoint
+    expect:
+      status: 401
+      body:
+        responseData.status: 401
+        responseData.message: Unauthorized
+
+  - name: recorded is boolean and the link is a dashboard page, not audio
+    source: https://developers.cloudtalk.io/api-reference/calls/call-history
+    fixture: small-account
+    request:
+      method: GET
+      path: /calls/index.json
+      headers:
+        Authorization: "Basic Y2xvdWR0YWxrOmNhdWxkcm9uLWNsb3VkdGFsay1maXh0dXJlLXNlY3JldC0wMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        responseData.data[0].Cdr.recorded: true
+        responseData.data[0].Cdr.recording_link: "https://analytics.cloudtalk.io/call-details/27"
+        responseData.data[0].Cdr.billsec: "0"
+
+  - name: an unrecorded call carries no link at all, which is the signal
+    source: https://developers.cloudtalk.io/api-reference/calls/call-history
+    fixture: small-account
+    request:
+      method: GET
+      path: /calls/index.json
+      headers:
+        Authorization: "Basic Y2xvdWR0YWxrOmNhdWxkcm9uLWNsb3VkdGFsay1maXh0dXJlLXNlY3JldC0wMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        responseData.data[1].Cdr.recorded: false
+      absent:
+        - responseData.data[1].Cdr.recording_link
+
+  - name: the envelope nests the count under responseData, not at the top level
+    source: https://developers.cloudtalk.io/guides/response-envelopes
+    fixture: small-account
+    request:
+      method: GET
+      path: /calls/index.json
+      headers:
+        Authorization: "Basic Y2xvdWR0YWxrOmNhdWxkcm9uLWNsb3VkdGFsay1maXh0dXJlLXNlY3JldC0wMDAwMDAwMDAw"
+    expect:
+      status: 200
+      body:
+        responseData.itemsCount: 2
+      absent:
+        - itemsCount
+        - data
+
+  - name: fetching a recording needs the same credential every other route does
+    source: https://my.cloudtalk.io/api/calls/recording/27.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /calls/recording/27.json
+    expect:
+      status: 401
+      body:
+        responseData.status: 401
+        responseData.message: Unauthorized
+
+  - name: a recording past its retention window is 410, not 404
+    source: https://developers.cloudtalk.io/api-reference/calls/recording-media
+    arm: recording_expired
+    fixture: empty
+    request:
+      method: GET
+      path: /calls/recording/27.json
+      headers:
+        Authorization: "Basic Y2xvdWR0YWxrOmNhdWxkcm9uLWNsb3VkdGFsay1maXh0dXJlLXNlY3JldC0wMDAwMDAwMDAw"
+    expect:
+      status: 410
+      body:
+        responseData.status: 410
+        responseData.message: "Recording expired."
+
+  - name: a recording that never existed is 404, a different code from an expired one
+    source: https://developers.cloudtalk.io/api-reference/calls/recording-media
+    arm: recording_not_found
+    fixture: empty
+    request:
+      method: GET
+      path: /calls/recording/999999999.json
+      headers:
+        Authorization: "Basic Y2xvdWR0YWxrOmNhdWxkcm9uLWNsb3VkdGFsay1maXh0dXJlLXNlY3JldC0wMDAwMDAwMDAw"
+    expect:
+      status: 404
+      body:
+        responseData.status: 404
+        responseData.message: "Not found."
