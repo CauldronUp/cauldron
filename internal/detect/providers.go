@@ -4974,6 +4974,44 @@ func providers() []provider {
 			gomod:  []string{"github.com/Backblaze/blazer"},
 		},
 		{
+			// The OpenAPI client Ory generates from the same description this
+			// Recipe fingerprints, plus the Kratos-only build of it.
+			recipe: "ory",
+			npm:    []string{"@ory/client", "@ory/kratos-client"},
+			gomod:  []string{"github.com/ory/client-go"},
+		},
+		{
+			// The driver, not an application library. supertokens-node's whole
+			// job is to speak the Core Driver Interface -- the surface this
+			// Recipe describes -- on behalf of an application that never sees
+			// it, which makes it a client of this API in the strictest sense.
+			recipe: "supertokens",
+			npm:    []string{"supertokens-node"},
+			gomod:  []string{"github.com/supertokens/supertokens-golang"},
+		},
+		{
+			// @logto/api, and deliberately not @logto/node. The latter is the
+			// application-side session library; this Recipe describes the
+			// Management API, which is what @logto/api is typed against.
+			recipe: "logto",
+			npm:    []string{"@logto/api"},
+		},
+		{
+			// here-geocoder describes itself as a client for the HERE REST
+			// API, which is this Recipe's surface. @here/olp-sdk-core is not
+			// mapped: it is the Data Platform, a different product.
+			recipe: "here",
+			npm:    []string{"here-geocoder"},
+		},
+		{
+			recipe: "tomtom",
+			npm:    []string{"@tomtom-international/web-sdk-services"},
+		},
+		{
+			recipe: "what3words",
+			npm:    []string{"@what3words/api"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
