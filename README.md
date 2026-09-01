@@ -2383,33 +2383,33 @@ otherwise drafted from their descriptions. Render does not distinguish a missing
 credential from a wrong one; Upstash answers three different shapes depending on
 how you fail to authenticate, only one of which matches its documented scheme.
 
-Eight are Groq's, where **the wrong verb and the wrong path are the same
+Five are Groq's, where **the wrong verb and the wrong path are the same
 failure.** `POST` to a real GET-only path answers the identical 404 a path
 nobody defined answers, with the method folded into a sentence rather than into
 a status -- there is no 405 anywhere. Its routes also resolve *before* the
 credential, which is the opposite order from Scaleway's, written the same day.
 
-Nine are Perplexity's, where **one route is versioned and the other is not.**
+Six are Perplexity's, where **one route is versioned and the other is not.**
 `POST /chat/completions` is a 401 and `POST /v1/chat/completions` is a 404 with
 zero bytes, while `/v1/models` is versioned and works -- and that model
 catalogue is documented as backing a different product entirely, so a client
 listing models to pick one for chat is reading the wrong list.
 
-Eight are TMDB's, where **six different mistakes are one error.** No key, a fake
+Three are TMDB's, where **six different mistakes are one error.** No key, a fake
 key, a fake key on a missing film, a fake bearer token, the wrong verb and a bad
 path all answer the same 103 bytes with `status_code: 7`. The key is checked
 before anything else, so five of the six are misdiagnosed.
 
-Eight are RAWG's, whose **two auth failures cannot both be served.** It does say
+Three are RAWG's, whose **two auth failures cannot both be served.** It does say
 which credential problem happened -- "The key parameter is not provided" against
 "The API key is not found" -- and one authorisation gate can carry one of them.
 Six Recipes have now hit that limit.
 
-Seven are Twitch's, which **needs two credentials and checks one first.** Sending
+Three are Twitch's, which **needs two credentials and checks one first.** Sending
 a correct `Client-Id` with no token earns a byte-identical response to sending
 nothing at all.
 
-Nine are Spotify's, where **the body cannot tell two failures apart and the
+Four are Spotify's, where **the body cannot tell two failures apart and the
 header can.** A missing and a bogus token give identical JSON naming three
 possible causes, while `WWW-Authenticate` carries `missing_token` against
 `invalid_token`. An unknown path answers 410 Gone, a status meaning the resource
