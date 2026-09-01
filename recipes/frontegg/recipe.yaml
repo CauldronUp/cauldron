@@ -1,0 +1,421 @@
+# Frontegg Recipe for Cauldron
+#
+# Frontegg is the group this Recipe, kinde/recipe.yaml and
+# propelauth/recipe.yaml were written together to answer one question about:
+# every customer gets their own hostname (app-<id>.frontegg.com), and the
+# generic host (api.frontegg.com) has to answer for a tenant it cannot read
+# off the domain at all. make/recipe.yaml already found that a real token
+# on the wrong regional host is indistinguishable from a token nobody ever
+# issued. Frontegg is the opposite of that finding, not a repeat of it, and
+# the difference is worth stating precisely because it did not have to come
+# out this way.
+#
+# *.frontegg.com is a real wildcard -- checked with plain nslookup, no HTTP
+# involved -- and it answers for absolutely anything under it:
+#
+#   zzz-cauldron-nonexistent-probe-12345.frontegg.com  -> d1lv299z9kt9im.cloudfront.net
+#   api.frontegg.com                                    -> d1lv299z9kt9im.cloudfront.net
+#   app-00000000-0000-0000-0000-000000000000.frontegg.com -> d1lv299z9kt9im.cloudfront.net
+#
+# the same CloudFront distribution, same four IPs, for a real host and two
+# fabricated ones. DNS alone cannot tell a customer from a typo here, same as
+# Make's six zones. What happens after the TLS handshake is where the two
+# providers stop agreeing.
+#
+# api.frontegg.com's own edge runs an AWS WAF Bot Control rule that blocks a
+# bare curl request to "/" with no query string on ANY hostname under the
+# domain -- real or fabricated alike, checked on both -- answering
+# {"message":"Task Failed successfully: access denied. Your request was
+# blocked by WAF security rules..."}, 403. That block is about the shape of
+# the request (no path, a bot-shaped TLS/HTTP fingerprint), not about which
+# tenant was asked for, and it is a dead end for this question: it says
+# nothing about host validity, only about how the request looked. Sending a
+# real path with an Accept header gets past it. Every case below was struck
+# that way, and the WAF block itself is not modelled -- it is an artifact of
+# how this project's own probes look to Cloudfront, not a Frontegg behaviour.
+#
+# Past the WAF, the split is immediate and it runs the opposite way from
+# Make's. A path that is real on a host that is not answers 404 and names the
+# host in the sentence:
+#
+#   GET /identity/resources/users/v1  on a fabricated host, no credential
+#     -> 404 {"errors":["Failed to find vendor for host:
+#        zzz-cauldron-nonexistent-probe-12345.frontegg.com"]}
+#
+#   the identical path on api.frontegg.com itself, no credential
+#     -> 401 {"errors":["Vendor authentication was not provided",
+#        "either use the environment host or send JWT"]}
+#
+# checked on three different fabricated hostnames, including one shaped
+# exactly like the app-<id> pattern Frontegg's own servers block documents
+# (app-00000000-0000-0000-0000-000000000000.frontegg.com), all three
+# answering the identical two-part sentence with the caller's own hostname
+# echoed back. A caller who mistypes a subdomain finds out from the response
+# body, in the same breath as the 404. A caller who gets the host right and
+# forgets a credential finds out from a completely different status and a
+# completely different sentence. Frontegg's edge, unlike Make's, is able to
+# answer "wrong vendor" and "no vendor" as two different facts, because
+# vendor lookup and credential verification are visibly two separate steps
+# here rather than one lookup that either finds a match or does not.
+#
+# On the real host, missing and wrong are two different sentences too, which
+# a bare bool cannot hold and this Recipe reproduces with required_headers
+# doing the "nothing was sent" half and a header-less fallback route doing
+# the "something was sent and it did not check out" half -- the same device
+# turso/recipe.yaml and census/recipe.yaml already use for the same reason:
+#
+#   no Authorization header at all
+#     -> 401 {"errors":["Vendor authentication was not provided",
+#        "either use the environment host or send JWT"]}
+#   Authorization: Bearer <anything else, garbage or well-formed-but-fake>
+#     -> 401 {"errors":["Failed to verify vendor JWT"]}
+#
+# and this holds for every method tried against the same path (GET, PATCH,
+# POST all reach the identical "Vendor authentication was not provided" with
+# no credential) and for a path this Recipe declares no route for at all
+# (identical body, both credential states) -- Cauldron's own auth check
+# already runs unconditionally before the router, the same shape
+# firehydrant/recipe.yaml documents, and confirmed here to be Frontegg's real
+# order too, not just this runtime's.
+#
+# The second sentence past the WAF block is not the second-most-interesting
+# thing this Recipe found. GET /identity/resources/auth/v1/user -- Frontegg's
+# own end-user login endpoint, the one a signed-out visitor's browser calls --
+# answers the identical "Vendor authentication was not provided" for a
+# request with no credential at all. Frontegg puts a mandatory vendor/M2M
+# gate underneath its end-user surface, not beside it: even authenticating an
+# end user requires the calling backend to have already proven who *it* is.
+# That is the machine-to-machine flow this group of Recipes was asked to look
+# for, and Frontegg's version of it is a distinct endpoint with its own
+# distinct failure vocabulary, checked live:
+#
+#   POST /auth/vendor/  {}  (empty body)
+#     -> 400 {"errors":["clientId must be a string","secret must be a string"]}
+#   POST /auth/vendor/  {"clientId": "<uuid-shaped>", "secret": "<string>"}
+#     -> 401 {"errors":["Failed to authenticate"]}
+#
+# a third sentence, unrelated to either of the two above, and one that never
+# consults an Authorization header at all -- confirmed live by sending one
+# anyway and getting the identical body back. That is the vendor JWT *minted
+# by* this call; "Failed to verify vendor JWT" above is what happens when a
+# bearer token fails validation on every *other* route. Two different verbs
+# for two different failures of the same credential's lifecycle, and neither
+# sentence is the other one reworded.
+#
+# Frontegg's own published OpenAPI description (frontegg/openapi-public on
+# GitHub, identity.json, fetched directly rather than assumed) confirms the
+# host split is not incidental to how this project happened to probe it. Its
+# servers block lists five, not one:
+#
+#   https://api.frontegg.com/identity        EU Region
+#   https://api.us.frontegg.com/identity     US Region
+#   https://api.ca.frontegg.com/identity     CA Region
+#   https://api.au.frontegg.com/identity     AU Region
+#   https://{domain}.frontegg.com/identity   "Frontegg sub-domain for use
+#                                              with user tokens", default
+#                                              variable app-xxx
+#
+# four generic regional hosts behind api(.<region>).frontegg.com, the same
+# shape of problem Make's eu1/eu2/us1/us2 have -- a vendor credential minted
+# in one region is a credential that host's own database has never heard of
+# in the other three, and this project has no way to create an account to
+# find out whether a wrong-region vendor credential collapses into "Failed to
+# verify vendor JWT" the way Make's wrong-zone token collapses into "Not
+# authorized." Only the EU host (the bare api.frontegg.com) was struck live;
+# the other three are recorded from the spec and not verified against. And a
+# fifth, genuinely different host: {domain}.frontegg.com -- the app-<id>
+# pattern this Recipe's own header opened with -- is documented in Frontegg's
+# own words as "for use with user tokens," a self-service surface distinct
+# from the vendor-gated one every route below actually reaches.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No vendor clientId/secret exists, was requested, or was guessed. Every
+#     401 and 404 above was struck with no account at all. The one resource
+#     route below is proven only against an empty fixture, the same device
+#     make/recipe.yaml and census/recipe.yaml use for the same reason: an
+#     empty collection needs no field value invented to prove its shape, and
+#     nothing else about a real user record was ever observed.
+#   - Frontegg's real body carries two sentences for the missing-credential
+#     case and this Recipe serves one. Cauldron's string_list error style
+#     (the same one datadog/recipe.yaml uses) puts exactly one string in the
+#     array; "Vendor authentication was not provided" is the one served,
+#     because it is the sentence the finding above turns on, and "either use
+#     the environment host or send JWT" is recorded here, live-verified, and
+#     not modelled -- the same trade make/recipe.yaml states for its own
+#     third, unservable 401.
+#   - The {domain}.frontegg.com self-service host is not modelled as its own
+#     surface. Cauldron's auth scheme is one setting for the whole Recipe;
+#     wiring a second, user-token scheme for that host would need a
+#     mechanism this runtime does not have, the same reason mezmo/recipe.yaml
+#     states for not routing api.mezmo.com's Authorization: Token scheme
+#     beside logs.mezmo.com's apikey scheme in one Recipe.
+#   - US/CA/AU regional hosts, and whether a vendor credential from one
+#     answers on another the way a Make zone does, are recorded from the spec
+#     above and never called.
+#   - Of 25-plus documented fields on the users/v3 list entry, about a
+#     dozen are declared. Roles, groups, sub-accounts and SCIM-managed-state
+#     fields are entirely absent.
+#   - _links (next/prev/first/last) is real and documented on the users/v3
+#     envelope and is not modelled -- the same gap firehydrant/recipe.yaml
+#     states for its own numbered page pointers: this format has count, page,
+#     items and pages, and nothing for a URL or token beside them.
+#   - No rate-limit header was seen on any response this Recipe struck, so
+#     none is declared. That is an absence in what was observed, not a claim
+#     that this host never sends one.
+#
+# Every case below not carrying a verified date was read from
+# frontegg/openapi-public's identity.json (openapi: 3.0.0, info.title:
+# "Authentication and Identity Management"), fetched directly rather than
+# assumed, not observed against a real vendor account. Keys below are
+# fixtures, not secrets.
+
+recipe: frontegg
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  provider: frontegg
+  docs: https://developers.frontegg.com/guides/getting-started/home
+  spec: https://raw.githubusercontent.com/frontegg/openapi-public/master/identity.json
+  spec_hash: 227efe5377c778c49d78da908f0df392ac42c8d5daec519f0a52587fbae202e3
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely a bearer JWT, but expressed as scheme none plus fixed routes
+  # below -- the same trade turso/recipe.yaml and census/recipe.yaml make,
+  # for the same reason: a single scheme can answer only one way, and this
+  # host answers with two different sentences depending on whether anything
+  # was sent at all.
+  scheme: none
+
+required_headers:
+  Authorization:
+    error: no_credential
+
+responses:
+  error:
+    style: string_list
+    key: errors
+
+resources:
+  user:
+    collection: items
+    id:
+      # Documented only as {"type": "string"} -- no format, no example,
+      # anywhere in the published spec. opaque is the honest choice rather
+      # than a guessed uuid.
+      style: opaque
+    fields:
+      email:
+        type: string
+      name:
+        type: string
+      verified:
+        type: boolean
+      mfaEnrolled:
+        type: boolean
+      provider:
+        type: string
+      tenantId:
+        type: string
+      tenantIds:
+        type: list
+      isLocked:
+        type: boolean
+      # frontegg, scim2 or external -- who is actually allowed to change
+      # this record.
+      managedBy:
+        type: string
+      createdAt:
+        type: datetime
+      lastLogin:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /identity/resources/users/v3
+    resource: user
+    operation: list
+    matches_header:
+      Authorization: "Bearer cauldron-frontegg-fixture-vendor-jwt-0000000000"
+    pagination:
+      style: offset
+      limit_param: _limit
+      cursor_param: _offset
+    list:
+      style: wrapped
+      count_field: _metadata.totalItems
+      pages_field: _metadata.totalPages
+
+  # Any credential that was offered and did not check out -- garbage or
+  # well-formed-but-fake alike. See the header for why only one of the two
+  # real shapes (this one) is reachable through Cauldron's own auth check;
+  # the "nothing offered" shape comes from required_headers above instead.
+  - method: GET
+    path: /identity/resources/users/v3
+    error: invalid_token
+
+  # A path this Recipe declares no other route for, armed with the same
+  # fallback error a real route's wrong-credential case gets -- the same
+  # device census/recipe.yaml uses to make the auth-before-routing point
+  # directly rather than only in prose. Struck live: this exact path, with a
+  # credential that did not check out, answered the identical
+  # "Failed to verify vendor JWT" a real route does.
+  - method: GET
+    path: /identity/resources/this-is-not-a-real-resource/v1
+    error: invalid_token
+
+  # Mints the vendor JWT every other route on this host demands. Answers with
+  # its own, third failure vocabulary -- see the header -- and never
+  # consults Authorization at all, confirmed live by sending one anyway and
+  # getting the identical body. It is sent in the case below only because
+  # Cauldron's required_headers is a Recipe-wide gate this format cannot
+  # scope to one path; the real endpoint ignores it entirely.
+  - method: POST
+    path: /auth/vendor/
+    error: vendor_credentials_invalid
+
+errors:
+  # required_headers' own answer for a request carrying no Authorization
+  # anywhere at all. See the header for the second sentence this shape
+  # cannot also carry.
+  no_credential:
+    status: 401
+    message: "Vendor authentication was not provided"
+
+  # A credential was offered -- garbage, or well-formed but naming nothing
+  # real -- and did not check out.
+  invalid_token:
+    status: 401
+    message: "Failed to verify vendor JWT"
+
+  # POST /auth/vendor/ with a well-formed clientId and secret naming no real
+  # vendor. Distinct from invalid_token: this is the credential *before* it
+  # becomes a JWT, not a JWT that failed verification.
+  vendor_credentials_invalid:
+    status: 401
+    message: "Failed to authenticate"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all names the two-part sentence, not the vendor
+    source: https://api.frontegg.com/identity/resources/users/v3
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/users/v3
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Vendor authentication was not provided"
+
+  - name: the same check gates the end-user login route underneath it too
+    # GET is a routing stand-in for the real POST this endpoint takes -- the
+    # finding is that the vendor gate is reached before anything about the
+    # end user is, which held for every method and path this Recipe tried.
+    source: https://api.frontegg.com/identity/resources/auth/v1/user
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/auth/v1/user
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Vendor authentication was not provided"
+
+  - name: a credential that does not check out answers a different sentence and a different route entirely
+    source: https://api.frontegg.com/identity/resources/users/v3
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/users/v3
+      headers:
+        Authorization: Bearer junk-not-a-real-token
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Failed to verify vendor JWT"
+
+  - name: a path this Recipe has no other route for is refused exactly the same way, once a credential was offered
+    source: https://api.frontegg.com/identity/resources/this-is-not-a-real-resource/v1
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/this-is-not-a-real-resource/v1
+      headers:
+        Authorization: Bearer junk-not-a-real-token
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Failed to verify vendor JWT"
+
+  - name: and the same unrouted path with no credential falls to the other sentence, not a 404
+    source: https://api.frontegg.com/identity/resources/this-is-not-a-real-resource/v1
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/this-is-not-a-real-resource/v1
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Vendor authentication was not provided"
+
+  - name: the vendor-minting endpoint has its own, third failure sentence
+    # A well-formed clientId (uuid-shaped) and secret, naming no real vendor.
+    # An Authorization header is included only to satisfy Cauldron's
+    # Recipe-wide required_headers gate -- see the header -- and the real
+    # endpoint was confirmed live to ignore it entirely; the body is
+    # identical with or without one.
+    source: https://api.frontegg.com/auth/vendor/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/vendor/
+      headers:
+        Authorization: Bearer irrelevant-to-this-endpoint
+      json:
+        clientId: "00000000-0000-0000-0000-000000000000"
+        secret: cauldron-fixture-not-a-real-secret
+    expect:
+      status: 401
+      body:
+        errors:
+          - "Failed to authenticate"
+
+  # A fabricated hostname answers 404 and names the host in the sentence --
+  # "Failed to find vendor for host: zzz-cauldron-nonexistent-probe-12345
+  # .frontegg.com", checked live against three different fabricated names --
+  # never reaching the vendor question the cases above are about at all. See
+  # the header. Cauldron has no mechanism for one path answering differently
+  # by hostname, the same limitation make/recipe.yaml states for its own six
+  # zones, so this finding lives in the header and not in a case here.
+
+  - name: the correct vendor credential clears the gate to an empty collection
+    source: https://raw.githubusercontent.com/frontegg/openapi-public/master/identity.json
+    fixture: empty
+    request:
+      method: GET
+      path: /identity/resources/users/v3
+      headers:
+        Authorization: "Bearer cauldron-frontegg-fixture-vendor-jwt-0000000000"
+    expect:
+      status: 200
+      body:
+        items: []
+        _metadata.totalItems: 0
