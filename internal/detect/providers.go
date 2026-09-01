@@ -5140,6 +5140,31 @@ func providers() []provider {
 			npm:    []string{"@niledatabase/server"},
 		},
 		{
+			recipe: "cognito",
+			npm:    []string{"@aws-sdk/client-cognito-identity-provider"},
+		},
+		{
+			recipe: "googlemaps",
+			npm:    []string{"@googlemaps/google-maps-services-js"},
+		},
+		{
+			recipe: "livepeer",
+			npm:    []string{"livepeer"},
+		},
+		{
+			// The server SDK, not the browser one -- this Recipe models the
+			// management API a backend calls, not the room a page joins.
+			recipe: "100ms",
+			npm:    []string{"@100mslive/server-sdk"},
+		},
+		{
+			// "takes json-cov output into stdin and POSTs it", which is
+			// exactly the caller this Recipe describes: a build, not an
+			// application.
+			recipe: "coveralls",
+			npm:    []string{"coveralls"},
+		},
+		{
 			recipe: "onfleet",
 			npm:    []string{"@onfleet/node-onfleet"},
 		},
