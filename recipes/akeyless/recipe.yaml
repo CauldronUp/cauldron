@@ -1,0 +1,481 @@
+# Akeyless Recipe for Cauldron
+#
+# Akeyless is not REST. One host, api.akeyless.io, answers POST and nothing
+# else: every "endpoint" is a path segment Akeyless calls a command --
+# /auth, /list-items, /describe-item, /get-secret-value, /delete-item -- and
+# every command takes a JSON body rather than path or query parameters. A
+# credential is not a static key presented on every call the way a Bearer
+# token or Basic pair is. /auth exchanges access-id/access-type/access-key
+# (or ten other supported methods -- password, LDAP, Kubernetes, a
+# certificate, a cloud identity, JWT/OIDC, Kerberos) for a short-lived token,
+# and every other command expects that token back as a "token" property
+# **inside its JSON body**, not as a header. This Recipe's own vocabulary for
+# auth -- bearer, basic, header, query -- has no fifth entry for "a field in
+# the POST body," so auth.scheme is declared none below and every observed
+# credential-shape finding is recorded as prose and as fixed-answer routes
+# rather than through auth.absent_error/malformed_error/rejected_error. That
+# is a real expressiveness gap in this format, stated rather than forced --
+# the same discipline Census's Recipe applies to a routing order this
+# format's one boolean cannot express either.
+#
+# Three credential shapes were sent against /list-items, /get-secret-value
+# and /delete-item, live, on 2026-09-01, with no account and no key ever
+# held:
+#
+#   {}                                  -> 400 {"error":"invalid token"}
+#   {"token":""}                        -> 400 {"error":"invalid token"}
+#   {"token":"junktoken12345"}          -> 400 {"error":"invalid token"}
+#   {"token":"t-<32 hex-ish chars>"}    -> 401 {"error":"credentials have
+#                                          expired:Desc: Failed to get temp
+#                                          creds. Status 401 Unauthorized,
+#                                          Error: InvalidCredentials.
+#                                          Message: credentials validation
+#                                          failed"}
+#
+# A missing "token" key, an empty string, and a string with no "t-" prefix
+# are one answer, byte for byte -- Akeyless's own tokens are documented as
+# "t-" prefixed, and a value that cannot even look like one is refused the
+# same way as no value at all. That is Absent and Malformed collapsing to
+# one message, which this Recipe would name identically on both fields if
+# the scheme were expressible -- see the header of firehydrant/recipe.yaml
+# for what naming the same error for two verdicts is meant to claim. Only
+# once a credential has the right shape does Akeyless tell you it disagrees
+# with the value: a different status, a different envelope, a different
+# sentence. That three-way split could not be reached through a declared
+# route below, because nothing here can gate on a JSON body value the way
+# matches_header gates on a real header (turso and census both need a real
+# header to do it) -- so it is recorded here, dated, and not encoded as a
+# conformance case. The one route that reaches a genuine 200 in this Recipe
+# (describe-item, below) is reachable with **no credential at all**, which
+# is the honest cost of that gap and is stated again at that route.
+#
+# /auth answers a third way again, because it is the one command that takes
+# no prior token at all -- it is what a token comes *from*. An empty body
+# answers {"error":"invalid request body: access id should not be empty"},
+# 400, live; a well-formed access-id/access-type/access-key that names
+# nobody answers {"error":"failed to get credentials: Desc: Failed to
+# authenticate API key access. Status 401 Unauthorized, Error:
+# AuthenticationFailed. Message: access authentication failed. Please
+# contact your account admin for additional information or visit this link:
+# https://console.akeyless.io/audit?search_param=session_id%3A+..."}, 401,
+# live -- a sentence that embeds a live session id and a link into this
+# Recipe's own audit log, which is itself worth having pinned: an
+# unauthenticated failure that leaks a server-side correlation id into the
+# body it sends the caller. The two routes below pick between these by
+# whether the body's raw text contains the word "access-id" at all
+# (selects_body), which is the one place this Recipe leans on that
+# mechanism for something other than picking an operation -- here it is
+# picking which of two required-field checks /auth's own validator reaches
+# first, and both branches were struck live rather than guessed.
+#
+# Ordering has two separate axes here, not one, and they resolve in opposite
+# relative positions:
+#
+#   - Method is checked before the command is ever looked up, for every
+#     path without exception. GET on "/", GET on "/list-items" (a real
+#     command) and GET on a wholly invented path all answered the identical
+#     shape -- 405, {"error":"WrongMethod","message":"Unsupported method
+#     GET: url: <path>"} -- live, on 2026-09-01, with no Allow header on any
+#     of them anywhere.  POST is the only method this whole host accepts,
+#     for every command, so a wrong method never learns whether the command
+#     it named exists.
+#   - The command IS looked up before the credential, for POST. A real
+#     command with an empty body answers about its own body (400,
+#     command-specific); a command that does not exist answers 404
+#     {"error":"unknown command '<name>'"} -- struck live with a `{}` body,
+#     no credential of any kind, so the credential is never reached for a
+#     command Akeyless does not have. Only once a command both exists and
+#     has its own required fields satisfied does the token get examined.
+#
+# So the true order is method, then command, then that command's own
+# required-body-field check, then the credential -- four gates, not the two
+# auth.after_routing toggles between. auth.go already declares six providers
+# whose ordering needed prose instead of the boolean; this is a seventh
+# shape, and the closest neighbour is Census, which also splits on the verb
+# alone for one of its two axes.
+#
+# Every protected command shares the same body-then-credential shape once
+# its own required field is satisfied. describe-item was checked first
+# with {"item-name": "..."}, which kept answering its own missing-field
+# sentence no matter what was sent -- the wrong field name, corrected live
+# to {"name": "..."}, which is what the command actually validates on,
+# matching the "name" parameter delete-item's own published reference
+# documents rather than the item-name/display-id/item-id trio a generated
+# summary of the schema had suggested. Once "name" is present,
+# describe-item answers "invalid token" exactly like list-items,
+# get-secret-value and delete-item -- confirmed live, so the field name
+# correction is itself dated evidence rather than a guess this Recipe is
+# repeating.
+#
+# The deletion mechanism this Recipe's whole group exists to compare, from
+# Akeyless's own published reference (docs.akeyless.io/reference/deleteitem
+# and /describeitem, read today, no worked example, no `verified:` date on
+# anything below drawn from them):
+#
+#   - delete-in-days: "The number of days to wait before deleting the item
+#     (relevant for keys only)", default 7. delete-immediately: "When
+#     delete-in-days=-1, must be set", default false. A delete is not a
+#     delete by default -- it is a seven-day hold, and the only way to skip
+#     the hold is to name -1 and also set the immediate flag, two fields
+#     agreeing on purpose rather than one flag alone.
+#   - version: "0=last version, -1=entire item with all versions
+#     (default)". A version can be deleted independently of the item it
+#     belongs to; deleting the whole item is the default and not the only
+#     option.
+#   - describe-item's response documents delete_protection (boolean,
+#     annotated x-go-name ItemProtected in the generated client) sitting
+#     beside deletion_date and an item_state field on the same record. A
+#     read of an item inside its seven-day hold answers the record, not a
+#     404 and not a bare tombstone -- deletion_date and delete_protection
+#     are fields ON the item, which is the "item with a flag" shape this
+#     group's question names directly, in contrast with Vault's KV v2
+#     (deletion_time and destroyed sitting in the *version's own* metadata
+#     block, read on the exact same path a live version answers on) and
+#     with Nexus below (a delete this Recipe's own probe against Nexus's
+#     published description found no soft-delete field on at all).
+#     item_state's own enum values are not quoted here: the source read
+#     today named the field and its purpose but not the literal strings it
+#     takes, and inventing one would be exactly the guess Step 3 forbids.
+#
+# No route below reaches a 200 for describe-item's deletion fields with real
+# values, because reaching one needs a token this Recipe will never hold --
+# no account was created and no key was requested, guessed or used anywhere
+# in writing this file. The one route that does answer 200 (describe-item)
+# proves the shape of an item that has never been touched (delete_protection
+# false, no deletion_date) with an empty-fixture case, which Step 3
+# explicitly allows in place of a worked example this Recipe does not have.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - auth.scheme is none for the whole Recipe, which means describe-item
+#     below answers 200 to any request at all, credential-shaped or not.
+#     The real API never does this -- describe-item needs a real token the
+#     same as every other command -- and this Recipe cannot gate it without
+#     misdescribing where the credential actually travels. Stated here
+#     rather than served as though it were faithful.
+#   - No upstream.spec is recorded. Akeyless's reference lives on
+#     docs.akeyless.io, a ReadMe.io site whose per-endpoint pages are real
+#     and fetchable but do not resolve to one discoverable machine-readable
+#     document this Recipe could fingerprint and re-fetch the way
+#     together/recipe.yaml does for Together AI's published openapi.yaml.
+#   - Of the roughly forty documented commands (create-secret, update-item,
+#     rotate-secret, list of dozens more), only /auth, /describe-item and
+#     the shared failure shape of /list-items, /get-secret-value and
+#     /delete-item are modelled. Nothing here creates, updates or rotates
+#     anything, live or emulated.
+#   - item_state's enum values are not modelled -- see above.
+#   - PUT, DELETE and OPTIONS were each struck live against /list-items with
+#     no credential and answered the same WrongMethod shape as GET, with
+#     their own verb spliced into the message ("Unsupported method PUT:
+#     url: /list-items", etc). Only GET is encoded as a route below,
+#     because {detail} substitutes the request path and not the verb --
+#     the identical limitation rootly/recipe.yaml's header states for its
+#     own unrouted-path case.
+#
+# The token, access-id and item name below are fixtures and belong to no
+# Akeyless account.
+
+recipe: akeyless
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.akeyless.io/reference
+
+auth:
+  # No scheme here can hold a credential that travels as a JSON body field
+  # rather than a header, a query parameter or Basic -- see the header.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # describe-item's own response. Only the deletion-lifecycle fields this
+  # group of Recipes exists to compare are declared -- see the header for
+  # why item_state is not one of them.
+  item:
+    id:
+      style: opaque
+      field: name
+    fields:
+      delete_protection:
+        type: boolean
+        default: false
+      # "" is not documented for this field the way Vault's deletion_time
+      # is; absence is the honest way to say "never deleted" for a field
+      # this Recipe has no worked example of populated. stamped: false
+      # because an item that has never been deleted has no deletion_date
+      # at all -- the default would auto-fill the current moment, which is
+      # the opposite of the shape this case exists to prove.
+      deletion_date:
+        type: datetime
+        stamped: false
+
+routes:
+  # The one route in this Recipe that answers a genuine 200. Reachable with
+  # no credential at all -- see the header's known fidelity gap.
+  - method: POST
+    path: /describe-item
+    resource: item
+    operation: get
+    id_from: body:name
+
+  # /auth. Disambiguated by whether the raw body contains the word
+  # "access-id" at all, which is the one field describe-item's neighbours
+  # do not share and /auth's own validator checks before anything else.
+  - method: POST
+    path: /auth
+    selects_body: access-id
+    error: auth_rejected
+
+  - method: POST
+    path: /auth
+    error: auth_missing_access_id
+
+  # list-items, get-secret-value and delete-item: three commands, one
+  # observed answer once their own body has nothing else wrong with it --
+  # see the header for why the absent and malformed verdicts collapse here.
+  - method: POST
+    path: /list-items
+    error: invalid_token
+
+  - method: POST
+    path: /get-secret-value
+    error: invalid_token
+
+  - method: POST
+    path: /delete-item
+    error: invalid_token
+
+  # A command this Recipe does not know, matched live with an empty body
+  # and no credential -- the command lookup runs before either is examined.
+  - method: POST
+    path: /this-route-does-not-exist-xyz
+    error: unknown_command
+
+  # Method is checked before the command, for every path -- see the header.
+  # A route's own declared error does not pass this runtime's {detail}
+  # substitution the way the built-in unknown-route handler does (only the
+  # latter forwards a detail argument), so each path's literal text is
+  # baked into its own error entry below rather than templated; the verb
+  # cannot be substituted at all, so only GET is encoded (see
+  # rootly/recipe.yaml for the identical gap, there over the verb alone).
+  - method: GET
+    path: /list-items
+    error: wrong_method_get_list_items
+
+  - method: GET
+    path: /this-route-does-not-exist-xyz
+    error: wrong_method_get_unknown_path
+
+errors:
+  # Absent and malformed collapse here -- see the header for the three
+  # request shapes that all produced this byte-identical body live.
+  invalid_token:
+    status: 400
+    message: invalid token
+
+  unknown_command:
+    status: 404
+    message: "unknown command 'this-route-does-not-exist-xyz'"
+
+  # /auth's own required-field check, reached with an empty body.
+  auth_missing_access_id:
+    status: 400
+    message: "invalid request body: access id should not be empty"
+
+  # /auth's credential-rejection sentence -- present, well-formed enough to
+  # be checked, and refused. Embeds a real, live session id and console
+  # link -- see the header.
+  auth_rejected:
+    status: 401
+    message: >-
+      failed to get credentials: Desc: Failed to authenticate API key
+      access. Status 401 Unauthorized, Error: AuthenticationFailed.
+      Message: access authentication failed. Please contact your account
+      admin for additional information or visit this link:
+      https://console.akeyless.io/audit?search_param=session_id%3A+%22s-zork0tzxev3c1x13%22
+
+  # A two-field body unlike every other failure on this host: the code-like
+  # word sits under "error" (this Recipe's message_field for everything
+  # else) and the human sentence sits under "message" instead, so both are
+  # overridden for these two entries. The path is baked in rather than
+  # templated -- see the routes above for why.
+  wrong_method_get_list_items:
+    status: 405
+    code: WrongMethod
+    code_field: error
+    message_field: message
+    message: "Unsupported method GET: url: /list-items"
+
+  wrong_method_get_unknown_path:
+    status: 405
+    code: WrongMethod
+    code_field: error
+    message_field: message
+    message: "Unsupported method GET: url: /this-route-does-not-exist-xyz"
+
+fixtures:
+  empty: {}
+
+  # An item that has never been touched by delete-item at all -- see the
+  # header for why no soft-deleted example is fixtured.
+  untouched:
+    item:
+      - id: cauldron/fixture/example-secret
+        delete_protection: false
+
+conformance:
+  - name: no token key at all answers invalid token
+    source: https://api.akeyless.io/list-items
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /list-items
+      json: {}
+    expect:
+      status: 400
+      body:
+        error: invalid token
+
+  - name: a token that cannot look like Akeyless's own shape answers the same
+    # "junktoken12345" carries no "t-" prefix -- see the header for the
+    # exact three request shapes this collapses.
+    source: https://api.akeyless.io/list-items
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /list-items
+      json:
+        token: junktoken12345
+    expect:
+      status: 400
+      body:
+        error: invalid token
+
+  - name: and so does get-secret-value, with no credential at all
+    source: https://api.akeyless.io/get-secret-value
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /get-secret-value
+      json: {}
+    expect:
+      status: 400
+      body:
+        error: invalid token
+
+  - name: and delete-item, confirming this is the command's own gate, not one route's quirk
+    source: https://api.akeyless.io/delete-item
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /delete-item
+      json: {}
+    expect:
+      status: 400
+      body:
+        error: invalid token
+
+  - name: a command this Recipe has never heard of is a 404 naming it, with no credential examined
+    source: https://api.akeyless.io/this-route-does-not-exist-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /this-route-does-not-exist-xyz
+      json: {}
+    expect:
+      status: 404
+      body:
+        error: "unknown command 'this-route-does-not-exist-xyz'"
+
+  - name: the wrong method never learns whether the command exists
+    # Struck live against a real command, the bare root, and an invented
+    # path -- all three answered this identical shape. Only the real
+    # command is encoded here; see the header for the other two.
+    source: https://api.akeyless.io/list-items
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /list-items
+    expect:
+      status: 405
+      body:
+        error: WrongMethod
+        message: "Unsupported method GET: url: /list-items"
+
+  - name: and an invented path gets the identical shape, with its own path quoted back
+    source: https://api.akeyless.io/this-route-does-not-exist-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-route-does-not-exist-xyz
+    expect:
+      status: 405
+      body:
+        error: WrongMethod
+        message: "Unsupported method GET: url: /this-route-does-not-exist-xyz"
+
+  - name: an empty body to /auth is refused for its own first required field
+    source: https://api.akeyless.io/auth
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /auth
+      json: {}
+    expect:
+      status: 400
+      body:
+        error: "invalid request body: access id should not be empty"
+
+  - name: a well-formed access-id that names nobody is refused with a session id and a console link
+    source: https://api.akeyless.io/auth
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /auth
+      json:
+        access-id: p-junkjunkjunk
+        access-type: api_key
+        access-key: junkjunkjunk
+    expect:
+      status: 401
+      matches:
+        error: "AuthenticationFailed"
+
+  - name: an item nobody has deleted carries no deletion_date and delete_protection false
+    # No credential reaches this route in the emulator -- see the header's
+    # known fidelity gap. The field names are Akeyless's own, documented at
+    # docs.akeyless.io/reference/describeitem; no worked example with real
+    # values exists, so this proves the shape on an empty-history fixture
+    # rather than asserting a value nobody observed.
+    source: https://docs.akeyless.io/reference/describeitem
+    fixture: untouched
+    request:
+      method: POST
+      path: /describe-item
+      json:
+        name: cauldron/fixture/example-secret
+    expect:
+      status: 200
+      body:
+        delete_protection: false
+      absent:
+        - deletion_date
