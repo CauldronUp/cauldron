@@ -4155,6 +4155,37 @@ func providers() []provider {
 			npm:    []string{"libhoney"},
 		},
 		{
+			// The vendor's own SDK. Note it speaks the sdk.split.io data plane,
+			// which is one of the two hosts this Recipe describes.
+			recipe: "split",
+			npm:    []string{"@splitsoftware/splitio"},
+		},
+		{
+			// The vendor's own client.
+			recipe: "flagsmith",
+			npm:    []string{"flagsmith"},
+		},
+		{
+			// The vendor's own SDK.
+			recipe: "brevo",
+			npm:    []string{"@getbrevo/brevo"},
+		},
+		{
+			// The vendor's own client.
+			recipe: "mailjet",
+			npm:    []string{"node-mailjet"},
+		},
+		{
+			// The vendor's own TypeScript library.
+			recipe: "lithic",
+			npm:    []string{"lithic"},
+		},
+		{
+			// The vendor's own TypeScript SDK.
+			recipe: "moov",
+			npm:    []string{"@moovio/sdk"},
+		},
+		{
 			// The vendor's own JavaScript client.
 			recipe: "gitbook",
 			npm:    []string{"@gitbook/api"},
