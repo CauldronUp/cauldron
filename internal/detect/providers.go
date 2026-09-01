@@ -4182,6 +4182,46 @@ func providers() []provider {
 			npm:    []string{"cronitor"},
 		},
 		{
+			// The vendor's own JavaScript bindings.
+			recipe: "axiom",
+			npm:    []string{"@axiomhq/js"},
+		},
+		{
+			// LogDNA's logging module, which posts to the ingest host this
+			// Recipe models. The management host it does not model has no
+			// client here.
+			recipe: "mezmo",
+			npm:    []string{"@logdna/logger"},
+		},
+		{
+			// The vendor's crash reporter, which posts to /entries. This Recipe
+			// models that endpoint's failure and the v3 management API, so the
+			// match is partial and worth saying so.
+			recipe: "raygun",
+			npm:    []string{"raygun"},
+		},
+		{
+			// The vendor's own TypeScript SDK, from the rootlyhq organisation.
+			recipe: "rootly",
+			npm:    []string{"@rootly/ts"},
+		},
+		{
+			// Not the vendor's own -- FireHydrant ships no JavaScript SDK -- but
+			// the Backstage plugin is a real client of this API.
+			recipe: "firehydrant",
+			npm:    []string{"@backstage-community/plugin-firehydrant"},
+		},
+		{
+			// The vendor's own API client. The bare turso package is the CLI.
+			recipe: "turso",
+			npm:    []string{"@tursodatabase/api"},
+		},
+		{
+			// The vendor's own TypeScript SDK.
+			recipe: "make",
+			npm:    []string{"@makehq/sdk"},
+		},
+		{
 			// The vendor's own Node SDK.
 			recipe: "infobip",
 			npm:    []string{"@infobip-api/sdk"},

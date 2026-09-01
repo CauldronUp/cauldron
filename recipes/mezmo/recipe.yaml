@@ -1,0 +1,272 @@
+# Mezmo Recipe for Cauldron
+#
+# Mezmo is LogDNA's new name and old wire format at the same time. Checked
+# live on 2026-09-01: POST /logs/ingest answers byte-identical bodies at
+# https://logs.mezmo.com/logs/ingest and https://logs.logdna.com/logs/ingest
+# -- same status, same JSON, same headers, including an
+# X-Ext-Authz-Latency: 0 header neither domain's root path carries. Both
+# hostnames answer. The old brand was not retired underneath the new one; it
+# is the same edge, reachable both ways, and a Recipe modelling only
+# logs.mezmo.com would be describing half of what actually receives traffic.
+#
+# Ingestion and the management/export API are not the same surface wearing
+# two paths. They are two different products behind two different
+# hostnames, with two credential schemes that do not overlap at all:
+#
+#   POST https://logs.mezmo.com/logs/ingest
+#     no credential      -> 401 {"message":"Unauthorized","status":401,"code":"EAUTH"}
+#     apikey, present, wrong (query param, header, or HTTP Basic username --
+#       all three checked live and all three land here identically)
+#                        -> 403 {"error":"Account not found","status":"error","code":"Forbidden"}
+#
+#   GET https://api.mezmo.com/v1/export  (and /v2/export -- identical)
+#     no credential      -> 401 {"error":"Missing Credentials","status":"error","code":"NotAuthorized"}
+#     Authorization: Token <garbage>
+#                        -> 400 {"error":"Token Validation Error: Malformed CRN","status":"error","code":"NotAuthorized"}
+#     HTTP Basic, garbage username (a "servicekey")
+#                        -> 400 {"error":"Service Key Validation Error: Invalid or deactivated servicekey","status":"error","code":"NotAuthorized"}
+#
+# Four different envelopes for what is, in every case, "you did not prove
+# who you are": message vs error as the prose-carrying key; EAUTH,
+# Forbidden and NotAuthorized as three unrelated code vocabularies; status
+# sent as the JSON number 401 on ingestion's own missing-credential answer
+# and as the literal string "error" everywhere else, including ingestion's
+# own wrong-credential answer -- so status does not even mean the same kind
+# of value twice within one endpoint's own two failure modes. A client that
+# learned to read .message and compare .status === 401 from the one case
+# that looks like every other API's shape is reading nothing on the other
+# three.
+#
+# api.mezmo.com's own OpenAPI description confirms the two credential
+# schemes are unrelated by design, not by accident: ingestion secures with
+# `apikeyAuth` (an `apikey` header, or the key as an HTTP Basic username) or
+# `basicAuth`, while "This key is used for all APIs with the exception of
+# ingest" is said, in those words, of the `AccessToken` scheme (`Authorization:
+# Token <ACCESS TOKEN>`) that /v1/export and /v2/export both require. A
+# credential minted for one has no meaning to the other, and nothing about
+# either failure shape says so -- both simply refuse.
+#
+# The query param transport is worth stating precisely, because export does
+# not honour the one ingestion does. `?apikey=<garbage>` on
+# POST /logs/ingest reaches the same "Account not found" 403 a header or
+# Basic auth reaches. Checked live: the identical `?apikey=<garbage>` on
+# GET /v1/export answers 401 Missing Credentials, as though nothing had
+# been sent at all -- because on that route nothing recognised had been:
+# export reads Authorization, not a query parameter, and a caller who
+# copies the ingestion pattern over to export is not rejected for a bad
+# key. They are rejected for what export sees as no key.
+#
+# The two surfaces even disagree about which check runs first. Checked live:
+# GET /logs/ingest (the wrong method) and POST /logs/ingestXYZ (a path that
+# does not exist) both still answer 401 EAUTH -- ingestion's gateway checks
+# the credential before it checks whether the request could ever have
+# succeeded at all. api.mezmo.com is the other way round: POST /v1/export
+# (also the wrong method) answers 405 {"error":"Method Not Allowed",
+# "status":"error","code":"BadRequest"} with an Allow: GET, OPTIONS header,
+# and GET /v1/exportXYZ answers 404 {"error":"No Resource Found",
+# "status":"error","code":"BadRequest"} -- neither one ever mentions a
+# credential, because routing answered first. A client retrying a 401 by
+# rotating its key would retry forever against a typo'd ingest path; the
+# identical mistake against export would have failed differently on the
+# first attempt.
+#
+# management/export is not routed as a resource in this Recipe. Cauldron's
+# own auth check (internal/runtime/auth.go: authorised) is one scheme for
+# the whole Recipe, checked before routing is even resolved, and ingestion's
+# apikey-header scheme is the one wired here -- so any route this Recipe
+# declared under api.mezmo.com would be checked against apikey and would
+# reject every one of the Authorization: Token requests a real export caller
+# actually sends. The auth divergence above is recorded as evidence rather
+# than reproduced by a route, for exactly the reason Axiom's _apl route is
+# absent from that Recipe: the mechanism that would make it correct does
+# not exist for a Recipe with one already-wired scheme.
+#
+# The most useful thing this Recipe can say about ingestion is not in its
+# error bodies at all. It is at
+# https://docs.mezmo.com/docs/log-ingestion-delays, and it is exact:
+#
+#   "Indexing refers to the time between when a log line is ingested, and
+#   when it's available for search. By default, the Mezmo indexing process
+#   updates every 30s. As soon as a line is available in Live Tail, it
+#   should be indexed by Mezmo within 30s."
+#
+# That is stacked on top of a first delay the same page names separately --
+# "Mezmo aims for an operational standard of 1s for Live Tail latency. The
+# typical average for Live Tail latency is approximately 10s" -- so a line
+# a caller just received a 200 for can be roughly 40 seconds from
+# answering a search, by Mezmo's own numbers, and the 200 itself says
+# nothing about either wait. This is the same shape as Axiom's blocksCreated
+# finding from a different provider: a successful ingest response is a
+# receipt for acceptance, not a claim about queryability, and here the
+# provider states the gap in seconds rather than leaving it to be inferred
+# from a field that is always nought.
+#
+# The export API's own pagination is worth recording even though the route
+# it belongs to is not modelled here. Mezmo's own words, from the same
+# OpenAPI description that documents /v2/export: "The JSON response
+# contains 2 fields: lines and pagination_id... Repeat this request-response
+# cycle, updating the pagination_id parameter with the token returned in
+# every new response, until the response eventually returns a null value for
+# the token. This indicates... you have reached the final page." A null
+# pagination_id terminates the loop; an absent one would not be the same
+# claim, which is exactly the distinction Cauldron's cursor_null exists to
+# make -- stated here because the route that would use it is not.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - /v1/export and /v2/export are not routed, and neither is
+#     GET /v1/config/keys or any other api.mezmo.com endpoint. See above.
+#   - Ingestion's apikey credential is accepted three interchangeable ways
+#     live -- an `apikey` header, an `?apikey=` query parameter, and HTTP
+#     Basic with the key as the username -- and Cauldron's auth scheme is
+#     one mechanism per Recipe. The header form is wired, because it is
+#     what Mezmo's own OpenAPI names as the primary `apikeyAuth` scheme; the
+#     other two are recorded above as observed rather than reproduced.
+#   - Cauldron's own auth check cannot distinguish "no credential" from "a
+#     credential that does not match" -- both take the same branch and get
+#     one wired response. The 401 EAUTH shape is wired, because it is what a
+#     request carrying no apikey anywhere in it actually is. The 403
+#     "Account not found" shape is real, checked live, and reachable by
+#     arming the account_not_found entry for one request, the same device
+#     Honeycomb's Recipe already uses for its own second, not-automatic
+#     auth failure shape.
+#   - The ingest route's success body is not modelled. Mezmo's own OpenAPI
+#     declares it as `type: object, additionalProperties: {}` -- a schema
+#     that commits to nothing -- and no call this Recipe made or could make
+#     without a real key ever produced one to record. The event resource
+#     below carries no response fields for this reason; a bare {} is served
+#     on success, which is the minimal instance of what Mezmo's own spec
+#     leaves unspecified rather than an invented shape.
+#   - hostname is a required query parameter on ingest per Mezmo's own
+#     OpenAPI, and is not enforced here. Checked live: a request with
+#     neither hostname nor a credential still answers the credential
+#     failure (401 EAUTH), not a parameter error -- auth is checked before
+#     the parameter would be -- so modelling hostname as required would add
+#     a validation path this Recipe never observed being reached.
+#   - No spec/spec_hash is recorded. Mezmo's combined OpenAPI description
+#     exists (served piecemeal through docs.mezmo.com's per-endpoint pages
+#     rather than at one fetchable URL for the whole document), but no
+#     single stable URL for the complete file was found to fingerprint.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: mezmo
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.mezmo.com/log-analysis-api
+
+auth:
+  scheme: header
+  header: apikey
+  keys:
+    - cauldron-fixture-mezmo-ingestion-key-00000000000000
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+  resource:
+    style: bare
+
+resources:
+  # The ingest acknowledgment. lines exists only so this resource is not
+  # empty -- an empty-fields create would echo the request body back
+  # verbatim, which is worse than declaring nothing, because it would claim
+  # Mezmo mirrors what it was sent when nothing here shows that it does.
+  # in: "-" keeps it off the wire either way: Mezmo's own OpenAPI leaves the
+  # 200 body as an unspecified wildcard object, and no authenticated call
+  # was ever made to observe one -- see the fidelity gap above. No
+  # identifier either; Mezmo sends none for a line, batch or request.
+  event:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      lines:
+        type: list
+        in: "-"
+
+routes:
+  - method: POST
+    path: /logs/ingest
+    resource: event
+    operation: create
+    status: 200
+
+errors:
+  # Wired: what Cauldron's single auth check answers automatically for
+  # every request with no matching apikey. This is the shape a request
+  # carrying no apikey anywhere in it actually gets.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    code: EAUTH
+    fields:
+      # A JSON number here -- the one place on this whole surface status is
+      # typed as one rather than as the literal string "error".
+      status: 401
+
+  # What a present-but-wrong apikey gets, checked live over all three
+  # transports (header, query parameter, HTTP Basic username). Armed rather
+  # than wired: Cauldron's automatic check cannot tell "wrong" from
+  # "missing", so a case demonstrating this shape installs the fault for
+  # itself. It is still a real, live-checked Mezmo response.
+  account_not_found:
+    status: 403
+    message_field: error
+    message: Account not found
+    code: Forbidden
+    fields:
+      # The literal string "error", not the HTTP status. Code reading
+      # response.status === 401 to detect "not authenticated" never matches
+      # this failure at all -- not the wrong type, a wrong kind of value.
+      status: error
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: a missing apikey is 401 EAUTH, with status sent as a number
+    source: https://logs.logdna.com/logs/ingest
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /logs/ingest
+      json: {}
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+        code: EAUTH
+        status: 401
+      absent:
+        # The other envelope's key. Nothing here to read .error off this
+        # failure and find a sentence.
+        - error
+
+  - name: a wrong apikey is 403 Account not found, and status becomes the string "error" -- armed, because Cauldron cannot tell wrong from missing on its own
+    source: https://logs.logdna.com/logs/ingest?apikey=0000000000000000000000000000aa
+    verified: "2026-09-01"
+    arm: account_not_found
+    fixture: empty
+    request:
+      method: POST
+      path: /logs/ingest
+      headers:
+        apikey: "0000000000000000000000000000aa"
+      json: {}
+    expect:
+      status: 403
+      body:
+        error: Account not found
+        code: Forbidden
+        # A string, not the number 403 -- unlike the missing-credential
+        # shape's status: 401 above.
+        status: error
+      absent:
+        - message

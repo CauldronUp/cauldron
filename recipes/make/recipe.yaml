@@ -1,0 +1,306 @@
+# Make (formerly Integromat) Recipe for Cauldron
+#
+# Six hostnames, one path, and a token is only ever valid on one of them.
+#
+# Make's own OpenAPI fragment for this route (embedded in
+# developers.make.com/api-documentation/api-reference/scenarios, fetched
+# directly rather than assumed) lists six servers for GET /scenarios:
+#
+#   eu1.make.com   eu2.make.com   us1.make.com   us2.make.com
+#   eu1.make.celonis.com   us1.make.celonis.com
+#
+# and nothing in that document, or anywhere else this project could reach,
+# says which one a given token belongs to. A team is provisioned onto
+# exactly one, an API token is a credential in that zone's own database, and
+# there is no request you can make -- to any of the six -- that looks up an
+# account by token and answers "wrong zone, try this one instead." A token
+# sent to a host it does not belong to is not almost valid. It is not found,
+# and it is answered exactly the way a token that was never issued at all
+# is answered.
+#
+# Checked live against both eu1.make.com/api/v2/scenarios and
+# us1.make.com/api/v2/scenarios, no account and no key ever created:
+#
+#   no Authorization header at all      -> 401 {"detail":"Access denied.","message":"User is not logged in.","code":"IM015","suberrors":[]}
+#   Authorization: Token junk-not-a-uuid -> 401 {"detail":"Invalid token header.","message":"Access denied","code":"SC401","suberrors":[]}
+#   Authorization: Token <a real UUID that names no token> -> 401 {"detail":"Not authorized.","message":"Access denied","code":"SC401","suberrors":[]}
+#
+# identically on both hosts, byte for byte. Three distinct 401s for three
+# distinct reasons: no credential offered at all, a credential that is not
+# even shaped like one (Make's tokens are UUIDs, and it checks the shape
+# before it checks anything else), and a credential that is shaped right but
+# names nothing this zone has ever issued.
+#
+# That third line is the one worth reading twice, because it is also the
+# line a valid token from the *other* zone produces. A user on the Make
+# community forum (community.make.com/t/api-access-denied/21481) posted the
+# exact sequence: calling eu1 with a token issued on eu2 answered
+# {"detail":"Not authorized.","message":"Access denied","code":"SC401"} --
+# the identical body this Recipe records above for a token that is simply
+# made up -- and switching only the hostname to eu2, with the same token,
+# answered 200. Make does not distinguish "this token belongs to a
+# different zone" from "this token does not exist." Both are the one
+# credential a zone's own database has never heard of, checked the only way
+# a token check can be checked: by looking it up in the database in front
+# of it. A client that got its zone wrong and a client that got its token
+# wrong receive the same three fields and no way to tell them apart from
+# the response alone -- the zone_url has to be read out of band, from the
+# address bar of the Make dashboard, which is the only source Make's own
+# docs point to for it (developers.make.com/api-documentation/getting-started/api-structure).
+#
+# Both hosts, unauthenticated and wrongly authenticated alike, also carried
+# x-ratelimit-limit: 10000 and an x-ratelimit-remaining that ticked down by
+# one with every call this project made -- observed independently on each
+# host in the same short window, which is consistent with each zone
+# metering its own edge traffic separately rather than sharing one counter,
+# though six calls is not proof of that. It is a different number from the
+# one Make's rate-limiting docs describe
+# (developers.make.com/api-documentation/getting-started/rate-limiting):
+# 60 to 1,000 requests a minute depending on plan, checked via
+# GET /organizations/{id} and enforced with a 429 whose body this project
+# never saw, because producing it needs the very account these ten-thousand-
+# count headers do not. Two limits, at two layers, and only the outer one
+# was ever reachable without one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - This Recipe models one host. Cauldron has no mechanism for "the same
+#     path exists on six hostnames and a credential valid on one is invalid
+#     on the other five" -- routes are matched by method and path, not by
+#     which of a Recipe's several servers received them, and inventing a
+#     per-host credential store to force the shape would be modelling a
+#     capability the runtime does not have rather than describing the one
+#     it does. The finding above is the reason this Recipe exists; it lives
+#     in this header and in the conformance cases that hit each real host
+#     directly, not in a mechanism this format cannot run.
+#   - Only two of the three 401s are servable at once. Cauldron's
+#     credential check is a single match against one fixture value; a
+#     request either matches or it does not, so a shaped-wrong token and a
+#     shaped-right-but-unknown token cannot be told apart by this Recipe the
+#     way the real API tells them apart. The fallback below always answers
+#     "Not authorized." / SC401 -- the shape that matters for the finding
+#     this Recipe is making, since it is the shape a wrong-zone token
+#     produces too. "Invalid token header." is recorded in this header,
+#     live-verified, and not separately modelled.
+#   - The scenario resource carries no seeded records. Make's own
+#     documentation gives a full schema for a listed scenario -- every field
+#     below is read from it -- and not one worked example value anywhere:
+#     no sample id, no sample name, nothing this Recipe could copy rather
+#     than invent. Reaching a real one needs a token this project was never
+#     given. Rather than manufacture a scenario that resembles nothing any
+#     account actually holds, the list route is proven against the one
+#     dataset this Recipe does not have to invent: an empty one.
+#   - teamId or organizationId is documented as required on every call to
+#     this route, and this Recipe does not enforce it, because the error a
+#     request without either one gets back was never observed and nothing
+#     published states its shape.
+#   - cols[] -- the parameter that adds deleted, deletedAt, executions,
+#     errors and customProperties to a scenario the plain listing leaves
+#     out -- is real and documented on this same endpoint and is not
+#     modelled, for the same reason the records above are not: there is no
+#     baseline response to add a field to.
+#   - Every other Make resource -- teams, organizations, connections, data
+#     stores, hooks, templates -- is out of scope. This Recipe exists to
+#     show the zone mechanism on one route, not to be a complete client.
+
+recipe: make
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  provider: make
+  docs: https://developers.make.com/api-documentation/api-reference/scenarios
+
+auth:
+  # Neither built-in scheme fits. authorised() is one match, pass or fail,
+  # for the whole Recipe -- it cannot hold three answers for three reasons a
+  # credential was rejected. required_headers below carries the one that
+  # matters most (nothing offered at all); matches_header on the route
+  # carries the other two, folded into one -- see the header.
+  scheme: none
+
+required_headers:
+  Authorization:
+    error: no_credential
+
+responses:
+  error:
+    style: flat
+    message_field: detail
+    code_field: code
+    code_type: string
+    # suberrors is present, and empty, on every failure this project
+    # observed.
+    fields:
+      suberrors: []
+
+resources:
+  scenario:
+    collection: scenarios
+    id:
+      style: numeric
+    fields:
+      name:
+        type: string
+      teamId:
+        type: integer
+      folderId:
+        type: integer
+        null_when_unset: true
+      concept:
+        type: boolean
+      isinvalid:
+        type: boolean
+      isActive:
+        type: boolean
+      islocked:
+        type: boolean
+      isPaused:
+        type: boolean
+      usedModules:
+        type: list
+      scheduling:
+        type: map
+      created:
+        type: datetime
+      lastEdit:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /api/v2/scenarios
+    resource: scenario
+    operation: list
+    matches_header:
+      Authorization: "Token cauldron-fixture-00000000-0000-0000-0000-000000000000"
+    filters:
+      - param: teamId
+        field: teamId
+    # Bracket-nested, per Make's own OpenAPI fragment for this route:
+    # pg[limit], pg[offset], pg[sortBy], pg[sortDir]. Not verified against a
+    # real response -- see the header on why this route has none to check
+    # it against -- but the parameter names themselves are read directly
+    # from the published schema rather than guessed.
+    pagination:
+      style: offset
+      limit_param: "pg[limit]"
+      cursor_param: "pg[offset]"
+    list:
+      style: wrapped
+      key: scenarios
+
+  # Any credential that was offered and did not match -- malformed or merely
+  # unknown to this zone alike. See the header for why only one of the two
+  # real shapes is reachable here.
+  - method: GET
+    path: /api/v2/scenarios
+    error: invalid_token
+
+errors:
+  no_credential:
+    status: 401
+    message: "Access denied."
+    code: IM015
+    fields:
+      message: "User is not logged in."
+    headers:
+      x-ratelimit-limit: "10000"
+
+  invalid_token:
+    status: 401
+    message: "Not authorized."
+    code: SC401
+    fields:
+      message: "Access denied"
+    headers:
+      x-ratelimit-limit: "10000"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all is IM015 on the EU zone
+    source: https://eu1.make.com/api/v2/scenarios
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/scenarios
+    expect:
+      status: 401
+      headers:
+        x-ratelimit-limit: "10000"
+      body:
+        detail: "Access denied."
+        message: "User is not logged in."
+        code: IM015
+        suberrors: []
+
+  - name: and the identical IM015 on the US zone, byte for byte
+    source: https://us1.make.com/api/v2/scenarios
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/scenarios
+    expect:
+      status: 401
+      headers:
+        x-ratelimit-limit: "10000"
+      body:
+        detail: "Access denied."
+        message: "User is not logged in."
+        code: IM015
+        suberrors: []
+
+  - name: a token that names nothing this zone has issued is SC401, not IM015
+    source: https://eu1.make.com/api/v2/scenarios
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/scenarios
+      headers:
+        # Shaped like a real Make token -- Make's own docs give
+        # 93dc8837-2911-4711-a766-59c1167a974d as the example -- and issued
+        # by nobody.
+        Authorization: "Token 00000000-0000-4000-8000-000000000000"
+    expect:
+      status: 401
+      body:
+        detail: "Not authorized."
+        message: "Access denied"
+        code: SC401
+
+  - name: the same unknown token is answered identically on the other zone
+    source: https://us1.make.com/api/v2/scenarios
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/scenarios
+      headers:
+        Authorization: "Token 00000000-0000-4000-8000-000000000000"
+    expect:
+      status: 401
+      body:
+        detail: "Not authorized."
+        message: "Access denied"
+        code: SC401
+      # This is the body a real user's real, valid token gets back when
+      # aimed at the wrong one of the six hosts above -- see the header.
+      # Nothing in this response says which reason applies.
+
+  - name: the correct credential clears the gate to an empty collection
+    source: https://developers.make.com/api-documentation/api-reference/scenarios
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/scenarios?teamId=900001
+      headers:
+        Authorization: "Token cauldron-fixture-00000000-0000-0000-0000-000000000000"
+    expect:
+      status: 200
+      body:
+        scenarios: []

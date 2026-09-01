@@ -1,0 +1,569 @@
+# FireHydrant Recipe for Cauldron
+#
+# FireHydrant is not JSON:API. Its own published description says as much in
+# passing -- "returns JSON responses", nothing more specific -- and the wire
+# confirms it: a listing is {"data": [...], "pagination": {...}}, a single
+# record is the record itself with no wrapper at all, and a record's fields
+# sit directly on it rather than one level down under an "attributes" key.
+# Compare rootly/recipe.yaml, in the same collection, which really is
+# JSON:API and pays for it with a second document nested inside one
+# attribute. FireHydrant's plainer envelope is also the one this format's
+# vocabulary already had a name for before Rootly needed a new one: list
+# style wrapped, key data, count fields nested under a sibling "pagination"
+# object, resource style bare.
+#
+# incident.io is the other Recipe in this collection modelling a workspace
+# where status and severity are configured per account rather than fixed by
+# the provider, and FireHydrant lands in a third place between it and
+# Rootly:
+#
+#   - incident.io wraps both status and severity as objects -- {id, name,
+#     category} and {id, name, rank} -- so a client always has an id to key
+#     on and a fixed field (category, rank) beside the name a workspace
+#     chose. Rootly's severity keeps that shape; its status does not (see
+#     rootly/recipe.yaml).
+#   - FireHydrant keeps neither shape. severity is a bare string on the
+#     incident (documented as {"type": "string", "nullable": true}, no id
+#     anywhere beside it), and so is priority, and so is current_milestone --
+#     "the type/slug of the current milestone... one of the currently
+#     configured milestones for the given incident," which is Rootly's
+#     status problem restated: whatever a workspace called its milestones is
+#     the only word an integration gets.
+#   - What FireHydrant has that neither of the others do is active: a
+#     boolean, present on every incident, that answers "is this over" without
+#     reading a single configured name. It is coarser than incident.io's
+#     four-word category, and it is the one thing on this record that means
+#     the same thing in every account.
+#   - And FireHydrant's milestones array -- {id, type, duration, occurred_at,
+#     created_at, updated_at} -- is incident.io's incident_timestamp_values
+#     restated with a different name for the same idea: a list of named
+#     events instead of fixed properties, because the set of milestones a
+#     workspace tracks is not fixed either. reported_at and resolved_at are
+#     not properties on either provider's incident; both are entries to find
+#     by name in an array.
+#
+# Configured taxonomies are addressed differently again. A FireHydrant
+# severity has no id field at all -- GET /v1/severities/{severity_slug}
+# addresses it by the same slug the record itself carries as "slug", so the
+# identifier this Recipe emits is literally named slug rather than id. Three
+# providers, three answers to "how do you address a thing a customer
+# renamed": incident.io mints an opaque 26-character id and keeps the name
+# separate; Rootly mints a JSON:API id and keeps a human slug beside it;
+# FireHydrant has no id at all and addresses the record by the name-derived
+# slug directly.
+#
+# Missing and wrong credentials do not answer alike here, which is the
+# opposite of Rootly. No Authorization header at all answered
+# {"error": "This endpoint requires you to be authenticated."}; a
+# syntactically fine but wrong bearer token -- "Authorization: Bearer
+# junktoken12345" -- answered {"error": "The bearer token you provided is
+# invalid or expired."}. Same 401, same flat one-string envelope, different
+# sentence, and both were called against every path this Recipe probed,
+# known or not: /v1/incidents, /v1/incidents/{id}, and a path FireHydrant has
+# no route for at all all answered exactly one of these two messages
+# depending only on the credential, never a routing-specific shape. That is
+# also the opposite of Rootly, whose router answers unrouted paths before
+# authentication is even checked. FireHydrant's ordering -- credentials
+# first, always, for every path -- is the one Cauldron's own runtime already
+# has built in: authorised(r) is checked once, unconditionally, before the
+# router is ever consulted. Nothing about this Recipe's auth had to be
+# reshaped to fit; it already did.
+#
+# Cauldron's own auth check is binary, though, and cannot distinguish why a
+# request was refused -- authorised(r) returns one bool, and the single call
+# site that acts on it always raises the same named failure regardless of
+# whether the header was absent or merely wrong. Reproducing FireHydrant's
+# second sentence needed the mechanism descope/recipe.yaml already used for
+# an identical problem: authentication_error is the ordinary check's answer
+# (the "missing" wording, since that is what the check produces on its own),
+# and invalid_token is reached only by arming it for one request, standing
+# in for a distinction the check itself cannot make.
+#
+# One live, genuinely public route exists and is not modelled: GET
+# /v1/noauth/ping answered 200 {"response": "pong"} with no credential at
+# all, while GET /v1/ping (no "noauth") demanded one. Cauldron's auth scheme
+# is one setting for the whole Recipe, with no per-route exemption, so this
+# Recipe can reproduce every route that needs a bearer token or the one that
+# needs none, and not both at once without misdescribing the other nineteen.
+# Recorded here instead of forced.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of 57 documented incident fields this Recipe declares about sixteen.
+#     Ticketing, conference-bridge, conversation and custom-field integration
+#     fields are entirely absent, as are role assignments and impacts.
+#   - pagination.last / .prev / .next are page numbers (not tokens, not
+#     URLs), and this format has no field for a numbered page pointer
+#     distinct from the current page itself; only count, page, items and
+#     pages are modelled.
+#   - priority and its own configured-taxonomy endpoint (GET /v1/priorities)
+#     are not modelled at all.
+#   - create, update, resolve, close and archive are not modelled. Every
+#     route here is a GET.
+#   - Rate limiting is documented (a 429 with {"error": "rate limit
+#     exceeded"} and RateLimit-Limit / Retry-After headers) and never
+#     triggered; FireHydrant's own wording for the limit itself is "at least
+#     50 requests per account every 10 seconds" -- a floor, not an exact
+#     figure -- so no specific header value is served for it.
+#
+# Every case below not carrying a verified date was read from the OpenAPI
+# definition embedded in FireHydrant's own reference pages (openapi: 3.0.1,
+# info.title: "FireHydrant API"), for example
+# https://docs.firehydrant.com/reference/list_incidents.md, not observed
+# against a real organisation -- this Recipe was written with no credential
+# and created no account. Keys below are fixtures, not secrets.
+
+recipe: firehydrant
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.firehydrant.com/reference/firehydrant-api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - fhb-cauldron000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    count_field: pagination.count
+    page_count_field: pagination.items
+    pages_field: pagination.pages
+    page_field: pagination.page
+  resource:
+    style: bare
+  error:
+    # {"error": "..."} -- one string, no code, no type, on every failure
+    # this Recipe reached.
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  incident:
+    collection: data
+    id:
+      # "UUID of the Incident" is the schema's own words for this field.
+      style: uuid
+    fields:
+      name:
+        type: string
+        null_when_unset: true
+      number:
+        type: integer
+      summary:
+        type: string
+        null_when_unset: true
+      description:
+        type: string
+        null_when_unset: true
+      # A bare string, unlike incident.io's severity object -- see the
+      # header. No id anywhere beside it.
+      severity:
+        type: string
+        null_when_unset: true
+      severity_color:
+        type: string
+        null_when_unset: true
+      # "The type/slug of the current milestone. Will be one of the
+      # currently configured milestones for the given incident" -- the
+      # provider's own words, and the same problem status is for Rootly:
+      # nothing fixed to check it against.
+      current_milestone:
+        type: string
+        null_when_unset: true
+      # The one universal, un-configurable signal this record carries. See
+      # the header for why it is worth having even though it is coarser than
+      # incident.io's four-word category.
+      active:
+        type: boolean
+        null_when_unset: true
+      private_id:
+        type: string
+        null_when_unset: true
+      # A list of named events rather than fixed properties -- see the
+      # header's comparison with incident.io's incident_timestamp_values.
+      # There is no reported_at or resolved_at property on this record;
+      # both are entries here, found by their own "type".
+      milestones:
+        type: list
+      customers_impacted:
+        type: integer
+        null_when_unset: true
+      incident_url:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: datetime
+      started_at:
+        type: datetime
+        null_when_unset: true
+      discarded_at:
+        type: datetime
+        null_when_unset: true
+
+  # A workspace's own configured severities, addressed by slug rather than
+  # by an id -- see the header. GET /v1/severities/{severity_slug} is the
+  # provider's own path parameter name, and SeverityEntity has no "id"
+  # property at all to have named this after instead.
+  severity:
+    collection: data
+    id:
+      style: opaque
+      field: slug
+    fields:
+      description:
+        type: string
+        null_when_unset: true
+      # No enum documented anywhere -- a genuinely free string, unlike
+      # Rootly's severity field (critical, high, medium, low) sitting beside
+      # its own configurable name.
+      type:
+        type: string
+        null_when_unset: true
+      position:
+        type: integer
+        null_when_unset: true
+      color:
+        type: string
+        null_when_unset: true
+      system_record:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/incidents
+    resource: incident
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      max_limit: 200
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v1/incidents/{id}
+    resource: incident
+    operation: get
+
+  - method: GET
+    path: /v1/severities
+    resource: severity
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      max_limit: 200
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+errors:
+  # What the ordinary auth check produces on its own -- see the header for
+  # why only one of the two live sentences can come from the check itself.
+  authentication_error:
+    status: 401
+    message: This endpoint requires you to be authenticated.
+
+  # Reached only by arming it: the live failure this reproduces is a bearer
+  # value that is present but not accepted, which Cauldron's binary auth
+  # check cannot tell apart from an absent one.
+  invalid_token:
+    status: 401
+    message: The bearer token you provided is invalid or expired.
+
+  # Documented, not observed -- this Recipe never triggered a real 429. No
+  # specific RateLimit-Limit or Retry-After value is served; see the header
+  # for why.
+  rate_limit:
+    status: 429
+    message: rate limit exceeded
+
+fixtures:
+  empty: {}
+
+  small-organization:
+    severity:
+      - id: sev1
+        description: Critical, customer-facing impact
+        type: critical
+        position: 1
+        color: "#D0021B"
+        system_record: true
+        created_at: "2026-01-05T12:00:00.000Z"
+        updated_at: "2026-01-05T12:00:00.000Z"
+      - id: sev3
+        description: Minor, internal only
+        type: minor
+        position: 3
+        color: "#9B9B9B"
+        system_record: false
+        created_at: "2026-01-05T12:00:00.000Z"
+        updated_at: "2026-01-05T12:00:00.000Z"
+
+    incident:
+      - id: f47ac10b-58cc-4372-a567-0e02b2c3d479
+        name: Checkout API returning 500s
+        number: 142
+        summary: A deploy shipped a nil pointer in the payment path.
+        description: Elevated 500 rate on POST /checkout since the 09:00 deploy.
+        severity: SEV1
+        severity_color: "#D0021B"
+        # "Investigating" is this account's own word, same problem Rootly's
+        # status has: nothing fixed says whether that word means open or
+        # closed.
+        current_milestone: investigating
+        active: true
+        private_id: PRIV-142
+        milestones:
+          - id: 1a5a3f10-0000-4000-8000-000000000001
+            type: started
+            duration: null
+            occurred_at: "2026-08-14T09:00:00.000Z"
+            created_at: "2026-08-14T09:02:00.000Z"
+            updated_at: "2026-08-14T09:02:00.000Z"
+          - id: 1a5a3f10-0000-4000-8000-000000000002
+            type: investigating
+            duration: PT2M
+            occurred_at: "2026-08-14T09:02:00.000Z"
+            created_at: "2026-08-14T09:02:11.000Z"
+            updated_at: "2026-08-14T09:02:11.000Z"
+        customers_impacted: 340
+        incident_url: https://app.firehydrant.io/incidents/142
+        created_at: "2026-08-14T09:02:11.000Z"
+        started_at: "2026-08-14T09:00:00.000Z"
+
+      - id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        name: Nightly export job delayed
+        number: 143
+        summary: The scheduled export ran forty minutes late.
+        description: null
+        severity: SEV3
+        severity_color: "#9B9B9B"
+        current_milestone: resolved
+        active: false
+        private_id: PRIV-143
+        milestones:
+          - id: 2b6b4f20-0000-4000-8000-000000000001
+            type: started
+            duration: null
+            occurred_at: "2026-08-15T02:00:00.000Z"
+            created_at: "2026-08-15T02:10:00.000Z"
+            updated_at: "2026-08-15T02:10:00.000Z"
+          - id: 2b6b4f20-0000-4000-8000-000000000002
+            type: resolved
+            duration: PT55M
+            occurred_at: "2026-08-15T02:55:00.000Z"
+            created_at: "2026-08-15T03:00:00.000Z"
+            updated_at: "2026-08-15T03:00:00.000Z"
+        customers_impacted: 0
+        incident_url: https://app.firehydrant.io/incidents/143
+        created_at: "2026-08-15T02:10:00.000Z"
+        started_at: "2026-08-15T02:00:00.000Z"
+        discarded_at: null
+
+# Every case below carries source. A verified date means this Recipe called
+# api.firehydrant.io with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from the OpenAPI
+# definition embedded in FireHydrant's own reference pages and never called.
+conformance:
+  - name: no credential says one thing
+    source: https://api.firehydrant.io/v1/incidents
+    verified: "2026-09-01"
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        error: This endpoint requires you to be authenticated.
+      absent:
+        - errors
+        - message
+
+  - name: and a wrong one says another
+    # Reproduced by arming it -- see the header for why Cauldron's own auth
+    # check cannot produce this second sentence on its own. This exact
+    # request and response were both observed live, for
+    # "Authorization: Bearer junktoken12345".
+    source: https://api.firehydrant.io/v1/incidents
+    verified: "2026-09-01"
+    fixture: small-organization
+    arm: invalid_token
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error: The bearer token you provided is invalid or expired.
+
+  - name: an unrecognised path answers exactly the same as a real one
+    # Called live with no credential: the path FireHydrant has no route for
+    # answered the identical body a real path does, rather than a
+    # routing-specific 404 -- see rootly/recipe.yaml, whose router answers
+    # differently. No route needs declaring here at all: Cauldron's own
+    # auth check already runs before routing is attempted, for every path.
+    source: https://api.firehydrant.io/v1/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/totally-bogus-endpoint-xyz
+    expect:
+      status: 401
+      body:
+        error: This endpoint requires you to be authenticated.
+
+  - name: a malformed id answers the same as a missing credential everywhere else
+    source: https://api.firehydrant.io/v1/incidents/not-a-real-id-@@@
+    verified: "2026-09-01"
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents/not-a-real-id-@@@
+    expect:
+      status: 401
+      body:
+        error: This endpoint requires you to be authenticated.
+
+  - name: a single incident is the record itself, with no wrapper
+    source: https://docs.firehydrant.com/reference/get_incident.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents/f47ac10b-58cc-4372-a567-0e02b2c3d479
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        name: Checkout API returning 500s
+        severity: SEV1
+      absent:
+        - data
+        - attributes
+        - incident
+
+  - name: severity is a bare string with no id beside it
+    source: https://docs.firehydrant.com/reference/list_incidents.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents/f47ac10b-58cc-4372-a567-0e02b2c3d479
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        severity: SEV1
+        severity_color: "#D0021B"
+      absent:
+        - severity.id
+        - severity.name
+        - severity_id
+
+  - name: active is the one fixed signal, whatever the milestone is called
+    source: https://docs.firehydrant.com/reference/list_incidents.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents/6ba7b810-9dad-11d1-80b4-00c04fd430c8
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        active: false
+        current_milestone: resolved
+
+  - name: a milestone is a list entry, not a property
+    # Compare incident.io's incident_timestamp_values: there is no
+    # reported_at or resolved_at property on this record either.
+    source: https://docs.firehydrant.com/reference/list_incidents.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents/f47ac10b-58cc-4372-a567-0e02b2c3d479
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        "milestones[0].type": started
+        "milestones[1].type": investigating
+        "milestones[1].occurred_at": "2026-08-14T09:02:00.000Z"
+      absent:
+        - reported_at
+        - resolved_at
+
+  - name: a listing wraps its array under data, beside pagination
+    source: https://docs.firehydrant.com/reference/list_incidents.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        "pagination.count": 2
+        "pagination.items": 2
+        "pagination.pages": 1
+        "pagination.page": 1
+        "data[0].name": Checkout API returning 500s
+      absent:
+        - meta
+        - total_count
+        - has_more
+
+  - name: a severity is addressed by slug, and answers under that name
+    source: https://docs.firehydrant.com/reference/list_severities.md
+    fixture: small-organization
+    request:
+      method: GET
+      path: /v1/severities
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data[0].slug": sev1
+        "data[0].type": critical
+        "data[0].position": 1
+      absent:
+        - "data[0].id"
+        - "data[0].name"
+
+  - name: a rate-limited response is the same one-string envelope
+    source: https://docs.firehydrant.com/reference/list_incidents.md
+    fixture: small-organization
+    arm: rate_limit
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer fhb-cauldron000000000000000000000
+    expect:
+      status: 429
+      body:
+        error: rate limit exceeded

@@ -1,0 +1,736 @@
+# Rootly Recipe for Cauldron
+#
+# Rootly really is JSON:API. Its own published spec says so in as many words
+# ("Rootly is using JSON:API (https://jsonapi.org) specification") and every
+# record on the wire is {"data": {"id", "type", "attributes": {...}}}, the id
+# outside attributes and a string even though nothing about it looks minted
+# from a sequence. That outer shape fits this format's vocabulary exactly the
+# way Lemon Squeezy's already does: collection: data, id.type: string, every
+# business field declared with in: attributes, and the type discriminator and
+# jsonapi.version stamped as route-level constants because nothing about them
+# comes from a stored record.
+#
+# One thing does not fit that precedent. Lemon Squeezy's attributes are flat.
+# Rootly's severity is not: incident.attributes.severity is itself a complete,
+# second JSON:API document -- {"data": {"id", "type": "severities",
+# "attributes": {...}}} -- sitting as the *value* of one attribute, rather
+# than the relationships-plus-included shape JSON:API defines for this. There
+# is no single "this is JSON:API" primitive in this format to reach for. What
+# reaches it is composition: field.in already nests twice for Brex
+# (spend_controls.limit.amount) and a resource-level constant already nests
+# for Attio (id.workspace_id). Rootly needed both at once, one level deeper
+# still: severity_id nests at in: attributes.severity.data, severity_name and
+# severity_level nest one level further at
+# in: attributes.severity.data.attributes, and the constant
+# attributes.severity.data.type: severities supplies the discriminator the
+# same way PagerDuty's route constants supply type: incident. It fits, and
+# fitting it took every nesting mechanism this format has, chained three
+# deep, rather than one declared as JSON:API's own.
+#
+# incident.io and PagerDuty are the other two observability Recipes here, and
+# Rootly disagrees with both on the question each one answers:
+#
+#   - incident.io treats status and severity identically: each is configured
+#     per workspace and each still carries one fixed, universal thing beside
+#     the name -- severity has a rank, status has a category (triage, active,
+#     learning, closed) that means the same four words in every workspace.
+#     Rootly's severity keeps that shape (a "severity" field of critical,
+#     high, medium or low sits beside the free-text "name"), but its status
+#     does not: GET /v1/statuses answers name, slug, description, color and
+#     enabled, and nothing else -- no category, no rank, no fixed anchor at
+#     all. A workspace that renames every status has nothing left for an
+#     integration to check "is this incident over" against. Two providers
+#     that both let you rename your statuses, and only one of them leaves you
+#     a fixed word to fall back on.
+#   - kind is the fixed vocabulary status is missing. Its documented enum --
+#     test, test_sub, example, example_sub, normal, normal_sub, backfilled,
+#     scheduled, scheduled_sub -- is the same nine words in every workspace,
+#     which is the opposite arrangement from status: the field a workspace
+#     cannot rename is the one this Recipe can declare with confidence, and
+#     the field it can rename is the one with nothing to declare.
+#   - PagerDuty's failures are nested with PagerDuty's own numbering and no
+#     type at all, and its scheme is "Token token=", not Bearer. Rootly's
+#     failures are a JSON:API errors array -- {"errors": [{"title", "status"}]}
+#     -- and its scheme really is Bearer.
+#
+# Missing and wrong credentials are not one of the places Rootly disagrees
+# with the rest of the collection, though it is worth saying which way it
+# falls: no Authorization header at all and "Authorization: Bearer
+# junktoken12345" answered with the byte-identical body on every call this
+# Recipe made. See firehydrant/recipe.yaml for a provider that answers the
+# two differently -- of the pair, this is the one Cauldron's own binary
+# auth check already reproduces for free, because there is only one thing to
+# reproduce.
+#
+# There is a second, sharper split between two kinds of "not found," and it
+# is the one thing this Recipe could not carry all the way through. A path
+# under a route this Recipe knows about -- GET /v1/incidents/{id} with a
+# malformed id, no credential at all -- answered 401, the ordinary auth
+# failure, before anything about the id was ever examined. A path Rails has
+# no route for at all -- GET /v1/totally-bogus-endpoint-xyz -- answered 404
+# with a completely different body, in a completely different envelope, and
+# it did so with no credential and with a wrong one exactly alike: the
+# router's own "no route matches" rescue runs before Rootly's auth check ever
+# sees the request. Rootly's real ordering is conditional on which of those
+# two situations a request is in. Cauldron's is not -- the runtime checks
+# authorised(r) once, unconditionally, before it ever asks the router
+# anything -- so an unauthenticated request to an unrouted path is refused
+# for its credentials here, never for its path. The conformance case below
+# demonstrating the unrouted shape has to carry a valid credential to reach
+# it at all, which is a request this Recipe never got to make against the
+# live API, and it says so by carrying no verified date.
+#
+# One more, purely at the edge and not modelled: PATCH and OPTIONS on
+# /v1/incidents answered with Rootly's Webflow marketing 404 page
+# (text/html, a CDN fallback for a method the app tier never sees) while
+# DELETE and PUT on the same path answered the ordinary Rails routing error
+# in JSON. All four requests hit the same Cloudflare edge (same CF-Ray
+# prefix). That split looks like an edge-routing rule keyed on the verb
+# rather than anything the Rails application decides, and it is recorded
+# here rather than served, because a Recipe describing the application's own
+# behaviour has no way to tell a CDN's opinion of a verb from the provider's.
+#
+# Rate limiting has its own gap between what was seen and what is written
+# down. Every response this Recipe's probes received -- 401s, both kinds --
+# carried X-RateLimit-Limit: "3000, 3000;window=60" and X-RateLimit-Remaining
+# counting down from 2999. Rootly's own published description says the
+# default is 5 GET/HEAD/OPTIONS calls per API key every 60 seconds. Those are
+# not the same number, and the likeliest reading is that an unauthenticated
+# call is not metered against any API key's bucket at all and lands in some
+# other, much larger one -- but that is a guess, not something either probe
+# or document actually says, so this Recipe serves the number it watched
+# happen (Limit only; Remaining moves with every call a static fixture cannot
+# track) and states the documented one here rather than serving it as though
+# a credential had been checked.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of 135 documented incident attributes this Recipe declares about twenty.
+#     Chat, video-conferencing, ticketing and status-page integration fields
+#     (Slack, Zoom, Jira, Google Meet, Microsoft Teams and a dozen more) are
+#     entirely absent.
+#   - relationships and included, which JSON:API defines and Lemon Squeezy's
+#     Recipe already states as absent, are absent here too.
+#   - links.self / .first / .prev / .next / .last are not modelled; only the
+#     meta counts are. The published schema does not say whether next is a
+#     path or an absolute URL, and this format has to be told which.
+#   - page[after] / meta.next_cursor, the cursor-based alternative to
+#     page[number], is documented but not modelled; this Recipe pages by
+#     page[number] and page[size] only.
+#   - create, update and delete are not modelled. Every route here is a GET.
+#   - attributes.severity.data.attributes.color and .position are declared; the schema
+#     also has notify_emails and slack_channels/slack_aliases, not modelled.
+#   - An incident with no severity assigned answers with attributes.severity:
+#     null rather than an object (the schema says so explicitly); this
+#     Recipe's fixture only demonstrates the assigned case, because a field
+#     group nested this deep has no way in this format to collapse to a bare
+#     null when every field inside it is unset.
+#
+# Every case below not carrying a verified date was read from Rootly's own
+# published OpenAPI description at rootly.com/swagger/v1/swagger.json
+# (openapi: 3.0.1, info.title: "Rootly API v1"), not observed against a real
+# workspace -- this Recipe was written with no credential and created no
+# account. Keys below are fixtures, not secrets.
+
+recipe: rootly
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.rootly.com/api-reference/overview
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - rootly_cauldron_0000000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    count_field: meta.total_count
+    pages_field: meta.total_pages
+    page_field: meta.current_page
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # The ordinary shape: an array, because JSON:API says a failed request
+    # may fail several ways at once. title carries the sentence; status
+    # repeats the HTTP status as a quoted string, which is why it is set as a
+    # literal field below rather than through status_field -- this runtime's
+    # status_field always writes a number, and Rootly's own is never one.
+    style: list
+    key: errors
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  incident:
+    collection: data
+    id:
+      # Documented only as {"type": "string", "description": "Unique ID of
+      # the incident"} -- no format, no example, anywhere in the published
+      # spec. sequential_id is the one identifier this Recipe has ever seen a
+      # concrete shape for (an integer), so opaque is the honest choice for
+      # "id" rather than a guessed uuid.
+      style: opaque
+    fields:
+      title:
+        type: string
+        in: attributes
+      summary:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # test, test_sub, example, example_sub, normal, normal_sub, backfilled,
+      # scheduled, scheduled_sub -- the one fixed vocabulary on this record,
+      # documented on the create body (new_incident) rather than on the read
+      # shape, and the read shape does not disagree with it anywhere.
+      kind:
+        type: string
+        default: normal
+        in: attributes
+      private:
+        type: boolean
+        default: false
+        in: attributes
+      source:
+        type: string
+        null_when_unset: true
+        in: attributes
+      slug:
+        type: string
+        in: attributes
+      url:
+        type: string
+        null_when_unset: true
+        in: attributes
+      short_url:
+        type: string
+        null_when_unset: true
+        in: attributes
+      sequential_id:
+        type: integer
+        in: attributes
+      # The severity assigned to this incident, nested as a second, complete
+      # JSON:API document rather than a flat reference. attributes.severity.data.type is
+      # a resource-level constant below; these four fields are what nests
+      # inside it, one level further down than an ordinary attribute.
+      severity_id:
+        type: string
+        in: attributes.severity.data
+        as: id
+      severity_name:
+        type: string
+        in: attributes.severity.data.attributes
+        as: name
+      # critical, high, medium, low -- the fixed word beside the free-text
+      # name, same shape as PagerDuty's severity_rank and incident.io's
+      # severity_rank: an orderable, universal fact sitting beside a label a
+      # workspace chose.
+      severity_level:
+        type: string
+        in: attributes.severity.data.attributes
+        as: severity
+      severity_color:
+        type: string
+        null_when_unset: true
+        in: attributes.severity.data.attributes
+        as: color
+      # No category, no rank, nothing fixed -- see the header. status itself
+      # is the bare name a workspace configured at GET /v1/statuses, and nothing
+      # else on this record says whether that name means the incident is over.
+      status:
+        type: string
+        null_when_unset: true
+        in: attributes
+      created_at:
+        type: datetime
+        in: attributes
+      updated_at:
+        type: datetime
+        in: attributes
+      started_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      detected_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      acknowledged_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      mitigated_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      resolved_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+    constants:
+      type: incidents
+      attributes.severity.data.type: severities
+
+  # A workspace's own configured severities, fetched from GET /v1/severities.
+  # Compare incident.io's severity, which carries the same rank-beside-a-name
+  # shape under different field names.
+  severity:
+    collection: data
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        in: attributes
+      severity:
+        type: string
+        in: attributes
+      description:
+        type: string
+        null_when_unset: true
+        in: attributes
+      color:
+        type: string
+        null_when_unset: true
+        in: attributes
+      position:
+        type: integer
+        null_when_unset: true
+        in: attributes
+      created_at:
+        type: datetime
+        in: attributes
+      updated_at:
+        type: datetime
+        in: attributes
+    constants:
+      type: severities
+
+  # A workspace's own configured statuses, fetched from GET /v1/statuses.
+  # Compare incident.io's incident_status, whose category field is the one
+  # thing that stays fixed across workspaces -- this resource has no
+  # equivalent field at all.
+  status:
+    collection: data
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        in: attributes
+      slug:
+        type: string
+        in: attributes
+      description:
+        type: string
+        null_when_unset: true
+        in: attributes
+      color:
+        type: string
+        in: attributes
+      enabled:
+        type: boolean
+        in: attributes
+      created_at:
+        type: datetime
+        in: attributes
+      updated_at:
+        type: datetime
+        in: attributes
+    constants:
+      type: statuses
+
+routes:
+  - method: GET
+    path: /v1/incidents
+    resource: incident
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+      limit_param: "page[size]"
+      cursor_param: "page[number]"
+      first_page: 1
+    headers:
+      Content-Type: application/vnd.api+json
+    fields:
+      jsonapi.version: "1.0"
+
+  - method: GET
+    path: /v1/incidents/{id}
+    resource: incident
+    operation: get
+    headers:
+      Content-Type: application/vnd.api+json
+    fields:
+      # The record's own type constant already lands at data.type once
+      # resource.style wraps it under "data"; only the envelope's own
+      # version marker needs adding here.
+      jsonapi.version: "1.0"
+
+  - method: GET
+    path: /v1/severities
+    resource: severity
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+      limit_param: "page[size]"
+      cursor_param: "page[number]"
+      first_page: 1
+    headers:
+      Content-Type: application/vnd.api+json
+    fields:
+      jsonapi.version: "1.0"
+
+  - method: GET
+    path: /v1/statuses
+    resource: status
+    operation: list
+    pagination:
+      style: page
+      limit: 10
+      limit_param: "page[size]"
+      cursor_param: "page[number]"
+      first_page: 1
+    headers:
+      Content-Type: application/vnd.api+json
+    fields:
+      jsonapi.version: "1.0"
+
+errors:
+  # No Authorization header and a well-formed-but-wrong Bearer token answered
+  # with this exact same body on every call this Recipe made -- see the
+  # header for the contrast with firehydrant, which does not.
+  authentication_error:
+    status: 401
+    message: Invalid token
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+      X-RateLimit-Limit: "3000, 3000;window=60"
+    fields:
+      status: "401"
+
+  # Rails' own router rescue, reached only when the path matches no route at
+  # all -- see the header for why this Recipe cannot reach it through an
+  # unauthenticated request the way the live probe did. {detail} is the
+  # request's own path; the method is not substitutable the same way, so it
+  # is fixed at GET here rather than claimed for every verb.
+  unknown_route:
+    status: 404
+    style: flat
+    message_field: error
+    code_field: "-"
+    message: "No route matches [GET] {detail}"
+    headers:
+      Content-Type: application/vnd.api+json
+
+  # Documented, not observed: this Recipe never triggered a real 429, and
+  # the header explains why the number in Rootly's own description
+  # ("5 GET/HEAD/OPTIONS per API key per 60 seconds") is not served anywhere
+  # here. A different envelope from the other two failures -- a bare
+  # "error" string, not the JSON:API errors array -- which is Rootly's own
+  # published wording, not this Recipe's guess.
+  rate_limit:
+    status: 429
+    style: flat
+    message_field: error
+    code_field: "-"
+    message: Rate limit exceeded. Try again later.
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    status:
+      - id: rly_status_investigating
+        name: Investigating
+        slug: investigating
+        description: Working out whether this is real
+        color: "#F5A623"
+        enabled: true
+        created_at: "2026-01-10T09:00:00.000Z"
+        updated_at: "2026-01-10T09:00:00.000Z"
+      # "Wrapped up" is this workspace's word for over. Nothing on this
+      # record -- no category field exists on the resource at all -- tells a
+      # caller that "Wrapped up" means the incident is finished rather than
+      # "Investigating" meaning the same thing.
+      - id: rly_status_wrapped_up
+        name: Wrapped up
+        slug: wrapped-up
+        description: No longer impacting anyone
+        color: "#4CAF50"
+        enabled: true
+        created_at: "2026-01-10T09:00:00.000Z"
+        updated_at: "2026-01-10T09:00:00.000Z"
+
+    severity:
+      - id: rly_sev_1
+        name: SEV1
+        severity: critical
+        description: Full outage
+        color: "#D0021B"
+        position: 1
+        created_at: "2026-01-10T09:00:00.000Z"
+        updated_at: "2026-01-10T09:00:00.000Z"
+      - id: rly_sev_3
+        name: SEV3
+        severity: low
+        description: Minor, low impact
+        color: "#9B9B9B"
+        position: 3
+        created_at: "2026-01-10T09:00:00.000Z"
+        updated_at: "2026-01-10T09:00:00.000Z"
+
+    incident:
+      - id: rly_incident_1001
+        title: Checkout API returning 500s
+        summary: A deploy shipped a nil dereference in the payment path.
+        kind: normal
+        private: false
+        source: pagerduty
+        slug: checkout-api-returning-500s
+        url: https://rootly.com/account/incidents/rly_incident_1001
+        short_url: https://rootly.com/i/rly_incident_1001
+        sequential_id: 142
+        severity_id: rly_sev_1
+        severity_name: SEV1
+        severity_level: critical
+        severity_color: "#D0021B"
+        status: Investigating
+        created_at: "2026-08-14T09:02:11.000Z"
+        updated_at: "2026-08-14T09:05:00.000Z"
+        started_at: "2026-08-14T09:00:00.000Z"
+        detected_at: "2026-08-14T09:01:00.000Z"
+        acknowledged_at: "2026-08-14T09:03:00.000Z"
+
+      - id: rly_incident_1002
+        title: Nightly export job delayed
+        summary: The scheduled export ran forty minutes late.
+        kind: normal
+        private: false
+        source: web
+        slug: nightly-export-job-delayed
+        url: https://rootly.com/account/incidents/rly_incident_1002
+        short_url: https://rootly.com/i/rly_incident_1002
+        sequential_id: 143
+        severity_id: rly_sev_3
+        severity_name: SEV3
+        severity_level: low
+        severity_color: "#9B9B9B"
+        status: Wrapped up
+        created_at: "2026-08-15T02:10:00.000Z"
+        updated_at: "2026-08-15T03:00:00.000Z"
+        started_at: "2026-08-15T02:00:00.000Z"
+        resolved_at: "2026-08-15T02:55:00.000Z"
+
+# Every case below carries source. A verified date means this Recipe called
+# api.rootly.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from the published OpenAPI
+# description at rootly.com/swagger/v1/swagger.json and never called.
+conformance:
+  - name: no credential and a wrong one answer the identical body
+    # Observed twice, back to back: once with the Authorization header left
+    # off entirely and once with "Authorization: Bearer junktoken12345".
+    # Both calls answered this exact body -- see firehydrant/recipe.yaml for
+    # the same question answered the other way.
+    source: https://api.rootly.com/v1/incidents
+    verified: "2026-09-01"
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+        X-RateLimit-Limit: "3000, 3000;window=60"
+      body:
+        "errors[0].title": Invalid token
+        "errors[0].status": "401"
+      absent:
+        - "errors[0].code"
+        - "errors[0].detail"
+        - message
+        - error
+
+  - name: and leaving the header off entirely answers the same
+    source: https://api.rootly.com/v1/incidents
+    verified: "2026-09-01"
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents
+    expect:
+      status: 401
+      body:
+        "errors[0].title": Invalid token
+        "errors[0].status": "401"
+
+  - name: a malformed id under a real route is still refused for its credentials
+    # The id is never reached: Rootly's auth check runs before anything about
+    # the path is examined, on a route this Recipe knows about.
+    source: https://api.rootly.com/v1/incidents/not-a-real-id-@@@
+    verified: "2026-09-01"
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents/not-a-real-id-@@@
+    expect:
+      status: 401
+      body:
+        "errors[0].title": Invalid token
+
+  - name: an unrouted path answers Rails' own shape, in a different envelope
+    # Called live with no credential and again with a wrong one -- both
+    # answered this same body, meaning the router's "no route matches" rescue
+    # runs before Rootly's auth check ever sees a request to a path it has no
+    # route for at all. Reaching the same shape through Cauldron needs a
+    # valid credential, because this runtime's own auth check is
+    # unconditional -- see the header. That request was never made against
+    # the live API, so this case carries no verified date even though the
+    # body and content type it asserts are the literal ones observed.
+    source: https://api.rootly.com/v1/totally-bogus-endpoint-xyz
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/totally-bogus-endpoint-xyz
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/vnd.api+json
+      body:
+        error: "No route matches [GET] /v1/totally-bogus-endpoint-xyz"
+      absent:
+        - errors
+        - "errors[0]"
+
+  - name: the id sits outside attributes and the type says what this is
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents/rly_incident_1001
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/vnd.api+json
+      body:
+        "data.id": rly_incident_1001
+        "data.type": incidents
+        "data.attributes.title": Checkout API returning 500s
+      absent:
+        - id
+        - title
+        - "data.title"
+
+  - name: severity is a second, complete JSON:API document nested one attribute deep
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents/rly_incident_1001
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.attributes.severity.data.id": rly_sev_1
+        "data.attributes.severity.data.type": severities
+        "data.attributes.severity.data.attributes.name": SEV1
+        # The fixed word beside the workspace's own label.
+        "data.attributes.severity.data.attributes.severity": critical
+      absent:
+        - "data.attributes.severity_id"
+        - "data.relationships"
+        - included
+
+  - name: status carries no category, only the name a workspace chose
+    # Contrast incident.io's incident_status, whose category is the one word
+    # every workspace shares. GET /v1/statuses answers name, slug,
+    # description, color and enabled -- nothing else -- so there is no field
+    # anywhere on this resource an integration can check instead of the name
+    # itself.
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/statuses
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data[0].attributes.name": Investigating
+        "data[1].attributes.name": Wrapped up
+      absent:
+        - "data[0].attributes.category"
+        - "data[1].attributes.category"
+        - "data[0].category"
+
+  - name: kind is the fixed vocabulary status does not have
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents/rly_incident_1001
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.attributes.kind": normal
+
+  - name: the envelope reports a page total under meta, not the collection
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "meta.total_count": 2
+        "meta.total_pages": 1
+        "meta.current_page": 1
+        "data[0].attributes.title": Checkout API returning 500s
+        # Every entry in a listing carries its own type, the same as the
+        # single-record route -- not only the record this Recipe's GET
+        # single case happens to fetch.
+        "data[0].type": incidents
+        "data[1].type": incidents
+      absent:
+        - total_count
+        - total
+        - has_more
+
+  - name: a rate-limited response is a bare string under error, not the array
+    source: https://rootly.com/swagger/v1/swagger.json
+    fixture: small-workspace
+    arm: rate_limit
+    request:
+      method: GET
+      path: /v1/incidents
+      headers:
+        Authorization: Bearer rootly_cauldron_0000000000000000000000000000
+    expect:
+      status: 429
+      body:
+        error: Rate limit exceeded. Try again later.
+      absent:
+        - errors

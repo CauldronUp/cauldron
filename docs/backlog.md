@@ -153,7 +153,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | ~~Neon~~ | Shipped. Branches, databases, endpoints |
 | ~~PlanetScale~~ | Shipped, written against the Swagger 2.0 document PlanetScale serves from its own API host. The field called state is not the state of the deployment: a deploy request carries state -- "Whether the deploy request is open or closed" -- beside deployment_state, "The deployment state of the deploy request", so a request abandoned after review and one whose migration ran an hour ago both read closed. Also: the id is "The ID of the deploy request" and every path takes the number instead, which is per database, so the globally unique identifier addresses nothing; a request outlives the branch it came from, still naming it while branch_deleted says it is gone; and next_page is "null when this is the last page" where Confluence omits the field entirely. The ten deploy-lifecycle endpoints are stated as not modelled, because each advances a state machine this format cannot express |
 | CockroachDB Cloud | Clusters, SQL users, operations |
-| Turso | Databases, replicas, tokens |
+| ~~Turso~~ | Shipped. **It answers a missing header with a JWT parsing error** -- "token contains an invalid number of segments" when no token was sent at all, so the message describes the shape of a credential the caller never supplied, and a junk string answers identically. Its create is a different failure from Temporal's: not an unfinished operation but a **truncated projection**, three fields where a read gives eight, and among the missing is `group`, which the create request was required to supply. There is no state field in the schema to be pending. Also pinned: `DbId` is a real UUID that nothing addresses by, since every path takes the name; a delete answers a bare string under the key a create wraps an object under; and **no 405 exists on this host at all**, where SingleStore's Recipe records a real one with an `Allow` header |
 | Confluent Cloud | Kafka topics, schemas, consumers |
 | Aiven | Managed databases, Kafka, service lifecycle |
 | CloudAMQP | RabbitMQ instances and queues |
@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**241 more listings across 151 Recipes declare no paging at all**, and the
+**245 more listings across 154 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1326,7 +1326,7 @@ what normalisation does not fix.
 | Provider | Why |
 |---|---|
 | ~~Fivetran~~ | Shipped. Triggering a sync that is already running answers success and starts nothing, succeeded_at and failed_at both persist so which is later is the only health signal, and paused and sync_frequency are different things that each look fine alone |
-| Airbyte | A job has attempts, and an attempt failing is not the job failing |
+| ~~Airbyte~~ | Shipped, and it answers the question this row was queued for: **a partial failure is not called a success**. `incomplete` is a status distinct from both succeeded and failed. Two things qualify it -- the name appears in the enum and nowhere in Airbyte's own prose about jobs, and once a job is incomplete the response gives only whole-job totals with no per-stream breakdown, so a caller knows something did not finish and cannot find out what. Census, written alongside, does the opposite: its own worked example shows a run with `records_failed: 1` carrying `status: "completed"`. Airbyte also checks the credential before routing without exception, which is exactly what this runtime does, so it needed no workaround -- the first time in that batch that was true |
 | ~~Hightouch~~ | Shipped. A run with every row rejected finishes as success, warning is neither an error nor a success, the reasons live on an endpoint the run does not link to, and disabled and paused are different things that both stop a sync |
 | dbt Cloud | A run has steps, and the run status is not the step status |
 | ~~Snowflake SQL API~~ | Shipped. The same endpoint answers 200 with results or 202 with a handle depending on how fast the query was, every value is a string, a row is positional with the names in the metadata, and NULL is a real null inside the array of strings |
@@ -1358,7 +1358,7 @@ what normalisation does not fix.
 | Bunny.net | Purging is eventually consistent and the API confirms the request rather than the purge |
 | Transloadit | An assembly is asynchronous and partial results are readable, which is a crawl's trap in a different shape |
 | Elastic Cloud | A deployment is created before it is reachable, and the endpoint appears in a later read than the one that created it |
-| Rootly | An incident timeline is append-only and events arrive out of order, so the last write is not the latest event |
+| ~~Rootly~~ | Shipped. It is the first JSON:API provider here, and the outer envelope fits the way Lemon Squeezy's already does. What has no precedent is **a second complete JSON:API document nested as an attribute's value** -- `incident.attributes.severity` carries its own `data`/`id`/`type`/`attributes`, rather than a reference in `relationships` with the body in `included`, which is what the specification is for. Expressing it took every nesting primitive the format has, chained three deep. Its routing order is also **conditional**: the credential is checked first for every path Rootly has, and the router answers first for paths it does not, so the ordering depends on whether the route exists -- which a caller cannot know in advance, and which one gate before routing cannot reproduce |
 
 ## Listings that narrow themselves
 
@@ -1443,6 +1443,11 @@ than a client for its API.
 | New Relic | The `newrelic` package on npm is the **APM agent**, not a client of this API. It instruments an application and reports telemetry to New Relic's ingest endpoints; it never calls the v2 REST API or NerdGraph that this Recipe describes, and `@newrelic/telemetry-sdk` is the same story with a smaller surface. A project holding either is being monitored by New Relic rather than querying it, so offering this emulator would intercept nothing it actually sends. It ships unmapped and a test guards the decision |
 | NewsAPI | Nothing on either registry reaches it under a name that identifies it. The npm packages calling themselves NewsAPI clients are thin unmaintained wrappers with nothing depending on them, and Packagist returns unrelated content-management libraries. Offering this emulator on a name match would be wrong about the host and the key at once, so it ships unmapped and a test guards the decision |
 | GNews | The same, and worse for the name: `gnews` on npm is a Google News **scraper** that parses the public RSS feed and never calls gnews.io at all -- a different service reached a different way. Mapping the two would hand somebody an emulator of an API their code does not use, so it ships unmapped |
+| AppSignal | A client exists and it is the wrong one, the same shape of miss the New Relic row records. `@appsignal/nodejs` is the **instrumentation library**: it reports telemetry to `appsignal-endpoint.net`, the surface this Recipe deliberately does not model, having modelled the personal-token REST API at `appsignal.com/api` instead. A project holding it is being observed by AppSignal rather than querying it, so the emulator would intercept nothing it sends |
+| SingleStore | The npm packages under the vendor's own scope speak **SQL**, not this API. `@singlestore/http-client` executes statements against a database; `@singlestore/client` wraps it. This Recipe describes the management plane -- creating and sizing workspaces and clusters -- which neither package touches. Mapping them would offer an emulator of the control plane to code that only ever runs queries |
+| Pipedream | `pipedream` on npm is the **components monorepo**, the library of integration steps that run inside a Pipedream workflow. It is not a client of the REST API this Recipe describes, and a project holding it is being run by Pipedream rather than calling it. Nothing on Packagist is relevant either |
+| Airbyte | Nothing on either registry calls this API. `faros-airbyte-cdk` is a **connector development kit** -- for building sources and destinations that Airbyte runs, not for driving Airbyte itself -- and the embedded widget is a UI component. The clients that do call the API are Python and Java, which neither registry indexes |
+| Census | Nothing on either registry reaches it, and the name is unhelpful: the npm results for `census` are United States demographic-data wrappers, which speak to the Census Bureau API this collection already describes under `uscensus`. Two unrelated things sharing a word, and mapping either to the other would be wrong twice |
 | Browserless | A homograph, and a costly one. The `browserless` package on npm is **microlinkhq's local Puppeteer wrapper** -- it drives a browser inside your own process and never calls browserless.io at all. A project holding it has no relationship with this service whatsoever, so mapping the two would offer an emulator of an API that project does not use. Packagist returns nothing relevant either. It ships unmapped and a test guards the decision |
 | Tink | A homograph rather than a gap. `tink` on npm is a next-generation runtime and package manager that shares the name and nothing else; Packagist returns unrelated packages for the same reason. The clients that genuinely reach this API are Java and Python, which neither registry indexes. Offering an open-banking emulator to a project that installed a package manager would be wrong about everything at once, so it ships unmapped and a test guards the decision |
 | Semantic Scholar | Nothing on either registry reaches the Academic Graph API. The clients that exist for it are Python, which neither npm nor Packagist indexes, and the npm results for the name are citation-formatting libraries that parse BibTeX already on disk rather than calling the service. Offering this emulator to a bibliography formatter would be wrong about the host and the protocol at once, so it ships unmapped and a test guards the decision |
@@ -1488,7 +1493,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Sixty-three Recipes send at least one identifier as a number now, and each
+Sixty-five Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

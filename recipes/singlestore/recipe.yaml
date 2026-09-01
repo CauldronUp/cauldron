@@ -1,0 +1,648 @@
+# SingleStore Management API Recipe for Cauldron
+#
+# Checked live, with no account and no credential, against
+# api.singlestore.com. Every failure on this host is plain text -- not one
+# of them is JSON, and the published OpenAPI description agrees by omission:
+# of the hundred-odd operations in it, not one declares a response schema
+# for its 400, 401, 404, 429 or 500. Each just has a description string.
+# What is on the wire for a failure is not written down anywhere except the
+# wire itself, and this Recipe reports what was actually sent rather than
+# guessing a JSON shape the document never promises.
+#
+# Missing and wrong are not one failure here, and they are not two either --
+# they are three, and the difference is not present-vs-absent the way
+# Checkly's Recipe in this collection needed. It is what got as far as being
+# checked:
+#
+#   no Authorization header at all         -> "Unauthorized"            (13B)
+#   Authorization: Bearer junkjunkjunk     -> "invalid API Key, wrong
+#                                              format: encoding/hex:
+#                                              invalid byte: U+006A 'j'"
+#   a 32-hex-character Bearer value        -> "invalid API Key length"
+#   the same with 64 hex characters        -> "invalid API Key length"
+#
+# A missing key is checked first and answers a generic word. A present key
+# is run through hex.DecodeString, and a value that is not valid hex fails
+# there, with Go's own decoder error folded into the response -- which means
+# the message is not a fixed string at all. It names the specific invalid
+# byte and reports it as "U+006A 'j'" because 'j' was the first character in
+# junkjunkjunk that is not a hex digit; a different bad value gets a
+# different byte named in the sentence. Only the prefix
+# "invalid API Key, wrong format: encoding/hex:" is stable, and that is
+# pinned below rather than the whole sentence, because the whole sentence is
+# not one thing a client could match on. A key that does decode as hex but
+# is the wrong length reaches a second check and answers a third sentence,
+# checked at two different lengths to make sure it was the length and not
+# the value.
+#
+# None of this is asserted as the complete picture. What the correct key
+# length actually is, and what a well-formed-but-revoked key answers, are
+# both real questions this Recipe cannot reach without a credential this
+# task forbids obtaining.
+#
+# The routing underneath is worth pinning too, because it disagrees with
+# Turso's Recipe in this collection on the one point both were checked
+# against directly. A wrong method on a real path -- PUT where only GET and
+# POST are registered -- answers 405, with an Allow header naming what would
+# have worked: "GET, POST, OPTIONS". A path that resembles nothing
+# registered at all answers a plain 404, "404 page not found", Go's own
+# net/http default. The two are genuinely different failures on this host,
+# checked live both ways, where Turso's Recipe found they are the identical
+# body. And /v1/organizations -- one of the two paths this Recipe was asked
+# to probe -- is neither: it 404s even with no credential at all, because it
+# was never a route on this host to begin with. Organisation data lives at
+# /v2/organizations/current instead, reached with id_from: auth the same way
+# Turso's /v1/auth/validate is, because there is exactly one organisation a
+# credential can belong to and nothing to address one of by.
+#
+# /v1/workspaces is the other path the task named, and it answers -- but not
+# because it is documented. The published Management API description no
+# longer has a /v1/workspaces path in it at all; a workspace and its
+# workspace group were unified into one /v2/clusters entity, and the
+# description says so in its own words: "The clusters endpoint provides a
+# unified API for managing workspaces and workspace groups as a single
+# cluster entity." Yet the v1 host answers, live, with the identical
+# three-tier auth failure /v2/clusters answers -- checked both ways below --
+# which means the old surface is still switched on behind the same gateway
+# and simply is not the one the current document describes. This Recipe
+# models /v2/clusters, because that is the one thing has a published shape
+# for, and pins /v1/workspaces only for the auth and routing parity a live
+# credential-free probe could actually establish.
+#
+# The finding this Recipe was sent to find, read from that same published
+# description rather than observed:
+#
+# Creating a cluster answers 200 with exactly three fields --
+# {"adminPassword": ..., "clusterID": ..., "groupID": ...} -- none of which
+# is the record. A GET on the same cluster answers a Cluster with a `state`
+# enum of six values: ACTIVE, PENDING, SUSPENDED, FAILED, TERMINATED,
+# UNKNOWN. The create response carries none of them, and carries no
+# operation or async handle to poll either -- unlike Neon's Recipe in this
+# collection, whose create answers with the operations that will say when a
+# branch is ready, and unlike Temporal Cloud's Recipe, whose create answers
+# with an AsyncOperation built to be polled. Here there is nothing to poll
+# with at all except the same GET a caller would have made anyway: the
+# create response gives back an id and a generated password and nothing
+# that says whether the id refers to something usable yet. A caller has to
+# already know to re-fetch the same clusterID to learn what "PENDING" even
+# means for this one. And the same shape repeats on the two other writes
+# this Recipe models: PATCH answers {"clusterID": ...} alone, and DELETE
+# answers {"clusterID": ...} alone (occasionally with a second field beside
+# it -- see the gaps). Every mutation on this resource tells you what you
+# changed and nothing about what state it left behind.
+#
+# The password is worth flagging on its own: Neon's Recipe in this
+# collection already found a create response carrying a live credential in
+# the body, and SingleStore's create does the identical thing for the
+# identical reason -- the admin password is generated server-side when the
+# caller does not supply one, and the only place it is ever sent is this one
+# response.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 200 below is read from the published description, not
+#     observed, and carries no `verified:` date. The 401s, the 404s and the
+#     405 are struck live, unauthenticated, and carry one.
+#   - What a valid-length, valid-hex, simply-wrong key answers is not
+#     stated. Two lengths were tried and both were rejected on length before
+#     anything about validity could be checked, so the boundary between "the
+#     wrong length" and "the right length but revoked" was never reached.
+#   - includeTerminated -- "To include any terminated clusters, set to
+#     true" -- is real and not modelled. It is not an ordinary filter: the
+#     listing excludes TERMINATED clusters by default and the query
+#     parameter is a boolean switch rather than a value to match a field
+#     against, which is a different shape than this format's filters
+#     express. Recorded here rather than forced into that mechanism.
+#   - AutoScale, AutoSuspend, SizeConfig, firewallRanges and the private-
+#     connectivity fields on Cluster are real and not modelled, the same
+#     judgement Temporal Cloud's Recipe already made about NamespaceSpec:
+#     nested configuration no fixture here would exercise usefully.
+#   - DELETE's response sometimes carries a second field, workspaceGroupID,
+#     "returned only if it was also terminated" -- when the deleted cluster
+#     was the last one in its group. This format's delete shapes answer
+#     with an id or a full record, not a conditional second field beside
+#     the id, so the plain {"clusterID": ...} case is the one modelled and
+#     the conditional one is stated here instead.
+#   - Organisations, projects, workspace groups (as their own resource
+#     rather than folded into Cluster), teams, jobs, secrets and the rest of
+#     this API's roughly seventy other paths are absent. Clusters and the
+#     current organisation only.
+#
+# The key below is a fixture and belongs to no organisation.
+
+recipe: singlestore
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.singlestore.com/cloud/reference/management-api/reference/
+  provider: singlestore-management
+  supersedes:
+    - version: v1
+      host: api.singlestore.com/v1/workspaces
+      note: >-
+        Still live behind the same gateway and answers the identical
+        three-tier auth failure /v2/clusters does -- checked both ways
+        below -- but has no path in the current published description at
+        all. Workspaces and workspace groups were unified into /v2/clusters.
+
+auth:
+  # Genuinely bearer, but expressed as scheme none plus fixed routes below,
+  # because a single scheme can only ever answer one way and this host
+  # answers three depending on what was sent -- see the header.
+  scheme: none
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # Every failure on this host is plain text, not JSON -- see the header.
+    # The message is the whole body.
+    style: text
+
+resources:
+  organization:
+    id:
+      style: uuid
+      field: orgID
+    fields:
+      name:
+        type: string
+      firewallRanges:
+        type: list
+
+  cluster:
+    collection: clusters
+    id:
+      style: uuid
+      field: clusterID
+    fields:
+      name:
+        type: string
+        required: true
+      # ACTIVE, PENDING, SUSPENDED, FAILED, TERMINATED or UNKNOWN. Absent
+      # from the create response entirely -- see the header.
+      state:
+        type: string
+        default: ACTIVE
+      region:
+        type: string
+      # AWS, GCP or Azure.
+      provider:
+        type: string
+      groupID:
+        type: string
+      projectID:
+        type: string
+      endpoint:
+        type: string
+      # PRODUCTION or NON-PRODUCTION.
+      deploymentType:
+        type: string
+        default: PRODUCTION
+      # 0.0 to 1.0. Present while a resize is in progress.
+      scalingProgress:
+        type: number
+        null_when_unset: true
+      createdAt:
+        type: datetime
+      terminatedAt:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      # Only ever sent by the create response, as a sibling of the trimmed
+      # record rather than a field the resource normally carries -- see the
+      # header and the create route below.
+      adminPassword:
+        type: string
+
+routes:
+  # /v2/organizations/current. No id in the path and nothing to address one
+  # of by -- the same shape Turso's /v1/auth/validate is in this collection.
+  - method: GET
+    path: /v2/organizations/current
+    resource: organization
+    operation: get
+    id_from: auth
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+
+  - method: GET
+    path: /v2/organizations/current
+    matches_header:
+      Authorization: Bearer junkjunkjunk
+    error: bad_key_format
+
+  - method: GET
+    path: /v2/organizations/current
+    matches_header:
+      Authorization: Bearer 0123456789abcdef0123456789abcdef
+    error: bad_key_length
+
+  - method: GET
+    path: /v2/organizations/current
+    error: missing_authentication
+
+  - method: GET
+    path: /v2/clusters
+    resource: cluster
+    operation: list
+    filters:
+      - param: projectID
+        field: projectID
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+
+  - method: GET
+    path: /v2/clusters
+    matches_header:
+      Authorization: Bearer junkjunkjunk
+    error: bad_key_format
+
+  - method: GET
+    path: /v2/clusters
+    matches_header:
+      Authorization: Bearer 0123456789abcdef0123456789abcdef
+    error: bad_key_length
+
+  - method: GET
+    path: /v2/clusters
+    matches_header:
+      Authorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+    error: bad_key_length
+
+  - method: GET
+    path: /v2/clusters
+    error: missing_authentication
+
+  - method: GET
+    path: /v2/clusters/{id}
+    resource: cluster
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+
+  - method: GET
+    path: /v2/clusters/{id}
+    error: missing_authentication
+
+  # 200, never 201, and never the fields that would say whether the id it
+  # hands back means anything usable yet -- see the header.
+  - method: POST
+    path: /v2/clusters
+    resource: cluster
+    operation: create
+    status: 200
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    returns: [id]
+    fields:
+      # groupID is minted alongside the cluster -- creating a cluster
+      # creates its workspace group in the same call -- so it cannot come
+      # from a trim of the request body the way id can; it is supplied here
+      # the same way Neon's Recipe in this collection supplies its create
+      # response's operations. The one field this response carries that a
+      # GET never will:
+      adminPassword: cauldronFixture000Password!
+      groupID: "00000000-0000-4000-9000-000000000002"
+
+  - method: POST
+    path: /v2/clusters
+    error: missing_authentication
+
+  - method: PATCH
+    path: /v2/clusters/{id}
+    resource: cluster
+    operation: update
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    returns: [id]
+
+  - method: PATCH
+    path: /v2/clusters/{id}
+    error: missing_authentication
+
+  - method: DELETE
+    path: /v2/clusters/{id}
+    resource: cluster
+    operation: delete
+    matches_header:
+      Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    deleted_body: id
+    deleted_key: clusterID
+
+  - method: DELETE
+    path: /v2/clusters/{id}
+    error: missing_authentication
+
+  # A wrong method on a real path. Real 405, with an Allow header -- the
+  # opposite of Turso's Recipe in this collection, checked against the
+  # identical question. See the header.
+  - method: PUT
+    path: /v2/clusters
+    error: method_not_allowed
+
+  # A path that resembles nothing registered at all.
+  - method: GET
+    path: /v1/this-is-not-a-real-endpoint
+    error: unknown_route
+
+  # /v1/organizations was never a route on this host -- see the header.
+  # It 404s exactly like the line above, with no credential required to
+  # find that out, because routing runs before any auth check does.
+  - method: GET
+    path: /v1/organizations
+    error: unknown_route
+
+  # /v1/workspaces: not in the current published description at all, and
+  # answers the identical three-tier auth failure /v2/clusters does. See
+  # the header. Pinned for the auth and routing parity only -- no resource
+  # shape is claimed for it.
+  - method: GET
+    path: /v1/workspaces
+    matches_header:
+      Authorization: Bearer junkjunkjunk
+    error: bad_key_format
+
+  - method: GET
+    path: /v1/workspaces
+    error: missing_authentication
+
+errors:
+  # No Authorization header at all. Checked before the value of one that is
+  # present is examined at all.
+  missing_authentication:
+    status: 401
+    message: Unauthorized
+
+  # A present value that fails encoding/hex.DecodeString. The real message
+  # names the specific invalid byte and its position; only the stable
+  # prefix is pinned here -- see the header.
+  bad_key_format:
+    status: 401
+    message: "invalid API Key, wrong format: encoding/hex: invalid byte: U+006A 'j'"
+
+  # Valid hex, wrong length. Checked at two different lengths live to
+  # confirm it really is the length being checked.
+  bad_key_length:
+    status: 401
+    message: invalid API Key length
+
+  # Go's net/http default 404, not this API's own wording -- there is no
+  # API-level 404 body on this host at all, checked live.
+  unknown_route:
+    status: 404
+    message: 404 page not found
+
+  # A real 405 with an Allow header, the opposite of Turso's Recipe in this
+  # collection on the identical question.
+  method_not_allowed:
+    status: 405
+    message: "method not allowed (indicate one of GET, POST)"
+    headers:
+      allow: "GET, POST, OPTIONS"
+
+fixtures:
+  empty: {}
+
+  account:
+    organization:
+      - id: "00000000-0000-4000-9000-000000000004"
+        name: Cauldron Fixture
+        firewallRanges:
+          - 0.0.0.0/0
+
+    cluster:
+      # Settled and reachable.
+      - id: "00000000-0000-4000-9000-000000000001"
+        name: cauldron-shop
+        state: ACTIVE
+        region: us-west-2
+        provider: AWS
+        groupID: "00000000-0000-4000-9000-000000000002"
+        projectID: "00000000-0000-4000-9000-000000000003"
+        endpoint: cauldron-shop.aws-us-west-2.svc.singlestore.com
+        deploymentType: PRODUCTION
+        createdAt: "2026-01-10T09:00:00Z"
+
+conformance:
+  - name: no credential at all is a plain word, not JSON
+    source: https://api.singlestore.com/v2/clusters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/clusters
+    expect:
+      status: 401
+      headers:
+        content-type: text/plain; charset=utf-8
+      body_matches: "^Unauthorized$"
+
+  - name: a present key that is not valid hex fails a different, earlier check
+    source: https://api.singlestore.com/v2/clusters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/clusters
+      headers:
+        Authorization: Bearer junkjunkjunk
+    expect:
+      status: 401
+      body_matches: "^invalid API Key, wrong format: encoding/hex:"
+
+  - name: valid hex at one wrong length is still the wrong length
+    source: https://api.singlestore.com/v2/clusters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/clusters
+      headers:
+        Authorization: Bearer 0123456789abcdef0123456789abcdef
+    expect:
+      status: 401
+      body_matches: "^invalid API Key length$"
+
+  - name: and so is twice that many hex characters
+    source: https://api.singlestore.com/v2/clusters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/clusters
+      headers:
+        Authorization: Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd
+    expect:
+      status: 401
+      body_matches: "^invalid API Key length$"
+
+  - name: /v1/workspaces answers the identical hex-format failure /v2/clusters does
+    source: https://api.singlestore.com/v1/workspaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/workspaces
+      headers:
+        Authorization: Bearer junkjunkjunk
+    expect:
+      status: 401
+      body_matches: "^invalid API Key, wrong format: encoding/hex:"
+
+  - name: and answers the identical missing-credential failure too
+    source: https://api.singlestore.com/v1/workspaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/workspaces
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: /v1/organizations was never a route here at all, with or without a credential
+    source: https://api.singlestore.com/v1/organizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/organizations
+    expect:
+      status: 404
+      body_matches: "^404 page not found$"
+
+  - name: a path that resembles nothing registered is the same plain 404
+    source: https://api.singlestore.com/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body_matches: "^404 page not found$"
+
+  - name: a wrong method on a real path is a real 405 with an Allow header
+    source: https://api.singlestore.com/v2/clusters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /v2/clusters
+    expect:
+      status: 405
+      headers:
+        allow: "GET, POST, OPTIONS"
+      body_matches: "^method not allowed"
+
+  - name: creating a cluster answers three fields and none of them is the record
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: POST
+      path: /v2/clusters
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+      json:
+        name: cauldron-newcluster
+        projectID: "00000000-0000-4000-9000-000000000003"
+    expect:
+      status: 200
+      # clusterID is freshly minted by this create and is not the fixture's
+      # existing cluster, so its exact value is not asserted -- only that it
+      # is there and shaped like the rest of this Recipe's identifiers.
+      body:
+        groupID: "00000000-0000-4000-9000-000000000002"
+        adminPassword: cauldronFixture000Password!
+      matches:
+        clusterID: "^[0-9a-f-]{36}$"
+      absent:
+        # Nothing here says whether the cluster this id names is ACTIVE yet
+        # -- not because it withholds a status field, but because none
+        # exists to withhold. See the header.
+        - state
+        - name
+        - region
+        - endpoint
+
+  - name: the current organisation is addressed by the credential, not a path id
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: GET
+      path: /v2/organizations/current
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    expect:
+      status: 200
+      body:
+        orgID: "00000000-0000-4000-9000-000000000004"
+        name: Cauldron Fixture
+
+  - name: listing clusters can be narrowed to one project
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: GET
+      path: /v2/clusters?projectID=00000000-0000-4000-9000-000000000003
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    expect:
+      status: 200
+      body:
+        "[0].clusterID": "00000000-0000-4000-9000-000000000001"
+
+  - name: only a GET shows the state the create response never mentioned
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: GET
+      path: /v2/clusters/00000000-0000-4000-9000-000000000001
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    expect:
+      status: 200
+      body:
+        clusterID: "00000000-0000-4000-9000-000000000001"
+        state: ACTIVE
+        name: cauldron-shop
+      absent:
+        # Never echoed outside the one create response that generated it.
+        - adminPassword
+
+  - name: updating a cluster answers only the id it changed
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: PATCH
+      path: /v2/clusters/00000000-0000-4000-9000-000000000001
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+      json:
+        name: cauldron-shop-renamed
+    expect:
+      status: 200
+      body:
+        clusterID: "00000000-0000-4000-9000-000000000001"
+      absent:
+        - name
+        - state
+
+  - name: deleting a cluster answers only the id it removed
+    source: https://docs.singlestore.com/cloud/reference/management-api/reference/
+    fixture: account
+    request:
+      method: DELETE
+      path: /v2/clusters/00000000-0000-4000-9000-000000000001
+      headers:
+        Authorization: Bearer cauldron5ingle5tore00000000000000000000fixture
+    expect:
+      status: 200
+      body:
+        clusterID: "00000000-0000-4000-9000-000000000001"

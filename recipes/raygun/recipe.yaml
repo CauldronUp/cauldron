@@ -1,0 +1,592 @@
+# Raygun Recipe for Cauldron
+#
+# Raygun has two surfaces on one host, exactly the way Bugsnag has two on two
+# hosts. Crash payloads go to POST api.raygun.com/entries with an X-ApiKey
+# header; everything a dashboard or a script reads back -- applications,
+# error groups, their instances -- comes from api.raygun.com/v3/... with a
+# personal access token as a Bearer credential. The two are unrelated: a
+# crash-reporting API key opens the first door and nothing else, a personal
+# access token opens the second and cannot submit an error. This Recipe
+# models the v3 read/management API only, the same choice Bugsnag's Recipe
+# makes about its own Notify API, for the same reason: different credential,
+# different resource shape, write-only.
+#
+# Probed live, unauthenticated and with junk credentials, on 2026-09-01. Both
+# surfaces answer identically for a missing credential and a wrong one:
+#
+#   1. POST /entries with no X-ApiKey and POST /entries with a made-up one
+#      both answer 403, Content-Type: application/json, and a body of
+#      exactly 15 bytes: Invalid API key -- no quotes, no braces. The header
+#      claims JSON and the body is not parseable JSON at all; response.json()
+#      throws on a 403 that says so in a header nobody reads that closely.
+#   2. GET /v3/applications with no Authorization and with a junk Bearer
+#      token both answer 401 with an RFC 9110 problem-details body:
+#      {"type":"https://tools.ietf.org/html/rfc9110#section-15.5.2",
+#      "title":"Unauthorized","status":401,"traceId":"..."}. Only traceId
+#      differs between the two calls, and it differs between any two calls.
+#      Twelve Recipes have found a provider cannot serve both a helpful
+#      "credential missing" and a firm "credential wrong" at once; Raygun is
+#      the thirteenth and fourteenth, on both of its own surfaces.
+#
+# A third finding sits between the two: routing runs before authentication on
+# the real v3 surface, and the two failures do not look alike. A path
+# matching no declared route answers 404 with Content-Length: 0 and no
+# Content-Type header at all -- not even the problem-details envelope --
+# while a path Raygun recognises but refuses for lacking a credential answers
+# 401 with the JSON body above. The 404 was reproduced with and without a
+# credential attached; credentials are never consulted for a path Raygun
+# does not have. This Recipe cannot encode that ordering as a case, though:
+# Cauldron's own runtime checks a request's credential before it consults the
+# router, for every Recipe, so an unauthenticated request to an unknown path
+# is refused here with the same 401 an unauthenticated request to a known
+# path gets. The 404-with-nothing-in-it shape below is real and is Raygun's;
+# reaching it here needs a working credential, which reaching it on the real
+# API does not.
+#
+# The ingestion API's own reference (raygun.com/documentation/product-guides/
+# crash-reporting/api/, read rather than called: sending a real payload would
+# create a real error) states the success code in so many words: "202 OK -
+# Message accepted." Accepted is the word the provider itself chose, not
+# recorded or stored -- and nothing in that reference says how long a
+# dashboard takes to show what was just accepted, or whether "accepted" ever
+# fails to become "visible". That gap is stated because it is real, not
+# because it was missed.
+#
+# Occurrence versus item, which Rollbar's Recipe already draws a line
+# through and Bugsnag's draws a second way: Raygun draws it a third way,
+# structurally the same shape as Bugsnag's error/event split but thinner on
+# the group side. An error-group is GET .../error-groups/{id}: a message, a
+# status, an application, and -- checked against the v3 OpenAPI description
+# at api.raygun.io/v3/raygun-openapi-spec.json -- nothing else. No event
+# count. No user count. Nothing Bugsnag's events or Rollbar's
+# total_occurrences puts on the group itself. A count exists nowhere in this
+# API; the only way to learn how many times an error has happened is to page
+# through every one of its instances and count them by hand.
+#
+# The drill-down is one hop deeper than Bugsnag's, too. Bugsnag's error
+# carries a class and a message even without fetching an event. Raygun's
+# error-group carries a message -- but the list of its instances
+# (GET .../instances, error-instance-summary in the description) answers
+# with an identifier and a timestamp each and nothing about what happened:
+# not the class, not the message, nothing. Getting the actual detail --
+# class, message, stack trace, user, request, breadcrumbs -- is a third
+# request, GET .../instance/{id}, naming an identifier the second request
+# supplied and the first one never mentioned. List groups, list a group's
+# instances, get one instance: three requests, and the middle one is close
+# to empty by itself.
+#
+# Every identifier in the description is declared as a bare `type: string`
+# with no format, pattern or example anywhere -- checked across all fifty
+# schemas in the spec, not assumed from one. id.style is opaque everywhere in
+# this Recipe for that reason, rather than guessing a shape the provider
+# never commits to. Every one of them is also echoed under "identifier"
+# rather than "id", consistently across every resource this Recipe declares,
+# which is an unusually uniform choice for an API this size.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The ingestion endpoint, POST /entries, is not modelled: different
+#     credential (X-ApiKey, not a Bearer PAT), different shape (a crash
+#     payload in, nothing addressable out), and no route here can carry two
+#     auth schemes at once. What was learned about it lives in this header
+#     rather than in a route.
+#   - The v3 description declares far more than error tracking: APM traces,
+#     issues and hotspots, deployments, source maps, Flutter symbols,
+#     invitations, teams, plans, pages, customers and sessions are all real
+#     routes in api.raygun.io/v3/raygun-openapi-spec.json. None of them are
+#     modelled. Applications and error groups are the part of the surface
+#     this Recipe is about.
+#   - An error-group has four statuses -- active, resolved, ignored,
+#     permanentlyIgnored -- and one-way action routes for each transition
+#     (resolve, activate, ignore, permanently-ignore), read from the same
+#     description rather than called. Whether resolving one reverts it to
+#     active the moment it recurs, the way Bugsnag's fixed does, is not
+#     stated anywhere in that description, and this Recipe does not guess:
+#     it says four statuses exist and stops there.
+#   - 403 (insufficient scope) and 404 (no such error-group) are declared
+#     per-route in the description and neither was reachable without a
+#     working token. Both are assumed to share the 401's problem-details
+#     envelope; that assumption is unverified and stated as such below.
+#   - traceId, present on every problem-details body this Recipe observed,
+#     is not declared as a field. It is different on every single request,
+#     so there is no fixed value a Recipe could serve that would not itself
+#     be a fabrication wearing the shape of an observation.
+
+recipe: raygun
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://api.raygun.io/v3/swagger/index.html
+  spec: https://api.raygun.io/v3/raygun-openapi-spec.json
+  spec_hash: cb3e019db6565ffa93973cecc8253810c02a96738e511bb3654e629533c60b72
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  prefix: "Bearer "
+  keys:
+    - cauldron_pat_0000000000000000000000000000
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: title
+    type_field: type
+    code_field: "-"
+    # The status really is repeated inside the body -- observed live on
+    # every 401 -- alongside the HTTP status line itself.
+    status_field: status
+
+resources:
+  application:
+    id:
+      style: opaque
+      field: identifier
+    fields:
+      planIdentifier:
+        type: string
+        required: true
+      name:
+        type: string
+        required: true
+      apiKey:
+        type: string
+        required: true
+      hasSentCrashData:
+        type: boolean
+        required: true
+      hasSentApmData:
+        type: boolean
+        required: true
+      hasSentRumData:
+        type: boolean
+        required: true
+      # notSet, mobile, web. Not required in the description, unlike its five
+      # siblings above.
+      rumDataType:
+        type: string
+        default: notSet
+
+  error-group:
+    id:
+      style: opaque
+      field: identifier
+    fields:
+      # The scope partition. Never sent under this name -- Raygun does not
+      # repeat the application in the body of a route already scoped to it --
+      # so it is hidden with in: "-" and exists only so the route below has a
+      # field to scope against.
+      application_id:
+        type: string
+        in: "-"
+      message:
+        type: string
+        required: true
+      # active, resolved, ignored, permanentlyIgnored.
+      status:
+        type: string
+        default: active
+      # Declared as a bare string in the description, unlike createdAt below,
+      # which the description gives an explicit date-time format. Both are
+      # modelled the same way here because nothing suggests they travel
+      # differently on the wire, but the description's own inconsistency is
+      # worth naming rather than smoothing over.
+      lastOccurredAt:
+        type: datetime
+        required: true
+      createdAt:
+        type: datetime
+        required: true
+      applicationUrl:
+        type: string
+      # Set once an error-group is resolved: the version it was fixed in, and
+      # whether occurrences from earlier versions should stop counting
+      # against it.
+      resolved_version:
+        type: string
+        in: resolvedIn
+        as: version
+        null_when_unset: true
+      resolved_discard_previous:
+        type: boolean
+        in: resolvedIn
+        as: discardFromPreviousVersions
+        null_when_unset: true
+      # True once an error-group is permanently ignored and told to discard
+      # what comes next. The description's own words for what that means:
+      # "new occurrences of this error will not be stored or count towards
+      # your error quota" -- not hidden, not muted, not counted at all.
+      discardNewOccurrences:
+        type: boolean
+        default: false
+
+  error-group-instance:
+    id:
+      style: opaque
+      field: identifier
+    fields:
+      application_id:
+        type: string
+        in: "-"
+      # The second scope partition, hidden the same way and for the same
+      # reason: this resource is addressed under one error-group and the
+      # description never repeats the group's own identifier in the body.
+      error_group_id:
+        type: string
+        in: "-"
+      occurredOn:
+        type: datetime
+        required: true
+      # Everything list-of-instances does not have. error-instance-summary,
+      # the shape the list route actually answers with, is only identifier
+      # and occurredOn -- checked against the description -- so a listing
+      # cannot say what happened, only that something did and when.
+      exception_message:
+        type: string
+        in: error
+        as: message
+      exception_class:
+        type: string
+        in: error
+        as: className
+      stack_trace:
+        type: list
+        in: error
+        as: stackTrace
+      version:
+        type: string
+      machineName:
+        type: string
+      applicationUrl:
+        type: string
+        required: true
+
+routes:
+  - method: GET
+    path: /v3/applications
+    resource: application
+    operation: list
+    pagination:
+      style: offset
+      limit: 100
+      max_limit: 500
+      limit_param: count
+      cursor_param: offset
+
+  - method: GET
+    path: /v3/applications/{id}
+    resource: application
+    operation: get
+
+  - method: GET
+    path: /v3/applications/{application_id}/error-groups
+    resource: error-group
+    operation: list
+    scope: [application_id]
+    pagination:
+      style: offset
+      limit: 100
+      max_limit: 500
+      limit_param: count
+      cursor_param: offset
+
+  - method: GET
+    path: /v3/applications/{application_id}/error-groups/{id}
+    resource: error-group
+    operation: get
+    scope: [application_id]
+
+  - method: GET
+    path: /v3/applications/{application_id}/error-groups/{error_group_id}/instances
+    resource: error-group-instance
+    operation: list
+    scope: [application_id, error_group_id]
+    # error-instance-summary: identifier and occurredOn, nothing else. The
+    # trim runs on the record's own key ("id"), before the identifier is
+    # renamed onto the wire as "identifier".
+    returns: [id, occurredOn]
+    pagination:
+      style: offset
+      limit: 100
+      max_limit: 500
+      limit_param: count
+      cursor_param: offset
+
+  - method: GET
+    path: /v3/applications/{application_id}/error-groups/{error_group_id}/instance/{id}
+    resource: error-group-instance
+    operation: get
+    scope: [application_id, error_group_id]
+
+errors:
+  # Observed live, twice: once with no Authorization header, once with a
+  # made-up Bearer token. Identical status and body both times, down to the
+  # exact URL in "type" -- only traceId ever changes, and it changes on every
+  # call including two calls that agree on everything else.
+  authentication_error:
+    status: 401
+    type: "https://tools.ietf.org/html/rfc9110#section-15.5.2"
+    message: "Unauthorized"
+
+  # A path this Recipe -- and the real v3 API -- has no route for. Observed
+  # live as 404 with Content-Length: 0 and no Content-Type header at all,
+  # with and without a credential attached. style: text is the closest
+  # match this format has for a body that is not JSON, but an empty
+  # message here does not reach the wire empty: the runtime falls back to
+  # its own built-in wording ("Unrecognised request URL.") whenever a
+  # Recipe's declared message is blank, on the theory that blank means
+  # unset rather than deliberately empty. So the status is faithful and the
+  # body is not -- Cauldron's placeholder sentence stands in for Raygun's
+  # true zero bytes, and no case here asserts the body is empty because
+  # that would not be true of what this Recipe actually serves.
+  unknown_route:
+    status: 404
+    style: text
+
+fixtures:
+  empty: {}
+
+  small-account:
+    application:
+      - id: rg-app-8f2c1a9e4b7d3f6a
+        planIdentifier: pro-2024
+        name: checkout-service
+        apiKey: rgapikey_0000000000000000000000000000
+        hasSentCrashData: true
+        hasSentApmData: true
+        hasSentRumData: false
+        rumDataType: notSet
+
+    error-group:
+      # Active, and no count anywhere on it -- the finding this fixture
+      # exists to demonstrate.
+      - id: rg-err-3d9b2c8f1a4e6d7b
+        application_id: rg-app-8f2c1a9e4b7d3f6a
+        message: "NullReferenceException: Object reference not set to an instance of an object"
+        status: active
+        lastOccurredAt: "2026-08-30T22:41:09Z"
+        createdAt: "2025-11-02T11:14:00Z"
+        applicationUrl: https://app.raygun.com/crash-reporting/checkout-service/errors/rg-err-3d9b2c8f1a4e6d7b
+      # Resolved, with the version it was fixed in and previous-version
+      # occurrences told to stop counting -- the shape declared in the
+      # description's own resolve request body.
+      - id: rg-err-7a1c4d9b2e8f3a6c
+        application_id: rg-app-8f2c1a9e4b7d3f6a
+        message: "TimeoutException: Upstream did not respond in 30s"
+        status: resolved
+        lastOccurredAt: "2026-08-10T14:22:31Z"
+        createdAt: "2026-05-19T08:00:00Z"
+        applicationUrl: https://app.raygun.com/crash-reporting/checkout-service/errors/rg-err-7a1c4d9b2e8f3a6c
+        resolved_version: "4.2.1"
+        resolved_discard_previous: true
+      # Permanently ignored and set to discard: new occurrences of this one
+      # are not stored and do not count against the plan's quota, per the
+      # description's own wording on the field.
+      - id: rg-err-1f6a9c3d7b2e4f8a
+        application_id: rg-app-8f2c1a9e4b7d3f6a
+        message: "Deprecated config key in use"
+        status: permanentlyIgnored
+        lastOccurredAt: "2026-07-01T09:00:00Z"
+        createdAt: "2026-01-15T00:00:00Z"
+        applicationUrl: https://app.raygun.com/crash-reporting/checkout-service/errors/rg-err-1f6a9c3d7b2e4f8a
+        discardNewOccurrences: true
+
+    error-group-instance:
+      # Full detail, only reachable by asking for this one instance by name.
+      - id: rg-inst-9b3e7a1c4d8f2a6b
+        application_id: rg-app-8f2c1a9e4b7d3f6a
+        error_group_id: rg-err-3d9b2c8f1a4e6d7b
+        occurredOn: "2026-08-30T22:41:09Z"
+        exception_class: NullReferenceException
+        exception_message: "Object reference not set to an instance of an object"
+        stack_trace:
+          - fileName: CheckoutController.cs
+            lineNumber: 84
+            methodName: ProcessOrder
+          - fileName: Startup.cs
+            lineNumber: 40
+            methodName: Invoke
+        version: "4.2.1"
+        machineName: web-3
+        applicationUrl: https://app.raygun.com/crash-reporting/checkout-service/errors/rg-err-3d9b2c8f1a4e6d7b/instances/rg-inst-9b3e7a1c4d8f2a6b
+      # A second occurrence of the same group. The list route trims both of
+      # these down to identifier and occurredOn; neither the class nor the
+      # message survives into the listing.
+      - id: rg-inst-2e8f4a9c1d7b3e6a
+        application_id: rg-app-8f2c1a9e4b7d3f6a
+        error_group_id: rg-err-3d9b2c8f1a4e6d7b
+        occurredOn: "2026-08-29T03:12:44Z"
+        exception_class: NullReferenceException
+        exception_message: "Object reference not set to an instance of an object"
+        stack_trace:
+          - fileName: CheckoutController.cs
+            lineNumber: 84
+            methodName: ProcessOrder
+        version: "4.2.0"
+        machineName: web-1
+        applicationUrl: https://app.raygun.com/crash-reporting/checkout-service/errors/rg-err-3d9b2c8f1a4e6d7b/instances/rg-inst-2e8f4a9c1d7b3e6a
+
+conformance:
+  - name: a missing credential is a 401 with an RFC 9110 problem-details body
+    source: https://api.raygun.com/v3/applications
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications
+    expect:
+      status: 401
+      body:
+        type: "https://tools.ietf.org/html/rfc9110#section-15.5.2"
+        title: "Unauthorized"
+        status: 401
+      absent:
+        - code
+        - message
+
+  - name: and a wrong credential answers exactly the same way
+    source: https://api.raygun.com/v3/applications
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications
+      headers:
+        Authorization: Bearer junk-not-a-real-token-000000
+    expect:
+      # Same status, same type, same title. Only traceId, which this Recipe
+      # does not model, ever differed between the two live calls.
+      status: 401
+      body:
+        type: "https://tools.ietf.org/html/rfc9110#section-15.5.2"
+        title: "Unauthorized"
+
+  - name: an error-group carries no count of its own
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a/error-groups/rg-err-3d9b2c8f1a4e6d7b
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        identifier: rg-err-3d9b2c8f1a4e6d7b
+        message: "NullReferenceException: Object reference not set to an instance of an object"
+        status: active
+      # Nothing in the description gives an error-group any of these. The
+      # only way to learn how many times it has happened is to page through
+      # every instance and count them.
+      absent:
+        - events
+        - users
+        - total_occurrences
+        - unique_occurrences
+        - count
+        - occurrences
+
+  - name: resolved names the version and whether earlier ones still count
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a/error-groups/rg-err-7a1c4d9b2e8f3a6c
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: resolved
+        resolvedIn:
+          version: "4.2.1"
+          discardFromPreviousVersions: true
+
+  - name: permanently ignored can mean new occurrences are not even stored
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a/error-groups/rg-err-1f6a9c3d7b2e4f8a
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: permanentlyIgnored
+        discardNewOccurrences: true
+
+  - name: identifiers are echoed as "identifier", not "id"
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        identifier: rg-app-8f2c1a9e4b7d3f6a
+        name: checkout-service
+      absent:
+        - id
+
+  - name: listing a group's instances answers identifier and time, nothing about what happened
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a/error-groups/rg-err-3d9b2c8f1a4e6d7b/instances
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].identifier": rg-inst-9b3e7a1c4d8f2a6b
+        "[0].occurredOn": "2026-08-30T22:41:09Z"
+      # Not the class, not the message, not the stack. error-instance-summary
+      # in the description has exactly two properties, and this is them.
+      absent:
+        - "[0].error"
+        - "[0].className"
+        - "[0].message"
+        - "[0].stackTrace"
+
+  - name: getting one instance by name is where the detail actually is
+    source: https://api.raygun.io/v3/raygun-openapi-spec.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/applications/rg-app-8f2c1a9e4b7d3f6a/error-groups/rg-err-3d9b2c8f1a4e6d7b/instance/rg-inst-9b3e7a1c4d8f2a6b
+      headers:
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        identifier: rg-inst-9b3e7a1c4d8f2a6b
+        "error.className": NullReferenceException
+        "error.message": "Object reference not set to an instance of an object"
+        "error.stackTrace[0].fileName": CheckoutController.cs
+        "error.stackTrace[0].lineNumber": 84
+
+  - name: a path Raygun does not have is a 404
+    source: https://api.raygun.com/v3/this-does-not-exist-xyz
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/this-does-not-exist-xyz
+      headers:
+        # A credential has to be sent for this case to reach routing at all
+        # -- see the header note on why -- but the live 404 was reproduced
+        # both with one attached and without. The live body was empty; this
+        # Recipe's is not, and the errors.unknown_route entry above says why.
+        Authorization: Bearer cauldron_pat_0000000000000000000000000000
+    expect:
+      status: 404

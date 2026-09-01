@@ -1,0 +1,442 @@
+# Axiom Recipe for Cauldron
+#
+# Axiom is two APIs wearing one hostname. Dataset management
+# (GET /v1/datasets, GET /v1/datasets/{id}), ingestion
+# (POST /v1/datasets/{name}/ingest) and query (POST /v1/datasets/_apl) all
+# answer at api.axiom.co, all take a Bearer token, and two of the three fail
+# a missing credential completely differently from the third.
+#
+# Checked live against api.axiom.co, unauthenticated, on 2026-09-01:
+#
+#   GET  /v1/datasets                    no token -> 401 {"code":401,"message":"auth token not provided"}
+#   GET  /v1/datasets                    junk token -> 403 {"code":403,"message":"forbidden"}
+#   GET  /v1/datasets/{id}               no token -> 401, same body as above
+#   GET  /v1/datasets/{id}               junk token -> 403, same body as above
+#   POST /v1/datasets/{name}/ingest      no token -> 401, same body as above
+#   POST /v1/datasets/{name}/ingest      junk token -> 403, same body as above
+#   POST /v1/datasets/_apl               no token -> 403 {"code":403,"message":"invalid parameters: unable to parse signature: organization ID is required"}
+#   POST /v1/datasets/_apl               junk token -> 403 {"code":403,"message":"forbidden"}
+#
+# Dataset management and ingestion agree with each other exactly: a missing
+# token is 401, a present-but-wrong one is 403, and the body is
+# {code, message} either way. Query does not. A missing token on the query
+# route is still a 403 -- the same status a wrong token gets everywhere else
+# -- and the message is not "auth token not provided" at all. It is what the
+# token parser says when it is handed nothing: an attempt to read an
+# organization id out of a signature that was never there. Code written
+# against the management surface, catching 401 to mean "no credential" and
+# 403 to mean "bad credential," reads the query surface backwards: both of
+# its failures are 403, and the one difference between them is a sentence a
+# client has no reason to parse.
+#
+# The query route is not wired into this Recipe as a resource route. Its
+# success body is a nested tabular/aggregation shape (buckets, series,
+# groups, aggregations, each carrying more of the same) that this format's
+# resource model does not fit without inventing structure nobody observed --
+# and a real result could not be recorded here at all, because doing so
+# needs a credential this Recipe was written without one on purpose. The
+# finding above is real and was checked live today; it is recorded as
+# evidence in this comment because the mechanism to turn it into a route
+# would have to guess at the one thing that matters most, which is exactly
+# what this project refuses to do. See "Known fidelity gaps" below.
+#
+# Route existence is also checked before authentication, and not just for
+# query. A path this Recipe never declares -- GET /v1/datasetsXYZ -- answers
+# 404 {"code":404,"message":"path /v1/datasetsXYZ was not found"} with no
+# X-Axiom-Trace-Id header, where every authenticated-or-rejected request
+# carries one. A method a route does not support -- DELETE /v1/datasets --
+# answers 405 {"code":405,"message":"method DELETE is not allowed, but
+# [GET,POST] are"} with an Allow header, also with no trace id. Both happen
+# before the token is ever read: POST /v1/datasets/cauldron-probe/ingest
+# with no Authorization header at all is 401, but GET on the same path
+# (a method the route does not support) is still 405, not 401. Routing
+# answers first. This is Go's own httprouter shape rather than a designed
+# response of Axiom's, the same judgement call Honeycomb's Recipe already
+# makes about its own unmatched-path 404 -- so it is recorded here rather
+# than modelled as a route or an error.
+#
+# Axiom's own documentation disagrees with itself about where ingestion
+# lives. The narrative guide at axiom.co/docs/restapi/ingest gives the
+# endpoint as `POST https://AXIOM_DOMAIN/v1/ingest/DATASET_NAME` in every one
+# of its five examples. Checked live on 2026-09-01, that exact path 404s:
+# {"code":404,"message":"path /v1/ingest/cauldron-probe was not found"} --
+# on GET, POST and with a wrong token alike, because the path itself does
+# not exist. The OpenAPI-generated reference at
+# axiom.co/docs/restapi/endpoints/ingestIntoDataset gives a different path,
+# `POST /v1/datasets/{dataset_name}/ingest`, labelled "(Legacy)" with a
+# warning to prefer a per-edge-deployment domain instead -- and that legacy
+# path is the one this Recipe uses, because it is the one that answers.
+# "Legacy" and "answers when the documented replacement 404s" are not the
+# same claim, and Axiom's docs make the second one true while asserting the
+# first.
+#
+# The most useful thing this Recipe can say about ingestion is what Axiom's
+# own examples already show and never state in words. Every worked example
+# on the ingest guide page -- four of them, ingesting 1, 1, 2 and 6 events --
+# answers with "blocksCreated": 0. Not sometimes: every one. The same
+# response carries "walLength", which grows by exactly the number of events
+# in that request. Axiom's platform architecture page states plainly that
+# "All ingested data is durably written to a distributed write-ahead log
+# before being processed" -- so the 200 a caller gets back is a receipt for
+# the write-ahead log, and blocksCreated is the count of anything actually
+# compacted into queryable storage, which in every documented example is
+# nought. A 200 that says ingested: 2 is a claim about acceptance, not
+# about whether those two events would answer a query sent immediately
+# afterwards.
+#
+# One more asymmetry, small and easy to miss: the dataset object's own
+# timestamps are "created" and "updatedAt", not "created" and "updated" or
+# "createdAt" and "updatedAt". Code that builds the second field's name by
+# pattern from the first gets "createdAt" and reads undefined.
+#
+# Rate limiting is three separate accounting systems, not one, and which
+# headers a response carries depends on which surface answered it -- none of
+# this was seen on an unauthenticated request, so all of it is documented
+# rather than observed. X-RateLimit-Limit/Remaining/Reset count requests per
+# minute and apply generally. X-QueryLimit-Limit/Remaining/Reset count
+# Gigabyte-milliseconds of query cost and apply only to query. X-IngestLimit-
+# Limit/Remaining/Reset count bytes ingested per month and apply only to
+# ingest. A client that reads X-RateLimit-Remaining to decide whether it is
+# about to be throttled on ingestion is reading a number that describes a
+# different ceiling than the one ingestion is actually metered against.
+# Axiom's own words: "X-RateLimit-Limit: The maximum number of requests a
+# user is permitted to make per minute", "X-QueryLimit-Limit: The query cost
+# limit of your plan in Gigabyte Milliseconds (GB*ms)", "X-IngestLimit-
+# Limit: The maximum bytes ingested a user is permitted to make per month".
+# The documented 429 body is {"message": "rate limit exceeded"} -- no code
+# field at all, where every other failure on this API carries one.
+#
+# Cauldron's own auth check (internal/runtime/auth.go: authorised) answers a
+# single true or false, so it cannot serve the 401 and the 403 above as two
+# genuine outcomes of one check the way Axiom does. Missing and non-matching
+# both take the same "not authorised" branch and get one wired response --
+# named authentication_error below, and given the 401 shape, because that is
+# what a request carrying no Authorization header at all actually is, and
+# every non-armed case in this Recipe exercises exactly that. The 403 shape
+# is real -- checked live, dated below -- and reachable by arming the
+# forbidden entry for one request at a time, the same device Honeycomb's
+# Recipe already uses for its own second, not-automatic auth failure shape.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The query route, POST /v1/datasets/_apl, is not routed, for two
+#     reasons rather than one. Its success body is a nested tabular shape
+#     this format's resource model does not fit without inventing
+#     structure, and separately, its missing-token failure is a 403 with a
+#     signature-parsing message where every routed surface in this Recipe
+#     answers 401 -- and Cauldron's single auth check already has to share
+#     one shape across every route it protects, so a fourth, route-specific
+#     variant has nowhere to live even before the tabular body is
+#     considered. Both are recorded above as observed evidence instead.
+#   - This format's conformance case can only send a JSON object as a
+#     request body (Request.JSON is a map), and Axiom's ingest body is a
+#     bare JSON array of event objects at the top level -- not an object
+#     with a "lines" key, unlike Mezmo's. No case here can therefore send a
+#     realistic ingest body; the two cases against the ingest route both
+#     test authentication, which answers before the body is ever parsed.
+#   - The ingest response's accounting fields (ingested, failed,
+#     processedBytes, walLength, blocksCreated) are declared as route
+#     constants from Axiom's own documented example -- an ingest of two
+#     events answering {"ingested":2,"failed":0,"failures":[],
+#     "processedBytes":219,"blocksCreated":0,"walLength":2} -- and are not
+#     exercised by a conformance case, for the reason above. blocksCreated
+#     is the one field checked against all four of Axiom's own examples
+#     rather than just this one.
+#   - GET /v2/datasets is Axiom's current, docs-preferred listing endpoint;
+#     GET /v1/datasets is what this Recipe routes, because it is what the
+#     task's own evidence-gathering targeted and what was actually checked
+#     live. Both answered identically to a missing and a wrong token on
+#     2026-09-01. The dataset field list below (name, description, created,
+#     updatedAt, who, kind, retentionDays, canWrite, useRetentionPeriod)
+#     comes from the v2 reference, the only one Axiom currently publishes a
+#     field-by-field schema for, and was never seen on an authenticated v1
+#     response -- so it is documented, not verified.
+#   - Axiom documents a dataset id distinct from its name ("id: Dataset ID"
+#     beside "name: Unique dataset name"), and every route this Recipe
+#     exercised addresses a dataset by the name-shaped path segment
+#     (dataset_name, everywhere in the docs). No authenticated call ever
+#     showed whether id and name agree, so this Recipe addresses the
+#     dataset resource by name and does not declare a separate id field
+#     rather than assert a relationship nobody confirmed.
+#   - No OpenAPI/spec URL is recorded (upstream.spec is left unset). Axiom
+#     publishes an interactive, JavaScript-rendered reference rather than a
+#     fetchable machine-readable document at a stable, discoverable URL, so
+#     there is nothing here for `cauldron drift` to fingerprint.
+#
+# The token below is a fixture and belongs to no account.
+
+recipe: axiom
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://axiom.co/docs/restapi/introduction
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - xaat-cauldron-fixture-axiom-key-000000000000
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    code_type: number
+  list:
+    style: bare
+  resource:
+    style: bare
+
+resources:
+  dataset:
+    collection: datasets
+    id:
+      # Every route this Recipe exercises addresses a dataset by name, not
+      # by the separately-documented id property -- see the fidelity gap
+      # above.
+      style: opaque
+      field: name
+    fields:
+      description:
+        type: string
+        required: true
+      # Not "createdAt". Axiom's own pair is created/updatedAt, not
+      # created/updated or createdAt/updatedAt.
+      created:
+        type: datetime
+        required: true
+      updatedAt:
+        type: datetime
+        required: true
+      who:
+        type: string
+        required: true
+      kind:
+        type: string
+        required: true
+      retentionDays:
+        type: integer
+      canWrite:
+        type: boolean
+      useRetentionPeriod:
+        type: boolean
+
+  # The ingest acknowledgment. Axiom sends no identifier for one of these --
+  # not in the body, not anywhere -- so id.field is cleared. name exists
+  # only to carry the dataset a request was scoped to; Axiom's own response
+  # never echoes it, which is why it is nested nowhere on the wire.
+  event:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      name:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /v1/datasets
+    resource: dataset
+    operation: list
+
+  - method: GET
+    path: /v1/datasets/{id}
+    resource: dataset
+    operation: get
+
+  - method: POST
+    path: /v1/datasets/{name}/ingest
+    resource: event
+    operation: create
+    scope: [name]
+    # Axiom answers 200, not 202 -- unlike Honeycomb's empty 202 receipt,
+    # this one is a non-empty accounting of what the write-ahead log holds.
+    status: 200
+    fields:
+      ingested: 2
+      failed: 0
+      failures: []
+      processedBytes: 219
+      # Nought in all four of Axiom's own worked examples. The WAL absorbs
+      # the write; a block is a separate, later thing.
+      blocksCreated: 0
+      walLength: 2
+
+errors:
+  # Wired: what Cauldron's own auth check answers automatically, for every
+  # route in this Recipe, whenever the credential does not match. That check
+  # is a single boolean (internal/runtime/auth.go: authorised(r) bool) and
+  # cannot tell "no Authorization header at all" apart from "a header that
+  # does not match" -- both take this branch. Axiom itself can tell the
+  # difference and answers 401 for the first and 403 for the second; this
+  # entry models the first, because it is what a request with no
+  # Authorization header at all actually is, and it is the case every one of
+  # this Recipe's non-armed conformance cases below exercises for real.
+  authentication_error:
+    status: 401
+    code: "401"
+    message: auth token not provided
+
+  # What a well-formed but wrong Bearer token gets, on every dataset and
+  # ingest route this Recipe checked live. Armed rather than wired, for the
+  # reason above: Cauldron's automatic check cannot distinguish this from a
+  # missing credential, so a case demonstrating it installs this fault for
+  # itself with `arm` rather than relying on the emulator to notice that a
+  # non-matching-but-present header is a different failure from no header at
+  # all. It is still a real, live-checked Axiom response -- the mechanism
+  # that reproduces it in the sandbox is just deliberate rather than
+  # automatic. Also what a missing token gets on the query route this
+  # Recipe does not route, which is the one asymmetry armed forbidden cannot
+  # stand in for.
+  forbidden:
+    status: 403
+    code: "403"
+    message: forbidden
+
+  # Documented at axiom.co/docs/restapi/api-limits, never triggered here.
+  # No code field at all -- the one failure on this API that does not carry
+  # one, which code_field: "-" states rather than papers over with an empty
+  # string.
+  rate_limited:
+    status: 429
+    code_field: "-"
+    message: rate limit exceeded
+
+fixtures:
+  empty: {}
+
+  cauldron-org:
+    dataset:
+      - id: cauldron-probe
+        description: Cauldron conformance probe dataset
+        created: "2026-08-01T00:00:00Z"
+        updatedAt: "2026-08-30T12:00:00Z"
+        who: probe@cauldron.dev
+        kind: trace
+        retentionDays: 30
+        canWrite: true
+        useRetentionPeriod: true
+      - id: cauldron-probe-archive
+        description: ""
+        created: "2026-06-01T00:00:00Z"
+        updatedAt: "2026-06-02T00:00:00Z"
+        who: probe@cauldron.dev
+        kind: trace
+        retentionDays: 7
+        canWrite: false
+        useRetentionPeriod: false
+
+conformance:
+  - name: a missing token is 401, not 403
+    source: https://api.axiom.co/v1/datasets
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/datasets
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: auth token not provided
+
+  - name: a wrong token is 403, and a different message -- armed, because Cauldron cannot tell wrong from missing on its own
+    source: https://api.axiom.co/v1/datasets
+    verified: "2026-09-01"
+    arm: forbidden
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/datasets
+      headers:
+        Authorization: "Bearer xaat-00000000-0000-0000-0000-000000000000"
+    expect:
+      status: 403
+      body:
+        code: 403
+        message: forbidden
+
+  - name: a single dataset fails the same way as the listing when the token is missing
+    source: https://api.axiom.co/v1/datasets/cauldron-probe
+    verified: "2026-09-01"
+    fixture: cauldron-org
+    request:
+      method: GET
+      path: /v1/datasets/cauldron-probe
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: auth token not provided
+
+  - name: ingestion agrees with dataset management, not with query
+    source: https://api.axiom.co/v1/datasets/cauldron-probe/ingest
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/datasets/cauldron-probe/ingest
+    expect:
+      # The management-surface shape. The query route this Recipe does not
+      # route answers a missing token with 403 and a signature-parsing
+      # message instead -- see the header comment.
+      status: 401
+      body:
+        code: 401
+        message: auth token not provided
+
+  - name: and a wrong token on ingest is 403 forbidden, same as everywhere else on this surface
+    source: https://api.axiom.co/v1/datasets/cauldron-probe/ingest
+    verified: "2026-09-01"
+    arm: forbidden
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/datasets/cauldron-probe/ingest
+      headers:
+        Authorization: "Bearer xaat-00000000-0000-0000-0000-000000000000"
+    expect:
+      status: 403
+      body:
+        code: 403
+        message: forbidden
+
+  - name: a dataset's own timestamp fields are created and updatedAt, not a matching pair
+    source: https://axiom.co/docs/restapi/endpoints/getDatasets
+    fixture: cauldron-org
+    request:
+      method: GET
+      path: /v1/datasets/cauldron-probe
+      headers:
+        Authorization: "Bearer xaat-cauldron-fixture-axiom-key-000000000000"
+    expect:
+      status: 200
+      body:
+        name: cauldron-probe
+        created: "2026-08-01T00:00:00Z"
+        updatedAt: "2026-08-30T12:00:00Z"
+        kind: trace
+      absent:
+        - createdAt
+        - updated
+
+  - name: a rate limit carries no code field, unlike every other failure here
+    source: https://axiom.co/docs/restapi/api-limits
+    arm: rate_limited
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/datasets
+      headers:
+        Authorization: "Bearer xaat-cauldron-fixture-axiom-key-000000000000"
+    expect:
+      status: 429
+      body:
+        message: rate limit exceeded
+      absent:
+        - code
