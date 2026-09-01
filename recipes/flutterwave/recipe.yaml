@@ -1,0 +1,417 @@
+# Flutterwave Recipe for Cauldron
+#
+# Flutterwave and Paystack are the same shape of API from two competing
+# African payment processors, and the shape is not the same shape. Both
+# answer every request, success or failure, with
+#
+#   {"status": ..., "message": ..., "data": ...}
+#
+# and the field that looks identical is the field that differs. Paystack's
+# status is a boolean: true on success and on every empty-but-valid result,
+# false on a failure, checked once against api.paystack.co and recorded in
+# that Recipe. Flutterwave's status is a STRING, checked the same way here on
+# 2026-08-31 against api.flutterwave.com:
+#
+#   {"status":"error","message":"Authorization required","data":null}
+#
+# body.status === false is false against this on purpose -- Flutterwave never
+# sends false, it sends the six-character word "error" -- and body.status ===
+# true never matches either, because a Flutterwave success is the word
+# "success", not the boolean true. Code written against one provider's
+# boolean and pointed at the other's string does not throw. It reads a
+# string as truthy, unconditionally, on both a real success and a real
+# failure, and reports every Flutterwave call as having worked.
+#
+# The rest of the envelope diverges too, and entirely in Paystack's favour
+# for anyone trying to branch on why a call failed:
+#
+#   field         Paystack (401, no key)                    Flutterwave (401, no key)
+#   -----         -----------------------------------       ---------------------------
+#   status        false (boolean)                            "error" (string)
+#   message       "No Authorization Header was found"        "Authorization required"
+#   code          "invalid_Key"                               absent -- Flutterwave sends none
+#   type          "validation_error"                          absent -- Flutterwave sends none
+#   meta          {"nextStep": "..."}                         absent -- Flutterwave sends none
+#   data          absent                                      null, explicitly, on every failure
+#
+# Paystack gives a client three separate things to switch on -- code, type
+# and a human sentence. Flutterwave gives it one sentence and nothing else:
+# no machine-readable code, no category, so an integration that wants to
+# distinguish "your key is missing" from "your key is wrong" from "you are
+# rate limited" has to parse Flutterwave's prose to do it, where Paystack's
+# would have let it read a field. The one field Flutterwave adds that
+# Paystack's failure omits is data, and it is always the literal null --
+# present and empty, rather than absent, which is worth stating only because
+# nothing about it varies: it is null on every failure this research reached,
+# including the ones with nothing else in common.
+#
+# A second, sharper difference: Paystack checks a bad request before it
+# checks the credential often enough that /bank and /country answer without
+# a key at all, and the rest answer a 401 that at least confirms the path is
+# real. Flutterwave checks the credential first, unconditionally, on every
+# path tried:
+#
+#   GET /v3/banks/NG           (real path, no key)      -> 401 Authorization required
+#   GET /v3/banks/ZZ           (bad country, no key)    -> 401 Authorization required
+#   GET /v3/totally-not-a-path (unmapped, no key)       -> 401 Authorization required
+#   POST /v3/charges?type=card (real path, no key)      -> 401 Authorization required
+#
+# All four are byte-for-byte the same 65-byte response -- same ETag, even.
+# There is no unauthenticated surface on this API at all: unlike Paystack,
+# which this research could tell a genuine country from a nonsense one
+# without ever presenting a key, Flutterwave gives nothing away for free, and
+# a bad country code is indistinguishable here from a missing one. This
+# Recipe's own auth gate happens to run before its own routing table for
+# exactly the same reason, so this part needed no compromise to model: every
+# one of these four is a real, passing conformance case below.
+#
+# What is not free of compromise is the credential distinction one level
+# down. A bearer token that is present but wrong answers a different
+# sentence:
+#
+#   {"status":"error","message":"Invalid authorization key","data":null}
+#
+# checked live the same day, same shape, different words -- and Cauldron
+# raises one named error, authentication_error, for any failed credential
+# check regardless of whether a header was sent at all. This Recipe models
+# the missing-key wording as that one error, because it is the one every
+# unauthenticated probe here actually reached; the wrong-key wording is
+# recorded in this comment rather than as a second case, for the same
+# structural reason Wise's invalid_token could not get one either.
+#
+# The one behaviour worth an entire second half of this file: the same
+# logical action, a charge, answers with genuinely different shapes for
+# different payment methods, all from Flutterwave's own SDK documentation
+# (Flutterwave/Node-v3 on GitHub, never called here -- charging a card is
+# outside what "read-only, no key" permits). Two are modelled as raw bodies
+# below because no single resource schema fits both:
+#
+#   POST /v3/charges?type=bank_transfer answers
+#     {"status":"success","message":"Charge initiated",
+#      "meta":{"authorization":{"mode":"banktransfer", ...}}}
+#   with NO "data" key at all. The entire charge is the meta object.
+#
+#   POST /v3/charges?type=debit_ng_account answers
+#     {"status":"success","message":"Charge initiated",
+#      "data":{"id":..., "status":"pending", ...,
+#              "meta":{"authorization":{"mode":"redirect", ...}}}}
+#   with a full data object, and meta nested INSIDE it.
+#
+# Both are named "Charge initiated". Both are 200. One has no data key and
+# the other has meta two levels deeper than the first one has it at all.
+# A client that read meta.authorization.mode off the bank-transfer response
+# and reused that same accessor on the direct-debit one would read undefined
+# off a response that has an authorization object -- just not at that
+# address. A third documented shape sharpens this further without being
+# modelled as a route at all, because no REST path for it was found, only
+# the response in Flutterwave's own SDK docs: the UK/EU direct-debit charge
+# answers meta.authorization.mode: "redirect" -- the identical mode string
+# the Nigerian direct debit above nests inside data -- but sitting beside
+# data at the top level instead, a sibling rather than a child. Same field
+# name, same value, two different addresses, depending on which country's
+# bank account is being charged.
+#
+# And inside that nested shape, "status" appears twice at two depths with
+# two different meanings, which is the same trap Paystack's own header warns
+# about for /transaction/verify and reappears here unprompted: the envelope's
+# top-level status ("success") says the call was accepted; data.status
+# ("pending") says what the charge itself is doing. A client that reads the
+# top-level field and stops believes a pending, unfinished charge succeeded.
+#
+# No OpenAPI or Swagger description was found. developer.flutterwave.com and
+# its Mintlify-hosted successor both serve their reference as a rendered
+# app with no discoverable spec file; every path tried for one 404s. This
+# Recipe cites the narrative docs and Flutterwave's own SDK repository
+# instead. No upstream.spec is declared as a result.
+#
+# No rate-limit header of any kind was seen on any probe.
+#
+# Keys below are fixtures, not secrets, and every id, code and amount not
+# taken verbatim from Flutterwave's own published examples is invented.
+
+recipe: flutterwave
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.flutterwave.com/docs
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-flutterwave-secret-key
+
+responses:
+  success:
+    fields:
+      status: success
+  list:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      status: error
+      # Present and null on every failure, not absent -- see the header's
+      # field-by-field comparison against Paystack, which sends no data key
+      # on a failure at all.
+      data: null
+
+resources:
+  bank:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      # Looks numeric and is not, the same trap as Paystack's own bank
+      # codes: "011" and "057" both lose a leading zero as a number, and
+      # both are real Nigerian bank codes Flutterwave's own docs publish.
+      code:
+        type: string
+      # The path segment this record is scoped by (/v3/banks/{country}).
+      # Flutterwave's own bank objects never echo it -- every published
+      # example is bare {id, code, name} -- so it is declared only to
+      # satisfy the scope and kept off the wire, the same pattern Fly's
+      # app_name uses for the same reason.
+      country:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /v3/banks/{country}
+    resource: bank
+    operation: list
+    scope: [country]
+    fields:
+      message: Banks fetched successfully
+
+  # No REST path was found for card, mobile-money-by-country or ACH charges,
+  # only the response shapes in Flutterwave's own SDK documentation -- see
+  # the header for the UK/EU direct-debit shape, which is recorded there
+  # rather than routed here for exactly that reason. These two are the ones
+  # this research found a documented path for.
+  - method: POST
+    path: /v3/charges
+    matches_query:
+      type: bank_transfer
+    raw:
+      content_type: application/json
+      text: '{"status":"success","message":"Charge initiated","meta":{"authorization":{"transfer_reference":"MockFLWRef-1689847855598","transfer_account":"0067100155","transfer_bank":"Mock Bank","account_expiration":1689847855598,"transfer_note":"Mock note","transfer_amount":"1500.00","mode":"banktransfer"}}}'
+
+  - method: POST
+    path: /v3/charges
+    matches_query:
+      type: debit_ng_account
+    raw:
+      content_type: application/json
+      text: '{"status":"success","message":"Charge initiated","data":{"id":4475057,"tx_ref":"MC-1585230ew9v5050e0","flw_ref":"1689845911540-FLW-MOCK-REF","device_fingerprint":"N/A","amount":300,"charged_amount":300,"app_fee":4.2,"merchant_fee":0,"processor_response":"Pending validation","auth_model":"INTERNET_BANKING","currency":"NGN","ip":"54.75.161.64","narration":"Flutterwave Developers","status":"pending","auth_url":"https://ravesandboxapi.flutterwave.com/flwv3-pug/getpaid/api/short-url/aqp45TtNl","payment_type":"account","fraud_status":"ok","created_at":"2023-07-20T09:38:31.000Z","account_id":20937,"customer":{"id":2151369,"phone_number":"08074568890","name":"john doe","email":"johndoe@gmail.com","created_at":"2023-07-20T09:37:34.000Z"},"meta":{"authorization":{"mode":"redirect","redirect":"https://ravesandboxapi.flutterwave.com/flwv3-pug/getpaid/api/short-url/aqp45TtNl","validate_instructions":""}}}}'
+
+errors:
+  # The shape every failed credential check answers with here, because
+  # Cauldron raises one named error for any authorisation failure regardless
+  # of whether a header was sent at all. This is the missing-key wording;
+  # "Invalid authorization key" is the wrong-key wording and is recorded in
+  # the header rather than modelled, for the reason given there.
+  authentication_error:
+    status: 401
+    message: "Authorization required"
+
+  # Real, from Flutterwave's own common-errors documentation, and generic on
+  # purpose: it is the example the docs themselves give for a missing
+  # required field, not specific to any one charge type.
+  validation_error:
+    status: 400
+    message: "Cardno is required"
+
+fixtures:
+  empty: {}
+
+  small-registry:
+    bank:
+      # Real Nigerian entries from Flutterwave's own Node SDK documentation,
+      # codes and ids included verbatim.
+      - id: "132"
+        name: "Page MFBank"
+        code: "560"
+        country: NG
+      - id: "137"
+        name: "First Bank of Nigeria"
+        code: "011"
+        country: NG
+      - id: "141"
+        name: "Zenith Bank"
+        code: "057"
+        country: NG
+      - id: "144"
+        name: "Fidelity Bank"
+        code: "070"
+        country: NG
+      - id: "145"
+        name: "CitiBank"
+        code: "023"
+        country: NG
+
+conformance:
+  - name: the envelope's status is the string "error", never the boolean Paystack sends
+    source: https://api.flutterwave.com/v3/banks/NG
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/banks/NG
+    expect:
+      status: 401
+      body:
+        status: error
+        message: "Authorization required"
+        data: null
+      absent:
+        # Paystack's failure carries all three; Flutterwave's carries none.
+        - code
+        - type
+        - meta
+
+  - name: a bad country code is indistinguishable from a missing key here
+    # Unlike Paystack, where an unrecognised country is a genuine 200 with
+    # an empty list -- this research never gets to ask the question, because
+    # the credential is checked first.
+    source: https://api.flutterwave.com/v3/banks/ZZ
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/banks/ZZ
+    expect:
+      status: 401
+      body:
+        status: error
+        message: "Authorization required"
+
+  - name: an unmapped path answers the identical failure, not a 404
+    source: https://api.flutterwave.com/v3/totally-not-a-real-path
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v3/totally-not-a-real-path
+    expect:
+      status: 401
+      body:
+        status: error
+        message: "Authorization required"
+        data: null
+
+  - name: a write is refused the same way, before Flutterwave ever looks at its body
+    source: https://api.flutterwave.com/v3/charges?type=card
+    verified: "2026-08-31"
+    request:
+      method: POST
+      path: /v3/charges
+      query:
+        type: card
+    expect:
+      status: 401
+      body:
+        status: error
+        message: "Authorization required"
+
+  - name: a missing required field is a 400 naming only the field, no code and no type
+    source: https://developer.flutterwave.com/v3.0/docs/common-errors
+    arm: validation_error
+    request:
+      method: POST
+      path: /v3/charges
+      query:
+        type: card
+      headers:
+        Authorization: "Bearer cauldron-flutterwave-secret-key"
+    expect:
+      status: 400
+      body:
+        status: error
+        message: "Cardno is required"
+        data: null
+      absent:
+        - code
+        - type
+
+  - name: a bank transfer charge has no data key at all -- the whole charge is meta
+    source: https://github.com/Flutterwave/Node-v3/blob/master/documentation/collections.md
+    request:
+      method: POST
+      path: /v3/charges
+      query:
+        type: bank_transfer
+      headers:
+        Authorization: "Bearer cauldron-flutterwave-secret-key"
+      json:
+        tx_ref: "MC-1585230950508"
+        amount: "1500"
+        currency: NGN
+    expect:
+      status: 200
+      body:
+        status: success
+        message: "Charge initiated"
+        meta.authorization.mode: banktransfer
+        meta.authorization.transfer_bank: "Mock Bank"
+        meta.authorization.transfer_amount: "1500.00"
+      absent:
+        - data
+
+  - name: a direct-debit charge nests the identical authorization object two levels deeper
+    source: https://github.com/Flutterwave/Node-v3/blob/master/documentation/collections.md
+    request:
+      method: POST
+      path: /v3/charges
+      query:
+        type: debit_ng_account
+      headers:
+        Authorization: "Bearer cauldron-flutterwave-secret-key"
+      json:
+        tx_ref: "MC-1585230ew9v5050e0"
+        amount: "300"
+        currency: NGN
+    expect:
+      status: 200
+      body:
+        status: success
+        data.id: 4475057
+        # The charge's own lifecycle, not the envelope's. "success" one
+        # level up said the request was accepted; this says the money has
+        # not moved yet.
+        data.status: pending
+        data.meta.authorization.mode: redirect
+        data.meta.authorization.redirect: "https://ravesandboxapi.flutterwave.com/flwv3-pug/getpaid/api/short-url/aqp45TtNl"
+      absent:
+        # Confirms the two shapes really don't share an address: the
+        # bank-transfer route's meta lives at the top level and this one's
+        # does not.
+        - meta
+
+  - name: banks are scoped by a path segment they never echo on the wire
+    source: https://github.com/Flutterwave/Node-v3/blob/master/documentation/banks.md
+    fixture: small-registry
+    request:
+      method: GET
+      path: /v3/banks/NG
+      headers:
+        Authorization: "Bearer cauldron-flutterwave-secret-key"
+    expect:
+      status: 200
+      body:
+        status: success
+        message: "Banks fetched successfully"
+        data[0].name: "Page MFBank"
+        data[0].code: "560"
+        data[1].code: "011"
+        data[2].code: "057"
+      absent:
+        - data[0].country
+        - data[5]
