@@ -186,7 +186,7 @@ type Schema struct {
 	Nullable    bool               `yaml:"nullable"`
 	Enum        []any              `yaml:"enum"`
 	Properties  map[string]*Schema `yaml:"properties"`
-	Required    []string           `yaml:"required"`
+	Required    RequiredNames      `yaml:"required"`
 	Items       *Schema            `yaml:"items"`
 	Description string             `yaml:"description"`
 	// AllOf is followed because it is how most descriptions express "this
@@ -540,6 +540,42 @@ func (d *Document) ResolveParameter(p Parameter) Parameter {
 	}
 
 	return p
+}
+
+// RequiredNames is the list of properties a schema requires.
+//
+// It tolerates a boolean, which is not what the format says and is what Spotify
+// publishes:
+//
+//	schema:
+//	  type: string
+//	  format: byte
+//	  required: true
+//
+// That is what required means on a parameter, one level up, and on a schema it
+// should name properties. Refusing the document over it was the worse answer:
+// 290KB and every path Spotify publishes became unreadable because of one
+// boolean in one endpoint, and drift could not watch the provider at all.
+//
+// A boolean is read as naming nothing, which is what it conveys. The rest of
+// the schema survives.
+type RequiredNames []string
+
+// UnmarshalYAML accepts the list, and forgives the boolean.
+func (r *RequiredNames) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return nil
+	}
+
+	var names []string
+
+	if err := node.Decode(&names); err != nil {
+		return err
+	}
+
+	*r = names
+
+	return nil
 }
 
 // SchemaType is a schema's declared type, which may be written as a word or,
