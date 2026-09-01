@@ -4155,6 +4155,17 @@ func providers() []provider {
 			npm:    []string{"libhoney"},
 		},
 		{
+			// The vendor's own JavaScript wrapper.
+			recipe: "unsplash",
+			npm:    []string{"unsplash-js"},
+		},
+		{
+			// A third-party wrapper; Giphy's own SDKs are for the mobile
+			// platforms rather than for this API from Node.
+			recipe: "giphy",
+			npm:    []string{"giphy"},
+		},
+		{
 			// The vendor's own TypeScript library.
 			recipe: "groq",
 			npm:    []string{"groq-sdk"},
