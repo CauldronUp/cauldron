@@ -1,0 +1,435 @@
+# Alpha Vantage Recipe for Cauldron
+#
+# Every failure this Recipe records answers 200.
+#
+#   ?function=TIME_SERIES_DAILY               ->  200  {"Information": "..."}
+#   (no apikey at all)                        ->  200  {"Error Message": "..."}
+#   ten requests in ten seconds               ->  200  {"Information": "..."}
+#
+# There is no 4xx, no 5xx, and no Retry-After anywhere in this Recipe, because
+# none was ever seen: every response captured against the live API, success or
+# failure, carried status 200. A client that checks response.ok before parsing
+# the body checks something that is never false, and the only way to learn a
+# call did not work is to read the body and look for one of two keys that a
+# working call never carries.
+#
+# **And the top-level keys cannot be reached with a dot.**
+#
+#   {"Meta Data": {...}, "Time Series (Daily)": {"2026-08-31": {"1. open": ...}}}
+#
+# "Meta Data" has a space in it. "Time Series (Daily)" has a space and two
+# parentheses. Every field one level further down is worse: "1. open",
+# "4. close", "5. volume" -- a digit, a period, a space, then the word. None of
+# these are valid identifiers in any language whose dot operator takes one, so
+# response.Time Series (Daily) is a syntax error before the request is even
+# sent, and the only way in is a string subscript at every level.
+#
+# **The demo key is not a real key with a low ceiling. It is a whitelist.**
+#
+# The published apikey=demo answers exactly two documented queries --
+# TIME_SERIES_DAILY for IBM and GLOBAL_QUOTE for IBM -- with real data.
+# Everything else that carries it, however wrong, answers the same nag:
+#
+#   ?function=TIME_SERIES_DAILY&symbol=NOTASYMBOLXYZ&apikey=demo  -> 200 nag
+#   ?function=NOTAREALFUNCTION&symbol=IBM&apikey=demo             -> 200 nag
+#   ?function=TIME_SERIES_DAILY&apikey=demo    (symbol omitted)   -> 200 nag
+#   ?symbol=IBM&apikey=demo                    (function omitted) -> 200 nag
+#
+# Four different mistakes -- a symbol that does not exist, a function that
+# does not exist, a required parameter left out twice over -- and one
+# response, word for word, every time. A developer testing their error
+# handling against the demo key learns that Alpha Vantage answers bad input
+# with a sentence about upgrading, which is not what the real API does for a
+# real key: it is what the demo key does for every query it was not built to
+# answer, real mistake or none at all.
+#
+# Written against the live API rather than a document: every case below was
+# checked against www.alphavantage.co on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. There are two "no data" bodies and they do not share a key.
+#      Leaving off apikey entirely answers {"Error Message": "..."}; every
+#      other way of missing the mark on the demo key answers
+#      {"Information": "..."}. Code that checks body["Error Message"] sees
+#      nothing wrong with a request that has no function, no symbol and a
+#      real-looking key, because that failure is spelled the other word.
+#   2. The throttle is spelled exactly like the whitelist nag, and means the
+#      opposite thing. Both are {"Information": "..."}, 200, no header
+#      anywhere naming a limit or a retry time. One says the query was never
+#      going to work; the other says the same query would have worked if it
+#      had arrived two requests later. A client that treats "Information" as
+#      one failure retries a whitelist rejection forever and gives up
+#      instantly on a throttle a second wait would have cleared.
+#   3. The same value is prefixed two different widths depending on which
+#      function asked for it. TIME_SERIES_DAILY calls it "1. open" and
+#      GLOBAL_QUOTE calls the same figure "02. open" -- one digit against two,
+#      for a number that is otherwise formatted identically. Code written to
+#      strip the leading digit and the period from a daily bar's keys and
+#      reused on a quote strips one character short.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Only IBM is served, and only the handful of days its fixture holds. The
+#     real compact time series answers about a hundred trading days; three are
+#     recorded here because the trap is in the shape of one entry, not in how
+#     many there are.
+#   - function and symbol are not modelled as general parameters. The sandbox
+#     answers the one exact query the demo key actually serves and treats
+#     every other combination as the whitelist rejection, which is a
+#     narrower claim than "this Recipe understands Alpha Vantage's
+#     functions" and a more honest one: the demo key does not understand them
+#     either.
+#   - A real key was never used, requested or guessed. The one genuine
+#     "invalid symbol" or "unknown function" error Alpha Vantage would send to
+#     a paying caller was not reachable from here, because the demo key
+#     intercepts every query outside its whitelist before that logic runs.
+#     What is recorded instead is the interception itself, which is real and
+#     was really observed, and is a different fact from the one a real key
+#     would have shown.
+#   - Prices move day to day. The bars recorded are the ones the live series
+#     held on the date in the cases, and by the next trading day the newest
+#     one will have shifted from "close" to somewhere in the middle of the
+#     window, exactly the way a real compact series does.
+
+recipe: alphavantage
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: alphavantage
+  docs: https://www.alphavantage.co/documentation/
+
+auth:
+  # apikey is a query parameter every real call carries, but it is not
+  # modelled as Cauldron's auth: a missing or wrong one here still answers
+  # 200 with a body naming the problem, never the 401 the built-in scheme
+  # would serve. Leaving auth off and answering apikey through routes and
+  # errors is what keeps that 200 honest.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    # The shape the one truly missing thing uses. The two demo-key
+    # rejections below override the key explicitly, because they do not
+    # share it.
+    style: flat
+    message_field: "Error Message"
+
+resources:
+  daily_series:
+    id:
+      style: opaque
+      # The symbol lives in the query string and again inside Meta Data; it
+      # is not a top-level field of its own, so nothing is minted for it here.
+      field: "-"
+    fields:
+      # A fixed small object, held whole rather than broken into named
+      # fields: it changes shape with nothing this Recipe has a name for
+      # (Output Size becomes "Full size" on a different request) and the trap
+      # is in the parent key's space, not in what is inside it.
+      "Meta Data":
+        type: map
+      # Keyed by trading date, each value itself an object of five numbered,
+      # one-digit-prefixed fields. Two dynamic levels: the date this Recipe
+      # cannot enumerate in advance, and the field names beneath it that no
+      # dot operator can reach either way.
+      "Time Series (Daily)":
+        type: map
+
+  quote:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # Ten fields, two-digit prefixes, where the daily bar above uses one.
+      "01. symbol":
+        type: string
+      "02. open":
+        type: string
+      "03. high":
+        type: string
+      "04. low":
+        type: string
+      "05. price":
+        type: string
+      "06. volume":
+        type: string
+      "07. latest trading day":
+        type: string
+      "08. previous close":
+        type: string
+      "09. change":
+        type: string
+      # A number and a percent sign, in one string. "-0.7301%" parses as
+      # nothing numeric until the last character is stripped first.
+      "10. change percent":
+        type: string
+
+routes:
+  # The one query the demo key actually answers for a daily series.
+  - method: GET
+    path: /query
+    resource: daily_series
+    operation: get
+    id_from: query:symbol
+    matches_query:
+      function: TIME_SERIES_DAILY
+      symbol: IBM
+      apikey: demo
+
+  # The one query the demo key actually answers for a quote, wrapped under a
+  # key this Recipe's other resource does not use at all.
+  - method: GET
+    path: /query
+    resource: quote
+    operation: get
+    id_from: query:symbol
+    matches_query:
+      function: GLOBAL_QUOTE
+      symbol: IBM
+      apikey: demo
+    envelope:
+      style: wrapped
+      key: "Global Quote"
+
+  # apikey left out entirely. Distinct from every rejection below: this is
+  # the one that answers under "Error Message" rather than "Information".
+  - method: GET
+    path: /query-no-apikey
+    error: missing_apikey
+
+  # Anything else asked of the demo key: a symbol that does not exist, a
+  # function that does not exist, or either required parameter left out.
+  # Four different mistakes, recorded as one route because the live API
+  # answered all four with the same sentence, byte for byte.
+  - method: GET
+    path: /query-off-script
+    error: demo_rejected
+
+  # The same exact query the two success routes serve, asked too many times
+  # in one second. Same status as everything else here, same key as the
+  # rejection above, and a different sentence.
+  - method: GET
+    path: /query-too-fast
+    error: demo_throttled
+
+errors:
+  missing_apikey:
+    status: 200
+    message: "the parameter apikey is invalid or missing. Please claim your free API key on (https://www.alphavantage.co/support/#api-key). It should take less than 20 seconds."
+
+  demo_rejected:
+    status: 200
+    message_field: Information
+    message: "The **demo** API key is for demo purposes only. Please claim your free API key at (https://www.alphavantage.co/support/#api-key) to explore our full API offerings. It takes fewer than 20 seconds."
+
+  demo_throttled:
+    status: 200
+    message_field: Information
+    message: "Please query the demo URLs at no more than 2 requests per second."
+
+fixtures:
+  empty: {}
+
+  ibm:
+    daily_series:
+      - id: IBM
+        "Meta Data":
+          "1. Information": "Daily Prices (open, high, low, close) and Volumes"
+          "2. Symbol": "IBM"
+          "3. Last Refreshed": "2026-08-31"
+          "4. Output Size": "Compact"
+          "5. Time Zone": "US/Eastern"
+        "Time Series (Daily)":
+          "2026-08-31":
+            "1. open": "232.7300"
+            "2. high": "235.9379"
+            "3. low": "232.1800"
+            "4. close": "233.8700"
+            "5. volume": "6002805"
+          "2026-08-28":
+            "1. open": "238.3000"
+            "2. high": "239.0800"
+            "3. low": "235.0900"
+            "4. close": "235.5900"
+            "5. volume": "3945403"
+          "2026-08-27":
+            "1. open": "232.8000"
+            "2. high": "240.8065"
+            "3. low": "231.4500"
+            "4. close": "238.7900"
+            "5. volume": "5505922"
+
+    quote:
+      - id: IBM
+        "01. symbol": "IBM"
+        "02. open": "232.7300"
+        "03. high": "235.9379"
+        "04. low": "232.1800"
+        "05. price": "233.8700"
+        "06. volume": "6002805"
+        "07. latest trading day": "2026-08-31"
+        "08. previous close": "235.5900"
+        "09. change": "-1.7200"
+        "10. change percent": "-0.7301%"
+
+conformance:
+  - name: the top-level keys have spaces and cannot be reached with a dot
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query
+      query:
+        function: TIME_SERIES_DAILY
+        symbol: IBM
+        apikey: demo
+    expect:
+      status: 200
+      body:
+        # "Meta Data" has a space; response.Meta Data is a syntax error
+        # before the request is even sent.
+        'Meta Data.2\. Symbol': IBM
+        'Meta Data.3\. Last Refreshed': "2026-08-31"
+        # And "Time Series (Daily)" has a space and two parentheses, holding
+        # an object keyed by a date this Recipe cannot enumerate in advance.
+        'Time Series (Daily).2026-08-31.1\. open': "232.7300"
+        'Time Series (Daily).2026-08-31.5\. volume': "6002805"
+
+  - name: every field one level down is a digit, a period and a space
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query
+      query:
+        function: TIME_SERIES_DAILY
+        symbol: IBM
+        apikey: demo
+    expect:
+      status: 200
+      body:
+        # A second trading day, still under the same unreachable field name.
+        'Time Series (Daily).2026-08-28.2\. high': "239.0800"
+        'Time Series (Daily).2026-08-28.3\. low': "235.0900"
+        'Time Series (Daily).2026-08-27.4\. close': "238.7900"
+
+  - name: the quote wraps under a key the daily series never uses
+    source: https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query
+      query:
+        function: GLOBAL_QUOTE
+        symbol: IBM
+        apikey: demo
+    expect:
+      status: 200
+      body:
+        'Global Quote.01\. symbol': IBM
+        # A number and a percent sign in one string.
+        'Global Quote.10\. change percent': "-0.7301%"
+        'Global Quote.09\. change': "-1.7200"
+
+  - name: the same figure is prefixed one digit here and two digits there
+    source: https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query
+      query:
+        function: GLOBAL_QUOTE
+        symbol: IBM
+        apikey: demo
+    expect:
+      status: 200
+      body:
+        # "02. open" here, "1. open" on the daily bar above -- the same
+        # value, prefixed to two different widths depending on which
+        # function answered.
+        'Global Quote.02\. open': "232.7300"
+      absent:
+        - 'Global Quote.1\. open'
+
+  - name: apikey left out entirely answers under a key nothing else uses
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query-no-apikey
+    expect:
+      # Two hundred. Not the 401 a built-in auth check would answer.
+      status: 200
+      body:
+        "Error Message": "the parameter apikey is invalid or missing. Please claim your free API key on (https://www.alphavantage.co/support/#api-key). It should take less than 20 seconds."
+      absent:
+        - Information
+
+  - name: an unknown symbol is the whitelist rejection, not a real error
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=NOTASYMBOLXYZ&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query-off-script
+    expect:
+      status: 200
+      body:
+        Information: "The **demo** API key is for demo purposes only. Please claim your free API key at (https://www.alphavantage.co/support/#api-key) to explore our full API offerings. It takes fewer than 20 seconds."
+      absent:
+        - "Error Message"
+
+  - name: a function that does not exist answers the same sentence
+    source: https://www.alphavantage.co/query?function=NOTAREALFUNCTION&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query-off-script
+    expect:
+      status: 200
+      body:
+        # Word for word the same as the unknown symbol above, though the
+        # mistake is a different parameter entirely.
+        Information: "The **demo** API key is for demo purposes only. Please claim your free API key at (https://www.alphavantage.co/support/#api-key) to explore our full API offerings. It takes fewer than 20 seconds."
+
+  - name: leaving out symbol or function is the same sentence a third time
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query-off-script
+    expect:
+      status: 200
+      body:
+        # A required parameter missing twice over -- once here, once for
+        # ?symbol=IBM&apikey=demo with function left out -- and both answer
+        # this, rather than naming what was missing.
+        Information: "The **demo** API key is for demo purposes only. Please claim your free API key at (https://www.alphavantage.co/support/#api-key) to explore our full API offerings. It takes fewer than 20 seconds."
+
+  - name: the throttle shares a key with the rejection and means the opposite
+    source: https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=demo
+    verified: "2026-08-31"
+    fixture: ibm
+    request:
+      method: GET
+      path: /query-too-fast
+    expect:
+      status: 200
+      body:
+        # Also "Information", also 200, and naming no limit or retry time
+        # anywhere in the body or the headers. The two are told apart only
+        # by which sentence is inside them.
+        Information: "Please query the demo URLs at no more than 2 requests per second."
+      absent:
+        - "Error Message"
