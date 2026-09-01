@@ -1,0 +1,690 @@
+# Linode Recipe for Cauldron
+#
+# Every listing here answers under the same key, whatever it holds. Regions,
+# types, images, kernels: all four are {"data": [...], "page": 1, "pages": 1,
+# "results": N}, and nothing is ever wrapped under its own plural the way
+# Vultr's four catalogues are. A client written against one Linode endpoint's
+# envelope is written against all of them.
+#
+# results is the real, stable count of the whole matching set. It does not
+# move with page_size the way Vultr's meta.total does on one of its four
+# routes -- checked at page_size 1, 5, 10, 100 and 200 against
+# /v4/linode/kernels, all three hundred and thirty-eight, every time. The
+# pair beside it, page and pages, are exactly what they say: the page served
+# and how many the whole set makes at this page size, and page still reports
+# the number asked for once it runs past the last one --
+# GET /v4/linode/kernels?page=5 against a four-page collection answers
+# {"data": [], "page": 5, "pages": 4, "results": 338}, not an error and not
+# a clamp back to 4.
+#
+# page=0 is not a fifth kind of failure. It is silently the first page:
+# GET /v4/linode/kernels?page=0 answers the same 100 records
+# GET /v4/linode/kernels?page=1 does, with no complaint about the zero.
+#
+# Failures are a list, always, even when there is exactly one:
+#
+#   {"errors": [{"reason": "Not found"}]}
+#   {"errors": [{"reason": "Invalid Token"}]}
+#   {"errors": [{"reason": "Must be of type Integer", "field": "page_size"}]}
+#
+# reason carries the sentence, not message, and a validation failure names
+# the offending parameter beside it in a field key that a not-found or an
+# auth failure never carries at all. There is no code and no category
+# anywhere in any of them -- reason is the only thing to switch on, and it
+# is prose rather than a stable token.
+#
+# The same collapse Vultr has, for a different reason. GET /v4/regions/xx-fake
+# and GET /v4/totallybogus/nested/path both answer the identical
+# {"errors": [{"reason": "Not found"}]} at 404, with no "field" key on either.
+# Vultr collapses the two because it has no id-addressed route to distinguish
+# them; Linode has id-addressed routes and still answers identically, because
+# an unmatched path and an unmatched id are the same category of nothing to
+# it. Two providers, two different reasons, one shared finding: an id in the
+# path and a path that does not exist are not always distinguishable, and
+# asking whether they are is worth doing before writing an emulator that
+# assumes they always are.
+#
+# One field genuinely disappears rather than reporting zero. A GPU type's
+# monthly price is null, not omitted and not 0 -- g1-gpu-rtx6000-1 prices
+# only by the hour, and the field carrying its monthly rate is present and
+# null beside an hourly figure that is a real number. Reading it as a
+# number without checking gets NaN from arithmetic that never throws.
+#
+# Every timestamp -- created, updated, built, eol -- is missing the UTC
+# designator RFC 3339 requires: "2025-10-01T04:00:00", not
+# "2025-10-01T04:00:00Z" and not "2025-10-01T04:00:00+00:00". A parser that
+# insists on one throws on every date this API sends. This Recipe's fixtures
+# carry the string exactly as observed rather than one this format would
+# stamp fresh, because nothing here writes a new record for the runtime to
+# datestamp on its own -- see the gaps below for what that means for the
+# vocabulary rather than for this file.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Image and kernel identifiers are two literal path segments end to end,
+#     not one: linode/almalinux10, linode/latest-2.6-32bit. Cauldron's router
+#     matches a route's segment count exactly, so a single {id} placeholder
+#     cannot address a path with an extra literal slash in it, and GET
+#     /v4/images/{id} and GET /v4/linode/kernels/{id} are not modelled --
+#     confirmed live: GET /v4/linode/kernels/linode/latest-2.6-32bit answers
+#     200 with the real record, four path segments deep, and nothing this
+#     format's route matcher can express in one parameter. Region and type
+#     identifiers are single segments (gb-lon, g6-nanode-1) and both get a
+#     get route below.
+#   - datetime here always stamps a fresh value with a trailing Z when a
+#     record does not already carry one. Nothing in this Recipe creates a
+#     record, so that path is never exercised, and the type is declared as
+#     the closest one available rather than as a claim that this format can
+#     mint Linode's exact, RFC-3339-incomplete shape from nothing.
+#   - A non-numeric page or page_size (page=abc) answers the identical
+#     {"reason": "Must be of type Integer"} this Recipe pins down, and
+#     nothing here validates that a paging parameter parses as a number
+#     before comparing it to a ceiling -- the same gap Vultr's per_page has,
+#     armed rather than derived below.
+#   - Nothing is provisioned. Creating, resizing, rebooting or deleting a
+#     Linode, a volume, a NodeBalancer, a domain, an object storage bucket or
+#     a Kubernetes cluster is not modelled. This Recipe describes the four
+#     catalogues an integration reads before deciding any of that, and the
+#     one call that says a request needs a credential it was never given.
+#   - Linode's real catalogues are far larger than the fixture below: 33
+#     regions, 75 Linode types, 33 public images and 338 kernels on the date
+#     verified. The fixture pins a handful of each, and every count in the
+#     conformance cases belongs to the fixture rather than to production.
+
+recipe: linode
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://techdocs.akamai.com/linode-api/reference/api
+
+auth:
+  # The four catalogues need no credential. GET /v4/account -- probed only
+  # for its unauthenticated failure -- is modelled as an unconditional error
+  # rather than a scheme, because no key was ever requested, issued or
+  # guessed to learn what a successful call answers.
+  scheme: none
+
+responses:
+  list:
+    # One key for every resource, unlike Vultr's four separate plural names.
+    style: wrapped
+    key: data
+    count_field: results
+    page_field: page
+    pages_field: pages
+  resource:
+    style: bare
+  error:
+    # {"errors": [{"reason": "...", ...}]} -- a list, even for one failure,
+    # with the sentence under "reason" rather than "message" and no code or
+    # category anywhere.
+    style: list
+    key: errors
+    message_field: reason
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  region:
+    id:
+      # gb-lon, se-sto, id-cgk -- a country-city slug, not one fixed prefix.
+      style: opaque
+    fields:
+      label:
+        type: string
+      country:
+        type: string
+      status:
+        type: string
+        default: ok
+      site_type:
+        type: string
+        default: core
+      capabilities:
+        type: list
+
+  type:
+    id:
+      # g6-nanode-1, g7-highmem-1, g1-gpu-rtx6000-1 -- a generation-and-class
+      # slug, not one fixed prefix.
+      style: opaque
+    fields:
+      label:
+        type: string
+      # nanode, standard, highmem, dedicated, gpu, premium, accelerated.
+      class:
+        type: string
+      price_hourly:
+        type: number
+        in: price
+        as: hourly
+      # Null on a GPU type, which prices by the hour only. See the header.
+      price_monthly:
+        type: number
+        in: price
+        as: monthly
+      memory:
+        type: integer
+      disk:
+        type: integer
+      vcpus:
+        type: integer
+      gpus:
+        type: integer
+        default: 0
+      network_out:
+        type: integer
+      transfer:
+        type: integer
+
+  image:
+    id:
+      # linode/almalinux10, linode/debian13. Every public image carried this
+      # prefix on the date verified; a private account image carries a
+      # different one this Recipe never observed, unauthenticated.
+      style: prefixed
+      prefix: "linode/"
+    fields:
+      label:
+        type: string
+      vendor:
+        type: string
+      size:
+        type: integer
+      status:
+        type: string
+        default: available
+      is_public:
+        type: boolean
+        default: true
+      deprecated:
+        type: boolean
+        default: false
+      created:
+        type: datetime
+      updated:
+        type: datetime
+      capabilities:
+        type: list
+
+  kernel:
+    id:
+      # linode/latest-2.6-32bit, linode/7.0.5-x86_64-linode173. Prefixed the
+      # same way images are.
+      style: prefixed
+      prefix: "linode/"
+    fields:
+      label:
+        type: string
+      version:
+        type: string
+      architecture:
+        type: string
+      kvm:
+        type: boolean
+      pvops:
+        type: boolean
+      deprecated:
+        type: boolean
+      built:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v4/regions
+    resource: region
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 500
+      over_limit: page_size_out_of_range
+      limit_param: page_size
+      cursor_param: page
+
+  - method: GET
+    path: /v4/regions/{id}
+    resource: region
+    operation: get
+
+  - method: GET
+    path: /v4/linode/types
+    resource: type
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 500
+      over_limit: page_size_out_of_range
+      limit_param: page_size
+      cursor_param: page
+
+  - method: GET
+    path: /v4/linode/types/{id}
+    resource: type
+    operation: get
+
+  # No get-by-id route. Image identifiers are two path segments, and this
+  # format's router matches a route's segment count exactly -- see the
+  # header's fidelity gap.
+  - method: GET
+    path: /v4/images
+    resource: image
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 500
+      over_limit: page_size_out_of_range
+      limit_param: page_size
+      cursor_param: page
+
+  # Same gap as images, for the same reason.
+  - method: GET
+    path: /v4/linode/kernels
+    resource: kernel
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      max_limit: 500
+      over_limit: page_size_out_of_range
+      limit_param: page_size
+      cursor_param: page
+
+  # The one route that needs a credential, modelled as a route that only
+  # ever fails: no key was requested, issued or guessed to learn what a
+  # successful call answers, so nothing here claims to know.
+  - method: GET
+    path: /v4/account
+    error: account_auth_required
+
+errors:
+  # Both a missing id and a path with no route at all. See the header: two
+  # different reasons, one shared 404.
+  resource_missing:
+    status: 404
+    message: "Not found"
+
+  account_auth_required:
+    status: 401
+    message: "Invalid Token"
+
+  # page_size past the ceiling of 500, refused rather than trimmed.
+  page_size_out_of_range:
+    status: 400
+    message: "Must be 25-500"
+    fields:
+      field: page_size
+
+  # Armed rather than derived: nothing here validates that page_size parses
+  # as a number before comparing it to the ceiling above, so a non-numeric
+  # value falls through unnoticed by default. The live API answers this
+  # exact body for it.
+  page_size_not_integer:
+    status: 400
+    message: "Must be of type Integer"
+    fields:
+      field: page_size
+
+  # The same shape, naming page instead of page_size.
+  page_not_integer:
+    status: 400
+    message: "Must be of type Integer"
+    fields:
+      field: page
+
+fixtures:
+  empty: {}
+
+  # Five of Linode's own thirty-three regions, four of its seventy-five
+  # Linode types, two of its thirty-three public images and three of its
+  # three hundred and thirty-eight kernels, all real records read from
+  # api.linode.com rather than invented.
+  catalogue:
+    region:
+      - id: gb-lon
+        label: "London 2, UK"
+        country: gb
+        status: ok
+        site_type: core
+        capabilities: ["Linodes", "Block Storage Encryption", "Disk Encryption", "Backups"]
+      - id: se-sto
+        label: "Stockholm, SE"
+        country: se
+        status: ok
+        site_type: core
+        capabilities: ["Linodes", "Block Storage Encryption", "Disk Encryption", "Backups"]
+      - id: id-cgk
+        label: "Jakarta, ID"
+        country: id
+        status: ok
+        site_type: core
+        capabilities: ["Linodes", "Block Storage Encryption", "Disk Encryption", "Backups"]
+      - id: br-gru
+        label: "Sao Paulo, BR"
+        country: br
+        status: ok
+        site_type: core
+        capabilities: ["Linodes", "Block Storage Encryption", "Disk Encryption", "Backups"]
+      - id: us-east
+        label: "Newark, NJ"
+        country: us
+        status: ok
+        site_type: core
+        capabilities: ["Linodes", "Block Storage Encryption", "Disk Encryption", "Backups"]
+
+    type:
+      - id: g6-nanode-1
+        label: Nanode 1GB
+        class: nanode
+        price_hourly: 0.0075
+        price_monthly: 5.0
+        memory: 1024
+        disk: 25600
+        vcpus: 1
+        gpus: 0
+        network_out: 1000
+        transfer: 1000
+      - id: g6-standard-1
+        label: Linode 2GB
+        class: standard
+        price_hourly: 0.018
+        price_monthly: 12.0
+        memory: 2048
+        disk: 51200
+        vcpus: 1
+        gpus: 0
+        network_out: 2000
+        transfer: 2000
+      - id: g7-highmem-1
+        label: Linode 24GB
+        class: highmem
+        price_hourly: 0.09
+        price_monthly: 60.0
+        memory: 24576
+        disk: 20480
+        vcpus: 2
+        gpus: 0
+        network_out: 5000
+        transfer: 5000
+      # GPU: priced hourly only. monthly is null, not 0 and not omitted.
+      - id: g1-gpu-rtx6000-1
+        label: "Dedicated 32GB + RTX6000 GPU x1"
+        class: gpu
+        price_hourly: 1.5
+        price_monthly: null
+        memory: 32768
+        disk: 655360
+        vcpus: 8
+        gpus: 1
+        network_out: 10000
+        transfer: 16000
+
+    image:
+      - id: linode/almalinux10
+        label: AlmaLinux 10
+        vendor: AlmaLinux
+        size: 3500
+        status: available
+        is_public: true
+        deprecated: false
+        created: "2025-10-01T04:00:00"
+        updated: "2026-07-03T15:29:28"
+        capabilities: [cloud-init]
+      - id: linode/debian13
+        label: Debian 13
+        vendor: Debian
+        size: 1800
+        status: available
+        is_public: true
+        deprecated: false
+        created: "2025-09-09T16:15:28"
+        updated: "2026-05-18T04:00:00"
+        capabilities: [cloud-init]
+
+    kernel:
+      - id: linode/latest-2.6-32bit
+        label: "Latest 2.6 (2.6.39.1-linode34)"
+        version: "2.6.39"
+        architecture: i386
+        kvm: false
+        pvops: true
+        deprecated: true
+        built: "2009-10-26T04:00:00"
+      - id: linode/latest-2.6
+        label: "Latest 2.6 Stable (2.6.23.17-linode44)"
+        version: "2.6.24"
+        architecture: i386
+        kvm: false
+        pvops: false
+        deprecated: true
+        built: "2009-08-17T04:00:00"
+      - id: linode/7.0.5-x86_64-linode173
+        label: 7.0.5-x86_64-linode173
+        version: "7.0.5"
+        architecture: x86_64
+        kvm: true
+        pvops: true
+        deprecated: false
+        built: "2026-05-08T14:12:05"
+
+conformance:
+  - name: every list is wrapped under one generic key, whatever it holds
+    source: https://api.linode.com/v4/regions
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/regions
+    expect:
+      status: 200
+      body:
+        data[0].id: gb-lon
+        data[4].id: us-east
+        # The whole fixture fits on one page, so this is the real count.
+        page: 1
+        pages: 1
+        results: 5
+      absent:
+        # Not "regions". Every Linode listing shares this one key, unlike
+        # Vultr's four separate plural names.
+        - regions
+        - meta
+
+  - name: and a completely different resource answers under the identical key
+    source: https://api.linode.com/v4/linode/types
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/types
+    expect:
+      status: 200
+      body:
+        data[0].id: g6-nanode-1
+        results: 4
+      absent:
+        - types
+
+  - name: a GPU type's monthly price is null, not zero and not omitted
+    source: https://api.linode.com/v4/linode/types
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/types
+    expect:
+      status: 200
+      body:
+        data[1].price.monthly: 12
+        # Present and null beside a real hourly figure, on the same record.
+        data[3].price.hourly: 1.5
+        data[3].price.monthly: null
+
+  - name: getting a region by id is bare, no wrapper at all
+    source: https://api.linode.com/v4/regions/gb-lon
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/regions/gb-lon
+    expect:
+      status: 200
+      body:
+        id: gb-lon
+        label: "London 2, UK"
+        site_type: core
+      absent:
+        - data
+        - region
+
+  - name: page 0 is silently the first page, not a fourth kind of failure
+    source: https://api.linode.com/v4/linode/kernels?page=0
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page: "0"
+    expect:
+      status: 200
+      body:
+        data[0].id: linode/latest-2.6-32bit
+        page: 1
+
+  - name: page_size shrinks the page and pages grows to match
+    source: https://api.linode.com/v4/linode/kernels?page_size=1
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page_size: "1"
+    expect:
+      status: 200
+      body:
+        data[0].id: linode/latest-2.6-32bit
+        page: 1
+        # Three kernels in the fixture, one per page.
+        pages: 3
+        results: 3
+      absent:
+        - data[1]
+
+  - name: a page past the last is empty and still reports the page you asked for
+    source: https://api.linode.com/v4/linode/kernels?page=5
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page: "5"
+        page_size: "1"
+    expect:
+      status: 200
+      body:
+        # Not clamped back to 3. The number in the response is the number
+        # that was asked for.
+        page: 5
+        pages: 3
+        results: 3
+      absent:
+        - data[0]
+
+  - name: page_size over the ceiling is refused, not trimmed
+    source: https://api.linode.com/v4/linode/kernels?page_size=99999
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page_size: "99999"
+    expect:
+      status: 400
+      body:
+        errors[0].reason: "Must be 25-500"
+        errors[0].field: page_size
+
+  - name: and a page_size that is not a number fails the same shape
+    # Armed rather than derived -- see the header's fidelity gap. Nothing
+    # here validates that page_size parses as a number before comparing it
+    # to the ceiling above, so a non-numeric value would otherwise fall
+    # through unnoticed.
+    source: https://api.linode.com/v4/linode/kernels?page_size=abc
+    verified: "2026-08-31"
+    fixture: catalogue
+    arm: page_size_not_integer
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page_size: abc
+    expect:
+      status: 400
+      body:
+        errors[0].reason: "Must be of type Integer"
+        errors[0].field: page_size
+
+  - name: a non-numeric page names page instead of page_size
+    source: https://api.linode.com/v4/linode/kernels?page=abc
+    verified: "2026-08-31"
+    fixture: catalogue
+    arm: page_not_integer
+    request:
+      method: GET
+      path: /v4/linode/kernels
+      query:
+        page: abc
+    expect:
+      status: 400
+      body:
+        errors[0].reason: "Must be of type Integer"
+        errors[0].field: page
+
+  - name: an unknown id is a list of one reason, with no field key at all
+    source: https://api.linode.com/v4/regions/xx-fake
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/regions/xx-fake
+    expect:
+      status: 404
+      body:
+        errors[0].reason: "Not found"
+      absent:
+        - errors[0].field
+        - errors[1]
+
+  - name: and a path with no route at all fails identically
+    source: https://api.linode.com/v4/totallybogus/nested/path
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/totallybogus/nested/path
+    expect:
+      status: 404
+      body:
+        errors[0].reason: "Not found"
+
+  - name: the one route that needs a credential fails the same way with or without one
+    source: https://api.linode.com/v4/account
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v4/account
+    expect:
+      status: 401
+      body:
+        errors[0].reason: "Invalid Token"
+      absent:
+        - errors[0].field
