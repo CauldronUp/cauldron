@@ -4106,6 +4106,14 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// Three wrappers on npm and two well-used PHP clients, so this is
+			// mapped rather than listed as unreachable. unicodeveloper/
+			// laravel-paystack has over a million installs.
+			recipe:   "paystack",
+			npm:      []string{"paystack", "paystack-api", "paystack-node"},
+			composer: []string{"unicodeveloper/laravel-paystack", "yabacon/paystack-php"},
+		},
+		{
 			// The official SDK, and the reason this Recipe is mapped rather
 			// than listed in the backlog. Packagist has no PubNub package
 			// under the vendor name, so only two registries are named.
