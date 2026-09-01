@@ -1,0 +1,615 @@
+# Moov Recipe for Cauldron
+#
+# A transfer has a source and a destination, and neither one is a fixed
+# shape. Moov moves money between a bank account, a card, a wallet, a push
+# to a card, a pull from a card and more, and one transfer's source can be
+# any of them while its destination is a different one entirely -- a card
+# charge landing in a wallet is the ordinary case, not an edge case.
+#
+# Moov's own answer to that is not a `oneOf`. Its OpenAPI description
+# declares TransferSource and TransferDestination as one object each, with
+# every possible shape's fields sitting beside each other as optional
+# properties: `card`, `bankAccount`, `wallet`, `applePay`, `terminalCard` all
+# named on the same schema, and a `paymentMethodType` enum saying which one
+# this particular transfer actually used. A card-funded transfer's source
+# carries a populated `card` object and no `bankAccount` key at all; a
+# bank-funded one carries `bankAccount` and no `card`. Nothing in the
+# response shape enforces that the populated object matches
+# `paymentMethodType` -- the discriminator and the payload are two separate
+# claims the provider happens to keep in agreement.
+#
+# Cauldron's field vocabulary has no type for "this field's shape depends on
+# a sibling's value." What it does have is exactly what turns out to be
+# needed here: a field is either present with a value or entirely absent
+# from the record, and a resource may declare as many independently
+# present-or-absent fields as it likes. That is sufficient to reproduce
+# Moov's own solution -- a wide object with several optional, independently
+# populated sub-objects -- because Moov did not choose a discriminated union
+# either. It chose the same "declare every shape, populate one" approach
+# this format's fields already support field-by-field. What Cauldron cannot
+# do, and what Moov's schema does not do either, is enforce that the
+# populated shape agrees with the discriminator: a fixture author could set
+# both `source.card` and `source.bankAccount` on the same record, or set
+# `paymentMethodType: card-payment` while populating `bankAccount`, and
+# nothing in the format or the OpenAPI description would refuse it. Every
+# fixture below keeps the two in agreement by discipline, not by a
+# mechanism that checks.
+#
+# Three more worth stating precisely:
+#
+#   1. `account` is not one of the polymorphic pieces. Every source and
+#      destination carries one, always, identifying who holds the payment
+#      method, regardless of which of card/bankAccount/wallet accompanies
+#      it. The same "declare every shape" pattern shows up a second time on
+#      Account.profile (`individual` vs `business`, chosen by
+#      `accountType`) and is not modelled here, to keep this Recipe to the
+#      one polymorphism the task asked about.
+#   2. A missing credential and a wrong one are answered identically:
+#      checked live, `GET /ping` and `GET /accounts` with no Authorization
+#      header at all, and the same two calls with a syntactically fine but
+#      fake bearer token, all four come back 401 with zero response bytes
+#      and no Content-Type header. There is no message, no code, and no way
+#      for a client to tell "you forgot your key" from "your key is wrong"
+#      from the response. Cauldron's auth check is one boolean regardless,
+#      so this is one of the rare cases where the real API's poverty of
+#      information and the format's are the same shape.
+#   3. An address Moov does not have -- an unrecognised path, a recognised
+#      path with the wrong method, even the bare root `/` -- answers 403
+#      Forbidden with the same zero-byte body, not 404 and not 405. Checked
+#      live four ways: a nonsense path, a nonsense path with a bearer token
+#      attached, a trailing slash on a real collection, and DELETE against
+#      `/ping`. All four came back 403.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Every error observed live -- 401, 403 -- carries no body at all: zero
+#     bytes, no Content-Type header. Cauldron's error path always answers
+#     JSON, at minimum `{}` with Content-Type: application/json, because
+#     writeRecipeError has no "send nothing" mode the way a route's own
+#     empty_body and raw.empty do (internal/runtime/errors.go calls
+#     writeJSON unconditionally). This Recipe gets as close as the format
+#     allows -- an error style with every field suppressed, so the body is
+#     `{}` -- and that is a real, permanent difference from the zero bytes
+#     the live API sends, not a rounding error. No case below claims the
+#     two are the same.
+#   - Every response also carries an `x-request-id` header per the
+#     provider's own description, fresh on every call. Like Lithic's
+#     debugging_request_id, that is a value that has to be different every
+#     time and the format has no mechanism for a header that is regenerated
+#     per request rather than fixed; it is left off rather than faked as a
+#     constant.
+#   - `POST .../transfers` (create), cancellations, refunds, reversals,
+#     account creation, payment-method creation, and the
+#     `x-idempotency-key` / `x-wait-for` headers a real create needs are not
+#     modelled. No transfer is created and no money moves; which
+#     `paymentMethodType` a transfer's source or destination holds is what a
+#     fixture puts there.
+#   - A transfer's real scoping under `/accounts/{accountID}/transfers` is
+#     "involves this account as either side," and Cauldron's scope
+#     mechanism matches one stored field against one path parameter exactly.
+#     This Recipe stores one owning account per transfer rather than two,
+#     which is a narrower claim than the provider makes.
+#
+# Tokens and identifiers below are fixtures, not secrets, and every figure
+# is invented.
+
+recipe: moov
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: latest
+  docs: https://docs.moov.io/api/authentication/access-tokens/
+  spec: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+  spec_hash: bf4c6a51b54533456b671224c8d1a2033161599eb1bdd6efbbd601950e160936
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  prefix: "Bearer "
+  keys:
+    - cauldron_moov_test_access_token
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # Every field suppressed: the closest this format gets to the zero-byte
+    # body the live API actually sends. See the header comment.
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  account:
+    id:
+      style: uuid
+      field: accountID
+    fields:
+      # sandbox or production.
+      mode:
+        type: string
+        default: sandbox
+      # individual, business, or guest.
+      accountType:
+        type: string
+        default: business
+      displayName:
+        type: string
+      createdOn:
+        type: datetime
+      updatedOn:
+        type: datetime
+
+  transfer:
+    id:
+      style: uuid
+      field: transferID
+    fields:
+      # The path parameter this resource is scoped by. Not sent on the wire:
+      # Moov does not repeat it in the transfer body, and the field only
+      # exists so Cauldron knows which account a fixture record belongs to.
+      accountID:
+        type: string
+        in: "-"
+      # created, pending, completed, failed, reversed, queued, canceled.
+      status:
+        type: string
+        default: pending
+      amountValue:
+        type: integer
+        in: amount
+        as: value
+      amountCurrency:
+        type: string
+        default: USD
+        in: amount
+        as: currency
+      description:
+        type: string
+      createdOn:
+        type: datetime
+      completedOn:
+        type: datetime
+      failureReason:
+        type: string
+
+      # -- source: always an account, plus at most one of card / bankAccount
+      # / wallet, chosen by sourcePaymentMethodType. This is the
+      # polymorphism the header comment describes: three sibling fields
+      # below are never all present on the same record.
+      sourcePaymentMethodID:
+        type: string
+        in: source
+        as: paymentMethodID
+      sourcePaymentMethodType:
+        type: string
+        in: source
+        as: paymentMethodType
+      sourceAccountID:
+        type: string
+        in: source.account
+        as: accountID
+      sourceAccountEmail:
+        type: string
+        in: source.account
+        as: email
+      sourceAccountDisplayName:
+        type: string
+        in: source.account
+        as: displayName
+      sourceCardID:
+        type: string
+        in: source.card
+        as: cardID
+      sourceCardBrand:
+        type: string
+        in: source.card
+        as: brand
+      sourceCardLastFour:
+        type: string
+        in: source.card
+        as: lastFourCardNumber
+      sourceBankAccountID:
+        type: string
+        in: source.bankAccount
+        as: bankAccountID
+      sourceBankName:
+        type: string
+        in: source.bankAccount
+        as: bankName
+      sourceBankAccountType:
+        type: string
+        in: source.bankAccount
+        as: bankAccountType
+      sourceWalletID:
+        type: string
+        in: source.wallet
+        as: walletID
+
+      # -- destination: the same three-way choice, independent of whichever
+      # one the source picked. Both demo transfers below land in a wallet,
+      # which is the ordinary case for a platform collecting funds; a
+      # destination can just as easily be a card (push-to-card) or a bank
+      # account, and the fields to say so are declared even though no
+      # fixture record here populates them.
+      destinationPaymentMethodID:
+        type: string
+        in: destination
+        as: paymentMethodID
+      destinationPaymentMethodType:
+        type: string
+        in: destination
+        as: paymentMethodType
+      destinationAccountID:
+        type: string
+        in: destination.account
+        as: accountID
+      destinationAccountEmail:
+        type: string
+        in: destination.account
+        as: email
+      destinationAccountDisplayName:
+        type: string
+        in: destination.account
+        as: displayName
+      destinationWalletID:
+        type: string
+        in: destination.wallet
+        as: walletID
+      destinationBankAccountID:
+        type: string
+        in: destination.bankAccount
+        as: bankAccountID
+      destinationBankName:
+        type: string
+        in: destination.bankAccount
+        as: bankName
+      destinationBankAccountType:
+        type: string
+        in: destination.bankAccount
+        as: bankAccountType
+      destinationCardID:
+        type: string
+        in: destination.card
+        as: cardID
+      destinationCardBrand:
+        type: string
+        in: destination.card
+        as: brand
+      destinationCardLastFour:
+        type: string
+        in: destination.card
+        as: lastFourCardNumber
+
+routes:
+  # A simple endpoint to check auth, per Moov's own description, and one
+  # with no body on success either: the OpenAPI description has no content
+  # schema for its 200 at all. empty rather than a resource, because there
+  # is nothing here to model as one.
+  - method: GET
+    path: /ping
+    raw:
+      empty: true
+
+  - method: GET
+    path: /accounts
+    resource: account
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 200
+      limit_param: count
+      cursor_param: skip
+
+  - method: GET
+    path: /accounts/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /accounts/{accountID}/transfers
+    resource: transfer
+    operation: list
+    scope:
+      - accountID
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 200
+      limit_param: count
+      cursor_param: skip
+
+  - method: GET
+    path: /accounts/{accountID}/transfers/{id}
+    resource: transfer
+    operation: get
+    scope:
+      - accountID
+
+errors:
+  # Both observed live with a zero-byte body; see the header comment for
+  # what this Recipe can and cannot reproduce of that.
+  authentication_error:
+    status: 401
+
+  # Covers three live-observed cases at once: an unrecognised path, a
+  # recognised path with the wrong method, and the bare root. Declared by
+  # these exact names so Cauldron's own built-in fallbacks
+  # (internal/runtime/errors.go: builtinFallbacks) use this status rather
+  # than their usual 404 / 405.
+  unknown_route:
+    status: 403
+  method_not_allowed:
+    status: 403
+
+  # Documented rather than observed: reaching either requires a real
+  # account. The OpenAPI description gives 404 no content schema at all
+  # (same shape as the two above), so it is left at the Recipe-wide default
+  # rather than given its own entry.
+  #
+  # 400 and 409 are the only two statuses whose responses declare a body at
+  # all -- {"error": "..."} -- so these two entries override the
+  # Recipe-wide suppression to say so.
+  parameter_missing:
+    status: 400
+    message_field: error
+    message: "invalid request"
+  conflict:
+    status: 409
+    message_field: error
+    message: "the request conflicted with the current state of the target resource"
+
+fixtures:
+  empty: {}
+
+  small-platform:
+    account:
+      - id: 04bc493e-9921-4520-9371-dae98bc0ce63
+        mode: production
+        accountType: business
+        displayName: "Whole Body Fitness"
+        createdOn: "2026-05-06T12:20:38.184Z"
+        updatedOn: "2026-05-06T12:20:38.184Z"
+
+      - id: dd64207c-076c-4ceb-8a49-a1023becfba8
+        mode: production
+        accountType: individual
+        displayName: "Jules Jackson"
+        createdOn: "2026-06-01T09:00:00Z"
+        updatedOn: "2026-06-01T09:00:00Z"
+
+    transfer:
+      # Card in, wallet out. sourceCard* is populated and sourceBankAccount*
+      # and sourceWallet* are both entirely absent from this record -- not
+      # null, not zeroed, just never set -- which is what puts them
+      # nowhere on the wire once it is shaped.
+      - id: ad473549-aca3-4038-a20b-1553bc3501cc
+        accountID: 04bc493e-9921-4520-9371-dae98bc0ce63
+        status: pending
+        amountValue: 32945
+        amountCurrency: USD
+        description: "Transfer from card to wallet"
+        createdOn: "2026-08-20T21:32:16Z"
+        sourcePaymentMethodID: 46ba234f-7e15-4f2d-9ae2-e836e620edb6
+        sourcePaymentMethodType: card-payment
+        sourceAccountID: dd64207c-076c-4ceb-8a49-a1023becfba8
+        sourceAccountEmail: jules@example.com
+        sourceAccountDisplayName: "Jules Jackson"
+        sourceCardID: ab81f9e8-e07b-4a85-9b81-9cc081f622e6
+        sourceCardBrand: Visa
+        sourceCardLastFour: "2000"
+        destinationPaymentMethodID: 83d5b572-ff04-4fd8-8e71-0656f6672662
+        destinationPaymentMethodType: moov-wallet
+        destinationAccountID: 04bc493e-9921-4520-9371-dae98bc0ce63
+        destinationAccountEmail: ops@example.com
+        destinationAccountDisplayName: "Whole Body Fitness"
+        destinationWalletID: ccb89f5a-be64-47a7-9ecd-db269412b2d7
+
+      # Bank account in, the same wallet out. The shape at "source" is a
+      # completely different sibling this time -- sourceBankAccount* is
+      # populated and sourceCard* is absent -- on a resource whose fields
+      # are declared identically to the record above.
+      - id: 35e4e1ca-330b-4dc8-beb1-ca3489fc92df
+        accountID: 04bc493e-9921-4520-9371-dae98bc0ce63
+        status: completed
+        amountValue: 15000
+        amountCurrency: USD
+        description: "Transfer from bank account to wallet"
+        createdOn: "2026-08-18T09:00:00Z"
+        completedOn: "2026-08-19T09:00:00Z"
+        sourcePaymentMethodID: 90599889-f1cd-411e-861d-62fdcd2e9f22
+        sourcePaymentMethodType: ach-debit-fund
+        sourceAccountID: dd64207c-076c-4ceb-8a49-a1023becfba8
+        sourceAccountEmail: jules@example.com
+        sourceAccountDisplayName: "Jules Jackson"
+        sourceBankAccountID: cb778373-5c55-4652-8198-d00eedc65453
+        sourceBankName: "First Northern"
+        sourceBankAccountType: checking
+        destinationPaymentMethodID: 404e0240-d5d9-4967-a2b4-023ac6689edf
+        destinationPaymentMethodType: moov-wallet
+        destinationAccountID: 04bc493e-9921-4520-9371-dae98bc0ce63
+        destinationAccountEmail: ops@example.com
+        destinationAccountDisplayName: "Whole Body Fitness"
+        destinationWalletID: 5b97d086-e938-45e9-b50f-80639d44400c
+
+# Three cases were checked against the live API on the date each carries.
+# Every other case is derived from Moov's published OpenAPI description;
+# none of those has been run against a real account, and none carries a
+# verified date.
+conformance:
+  - name: a missing credential gets the closest thing this format has to nothing
+    # The real answer, checked live, is zero bytes and no Content-Type
+    # header at all -- which no_body would assert if Cauldron's error path
+    # could ever produce it. It cannot (see the header comment), so this
+    # claims what the emulator actually sends instead of a claim that would
+    # never pass: an empty JSON object, which is the nearest this format
+    # gets to "nothing."
+    source: https://api.moov.io/ping
+    verified: "2026-09-01"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /ping
+    expect:
+      status: 401
+      body_matches: '^\{\}\s*$'
+
+  - name: a wrong credential answers exactly the same as a missing one
+    # A syntactically fine but fake bearer token, checked against both
+    # /ping and /accounts live: identical status, identical empty body,
+    # identical absence of any field naming what was wrong. There is no
+    # message here to get right or wrong -- that is the finding, and it
+    # survives even though the exact bytes do not: this Recipe's missing-
+    # credential case and this one assert the same body_matches pattern.
+    source: https://api.moov.io/accounts
+    verified: "2026-09-01"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts
+      headers:
+        Authorization: "Bearer junk-fake-token-12345"
+    expect:
+      status: 401
+      body_matches: '^\{\}\s*$'
+
+  - name: an address Moov does not have is refused, not missing
+    # Checked live four ways -- a nonsense path, the same path with a
+    # bearer token attached, a trailing slash on /accounts, and DELETE
+    # against /ping -- and all four came back 403, never 404 or 405. This
+    # case reproduces the plainest of the four.
+    source: https://api.moov.io/totally-not-a-real-path
+    verified: "2026-09-01"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /totally-not-a-real-path
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 403
+      body_matches: '^\{\}\s*$'
+
+  - name: a card-funded source carries a card and nothing else beside it
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts/04bc493e-9921-4520-9371-dae98bc0ce63/transfers/ad473549-aca3-4038-a20b-1553bc3501cc
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      body:
+        source.paymentMethodType: card-payment
+        source.card.brand: Visa
+        source.card.lastFourCardNumber: "2000"
+      absent:
+        - source.bankAccount
+        - source.wallet
+
+  - name: a bank-funded source carries a bank account instead, on the same field
+    # Same resource, same declared fields, and the sibling that shows up at
+    # "source" is a different one than the case above -- because which one
+    # appears is a property of the fixture record, not of the schema.
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts/04bc493e-9921-4520-9371-dae98bc0ce63/transfers/35e4e1ca-330b-4dc8-beb1-ca3489fc92df
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      body:
+        source.paymentMethodType: ach-debit-fund
+        source.bankAccount.bankName: "First Northern"
+        source.bankAccount.bankAccountType: checking
+      absent:
+        - source.card
+        - source.wallet
+
+  - name: the account beside a payment method is never polymorphic
+    # Every source and destination carries an account identifying who holds
+    # it, whichever of card / bankAccount / wallet accompanies it.
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts/04bc493e-9921-4520-9371-dae98bc0ce63/transfers/35e4e1ca-330b-4dc8-beb1-ca3489fc92df
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      body:
+        source.account.displayName: "Jules Jackson"
+        destination.account.displayName: "Whole Body Fitness"
+        destination.paymentMethodType: moov-wallet
+        destination.wallet.walletID: 5b97d086-e938-45e9-b50f-80639d44400c
+
+  - name: an amount is a nested object of minor units and a currency
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts/04bc493e-9921-4520-9371-dae98bc0ce63/transfers/ad473549-aca3-4038-a20b-1553bc3501cc
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      body:
+        amount.value: 32945
+        amount.currency: USD
+        status: pending
+      absent:
+        - amountValue
+        - amountCurrency
+
+  - name: a transfer listing is scoped to its account and is a bare array
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts/04bc493e-9921-4520-9371-dae98bc0ce63/transfers
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      matches:
+        "[0].transferID": "^[0-9a-f-]{36}$"
+      absent:
+        - data
+        - has_more
+        - total
+
+  - name: an account listing pages with skip and count, not offset and limit
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    request:
+      method: GET
+      path: /accounts?count=1&skip=1
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 200
+      matches:
+        "[0].accountID": "^[0-9a-f-]{36}$"
+
+  - name: parameter_missing is the one status this Recipe gives a body
+    source: https://raw.githubusercontent.com/moovfinancial/moov-api-public/main/latest/openapi.yaml
+    fixture: small-platform
+    arm: parameter_missing
+    request:
+      method: GET
+      path: /accounts
+      headers:
+        Authorization: "Bearer cauldron_moov_test_access_token"
+    expect:
+      status: 400
+      body:
+        error: "invalid request"
