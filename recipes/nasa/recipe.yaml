@@ -1,0 +1,566 @@
+# NASA Open APIs Recipe for Cauldron
+#
+# One host, one key, and several unrelated government services standing behind
+# it. api.nasa.gov fronts APOD (a daily picture, one Python-looking app) and
+# NEO (a near-Earth-object catalogue, a completely different Java-looking app
+# on Heroku), and the only thing they share is the gateway that authenticates
+# and meters both of them. Everything below that gateway disagrees.
+#
+# **A 400 is spelled two different ways depending on which app answers it.**
+#
+#   APOD, an unparseable date:
+#     {"code":400,"msg":"time data '2026/08/01' does not match format
+#     '%Y-%m-%d'","service_version":"v1"}
+#
+#   NEO, a date range over 7 days:
+#     {"code":400,"http_error":"BAD_REQUEST","error_message":"Date Format
+#     Exception - Expected format (yyyy-mm-dd) - The Feed date limit is only 7
+#     Days","request":"http://api.nasa.gov/rest/v1/feed?start_date=2026-08-01
+#     &end_date=2026-08-10"}
+#
+# Same status, same host, same DEMO_KEY, two different field names for the
+# message (msg vs error_message) and a category field (http_error) that only
+# one of the two sends. Code written against one 400 and pointed at the other
+# reads undefined out of every field it expects.
+#
+# **And there is a third shape, for the gateway itself.** A missing or wrong
+# api_key never reaches either app -- it is refused one level up, nested,
+# under yet another name:
+#
+#   {"error":{"code":"API_KEY_MISSING","message":"No api_key was supplied.
+#   Get one at https://api.nasa.gov:443"}}
+#
+# message.msg.error_message: three names for the same fact, on one host,
+# depending on which layer is doing the refusing. The rate limit answers in
+# this third shape too -- {"error":{"code":"OVER_RATE_LIMIT",...}} -- because
+# the gateway is what is counting, and the gateway is what a wrong key
+# reaches. The two apps never see either failure.
+#
+# The APOD text is Python's own strptime exception, verbatim, with the format
+# string still in it -- %Y-%m-%d -- which is an implementation detail of
+# whatever parses the date, leaked straight onto the wire.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.nasa.gov on the date in its verified field, including a
+# real 429 earned by spending a DEMO_KEY's hourly allowance down to zero.
+#
+# Three more the Recipe pins:
+#
+#   1. DEMO_KEY's own headers say the allowance, and it is smaller than the
+#      number usually quoted for it. X-Ratelimit-Limit answered 10 on every
+#      request, counting down 9, 8, 7 ... to 0, at which point the eleventh
+#      request in the hour answered 429. The 429's own Retry-After was 79513
+#      seconds -- about 22 hours, not the one hour the limit resets on -- and
+#      nothing in the response says why the two numbers disagree.
+#   2. The two apps are different programs on different infrastructure, not
+#      one program answering two paths. APOD's responses carry
+#      X-Powered-By: appdat and X-Frame-Options: SAMEORIGIN; NEO's carry a
+#      JSESSIONID cookie, arrive via Via: 1.1 heroku-router, and answer
+#      X-Frame-Options: DENY. A missing or invalid api_key is 403 either way,
+#      and a rate-limited request is 429 either way -- because both of those
+#      are refused by the gateway in front of both apps, before either one
+#      ever sees the request.
+#   3. A path neither app owns does not 404 from either of them. It falls
+#      through the whole gateway to a static site answering for
+#      api.nasa.gov's own documentation, hosted on GitHub Pages -- HTML,
+#      Content-Type text/html, Via: 1.1 varnish, and an X-Github-Request-Id
+#      that names an entirely third piece of infrastructure behind one host.
+#
+# Known fidelity gaps, and one shape this format cannot state at all:
+#
+#   - NEO's listing is not modelled, and it cannot be. /neo/rest/v1/feed
+#     answers {"near_earth_objects": {"2026-08-01": [ {...}, {...}, ... ],
+#     "2026-08-02": [ {...}, {...}, {...} ]}} -- an object keyed by date,
+#     where every value is an array of several independently identified
+#     asteroids (each with its own id, several sharing one date). Cauldron's
+#     map list style keys its object by the record's own id and each value is
+#     either that one record or, with entry_style: list, a hardcoded array of
+#     exactly that one record (internal/runtime/shape.go: `keyed[name] =
+#     []any{value}` -- one element, always). There is no way in this format
+#     to key a collection by a field that is not the record's identifier, or
+#     to put more than one record under a single map key. NEO needs both.
+#     Forcing it would mean either lying about the grouping (serving one
+#     asteroid per date, which real dates never have) or lying about the key
+#     (indexing by asteroid id instead of date, which is not how the real
+#     endpoint answers). Neither is what the provider does, so NEO's success
+#     shape is left out entirely rather than served wrong. Its 400 is pinned
+#     anyway, below, because a flat error envelope needs no list shape at all.
+#   - The gateway's own authentication failure is one name in this runtime
+#     (internal/runtime/handler.go fires exactly one "authentication_error"
+#     for any request that fails the auth scheme, whether the credential is
+#     absent or merely wrong) and NASA's gateway is two: API_KEY_MISSING for
+#     no key at all, verified below, and a differently worded API_KEY_INVALID
+#     for a key that is present and wrong --
+#     {"error":{"code":"API_KEY_INVALID","message":"An invalid api_key was
+#     supplied. Get one at https://api.nasa.gov:443"}}, checked live on the
+#     date below. Cauldron has one hook for both, so only one of the two texts
+#     can be served; this Recipe keeps the missing-key wording; the
+#     invalid-key wording is recorded here as evidence rather than as a case.
+#   - The identifier a picture is addressed by is a calendar date
+#     ("1995-06-16"), and id.style has no such option -- prefixed, numeric,
+#     timestamp, opaque, uuid, hex and digits are the whole list. opaque is
+#     the closest available and is used below; it is a bare string, not a
+#     random one, and the fixture is exact even though the style name is not.
+#   - Only two dates are served: the earliest addressable one and the one
+#     answered with no date at all, on the day this was written. The real
+#     endpoint answers a different "no date" picture every day back to
+#     1995-06-16, and the copyright field some entries carry was not observed
+#     on either date fetched, so it is not claimed here.
+#   - Passing an end_date before start_date to NEO's feed is not an error at
+#     all: it answers 200 with the two dates silently swapped, and its own
+#     links.self echoes the corrected range rather than the one actually
+#     sent. Checked live and worth recording, but it is evidence about the
+#     endpoint this Recipe does not model, not a case against one it does.
+#   - DEMO_KEY's rate limit is shared across every api.nasa.gov path behind
+#     the gateway, APOD and NEO alike, the same way agify.io's twenty-five a
+#     day is shared across three hostnames. Only APOD was spent down to
+#     verify the 429; NEO's half of the same counter was not separately
+#     exhausted.
+
+recipe: nasa
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.nasa.gov/
+
+auth:
+  # In the query string. DEMO_KEY is NASA's own published anonymous key, not a
+  # credential -- publishing it is the documented way to use this API without
+  # registering.
+  scheme: query
+  param: api_key
+  keys:
+    - DEMO_KEY
+
+responses:
+  # APOD's own shape: flat, msg and code, and service_version stamped beside
+  # them on success and failure alike.
+  error:
+    style: flat
+    message_field: msg
+    code_field: code
+  resource:
+    style: bare
+
+resources:
+  picture:
+    id:
+      style: opaque
+      # The wire calls it date, not id -- and it is one, not a random token.
+      # There is no id.style for that; opaque is the closest this format has.
+      field: date
+    fields:
+      media_type:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+      # Present on an image, absent -- not null -- on a video. Not required,
+      # so the fixture that omits it renders without it.
+      hdurl:
+        type: string
+      explanation:
+        type: string
+    constants:
+      # Stamped on every APOD response seen, success or failure, and never
+      # anything but "v1".
+      service_version: "v1"
+
+routes:
+  # The earliest date the real API will answer at all.
+  - method: GET
+    path: /planetary/apod
+    matches_query:
+      date: "1995-06-16"
+    resource: picture
+    operation: get
+    id_from: auth
+
+  # A date in the wrong shape entirely -- slashes instead of hyphens -- read
+  # straight into Python's strptime and answered in strptime's own words.
+  - method: GET
+    path: /planetary/apod
+    matches_query:
+      date: "2026/08/01"
+    error: apod_bad_date_format
+
+  # Two directions past the valid range, both answering the identical
+  # sentence: the same boundary check either way.
+  - method: GET
+    path: /planetary/apod
+    matches_query:
+      date: "1990-01-01"
+    error: apod_date_out_of_range
+
+  - method: GET
+    path: /planetary/apod
+    matches_query:
+      date: "2030-01-01"
+    error: apod_date_out_of_range
+
+  # No date at all: whichever picture is "today's" for whoever is asking.
+  # Falls through to this route for any date this Recipe has no fixture for
+  # too, which is every date besides the two seeded here.
+  - method: GET
+    path: /planetary/apod
+    resource: picture
+    operation: get
+    id_from: auth
+
+errors:
+  # The gateway's shape, one level above either app: nested, and the only one
+  # of the three envelopes with neither msg nor error_message in it.
+  authentication_error:
+    status: 403
+    style: nested
+    key: error
+    code: API_KEY_MISSING
+    code_field: code
+    message_field: message
+    message: "No api_key was supplied. Get one at https://api.nasa.gov:443"
+
+  apod_bad_date_format:
+    status: 400
+    # A number, not the error's own name -- code defaults to the name of the
+    # declared error absent this, which is a code no provider ever sends.
+    code: "400"
+    # Python's own strptime exception text, format string and all.
+    message: "time data '2026/08/01' does not match format '%Y-%m-%d'"
+    fields:
+      service_version: "v1"
+
+  apod_date_out_of_range:
+    status: 400
+    code: "400"
+    # The same sentence for a date too early and a date not yet arrived.
+    message: "Date must be between Jun 16, 1995 and Sep 01, 2026."
+    fields:
+      service_version: "v1"
+
+  # Earned by spending a real DEMO_KEY down from 10 to 0 within the hour and
+  # making one request more. The gateway's shape again, not either app's.
+  rate_limited:
+    status: 429
+    style: nested
+    key: error
+    code: OVER_RATE_LIMIT
+    code_field: code
+    message_field: message
+    message: "You have exceeded your rate limit. Try again later or contact us for assistance: https://api.nasa.gov:443"
+    headers:
+      # About 22 hours, not the one hour the limit itself resets on.
+      Retry-After: "79513"
+      X-Ratelimit-Limit: "10"
+      X-Ratelimit-Remaining: "0"
+
+  # NEO's own 400, on an endpoint this Recipe otherwise leaves unmodelled --
+  # see the header. A flat error needs no list shape to exist, so the third
+  # envelope is still pinned even though the resource behind it is not.
+  neo_feed_range_too_wide:
+    status: 400
+    style: flat
+    message_field: error_message
+    code_field: code
+    code: "400"
+    message: "Date Format Exception - Expected format (yyyy-mm-dd) - The Feed date limit is only 7 Days"
+    fields:
+      http_error: BAD_REQUEST
+      # Echoed back with /neo missing from the front of it -- the provider's
+      # own mistake, reproduced exactly rather than corrected.
+      request: "http://api.nasa.gov/rest/v1/feed?start_date=2026-08-01&end_date=2026-08-10"
+
+  # A path neither app owns. This is what api.nasa.gov answers for literally
+  # any unrecognised route, so it overrides Cauldron's own generic 404 rather
+  # than living on one declared path.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    # GitHub Pages' own 404, truncated before its two embedded base64 logo
+    # images -- bytes this Recipe has no use for reproducing. Everything
+    # above the cut is exact.
+    message: |-
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta http-equiv="Content-type" content="text/html; charset=utf-8">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'">
+          <title>Page not found &middot; GitHub Pages</title>
+          <style type="text/css" media="screen">
+            body {
+              background-color: #f1f1f1;
+              margin: 0;
+              font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            }
+
+            .container { margin: 50px auto 40px auto; width: 600px; text-align: center; }
+
+            a { color: #4183c4; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+
+            h1 { width: 800px; position:relative; left: -100px; letter-spacing: -1px; line-height: 60px; font-size: 60px; font-weight: 100; margin: 0px 0 50px 0; text-shadow: 0 1px 0 #fff; }
+            p { color: rgba(0, 0, 0, 0.5); margin: 20px 0; line-height: 1.6; }
+
+            ul { list-style: none; margin: 25px 0; padding: 0; }
+            li { display: table-cell; font-weight: bold; width: 1%; }
+
+            .logo { display: inline-block; margin-top: 35px; }
+            .logo-img-2x { display: none; }
+            @media
+            only screen and (-webkit-min-device-pixel-ratio: 2),
+            only screen and (   min--moz-device-pixel-ratio: 2),
+            only screen and (     -o-min-device-pixel-ratio: 2/1),
+            only screen and (        min-device-pixel-ratio: 2),
+            only screen and (                min-resolution: 192dpi),
+            only screen and (                min-resolution: 2dppx) {
+              .logo-img-1x { display: none; }
+              .logo-img-2x { display: inline-block; }
+            }
+
+            #suggestions {
+              margin-top: 35px;
+              color: #ccc;
+            }
+            #suggestions a {
+              color: #666666;
+              font-weight: 200;
+              font-size: 14px;
+              margin: 0 10px;
+            }
+
+          </style>
+        </head>
+        <body>
+
+          <div class="container">
+
+            <h1>404</h1>
+            <p><strong>File not found</strong></p>
+
+            <p>
+              The site configured at this address does not
+              contain the requested file.
+            </p>
+
+            <p>
+              If this is your site, make sure that the filename case matches the URL
+              as well as any file permissions.<br>
+              For root URLs (like <code>http://example.com/</code>) you must provide an
+              <code>index.html</code> file.
+            </p>
+
+            <p>
+              <a href="https://help.github.com/pages/">Read the full documentation</a>
+              for more information about using <strong>GitHub Pages</strong>.
+            </p>
+
+            <div id="suggestions">
+              <a href="https://githubstatus.com">GitHub Status</a> &mdash;
+              <a href="https://twitter.com/githubstatus">@githubstatus</a>
+            </div>
+
+            <a href="/" class="logo logo-img-1x">
+              <img width="32" height="32" title="" alt=""
+
+fixtures:
+  empty: {}
+
+  # Exactly one record, because both routes that serve this resource read
+  # their identifier from id_from: auth, and Cauldron refuses more than one
+  # record anywhere a route addresses a resource that way -- there would be
+  # nothing to choose between them with.
+  today:
+    picture:
+      # Fetched 2026-08-31. A video: no hdurl at all.
+      - id: "2026-08-31"
+        media_type: video
+        title: "Launch of the Roman Space Telescope"
+        url: "https://apod.nasa.gov/apod/image/2608/RomanLaunch_NASA.mp4"
+        explanation: "A new telescope has been launched into space to study the universe. The Nancy Grace Roman Space Telescope (RST) has the same size main mirror as the Hubble Space Telescope (HST) but sees 100 times more sky during each snapshot.  This is possible because when compared to HST, RST's main mirror is more curved, its secondary mirror is closer, and its main camera is larger.  The result is that RST can inspect more of the sky more quickly, likely allowing, among other capabilities, the discovery of many more supernovas which tell us more about the expansion rate and composition of our universe, and many more planets orbiting other stars that tell us more about the possibilities for life elsewhere in the universe. RST will orbit the Sun, not the Earth, like the James Webb Space Telescope.  The featured video shows Roman being launched yesterday from Kennedy Space Center, Florida, USA aboard a SpaceX Falcon Heavy rocket.   APOD's main NASA site is moving: From apod.nasa.gov to science.nasa.gov/apod"
+
+  earliest:
+    picture:
+      # The earliest date the real API will answer. An image: hdurl equals
+      # url exactly, rather than pointing at a larger version of it.
+      - id: "1995-06-16"
+        media_type: image
+        title: "Neutron Star Earth"
+        url: "https://apod.nasa.gov/apod/image/e_lens.gif"
+        hdurl: "https://apod.nasa.gov/apod/image/e_lens.gif"
+        explanation: "Today's Picture:    Explanation:  If the Earth could somehow be transformed to the ultra-high density of a neutron star , it might appear as it does in the above computer generated figure. Due to the very strong gravitational field, the neutron star distorts light from the background sky greatly. If you look closely, two images of the constellation Orion are visible. The gravity of this particular neutron star is so great that no part of the neutron star is blocked from view - light is pulled around by gravity even from the back of the neutron star.   We keep an  archive file.  Astronomy Picture of the Day is brought to you by  Robert Nemiroff and  Jerry Bonnell . Original material on this page is copyrighted to Robert Nemiroff and Jerry Bonnell."
+
+conformance:
+  - name: no date at all answers today's picture, and a video has no hdurl
+    source: https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: today
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        api_key: DEMO_KEY
+    expect:
+      status: 200
+      body:
+        date: "2026-08-31"
+        media_type: video
+        title: "Launch of the Roman Space Telescope"
+        service_version: "v1"
+      absent:
+        # Not null -- entirely missing, the way a video's answer sends it.
+        - hdurl
+
+  - name: the earliest date is a bare object, and its hdurl equals its url
+    source: https://api.nasa.gov/planetary/apod?date=1995-06-16&api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: earliest
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        date: "1995-06-16"
+        api_key: DEMO_KEY
+    expect:
+      status: 200
+      body:
+        date: "1995-06-16"
+        media_type: image
+        hdurl: "https://apod.nasa.gov/apod/image/e_lens.gif"
+        url: "https://apod.nasa.gov/apod/image/e_lens.gif"
+        service_version: "v1"
+
+  - name: a malformed date answers in strptime's own words
+    source: https://api.nasa.gov/planetary/apod?date=2026/08/01&api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        date: "2026/08/01"
+        api_key: DEMO_KEY
+    expect:
+      status: 400
+      body:
+        # A number, not the string "400" -- inferred the same way Twilio's
+        # numeric codes are.
+        code: 400
+        msg: "time data '2026/08/01' does not match format '%Y-%m-%d'"
+        service_version: "v1"
+
+  - name: a date before the archive begins is the same sentence as one in the future
+    source: https://api.nasa.gov/planetary/apod?date=1990-01-01&api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        date: "1990-01-01"
+        api_key: DEMO_KEY
+    expect:
+      status: 400
+      body:
+        msg: "Date must be between Jun 16, 1995 and Sep 01, 2026."
+
+  - name: and a date not yet arrived answers identically
+    source: https://api.nasa.gov/planetary/apod?date=2030-01-01&api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        date: "2030-01-01"
+        api_key: DEMO_KEY
+    expect:
+      status: 400
+      body:
+        # The identical wording checked above, one boundary in both
+        # directions.
+        msg: "Date must be between Jun 16, 1995 and Sep 01, 2026."
+
+  - name: no api_key at all is the gateway's shape, not either app's
+    source: https://api.nasa.gov/planetary/apod
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /planetary/apod
+    expect:
+      status: 403
+      body:
+        # Nested, under "error" -- the third envelope, and the only one with
+        # neither msg nor error_message anywhere in it.
+        "error.code": API_KEY_MISSING
+        "error.message": "No api_key was supplied. Get one at https://api.nasa.gov:443"
+      absent:
+        - msg
+        - error_message
+
+  - name: exceeding the hourly allowance answers the same nested shape
+    source: https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    arm: rate_limited
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        api_key: DEMO_KEY
+    expect:
+      status: 429
+      body:
+        "error.code": OVER_RATE_LIMIT
+      headers:
+        # Nearly a full day, on a counter that resets in one hour.
+        Retry-After: "79513"
+        X-Ratelimit-Limit: "10"
+        X-Ratelimit-Remaining: "0"
+
+  - name: NEO's 400 is a third shape entirely, on the same host and status
+    source: https://api.nasa.gov/neo/rest/v1/feed?start_date=2026-08-01&end_date=2026-08-10&api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    arm: neo_feed_range_too_wide
+    request:
+      method: GET
+      path: /neo/rest/v1/feed
+      query:
+        start_date: "2026-08-01"
+        end_date: "2026-08-10"
+        api_key: DEMO_KEY
+    expect:
+      status: 400
+      body:
+        code: 400
+        http_error: BAD_REQUEST
+        error_message: "Date Format Exception - Expected format (yyyy-mm-dd) - The Feed date limit is only 7 Days"
+        # The provider's own mistake: /neo is missing from the front of the
+        # path it echoes back.
+        request: "http://api.nasa.gov/rest/v1/feed?start_date=2026-08-01&end_date=2026-08-10"
+      absent:
+        # Neither of the other two envelopes' field names.
+        - msg
+        - error.message
+
+  - name: a path neither app owns falls through to a static site, in HTML
+    source: https://api.nasa.gov/not/a/real/path?api_key=DEMO_KEY
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /not/a/real/path
+      query:
+        api_key: DEMO_KEY
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      # The application never answers at all -- GitHub Pages does, for
+      # api.nasa.gov's own docs site, in words neither app above ever uses.
+      body_matches: 'File not found'

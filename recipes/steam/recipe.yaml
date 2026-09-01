@@ -1,0 +1,468 @@
+# Steam Web API Recipe for Cauldron
+#
+# A miss is not an error. It is a 200 whose only content is a boolean.
+#
+#   GET /api/appdetails?appids=440       -> {"440":{"success":true,"data":{...}}}
+#   GET /api/appdetails?appids=99999999  -> {"99999999":{"success":false}}
+#
+# The envelope is a map with exactly one key, and that key is the app id the
+# caller asked for -- a number, rendered as the string that JSON object keys
+# have to be. There is no HTTP 404, no error field, and on the failing id
+# "data" is not null, it is simply not there: the whole answer to whether app
+# 99999999 exists is a five-word object at the far end of a 200. Code that
+# checks response.ok and reads .data crashes on the very case it was written
+# to detect politely.
+#
+# **And a steamid does not fit where a JSON number is safe.** A Steam id is a
+# 64-bit integer -- 76561198095040360 -- and 2^53 is 9007199254740992, so this
+# one is off the safe end of a JavaScript number by a factor of eight. Every
+# steamid this Recipe has seen travels quoted:
+#
+#   "author":{"steamid":"76561198095040360", ...}
+#
+# checked on store.steampowered.com/appreviews/440?json=1. A client that
+# parses the response with a general-purpose JSON reader and then compares two
+# ids as numbers has already lost the bits that made them different, silently,
+# because the corruption happens in the parser and nothing downstream ever
+# sees the original digits.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.steampowered.com and store.steampowered.com on the date
+# in its verified field, using no key at all.
+#
+# Three more the Recipe pins:
+#
+#   1. One appdetails answer states an id as a number in one array and as a
+#      string in the next. categories[0] is {"id":1,"description":"Multi-player"}
+#      and genres[0] is {"id":"1","description":"Action"} -- same response, same
+#      shape of field, two JSON types. A client that parses one array's ids as
+#      numbers and reuses the code for the other gets "1" === 1 failing at the
+#      one place a caller is most likely to write that comparison.
+#   2. The same review field is a bare number before anyone has voted on the
+#      review and a quoted string once someone has. Checked against twenty
+#      live reviews on 2026-08-31: every one with votes_up: 0 answered
+#      weighted_vote_score as the bare JSON number 0.5, and every one with a
+#      vote answered it as a quoted string with sixteen digits of native
+#      double precision -- "0.589720726013183594" on nine votes,
+#      "0.523809552192687988" on one, even "0.5" itself quoted on one that
+#      happened to round there. The type is not a function of the value; it is
+#      a function of whether a database column was ever written. This
+#      Recipe's field schema is one declared type per field and cannot say
+#      both, so it states the quoted shape, which is what every voted review
+#      answers, and pins the unvoted one here rather than forcing it into a
+#      conformance case the schema cannot hold.
+#   3. The classic public endpoint everybody's tutorial names is gone.
+#      ISteamApps/GetAppList/v2/, the one no-key call that is supposed to hand
+#      back every app Steam has ever shipped, answers 404 with
+#      "Method 'GetAppList' not found in interface 'ISteamApps'" -- checked
+#      four ways (with and without a User-Agent, with and without a trailing
+#      format parameter, against a sibling method in the same interface that
+#      still works) to rule out a fluke. Whatever replaced it needs a key.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - appdetails carries dozens of fields (screenshots, movies, pc_requirements,
+#     price_overview, achievements, metacritic, ratings...) and this Recipe
+#     states a handful of them. Two apps are served, of roughly 190,000.
+#   - The real endpoint answers exactly the one id in ?appids=, and only one:
+#     passing a second (?appids=440,570) is a 400 whose body is the four bytes
+#     `null` -- a bare JSON null, not an object, not a string, and not a shape
+#     this format has a name for an error taking. That is stated here rather
+#     than forced into a conformance case with the wrong style, and it is why
+#     appids is singular in practice despite its plural name. The sandbox
+#     cannot narrow by it either, for a different reason: the app id is
+#     declared field: "-" because the real answer never echoes it, and
+#     Cauldron's filters narrow a listing by a declared field, so there is
+#     nothing left to filter on. The sandbox therefore answers every recorded
+#     app on every request -- both 440 and 99999999 together, always -- which
+#     is the same trade CoinGecko's Recipe states for ids= and is wrong in the
+#     same direction: too generous, never too narrow.
+#   - GetPlayerSummaries and GetAppList belong to api.steampowered.com's
+#     key-gated interfaces. Their success shapes are not modelled at all,
+#     because reaching them needs a real key and this Recipe was written
+#     without ever holding one; only the two failures a keyless caller can
+#     actually produce are recorded. appdetails and appreviews, on
+#     store.steampowered.com, are the two routes here that need no key for
+#     anything they do, and neither is part of Valve's documented Web API --
+#     both are the storefront's own undocumented, widely-depended-on JSON.
+#   - weighted_vote_score is declared type: string, which is what every voted
+#     review in this Recipe's fixtures answers. The unvoted shape -- the bare
+#     number 0.5, pinned in the header above with its own source -- is real
+#     and verified and not in any conformance case, because a field here
+#     takes one declared type and this one genuinely needs two. Forcing a
+#     second fixture record to hold 0.5 under type: string would have Cauldron
+#     itself refuse the file: seeding a number where a string is declared is
+#     rejected before a Recipe can even be verified, which is the schema
+#     working as intended and the reason this gap is stated rather than
+#     smuggled past it.
+#   - appreviews carries query_summary and a pagination cursor beside the
+#     reviews array; neither is modelled, the same trade CoinGecko's Recipe
+#     makes for ids= -- adding them would describe paging this Recipe does not
+#     implement rather than the two id-representation traps that are the
+#     point of modelling this endpoint at all.
+#   - The html fallback shape is truncated hard, to the seven real characters
+#     before its first quotation mark, so the fixture never has to hold or
+#     escape the ~11KB of server-rendered markup a real request returns. The
+#     conformance case matches a prefix rather than a value for exactly that
+#     reason.
+
+recipe: steam
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  # A label of convenience: GetPlayerSummaries and GetAppList are both v2 of
+  # their own interfaces, and appdetails and appreviews carry no version at
+  # all because Valve has never documented them.
+  api: v2
+  docs: https://partner.steamgames.com/doc/webapi_overview
+
+auth:
+  # True for the two routes this Recipe can actually reach: the storefront's
+  # appdetails and appreviews need no key for anything modelled here. The
+  # other two routes belong to a key-gated interface and are modelled only by
+  # the failure a keyless request produces, never by a success this Recipe
+  # was never able to observe.
+  scheme: none
+
+responses:
+  list:
+    # An object keyed by the app id asked for, not an array, and not wrapped
+    # in anything -- CoinGecko's shape, for the same reason: there is no name
+    # to put the collection under when the id the caller sent is the only key
+    # in the answer.
+    style: map
+    key: "-"
+  error:
+    # Every failure this Recipe can reach is a plain-text HTML body, from an
+    # API whose successes are JSON. A client calling .json() on either one
+    # throws rather than reading a reason.
+    style: text
+
+resources:
+  appdetails:
+    id:
+      style: numeric
+      # Not "-". A map-style list needs the identifier to survive as the
+      # entry's key, and the map renderer already omits "id" from the value
+      # unconditionally -- the same way CoinGecko's price does -- so this
+      # still matches the wire exactly: no "id" or "appid" field beside
+      # "success" and "data", because the real endpoint never sends one.
+      field: id
+    fields:
+      success:
+        type: boolean
+      # An opaque blob rather than a modelled schema. The real object carries
+      # dozens of fields this Recipe does not attempt.
+      data:
+        type: map
+
+  review:
+    id:
+      style: digits
+      field: recommendationid
+    fields:
+      author:
+        type: map
+      language:
+        type: string
+      review:
+        type: string
+      timestamp_created:
+        type: integer
+      voted_up:
+        type: boolean
+      votes_up:
+        type: integer
+      # Quoted, with sixteen digits of native double precision, on every
+      # voted review this Recipe has seen. Declared as a string for exactly
+      # that reason -- and see the header and the fidelity gaps below for the
+      # shape this field takes instead on a review nobody has voted on, which
+      # this schema cannot also declare.
+      weighted_vote_score:
+        type: string
+
+  # The shape the same path answers with when the caller does not know to ask
+  # for JSON. No identifier of any kind: one record, always.
+  review_html:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      success:
+        type: integer
+      html:
+        type: string
+
+routes:
+  # No filters: declared. The app id is spent entirely as the map key
+  # (id.field: "-" above), so there is no declared field left to filter on --
+  # Cauldron's filters narrow a listing by a field the resource states, and
+  # the one identifier this endpoint has is deliberately not one. The sandbox
+  # therefore answers every recorded app on every request, the same trade
+  # CoinGecko's Recipe makes for ids=, and it is written up in the fidelity
+  # gaps below rather than left to be discovered.
+  - method: GET
+    path: /api/appdetails
+    resource: appdetails
+    operation: list
+
+  # The expanded route comes first: a route declaring matches_query beats an
+  # equally-scoring one that declares nothing, so the plain route below is
+  # the fallback a caller reaches by forgetting the parameter.
+  - method: GET
+    path: /appreviews/440
+    resource: review
+    operation: list
+    matches_query:
+      json: "1"
+    list:
+      style: wrapped
+      key: reviews
+    fields:
+      # An integer, not the boolean every field with this name suggests.
+      # appdetails' own "success" is a boolean two levels down; this one is a
+      # top-level 1.
+      success: 1
+
+  # The fallback: the same path, the same method, and a caller who left off
+  # ?json=1 gets a rendered fragment instead of the reviews it asked for.
+  - method: GET
+    path: /appreviews/440
+    resource: review_html
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /ISteamUser/GetPlayerSummaries/v2/
+    error: missing_key
+
+  - method: GET
+    path: /ISteamApps/GetAppList/v2/
+    error: method_not_found
+
+errors:
+  missing_key:
+    status: 400
+    headers:
+      Content-Type: "text/html; charset=UTF-8"
+    message: "<html><head><title>Bad Request</title></head><body><h1>Bad Request</h1>Required parameter 'key' is missing</body></html>"
+
+  method_not_found:
+    status: 404
+    headers:
+      Content-Type: "text/html; charset=UTF-8"
+    message: "<html><head><title>Not Found</title></head><body><h1>Not Found</h1>Method 'GetAppList' not found in interface 'ISteamApps'</body></html>"
+
+fixtures:
+  empty: {}
+
+  store:
+    appdetails:
+      - id: "440"
+        success: true
+        data:
+          type: game
+          name: "Team Fortress 2"
+          steam_appid: 440
+          required_age: 0
+          is_free: true
+          dlc: [629330]
+          categories:
+            # A bare number.
+            - id: 1
+              description: Multi-player
+            - id: 27
+              description: Cross-Platform Multiplayer
+          genres:
+            # A quoted one, one array over, in the same response.
+            - id: "1"
+              description: Action
+            - id: "37"
+              description: Free To Play
+          platforms:
+            windows: true
+            mac: false
+            linux: true
+          release_date:
+            coming_soon: false
+            date: "Oct 10, 2007"
+      # The failing id. No "data" key at all -- absent, not null.
+      - id: "99999999"
+        success: false
+
+    review:
+      - id: "233191366"
+        author:
+          # Sixty-four bits, and 2^53 is 9007199254740992: this one is off
+          # the safe end of a JavaScript number by a factor of eight, and it
+          # travels quoted.
+          steamid: "76561198095040360"
+          personaname: Rykah
+          num_games_owned: 572
+          # An ordinary Unix timestamp, bare, in the same object as the
+          # quoted steamid two lines up. The size of the number decides
+          # whether it is safe, not the field's name or its neighbours.
+          last_played: 1787020563
+        language: english
+        review: "Though thick and thin, this game's always been here for me. Love it to pieces, even if I also hate it a little bit."
+        timestamp_created: 1787142239
+        voted_up: true
+        votes_up: 9
+        # Sixteen digits of precision, quoted, on a review nine people voted on.
+        weighted_vote_score: "0.589720726013183594"
+      - id: "234065484"
+        author:
+          steamid: "76561199098928500"
+          personaname: Pasgo
+          num_games_owned: 101
+          last_played: 1788226251
+        language: english
+        review: 'Meh game. but shout out to the 3 "active" game devs that have changed a single thing it the past 10 years.'
+        timestamp_created: 1788084638
+        voted_up: true
+        votes_up: 1
+        weighted_vote_score: "0.523809552192687988"
+
+    review_html:
+      # Truncated to the seven characters before the markup's first quotation
+      # mark, so the fixture never has to escape the rest of an ~11KB blob of
+      # server-rendered review HTML.
+      - id: page
+        success: 1
+        html: "<div>\n\n\t<div data-panel="
+
+conformance:
+  - name: a known app answers 200 with success under the app id it was asked for
+    source: https://store.steampowered.com/api/appdetails?appids=440
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /api/appdetails?appids=440
+    expect:
+      status: 200
+      body:
+        # The key is the id as a string, not a name the caller chose.
+        "440.success": true
+        "440.data.steam_appid": 440
+        "440.data.name": "Team Fortress 2"
+        "440.data.type": game
+        "440.data.is_free": true
+
+  - name: a non-existent app is still a 200, and success is the only thing said
+    source: https://store.steampowered.com/api/appdetails?appids=99999999
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /api/appdetails?appids=99999999
+    expect:
+      status: 200
+      body:
+        "99999999.success": false
+      absent:
+        # Not null. Not present at all.
+        - "99999999.data"
+
+  - name: one response states an id as a number in one array and a string in the next
+    source: https://store.steampowered.com/api/appdetails?appids=440
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /api/appdetails?appids=440
+    expect:
+      status: 200
+      body:
+        "440.data.categories[0].id": 1
+        "440.data.genres[0].id": "1"
+
+  - name: the steamid does not fit where a JSON number is safe, so it is a string
+    source: https://store.steampowered.com/appreviews/440?json=1&num_per_page=2
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /appreviews/440?json=1
+    expect:
+      status: 200
+      body:
+        "reviews[0].author.steamid": "76561198095040360"
+        # The ordinary timestamp two fields over is not quoted.
+        "reviews[0].author.last_played": 1787020563
+
+  - name: the score is a quoted string carrying full double precision, not a percentage
+    source: https://store.steampowered.com/appreviews/440?json=1&num_per_page=20&filter=all
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /appreviews/440?json=1
+    expect:
+      status: 200
+      body:
+        "reviews[0].votes_up": 9
+        "reviews[0].weighted_vote_score": "0.589720726013183594"
+        "reviews[1].votes_up": 1
+        # Sixteen digits again, on a different review, always quoted here --
+        # see the header for the review this Recipe cannot also seed, where
+        # the same field is a bare 0.5 instead.
+        "reviews[1].weighted_vote_score": "0.523809552192687988"
+
+  - name: json=1 is what turns the page into reviews instead of markup
+    source: https://store.steampowered.com/appreviews/440?json=1
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /appreviews/440?json=1
+    expect:
+      status: 200
+      body:
+        # An integer, not the boolean the name suggests everywhere else.
+        success: 1
+      absent:
+        - html
+
+  - name: and without it the same path answers a rendered fragment, not a review
+    source: https://store.steampowered.com/appreviews/440
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /appreviews/440
+    expect:
+      status: 200
+      body:
+        success: 1
+      matches:
+        html: '^<div>'
+      absent:
+        - reviews
+
+  - name: no key at all is a 400 in plain HTML, not a 401 and not JSON
+    source: https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?steamids=76561197960435530
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /ISteamUser/GetPlayerSummaries/v2/
+    expect:
+      status: 400
+      headers:
+        Content-Type: "text/html; charset=UTF-8"
+      body_matches: "Required parameter 'key' is missing"
+
+  - name: the classic public app list is gone; the interface says so by name
+    source: https://api.steampowered.com/ISteamApps/GetAppList/v2/
+    verified: "2026-08-31"
+    fixture: store
+    request:
+      method: GET
+      path: /ISteamApps/GetAppList/v2/
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=UTF-8"
+      body_matches: "Method 'GetAppList' not found in interface 'ISteamApps'"

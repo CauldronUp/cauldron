@@ -1,0 +1,760 @@
+# NOAA NCEI Access Data Service Recipe for Cauldron
+#
+# The format parameter does not just change the wire type. It changes which
+# API answers you.
+#
+#   GET .../data/v1?dataset=global-summary-of-the-year&stations=USW00094728
+#       &startDate=2020-01-01&endDate=2020-12-31&format=json
+#   ->  [{"EMXP":"  64.5","PRCP":"   1152.8","TMAX":"     17.92", ...}]
+#       (37 keys -- only the ones this station-year actually has)
+#
+#   Same request, format=csv:
+#   ->  "STATION","DATE","AWND","CDSD","CLDD",...,"WSFM"   <- 141 header columns
+#       "USW00094728","2020",,"    725.4","     725.4",...,     <- every column,
+#                                                                   blank where
+#                                                                   JSON simply
+#                                                                   left the key
+#                                                                   out
+#
+# JSON is sparse: a station-year with no wind data has no AWND key anywhere in
+# it. CSV is dense: the same station-year has an AWND column and it is empty
+# between two commas. A client that reads a fixed set of columns out of CSV and
+# a client that reads named keys out of JSON are each making an assumption the
+# other format breaks -- and the two are not translations of each other, they
+# are two different serialisations of two different ideas about what a record
+# is.
+#
+# **And CSV is what you get by default.** Leaving `format` off entirely
+# answers Content-Type: text/csv;charset=utf-8, not JSON -- confirmed by
+# requesting the exact URL above with the format parameter removed. A client
+# that builds this URL by hand, tests it in a browser, and forgets to add
+# `&format=json` before wiring it into code gets CSV in production and never
+# sees an error telling it so.
+#
+# Every numeric value in the JSON body is a quoted, right-justified,
+# space-padded string -- not because someone chose to serialise it that way,
+# but because it is copied verbatim out of the fixed-width text files these
+# datasets have always shipped as. TMAX is nine characters after the quotes on
+# every station-year checked, whatever the value:
+#
+#   2018  "TMAX":"     16.99"   (10 chars incl. quotes' contents)
+#   2019  "TMAX":"     16.97"
+#   2020  "TMAX":"     17.92"
+#
+# parseFloat handles it. `TMAX === 17.92` never does, and a schema declaring
+# TMAX as a JSON number rejects every response this service has ever sent.
+#
+# Four more this Recipe pins:
+#
+#   1. The field set changes row to row, silently. One station, three
+#      consecutive years, one request: 2018's row carries FZF3 and FZF4, 2019's
+#      carries FZF3 and not FZF4, 2020's carries neither. There is no schema
+#      field and no null -- the key is simply not there some years, and
+#      "some years" is not knowable in advance, because it depends on which
+#      freeze-threshold statistics that station happened to record that year.
+#   2. Every failure answers the same envelope with the same two facts stated
+#      twice: the HTTP status line says 400, and the body's own "errorCode"
+#      says 400 again, next to "errorMessage": "Bad Request" -- English for
+#      the number beside it, for a status that is not itself informative about
+#      which of six different validations failed.
+#   3. Two different sentences mean "you left this out." Leaving out `dataset`
+#      answers {"field":"dataset","message":"must not be null","value":null} --
+#      a Bean Validation default, in English about a Java concept. Leaving out
+#      `stations` answers {"field":"stations","message":"A station is
+#      required.","value":null} -- a sentence someone actually wrote for this
+#      API. Same shape, same status, one default message and one authored one,
+#      and nothing about the response says which kind you got.
+#   4. A reversed date range fails on both ends at once, in one response:
+#      startDate says "The start date can not be after the end date" and
+#      endDate says "The end date can not be before the start date," two
+#      objects in the same "errors" array over one HTTP request. Cauldron's
+#      own list error style renders exactly one entry per declared failure, so
+#      this Recipe reproduces the first of the two and states the second here
+#      rather than silently dropping it -- see "Known fidelity gaps."
+#
+# The search service two hosts over answers a different shape for what looks
+# like the same kind of failure. An unknown dataset on the *data* endpoint
+# names the field: {"field":"dataset","message":"Unsupported dataset.",
+# "value":"not-a-real-dataset"}. An unknown dataset on the *search* endpoint
+# answers {"field":null,"message":"dataset: Unknown dataset, : Invalid search
+# options","value":null} -- the field name is not in "field" at all, it is
+# text mashed into the front of "message" with a colon, and both structured
+# fields that would let a client route the error programmatically are null.
+#
+# The search service also answers a "count" that has nothing to do with how
+# many results came back. ?limit=1 and ?limit=2 both answer "count": 10000,
+# while "results" holds exactly one and two records respectively, and
+# "totalCount" -- a different field, spelled differently -- holds the true
+# match count (86045, checked against global-summary-of-the-year). A client
+# reading "count" as "how many are in this response" or "how many exist in
+# total" is wrong both ways at once.
+#
+# Written against the live API rather than a document: every case below was
+# checked against www.ncei.noaa.gov on the date in its verified field, with no
+# key requested, guessed at, or needed -- this service takes none.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - format=csv, and the CSV shape described above, are recorded rather than
+#     served. Cauldron's routes answer JSON; a Recipe that produced CSV bytes
+#     from this format would be claiming the tool can write CSV, which it
+#     cannot. This Recipe only answers requests that carry format=json
+#     explicitly (matches_query). Every other value, and the omitted
+#     parameter -- which is most real traffic, since CSV is the default --
+#     reaches a shape this Recipe does not serve, and asking for one of those
+#     against the emulator answers Cauldron's ordinary unrouted-path 404
+#     rather than the CSV, SSV, netCDF or PDF the real service would send. The
+#     error message for an unsupported format names all five: "Valid formats
+#     are csv, json, ssv, netcdf, and pdf" -- only csv and json were checked
+#     against a live response; ssv, netcdf and pdf are recorded from that
+#     sentence and not requested.
+#   - The reversed-date-range failure's second array entry (the endDate
+#     complaint) is not reproducible. See point 4 above.
+#   - Neither startDate nor endDate is filtered on. The real service selects
+#     station-years inside the requested range; this Recipe answers whichever
+#     fixture a case seeds, in full, and only stations is a real filter
+#     (equality against a fixture's STATION field). A request with a date
+#     range that matches nothing on the real service still gets everything
+#     the fixture holds here. dataset is not filtered on either: one dataset,
+#     global-summary-of-the-year, is modelled, and every route ignores the
+#     value of dataset except the one route whose whole job is to reject an
+#     unrecognised one.
+#   - 39 of global-summary-of-the-year's fields are declared, chosen to
+#     reproduce the findings above. The real CSV header names 141: wind,
+#     evaporation, fifteen ranked monthly extremes each for four different
+#     measures (HN01-15, HX01-15, LN01-15, LX01-15), pan evaporation, sunshine
+#     duration, and more. None of those 102 others are modelled.
+#   - The search endpoint's response is far deeper than what is served here.
+#     Every result carries its own nested "dataTypes" array (per-variable
+#     date-coverage records) and a "stations" array whose entries carry a
+#     third, again-differently-shaped "dataTypes" of their own, plus
+#     "platforms", "location", "centroid" and "boundingPoints". The top-level
+#     body separately carries two Elasticsearch-shaped terms aggregations
+#     (also both called "dataTypes" and "stations", a third and fourth shape
+#     for those two names) plus "bounds" and "totalFileSize". None of that
+#     nesting is modelled; only the flat fields on each result and the
+#     misleading "count" alongside "totalCount" are.
+#   - One station is served, USW00094728, across three consecutive years for
+#     global-summary-of-the-year, and two file records are served for the
+#     search endpoint, of the 86,045 the real search reports for that one
+#     dataset.
+
+recipe: noaa
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.ncei.noaa.gov/support/access-data-service-api-user-documentation
+
+auth:
+  # Public. No key is accepted, required, or checked.
+  scheme: none
+
+responses:
+  list:
+    # The data endpoint answers a bare top-level array. The search endpoint
+    # overrides this per route below, because it wraps its array and rides
+    # metadata beside it.
+    style: bare
+  error:
+    # {"errors": [{...}]}, alongside the two constants every failure repeats.
+    style: list
+    key: errors
+    message_field: message
+    fields:
+      # The status, said again inside the body it is the status of.
+      errorCode: 400
+      errorMessage: Bad Request
+
+resources:
+  annual_summary:
+    id:
+      style: opaque
+      # Not globally unique -- it is unique only within one station's series --
+      # but it is the one field every row carries under its own name, the same
+      # way bocvalet's observation is keyed by "d".
+      field: DATE
+    fields:
+      STATION:
+        type: string
+      DATE:
+        type: string
+      # The rest are declared as string throughout, because every one of them
+      # arrives quoted and fixed-width-padded, whatever kind of quantity it
+      # holds -- see the header above.
+      CDSD:
+        type: string
+      CLDD:
+        type: string
+      DP01:
+        type: string
+      DP10:
+        type: string
+      DP1X:
+        type: string
+      DSND:
+        type: string
+      DSNW:
+        type: string
+      DT00:
+        type: string
+      DT32:
+        type: string
+      DX32:
+        type: string
+      DX70:
+        type: string
+      DX90:
+        type: string
+      DYFG:
+        type: string
+      DYHF:
+        type: string
+      DYTS:
+        type: string
+      EMNT:
+        type: string
+      EMSD:
+        type: string
+      EMSN:
+        type: string
+      EMXP:
+        type: string
+      EMXT:
+        type: string
+      # Present in 2018 and 2019 and absent in 2020, on the same station.
+      FZF3:
+        type: string
+      # Present in 2018 alone, of the three years this Recipe fixtures.
+      FZF4:
+        type: string
+      FZF0:
+        type: string
+      FZF1:
+        type: string
+      FZF2:
+        type: string
+      FZF5:
+        type: string
+      FZF6:
+        type: string
+      FZF7:
+        type: string
+      FZF8:
+        type: string
+      FZF9:
+        type: string
+      HDSD:
+        type: string
+      HTDD:
+        type: string
+      PRCP:
+        type: string
+      SNOW:
+        type: string
+      TAVG:
+        type: string
+      TMAX:
+        type: string
+      TMIN:
+        type: string
+
+  dataset_file:
+    id:
+      style: opaque
+      # "gsoy-latest.tar.gz:USC00218450.csv" -- the archive name and the file
+      # name, colon-joined. Not the station id the data endpoint takes: that
+      # is USC00218450 with no extension, so round-tripping a search result
+      # into a data request means stripping ".csv" off the second half of
+      # this by hand.
+      field: id
+    fields:
+      name:
+        type: string
+      filePath:
+        type: string
+      tar:
+        type: string
+      startDate:
+        type: string
+      endDate:
+        type: string
+      fileSize:
+        type: integer
+      dataTypesCount:
+        type: integer
+
+routes:
+  # The data endpoint. Answers only when format=json is explicit -- see
+  # "Known fidelity gaps" for the (most common) requests that are not.
+  - method: GET
+    path: /access/services/data/v1
+    resource: annual_summary
+    operation: list
+    matches_query:
+      format: json
+    filters:
+      - param: stations
+        field: STATION
+    headers:
+      # The real service declares a charset on this one and not on the
+      # search response below -- both are recorded exactly as sent.
+      Content-Type: application/json;charset=utf-8
+
+  # Six ways of asking wrong, each its own path because none of these
+  # failures is reachable by declaring a filter: they are refusals to answer
+  # at all, the same shape epss's missing-cve path and bocvalet's bad-recent
+  # path already are.
+  - method: GET
+    path: /access/services/data/v1-unsupported-dataset
+    error: unsupported_dataset
+
+  - method: GET
+    path: /access/services/data/v1-invalid-date
+    error: invalid_date
+
+  - method: GET
+    path: /access/services/data/v1-date-range-reversed
+    error: date_range_reversed
+
+  - method: GET
+    path: /access/services/data/v1-missing-dataset
+    error: missing_dataset
+
+  - method: GET
+    path: /access/services/data/v1-missing-stations
+    error: missing_stations
+
+  - method: GET
+    path: /access/services/data/v1-unsupported-format
+    error: unsupported_format
+
+  # The search endpoint. A different host, a different shape, the same
+  # envelope for its failures.
+  - method: GET
+    path: /access/services/search/v1/data
+    resource: dataset_file
+    operation: list
+    list:
+      style: wrapped
+      key: results
+      fields:
+        # Neither of these is the length of "results" -- see the header above.
+        count: 10000
+        totalCount: 86045
+        startDate: "1763-01-01T00:00:00"
+        endDate: "2026-12-31T23:59:59"
+
+  - method: GET
+    path: /access/services/search/v1/data-invalid-query
+    error: search_invalid_query
+
+errors:
+  unsupported_dataset:
+    status: 400
+    message: Unsupported dataset.
+    fields:
+      field: dataset
+      value: not-a-real-dataset
+
+  invalid_date:
+    status: 400
+    message: "Invalid ISO Date Time. The correct ISO Date Time format is YYYY-MM-DD or YYYY-MM-DDTHH:MM:ss"
+    fields:
+      field: startDate
+      value: not-a-date
+
+  date_range_reversed:
+    status: 400
+    # The real response also carries a second entry, for endDate, saying the
+    # opposite direction of the same complaint. This format serves one entry
+    # per declared error -- see "Known fidelity gaps."
+    message: The start date can not be after the end date.
+    fields:
+      field: startDate
+      value: "2020-12-31"
+
+  missing_dataset:
+    status: 400
+    # The framework's own default sentence, about a Java concept, in English.
+    message: must not be null
+    fields:
+      field: dataset
+      value: null
+
+  missing_stations:
+    status: 400
+    # A sentence someone actually wrote for this API, unlike the one above --
+    # same status, same shape, one default and one authored.
+    message: A station is required.
+    fields:
+      field: stations
+      value: null
+
+  unsupported_format:
+    status: 400
+    message: "Invalid file format. Valid formats are csv, json, ssv, netcdf, and pdf."
+    fields:
+      field: format
+      value: xml
+
+  search_invalid_query:
+    status: 400
+    # The field name is not in "field" -- it is text glued onto the front of
+    # "message" instead, and both structured fields are null.
+    message: "dataset: Unknown dataset, : Invalid search options"
+    fields:
+      field: null
+      value: null
+
+fixtures:
+  empty: {}
+
+  # One station, one year -- the exact request in NOAA's own example query.
+  single_year:
+    annual_summary:
+      - id: "2020"
+        DATE: "2020"
+        STATION: USW00094728
+        EMXP: "  64.5"
+        EMXT: "   35.6"
+        PRCP: "   1152.8"
+        DP10: "        83"
+        DX90: "        20"
+        DX70: "       147"
+        EMNT: "   -9.9"
+        DT32: "        41"
+        DX32: "         6"
+        TMAX: "     17.92"
+        EMSD: "   230"
+        FZF1: "-4.3"
+        FZF0: "0.0"
+        FZF2: "-6.6"
+        FZF5: "-3.8"
+        EMSN: "   165"
+        FZF7: "-6.6"
+        DSND: "        9"
+        FZF6: "-3.8"
+        SNOW: "      325"
+        FZF9: "-9.9"
+        FZF8: "-9.9"
+        HDSD: "    2407.0"
+        CDSD: "    725.4"
+        DP01: "       127"
+        HTDD: "    2407.0"
+        DT00: "         0"
+        DP1X: "        10"
+        DYHF: "         8"
+        DYTS: "        27"
+        CLDD: "     725.4"
+        DYFG: "       153"
+        DSNW: "         3"
+        TAVG: "     14.05"
+        TMIN: "     10.17"
+
+  # The same station, three consecutive years, requested in one call -- the
+  # field-set-changes-per-row evidence.
+  three_years:
+    annual_summary:
+      - id: "2018"
+        DATE: "2018"
+        STATION: USW00094728
+        EMXP: "  73.7"
+        EMXT: "   35.6"
+        PRCP: "   1665.3"
+        DP10: "       102"
+        DX90: "        21"
+        DX70: "       152"
+        EMNT: "  -14.9"
+        DT32: "        66"
+        DX32: "        14"
+        TMAX: "     16.99"
+        EMSD: "   200"
+        FZF1: "-2.7"
+        FZF0: "0.0"
+        FZF3: "-8.2"
+        FZF2: "-8.2"
+        FZF5: "0.0"
+        EMSN: "   249"
+        FZF4: "-9.3"
+        FZF7: "-8.8"
+        DSND: "       16"
+        FZF6: "-2.7"
+        SNOW: "     1007"
+        FZF9: "-9.3"
+        FZF8: "-8.8"
+        HDSD: "    2550.6"
+        CDSD: "    774.0"
+        DP01: "       158"
+        HTDD: "    2550.6"
+        DT00: "         0"
+        DP1X: "        18"
+        DYHF: "        10"
+        DYTS: "        25"
+        CLDD: "     774.0"
+        DYFG: "       176"
+        DSNW: "         6"
+        TAVG: "     13.27"
+        TMIN: "      9.56"
+      - id: "2019"
+        DATE: "2019"
+        STATION: USW00094728
+        EMXP: "  46.5"
+        EMXT: "   35.0"
+        PRCP: "   1347.8"
+        DP10: "        89"
+        DX90: "        15"
+        DX70: "       156"
+        EMNT: "  -16.6"
+        DT32: "        73"
+        DX32: "        12"
+        TMAX: "     16.97"
+        EMSD: "   100"
+        FZF1: "-2.7"
+        FZF0: "-1.6"
+        FZF3: "-8.8"
+        FZF2: "-4.9"
+        FZF5: "0.0"
+        EMSN: "   102"
+        FZF7: "-7.7"
+        DSND: "       11"
+        FZF6: "-4.3"
+        SNOW: "      423"
+        FZF9: "-11.6"
+        FZF8: "-7.7"
+        HDSD: "    2589.8"
+        CDSD: "    684.1"
+        DP01: "       148"
+        HTDD: "    2589.8"
+        DT00: "         0"
+        DP1X: "        12"
+        DYHF: "         9"
+        DYTS: "        30"
+        CLDD: "     684.1"
+        DYFG: "       156"
+        DSNW: "         7"
+        TAVG: "     13.12"
+        TMIN: "      9.27"
+      - id: "2020"
+        DATE: "2020"
+        STATION: USW00094728
+        EMXP: "  64.5"
+        EMXT: "   35.6"
+        PRCP: "   1152.8"
+        DP10: "        83"
+        DX90: "        20"
+        DX70: "       147"
+        EMNT: "   -9.9"
+        DT32: "        41"
+        DX32: "         6"
+        TMAX: "     17.92"
+        EMSD: "   230"
+        FZF1: "-4.3"
+        FZF0: "0.0"
+        FZF2: "-6.6"
+        FZF5: "-3.8"
+        EMSN: "   165"
+        FZF7: "-6.6"
+        DSND: "        9"
+        FZF6: "-3.8"
+        SNOW: "      325"
+        FZF9: "-9.9"
+        FZF8: "-9.9"
+        HDSD: "    2407.0"
+        CDSD: "    725.4"
+        DP01: "       127"
+        HTDD: "    2407.0"
+        DT00: "         0"
+        DP1X: "        10"
+        DYHF: "         8"
+        DYTS: "        27"
+        CLDD: "     725.4"
+        DYFG: "       153"
+        DSNW: "         3"
+        TAVG: "     14.05"
+        TMIN: "     10.17"
+
+  search_results:
+    dataset_file:
+      - id: "gsoy-latest.tar.gz:USC00218450.csv"
+        name: USC00218450.csv
+        filePath: /data/global-summary-of-the-year/access/USC00218450.csv
+        tar: gsoy-latest.tar.gz
+        startDate: "1961-01-01T00:00:00"
+        endDate: "2026-12-31T23:59:59"
+        fileSize: 66258
+        dataTypesCount: 87
+      - id: "gsoy-latest.tar.gz:USC00129222.csv"
+        name: USC00129222.csv
+        filePath: /data/global-summary-of-the-year/access/USC00129222.csv
+        tar: gsoy-latest.tar.gz
+        startDate: "1961-01-01T00:00:00"
+        endDate: "2025-12-31T23:59:59"
+        fileSize: 76469
+        dataTypesCount: 84
+
+conformance:
+  - name: every value is a quoted, fixed-width string, whatever it holds
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2020-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    fixture: single_year
+    request:
+      method: GET
+      path: /access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2020-01-01&endDate=2020-12-31&format=json
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json;charset=utf-8
+      body:
+        "[0].STATION": USW00094728
+        "[0].DATE": "2020"
+        # Ten characters between the quotes, on a value with two.
+        "[0].TMAX": "     17.92"
+        "[0].PRCP": "   1152.8"
+
+  - name: the field set changes from row to row, silently
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2018-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    fixture: three_years
+    request:
+      method: GET
+      path: /access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2018-01-01&endDate=2020-12-31&format=json
+    expect:
+      status: 200
+      body:
+        "[0].DATE": "2018"
+        "[0].FZF4": "-9.3"
+        "[1].DATE": "2019"
+        "[1].FZF3": "-8.8"
+        "[2].DATE": "2020"
+      absent:
+        # Gone by 2019, on the same station.
+        - "[1].FZF4"
+        # Gone by 2020, on the same station.
+        - "[2].FZF4"
+        - "[2].FZF3"
+
+  - name: an unrecognised station is a 200 with nothing in it, not a 404
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=ZZZ00000000&startDate=2020-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    fixture: single_year
+    request:
+      method: GET
+      path: /access/services/data/v1?dataset=global-summary-of-the-year&stations=ZZZ00000000&startDate=2020-01-01&endDate=2020-12-31&format=json
+    expect:
+      status: 200
+      absent:
+        - "[0]"
+
+  - name: the status is stated twice, in the status line and in the body
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=not-a-real-dataset&stations=USW00094728&startDate=2020-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-unsupported-dataset
+    expect:
+      status: 400
+      body:
+        errorCode: 400
+        errorMessage: Bad Request
+        "errors[0].field": dataset
+        "errors[0].message": Unsupported dataset.
+        "errors[0].value": not-a-real-dataset
+
+  - name: a malformed date names the field and echoes what was sent
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=not-a-date&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-invalid-date
+    expect:
+      status: 400
+      body:
+        "errors[0].field": startDate
+        "errors[0].value": not-a-date
+      body_matches: 'YYYY-MM-DD'
+
+  - name: a reversed date range fails on both ends, and this format keeps one
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2020-12-31&endDate=2020-01-01&format=json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-date-range-reversed
+    expect:
+      status: 400
+      body:
+        "errors[0].field": startDate
+        "errors[0].message": The start date can not be after the end date.
+        "errors[0].value": "2020-12-31"
+
+  - name: two different sentences both mean "you left this out"
+    source: https://www.ncei.noaa.gov/access/services/data/v1?stations=USW00094728&startDate=2020-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-missing-dataset
+    expect:
+      status: 400
+      body:
+        # The framework's own default, about a Java concept.
+        "errors[0].message": must not be null
+        "errors[0].value": null
+
+  - name: and the other missing-parameter message was actually written for this API
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&startDate=2020-01-01&endDate=2020-12-31&format=json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-missing-stations
+    expect:
+      status: 400
+      body:
+        "errors[0].field": stations
+        "errors[0].message": A station is required.
+
+  - name: an unsupported format names all five it will accept
+    source: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-year&stations=USW00094728&startDate=2020-01-01&endDate=2020-12-31&format=xml
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/data/v1-unsupported-format
+    expect:
+      status: 400
+      body:
+        "errors[0].field": format
+        "errors[0].value": xml
+      body_matches: "csv, json, ssv, netcdf, and pdf"
+
+  - name: search wraps its results and rides a count beside them that is not their length
+    source: https://www.ncei.noaa.gov/access/services/search/v1/data?dataset=global-summary-of-the-year&limit=2
+    verified: "2026-08-31"
+    fixture: search_results
+    request:
+      method: GET
+      path: /access/services/search/v1/data?dataset=global-summary-of-the-year&limit=2
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        "results[0].name": USC00218450.csv
+        "results[1].name": USC00129222.csv
+        # Two results came back. This did not move.
+        count: 10000
+        totalCount: 86045
+
+  - name: the search endpoint's failure buries the field name inside the sentence
+    source: https://www.ncei.noaa.gov/access/services/search/v1/data?dataset=not-a-real-dataset&limit=2
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /access/services/search/v1/data-invalid-query
+    expect:
+      status: 400
+      body:
+        errorCode: 400
+        # Neither structured field survives on this endpoint's failures.
+        "errors[0].field": null
+        "errors[0].value": null
+      body_matches: 'dataset: Unknown dataset'
