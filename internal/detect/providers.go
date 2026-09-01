@@ -5114,6 +5114,10 @@ func providers() []provider {
 			npm:    []string{"@northflank/js-client"},
 		},
 		{
+			recipe: "expensify",
+			npm:    []string{"expensify"},
+		},
+		{
 			// Generated from the same description this Recipe fingerprints,
 			// and published within the last week -- unlike most of the Go
 			// clients here, which are years old.
