@@ -218,6 +218,11 @@ type Auth struct {
 	//   Baserow  is a third thing again: URL pattern first, then the
 	//            credential, then the specific id and the method. A wrong
 	//            method on a real path answers 401 rather than 405.
+	//   CloudTalk splits on which kind of mistake was made: it checks the
+	//            credential before an unrouted path, and lets a wrong method
+	//            skip the credential entirely to answer a real 405. Its own
+	//            second host is routing-first throughout, so one vendor
+	//            disagrees with itself.
 	//   Flexport splits on whether the verb is one it declares anywhere. PUT,
 	//            DELETE and OPTIONS hit a Rails CSRF page -- 422, HTML --
 	//            whatever the credential, while an unrouted GET does not 404
@@ -239,10 +244,10 @@ type Auth struct {
 	//            parsed, and the answer differs between two routes on one
 	//            host -- which no Recipe-wide setting can express at all.
 	//
-	// The last seven would each need the credential's state to survive a
+	// The last eight would each need the credential's state to survive a
 	// route match without gating it -- and Northflank's would need it to
 	// survive body validation as well, per route. That is a larger change
-	// than a boolean and is not obviously worth making for seven providers.
+	// than a boolean and is not obviously worth making for eight providers.
 	// What is worth doing is what those Recipes do: say so in the file, so
 	// the next reader knows the emulator is approximating rather than that
 	// the provider is simple.
