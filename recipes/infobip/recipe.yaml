@@ -1,0 +1,447 @@
+# Infobip Recipe for Cauldron
+#
+# This Recipe models exactly one Infobip endpoint out of a very large estate:
+# POST /sms/2/text/advanced, the "advanced" SMS send that accepts more than
+# one recipient in a single request. Infobip also has Email, WhatsApp, Voice,
+# RCS, a separate "successor" SMS endpoint at /sms/3/messages, and dozens of
+# other product surfaces under api.infobip.com. None of that is here.
+#
+# Checked live, 2026-09-01, against https://api.infobip.com: a request with
+# no Authorization header at all and a request with a well-formed but wrong
+# `Authorization: App <key>` get the identical answer -- 401, with the
+# identical body:
+#
+#   {"requestError":{"serviceException":{"messageId":"UNAUTHORIZED","text":"Invalid login details"}}}
+#
+# A client cannot tell a missing credential from a typo in one. Infobip joins
+# the list of providers in this collection where that distinction does not
+# exist on the wire.
+#
+# A GET where this route only takes POST answers 404, not 405 -- "Requested
+# URL not found: /sms/2/text/advanced", in the same requestError.serviceException
+# envelope, keyed NOT_FOUND. So does a path this Recipe has never heard of --
+# "Requested URL not found: /sms/2/text/advanced/totallynotarealpath" -- the
+# identical shape, with the specific path named in the sentence. Cauldron's
+# own runtime treats "wrong method on a route it knows" and "a path it has
+# never heard of" as two different failures (405 with an Allow header, and
+# 404), and Infobip does not make that distinction at all -- both are 404,
+# both are NOT_FOUND, both name the request's own path. This Recipe declares
+# both of the runtime's built-in names (method_not_allowed and unknown_route)
+# with the same status and the same wording so the emulator agrees with the
+# provider on the case that matters, and says here rather than hides that the
+# wording Cauldron substitutes for a wrong-method request is "{method} {path}"
+# where Infobip's own sentence names only the path -- the one seam left where
+# this Recipe's two built-in names cannot both carry an identical template
+# without carrying that difference too.
+#
+# THE FINDING THIS RECIPE EXISTS TO MAKE: where a multi-recipient send sits
+# among Twilio, Bandwidth, Sinch and Plivo.
+#
+#   Twilio has no multi-recipient primitive. N recipients is N requests, and
+#     each one answers with its own status, because each one *is* its own
+#     request.
+#   Bandwidth accepts an array of recipients in one request and answers with
+#     ONE message id covering all of them and no per-recipient breakdown at
+#     all. Learning what happened to each recipient means a second call, to
+#     a search endpoint that answers one row per recipient under renamed
+#     properties (id becomes messageId, to becomes destinationTn, and so on).
+#   Sinch accepts the same shape and answers with the batch and nothing about
+#     outcome whatsoever -- no status field whatsoever, for the batch or for
+#     any recipient in it. Learning what happened means a second call to a
+#     delivery report endpoint whose *default* answer is a summary: counts
+#     bucketed by status code, with no phone numbers attached unless the
+#     batch was created with delivery_report: full.
+#   Plivo answers with an array of bare message_uuids, one per recipient, and
+#     nothing else -- no status, no shared id tying them together once the
+#     array leaves the response. Learning what happened to three recipients
+#     means having kept all three uuids and asking about each of them one at
+#     a time.
+#   Infobip answers, in the SAME response that accepted the send, with a
+#     messages array -- one entry per recipient -- and each entry already
+#     carries its own messageId AND a structured status object:
+#
+#       {"messageId": "41793026727",
+#        "status": {"groupId": 1, "groupName": "PENDING", "id": 26,
+#                   "name": "MESSAGE_ACCEPTED",
+#                   "description": "Message sent to next instance"},
+#        "to": "..."}
+#
+#     That status is not a placeholder. Infobip's own status-code reference
+#     documents a Rejected group (groupId 5) alongside the Pending one
+#     (groupId 1) at the same status-code level a synchronous send answers
+#     at, which means two recipients in one request can come back with two
+#     DIFFERENT groupIds in the same response -- one pending, one already
+#     rejected for a bad prefix or a blocklisted destination -- with no
+#     second call required to see that they differ. Of the five, Infobip is
+#     the only one that gives Twilio's granularity (a real status per
+#     recipient, not a shared placeholder) inside Bandwidth's and Sinch's
+#     convenience (one request, one response, every recipient in it).
+#     Bandwidth and Sinch give the single call without the granularity;
+#     Plivo gives the granularity (an id each) without anything to read off
+#     it; Twilio gives the granularity by not being a bulk API at all.
+#
+# A SECOND SHAPE FOR ONE PROVIDER: this Recipe models /sms/2/text/advanced
+# because that is what was asked of it, and that is a live, fully supported,
+# heavily documented endpoint -- not a deprecated one. But Infobip's own
+# generated API client (infobip/infobip-api-python-client, generated from
+# their internal OpenAPI description) models a *different*, newer endpoint,
+# POST /sms/3/messages, described in its own docstring as "the successor of
+# [the endpoint this Recipe models]". Its error shape is not
+# requestError.serviceException at all -- it is a flat ApiError object:
+# {errorCode, description, action, violations, resources}. Two error
+# envelopes, two response-code sets (the /sms/3 client declares 200/400/401/
+# 403/500 and nothing else -- no documented 404, no documented 429), one
+# provider. This is read from the client library's generated models, not
+# observed, and it is not modelled here: this Recipe describes the one
+# endpoint asked for and says plainly that the provider's other current SMS
+# endpoint disagrees with it about what a failure looks like.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - bulkId is not modelled. It is a fresh identifier on every single
+#     response and every field in this format is either supplied by the
+#     caller or a fixed default -- there is no mechanism for "a new random
+#     value on every call" beyond the resource's own minted identifier,
+#     which this route already spends on messageId. A fixed constant here
+#     would be a specific false claim, so the field is left off entirely,
+#     the same choice Plivo's Recipe makes for api_id and for the same
+#     reason. Worth recording even though it is not reproduced: Infobip's
+#     own example bulkId, "2034072219640523072", is nineteen digits -- past
+#     the fifteen a JavaScript double holds exactly, so a client that parses
+#     it as a number rather than keeping it as text loses precision on the
+#     one value meant to correlate an entire send.
+#   - The "to" this Recipe answers with is a fixed placeholder, not the
+#     destination the caller actually sent. The real request body nests a
+#     recipient two levels down -- messages[0].destinations[0].to -- and this
+#     format extracts a create's fields from the top level of the request
+#     body. There is no mechanism here for reading a value out of a nested
+#     array on the way in, so the number in the response is this Recipe's
+#     own fixture value on every call rather than an echo of what was asked
+#     for.
+#   - Only one recipient is ever answered. A real bulk send answers with as
+#     many entries in messages as there were recipients, potentially with
+#     different statuses in each entry (see the finding above). Cauldron
+#     mints one record per create, so this Recipe's create route answers for
+#     one recipient the way Infobip would for a single-destination send --
+#     faithful to that case, and silent about the fan-out, the same
+#     limitation Bandwidth's, Sinch's and Plivo's Recipes each state for the
+#     same reason.
+#   - messageId is minted with the digits style at eleven characters, matching
+#     Infobip's own documented example ("41793026727"). Real Infobip message
+#     ids are not a fixed length; eleven is this Recipe's representative
+#     value, not a promise about every id the provider mints.
+#   - details.messageCount is declared but never sent by this Recipe's create
+#     route. The real field only appears when the request sets
+#     options.includeSmsCountInResponse: true, which this format has no
+#     mechanism to react to (there is no per-request-body conditional on an
+#     options sub-object), so the honest default is to leave it out
+#     entirely rather than send it unconditionally.
+#   - validationErrors is not modelled. Infobip's own client library
+#     documents an optional map of field names to lists of sentences
+#     alongside messageId and text on a 400, but no observed or documented
+#     example combining messageId, text and validationErrors together in one
+#     body was found, so no shape is guessed for it.
+#   - No rate_limit case is verified. Infobip's own docs describe a 429
+#     TOO_MANY_REQUESTS in the same requestError.serviceException envelope as
+#     every other declared failure, but the live probes run against this
+#     Recipe never triggered one, so the case below is documented rather
+#     than observed. No rate-limit headers were seen on any live response,
+#     including the 401s and 404s above.
+
+recipe: infobip
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: "2"
+  docs: https://www.infobip.com/docs/sms/sms-over-api
+
+auth:
+  # Authorization: App <api-key>. Infobip also accepts Basic, IBSSO and OAuth
+  # bearer tokens on other endpoints, but App is what this route documents
+  # and what was probed live.
+  scheme: bearer
+  header: Authorization
+  prefix: "App "
+  keys:
+    - cauldron000000000infobipapikey000
+
+responses:
+  resource:
+    style: bare
+  # {"requestError":{"serviceException":{"messageId": "...", "text": "..."}}}.
+  # Two levels of nesting for one fact, confirmed live for UNAUTHORIZED and
+  # NOT_FOUND and confirmed from Infobip's own docs for FORBIDDEN, BAD_REQUEST
+  # and TOO_MANY_REQUESTS besides -- the same envelope on every failure this
+  # Recipe declares.
+  error:
+    style: flat
+    message_field: requestError.serviceException.text
+    code_field: requestError.serviceException.messageId
+    type_field: "-"
+
+resources:
+  # One row per recipient, on the wire. This Recipe answers with exactly one,
+  # for the reason stated in the header comment above.
+  message:
+    collection: messages
+    id:
+      style: digits
+      field: messageId
+      length: 11
+    fields:
+      # Not the caller's destination -- see the header comment. A fixed
+      # fixture value, present on every response the way the real field
+      # always is, but not an echo of the request.
+      to:
+        type: string
+        default: "+15555550100"
+      # groupId/groupName/id/name/description, confirmed live nowhere (this
+      # route was never actually sent a message) and confirmed identically
+      # across Infobip's own tutorial example, its generated client's
+      # SmsMessageStatus model, and a second independent search result --
+      # three sources agreeing on one shape. PENDING/MESSAGE_ACCEPTED is the
+      # default state for a message this format cannot yet know the carrier's
+      # answer to.
+      status:
+        type: map
+        default:
+          groupId: 1
+          groupName: PENDING
+          id: 26
+          name: MESSAGE_ACCEPTED
+          description: "Message sent to next instance"
+      # Only present when the request sets options.includeSmsCountInResponse.
+      # No default, so it is absent unless a fixture supplies it -- see the
+      # header comment.
+      details:
+        type: map
+
+routes:
+  - method: POST
+    path: /sms/2/text/advanced
+    resource: message
+    operation: create
+    # A list of one, wrapped under the resource's own collection name --
+    # {"messages": [{...}]} -- the same shape Xero uses for "one invoice" and
+    # the shape this endpoint really does use even for a single recipient.
+    envelope:
+      style: wrapped
+      array: true
+    returns:
+      - id
+      - to
+      - status
+
+errors:
+  # Confirmed live, 2026-09-01, for both no Authorization header and a
+  # well-formed but wrong one: the identical body.
+  authentication_error:
+    status: 401
+    code: UNAUTHORIZED
+    message: "Invalid login details"
+
+  # Confirmed live, 2026-09-01, for a path this Recipe has never heard of.
+  # {detail} is the request's own path, exactly as Infobip's sentence names
+  # it.
+  unknown_route:
+    status: 404
+    code: NOT_FOUND
+    message: "Requested URL not found: {detail}"
+
+  # Confirmed live, 2026-09-01, for a GET on this route's own POST-only path
+  # -- Infobip answers the identical 404 shape rather than a 405. Cauldron's
+  # own {detail} for this built-in name is "{method} {path}" rather than the
+  # path alone, so the wording here reads "Requested URL not found: GET
+  # /sms/2/text/advanced" where the real API's sentence names only the path.
+  # That seam is stated in the header comment; the status and the messageId
+  # are what the conformance case below checks.
+  method_not_allowed:
+    status: 404
+    code: NOT_FOUND
+    message: "Requested URL not found: {detail}"
+
+  # Documented from Infobip's own API-authorization guide, not observed: a
+  # key lacking the required scope.
+  forbidden:
+    status: 403
+    code: FORBIDDEN
+    message: "Forbidden"
+
+  # Documented, not observed: Infobip's own guide gives this as the generic
+  # 400 sentence: no field name, no detail.
+  invalid_request:
+    status: 400
+    code: BAD_REQUEST
+    message: "Bad request"
+
+  # Documented, not observed -- see the header comment.
+  rate_limit:
+    status: 429
+    code: TOO_MANY_REQUESTS
+    message: "Too many requests"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: a missing credential is refused with requestError.serviceException
+    source: https://api.infobip.com/sms/2/text/advanced
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      json:
+        messages: []
+    expect:
+      status: 401
+      body:
+        requestError.serviceException.messageId: UNAUTHORIZED
+        requestError.serviceException.text: "Invalid login details"
+
+  - name: and a wrong App key answers the identical body
+    source: https://api.infobip.com/sms/2/text/advanced
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      headers:
+        Authorization: "App junkkey00000000000000000000000000000000"
+      json:
+        messages: []
+    expect:
+      status: 401
+      body:
+        requestError.serviceException.messageId: UNAUTHORIZED
+        requestError.serviceException.text: "Invalid login details"
+
+  - name: a GET where this route only takes POST is a 404, not a 405
+    source: https://api.infobip.com/sms/2/text/advanced
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /sms/2/text/advanced
+      # Cauldron checks authentication before it resolves a path, for every
+      # Recipe, so this case has to carry a valid credential to reach the
+      # routing failure -- where the real API needed none at all. The same
+      # limitation Plivo's Recipe states for the same reason.
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+    expect:
+      # The messageId is what the real API and this emulator agree on. The
+      # exact sentence is not asserted here because Cauldron's own {detail}
+      # for a wrong-method request names the method as well as the path,
+      # which the real one does not -- see the header comment and the
+      # method_not_allowed declaration above.
+      status: 404
+      body:
+        requestError.serviceException.messageId: NOT_FOUND
+
+  - name: and an unrecognised path names itself in the same shape
+    source: https://api.infobip.com/sms/2/text/advanced/totallynotarealpath
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /sms/2/text/advanced/totallynotarealpath
+      # See the credential comment on the case above -- the real request that
+      # produced this case's evidence carried none.
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+    expect:
+      status: 404
+      body:
+        requestError.serviceException.messageId: NOT_FOUND
+        requestError.serviceException.text: "Requested URL not found: /sms/2/text/advanced/totallynotarealpath"
+
+  - name: a send answers a messages array, not a single message object
+    source: https://www.infobip.com/developers/blog/how-to-send-an-sms-with-the-infobip-api-and-node-js-sdk
+    fixture: empty
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+      json:
+        messages:
+          - from: "InfoSMS"
+            destinations:
+              - to: "41793026727"
+            text: "Hello world"
+    expect:
+      status: 200
+      body:
+        "messages[0].to": "+15555550100"
+      matches:
+        "messages[0].messageId": '^[0-9]{11}$'
+      # No shared identifier for the whole send travels beside the array --
+      # see the header comment on bulkId.
+      absent:
+        - bulkId
+        - to
+        - status
+        - messageId
+
+  - name: the per-recipient status is a structured object, not a bare word
+    source: https://www.infobip.com/developers/blog/how-to-send-an-sms-with-the-infobip-api-and-node-js-sdk
+    fixture: empty
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+      json:
+        messages:
+          - from: "InfoSMS"
+            destinations:
+              - to: "41793026727"
+            text: "Hello world"
+    expect:
+      status: 200
+      body:
+        "messages[0].status.groupId": 1
+        "messages[0].status.groupName": PENDING
+        "messages[0].status.id": 26
+        "messages[0].status.name": MESSAGE_ACCEPTED
+        "messages[0].status.description": "Message sent to next instance"
+      # No count of messages this send was split into unless the caller asked
+      # for it -- see the header comment on details.
+      absent:
+        - "messages[0].details"
+
+  - name: a key lacking the required scope is FORBIDDEN, documented not observed
+    source: https://www.infobip.com/docs/essentials/api-essentials/api-authorization
+    fixture: empty
+    arm: forbidden
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+      json:
+        messages: []
+    expect:
+      status: 403
+      body:
+        requestError.serviceException.messageId: FORBIDDEN
+        requestError.serviceException.text: "Forbidden"
+
+  - name: a rate limit is TOO_MANY_REQUESTS in the same envelope, documented not observed
+    source: https://www.infobip.com/docs/essentials/api-essentials/integration-best-practices
+    fixture: empty
+    arm: rate_limit
+    request:
+      method: POST
+      path: /sms/2/text/advanced
+      headers:
+        Authorization: "App cauldron000000000infobipapikey000"
+      json:
+        messages: []
+    expect:
+      status: 429
+      body:
+        requestError.serviceException.messageId: TOO_MANY_REQUESTS
+        requestError.serviceException.text: "Too many requests"
