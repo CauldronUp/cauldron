@@ -437,7 +437,7 @@ the header says so.
 | Iterable | Assess — users, campaigns, catalogues |
 | ActiveCampaign | Assess — contacts, deals, automations |
 | ~~Brevo~~ | Shipped. It **distinguishes a missing key from a wrong one and only one can be served**: both are 401 with the same `code` of `unauthorized`, differing only in prose, so the field a machine would switch on is identical while the sentence is not. **Its published description is itself behind the credential** -- fetching `swagger_definition.yml` without a key answers 401 -- so the document explaining how to authenticate cannot be read without authenticating, and no `upstream.spec` is recorded. Documented and not called: the transactional send returns a `messageId` shaped like a mail Message-ID rather than a bare token, and the matching webhook field is spelled `message-id` with a hyphen, unreachable with a dot in most languages |
-| Kit (ConvertKit) | Assess — subscribers, sequences, tags |
+| ~~Kit (ConvertKit)~~ | Shipped as `recipes/kit`. Listed twice under two spellings of one company, which the rename made easy to do; see the other row for what it found |
 | Attentive | Assess — SMS subscribers and consent state, where consent is legally load-bearing |
 | Beehiiv | Assess — publications, posts, subscribers |
 | Loops | Assess — contacts and transactional sends |
@@ -1159,8 +1159,8 @@ transfers alone, and say so in the header.
 |---|---|
 | Rippling | Assess — employees, groups, app provisioning. Same standing rule as Gusto and Deel |
 | BambooHR | Assess — employees, time off, custom fields whose ids are per-account |
-| Ashby | Assess — candidate stages, where the stage is configurable per pipeline so branching on its name breaks |
-| Workable | Assess — jobs, candidates, stages |
+| ~~Ashby~~ | Shipped, and the assessment was answered sideways. Stages are configurable, as the row guessed, but the finding that matters is that **Ashby's own auth documentation is wrong about Ashby**: it states a missing key is 401 and a wrong key is 403, and five credential shapes struck live against two endpoints all answered a byte-identical 401 in **plain text**, on an API whose documented success bodies are JSON. On the person-versus-application question the group asked, Ashby separates Candidate from Application and links them from the person outwards with `applicationIds` -- the opposite direction from Lever's `contact` |
+| ~~Workable~~ | Shipped, and it gives the most decisive answer of the three to the person-versus-application question -- from its help centre rather than its schema. **A Candidate is scoped to a job.** The same person applying to two roles gets two entirely separate profiles, correlated only by matching the raw email field by eye in the interface, with no merge. Also verified: routing precedes authentication for every method, and Workable has **no method-not-allowed concept on the wire at all** -- PATCH and DELETE on a real path answer the identical 404 an unrouted path does, across five probes, with no `Allow` header anywhere |
 
 ### Messaging
 
@@ -1172,7 +1172,7 @@ transfers alone, and say so in the header.
 | ~~Customer.io~~ | Shipped, and this row had it right: the Track and App APIs are separate hosts with separate credential schemes. What the Recipe adds is that **nothing tells you when you have confused them** -- sending the App token to the Track host answers exactly what sending nothing answers, and what a wrong secret answers, so three mistakes share one response, separated only by a `WWW-Authenticate` header one host sends and the other does not. And **the API answers its own marketing site's 404**, a 3817-byte HTML page identical across both hosts and both kinds of mistake |
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
 | ~~Brevo~~ | Shipped, and this row's own correction still stands: the premise about limits was wrong and is kept here so it is not re-derived. What the Recipe found instead is that **Brevo's published description is behind the credential** -- fetching `swagger_definition.yml` without a key answers 401 -- so the document explaining how to authenticate cannot be read without authenticating, and no `upstream.spec` is recorded. It also distinguishes a missing key from a wrong one in prose while giving both the identical `code` of `unauthorized`, so the field a machine switches on cannot tell them apart |
-| Kit | Assess — subscribers, sequences, tags |
+| ~~Kit~~ | Shipped. The rename is not a migration: **api.convertkit.com and api.kit.com both serve both /v3 and /v4 identically**, one backend with two doorbells, and the two versions take incompatible credentials -- v3 reads `api_secret` from the query string and ignores an Authorization header entirely, v4 reads `X-Kit-Api-Key` or an OAuth bearer, and each scheme is blind to the other's. Kit's own upgrade guide says outright that V4 keys are not compatible with V3. The live 401 still carries `WWW-Authenticate: Bearer realm="ConvertKit API"`, the retired brand, in a header a client is meant to parse. On unsubscribing: one-way. The unsubscribe route is the only one that writes `state: cancelled`, the upsert says it cannot, and the update schema has no `state` property |
 | Beehiiv | Assess — publications, posts, subscribers |
 
 ### Identity and risk
