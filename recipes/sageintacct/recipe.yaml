@@ -1,0 +1,610 @@
+# Sage Intacct Recipe for Cauldron
+#
+# Checked live, 2026-09-01, against api.intacct.com, with no account and no
+# real sender or company credential ever created or sent.
+#
+# Sage Intacct is XML-over-HTTP to a single endpoint -- POST
+# /ia/xml/xmlgw.phtml, one path, one method the application answers at all
+# -- and not REST in any sense this format's vocabulary was built to
+# describe. There is no resource in a path, no verb in a method: every
+# request is the same envelope, {control, operation}, and what the envelope
+# asks for is named inside its own body by a <function> element such as
+# <create>, <read>, <readByQuery> or <delete>, wrapping an object like
+# APBILL. fauna/recipe.yaml in this collection names the identical mismatch
+# for the identical reason -- one path, one method, the operation inside the
+# payload -- and this Recipe follows its precedent rather than force a path-
+# and-verb shape onto a provider that has neither: auth.scheme is none, and
+# every route below is told apart by selects_body rather than by where it
+# is addressed.
+#
+# What differs from Fauna is the payload's own shape. Fauna's body is JSON
+# holding FQL text as a string value, which is an unusual value inside an
+# ordinary envelope. Sage Intacct's body is not JSON at all -- it is raw
+# XML, sent and answered with Content-Type text/xml, and Cauldron's own
+# conformance case format (internal/recipe/case.go's Request) has no field
+# for a literal raw body: only request.json and request.form exist. Every
+# case below wraps its literal XML text as the value of one JSON field,
+# named xml, purely so Cauldron's own selects_body mechanism has bytes to
+# search -- a real client sends the XML directly as the entire body, with no
+# JSON envelope and no field named xml anywhere. See internal/recipe/raw.go
+# and grep recipes/ for content_type: several Recipes here (arxiv, fred,
+# healthchecks) answer a real body with those literal bytes for a route that
+# always answers the same way; this Recipe uses the identical mechanism --
+# errors declaring style: text with their own Content-Type -- for the four
+# distinct XML and JSON bodies below, because unlike arxiv's single feed
+# format, which route answers here depends on what the request's own body
+# contains.
+#
+# The central question this Recipe was written to help answer -- can a
+# posted transaction be deleted, and what happens instead when it cannot --
+# could not be settled by calling the API, and that is itself the finding
+# this Recipe's header exists to record precisely rather than paper over.
+#
+# Every credential this API checks lives inside the XML body: <senderid> and
+# <password> in <control> identify the integration partner, <login><userid>,
+# <companyid> and <password> under <operation><authentication> identify the
+# company and user. None of it is a header or a query parameter, which is
+# the same reason auth.scheme is none rather than bearer or basic. A
+# well-formed envelope with a syntactically plausible but unregistered
+# senderid -- cauldron_test_sender, which belongs to no real Sage Intacct
+# partner -- answers GW-0011 "Invalid request" at the gateway, never
+# reaching the business-logic layer that would check the sender against a
+# real partner list and answer XL03000006 "Sign-in information is
+# incorrect" instead (see the gaps below for that code, documented and
+# never reached). NetSuite's Recipe in this collection hits the identical
+# wall by DNS instead of by registration -- see netsuite/recipe.yaml -- and
+# both state it rather than pretend a credential this Recipe never held
+# would have behaved as documented.
+#
+# Six things checked live, all of them sharp:
+#
+#   1. Three request shapes, one gateway-level message. A syntactically
+#      valid envelope with an unregistered senderid, a genuinely malformed
+#      one (a mismatched closing tag), and a well-formed control block with
+#      no <operation> section at all -- three different mistakes, checked
+#      separately -- all three answer the byte-identical GW-0011 "Invalid
+#      request". The gateway that produces this message does not
+#      distinguish "your XML is broken" from "your sender does not exist"
+#      from "you left out a required section": all three are one bucket,
+#      and the documented XML-parse-specific error (XL03000003, "Opening
+#      and ending tag mismatch") is not what a real malformed document gets
+#      back from this endpoint -- see the gaps below.
+#
+#   2. Absence has its own message, and it is not the same one. A body that
+#      contains no <senderid> at all -- checked with plain junk text, "not
+#      xml at all" -- answers GW-0024 "Missing sender ID". A body with
+#      literally nothing in it -- zero bytes -- answers a third message,
+#      GW-0022 "Missing request payload". Three tiers, checked separately:
+#      nothing sent, something sent that does not name a sender, and
+#      something sent that names one nobody registered. Compare Fireworks'
+#      absent/malformed/rejected split in this same mechanism's own worked
+#      examples (auth.go); this API keeps the identical three-way shape
+#      without HTTP ever being told about a credential at all.
+#
+#   3. GET is blocked somewhere this application never sees. GET on the
+#      real path answers 405 with Cloudflare's own generic HTML error page,
+#      unbranded and identical to any Cloudflare site's default 405 --
+#      confirmed reproducible across repeated calls. HEAD, OPTIONS, PATCH,
+#      PUT and DELETE on the identical path all answer 405 too, but with the
+#      application's own XML shape and its own sentence naming the method:
+#      "PATCH is not supported", "OPTIONS is not supported", "DELETE is not
+#      supported", "PUT is not supported". GET is the one HTTP verb a client
+#      would reach for first to probe an unfamiliar endpoint, and it is the
+#      one whose failure describes an edge firewall rule rather than
+#      anything this API itself does.
+#
+#   4. No 405 anywhere carries an Allow header. Checked on every method
+#      above; none of the six wrong-method responses names what the
+#      endpoint does accept.
+#
+#   5. An unrouted path answers from a third tier again, in a third shape.
+#      GET and POST to /ia/xml/nosuchroute both answer 403,
+#      Content-Type application/json -- not XML, not HTML --
+#      {"ia::result": {"ia::error":{"message":"Forbidden","code":"GW-403"}}}.
+#      "GW-" is the same prefix the gateway's own body-level failures use
+#      (GW-0011, GW-0022, GW-0024, GW-0020), which reads as the same
+#      gateway tier making a different check -- does this path exist at
+#      all -- rather than a different service. Routing is decided before
+#      any XML is ever parsed, in an envelope that owes nothing to XML at
+#      all.
+#
+#   6. Content-Type tells the truth throughout. Every application-level
+#      answer -- the three gateway-body messages, all five structured
+#      wrong-method answers -- is genuinely text/xml; the routing-tier 403
+#      is genuinely application/json; the edge's own GET block is genuinely
+#      text/html. Three tiers, three honest headers, which is the one
+#      dimension this API does not blur.
+#
+# Step 2a's absent/malformed/rejected vocabulary and auth.after_routing both
+# describe a check Cauldron's own runtime makes against one HTTP header or
+# query parameter before it ever asks the router anything. Neither applies
+# here in the form those fields take: there is no HTTP-level credential to
+# be absent, malformed or rejected, and finding #5 above is itself a
+# routing-order fact -- an unrouted path is refused by an entirely different
+# tier before the XML-checking gateway ever sees it -- expressed the only
+# way this Recipe can express it, as its own route rather than a boolean.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful call is modelled anywhere in this file. No credential
+#     this Recipe held was ever going to be real, and every route below
+#     answers a failure that was checked live.
+#   - The business-logic authentication layer -- XL03000006, two different
+#     sentences for two different reasons ("Invalid Web Services
+#     Authorization" when the sender is not authorised for the company;
+#     "Sign-in information is incorrect" when the company or user
+#     credentials themselves are wrong), per developer.intacct.com's own
+#     error-handling reference -- is documented and never reached: see
+#     finding #1. Neither sentence is modelled as a route, because this
+#     Recipe never got a request past the gateway tier that would produce
+#     either.
+#   - XL03000003 ("XML Parse schema error: Fatal Error 76: Opening and
+#     ending tag mismatch"), also from Sage Intacct's own documentation, is
+#     stated here rather than routed for the same reason: the malformed
+#     document this Recipe actually sent live got GW-0011, not this code --
+#     see finding #1 again. Whatever produces XL03000003 was not reached
+#     either.
+#   - BL01001973 ("Cannot find vendor with key '12345' to delete."), Sage
+#     Intacct's own documented example of a function-level failure --
+#     result/status failure, inside a successfully-authenticated
+#     operation -- is exactly the shape a delete-refusal on a paid bill
+#     would answer, and no worked example of that specific refusal appears
+#     in Sage Intacct's published reference. The business rule is
+#     documented in prose and quoted below; the wire shape a real refusal
+#     takes is not claimed, because inventing one would be exactly the
+#     fabricated error body Step 3 warns against.
+#   - GET's own 405 page is Cloudflare's stock error page, dynamic in the
+#     parts that matter for this claim least (a per-request ray id, a
+#     bot-challenge script) and static in the parts that matter most (the
+#     title, the h1, the description sentence). Only the static parts are
+#     served here; the dynamic script and tracking pixel are not
+#     reproduced, because a fixed copy of either would misrepresent
+#     something that changes on every real request as though it did not.
+#   - Cauldron's own JSON error envelope, used for the unknown_route
+#     failure, cannot be told to omit a Content-Type header the way the
+#     other JSON failure this API sends does not need to -- not a gap here,
+#     since the live 403 really does send Content-Type application/json.
+#
+# The delete-versus-reversal question this whole group of Recipes exists to
+# answer has an unambiguous answer in Sage Intacct's own published product
+# documentation, even though this Recipe could not reach the wire shape of
+# either outcome (see the gaps above). From
+# intacct.com/ia/docs/.../about-delete-reverse-bill.htm:
+#
+#   Deleting: "The transaction is removed from Sage Intacct, as though you
+#   never created it." Available only for an unpaid bill that has not been
+#   reconciled, carries no payments, and meets a handful of other
+#   conditions -- and never for one that has been paid: "You can't delete
+#   paid bills, you can only reverse them."
+#
+#   Reversing does two things at once, not one. The original's own state
+#   changes to Reversed -- a status on the same record, the way voiding
+#   works in NetSuite's Recipe in this collection -- and, unlike NetSuite,
+#   Sage Intacct also mints a second, new transaction: "Intacct adds a new
+#   transaction for the vendor" with its own state, Reversal, and its own
+#   number, "Reversed - [original bill number]". Asked whether void is a
+#   status on the original or a second record pointing at it, Sage
+#   Intacct's own answer is both at once, which neither of the other two
+#   providers in this group does: Expensify has no delete-or-void operation
+#   on a submitted report at all (see expensify/recipe.yaml), and NetSuite's
+#   own documentation describes voiding as a pure status-and-zeroing change
+#   with no second record minted (see netsuite/recipe.yaml).
+#
+# Credentials below are fixtures and were never valid, and belong to no
+# registered Sage Intacct partner.
+
+recipe: sageintacct
+capability: accounting
+version: 0.1.0
+
+upstream:
+  api: "3.0"
+  docs: https://developer.intacct.com/api/
+
+auth:
+  # The credential lives inside the XML body -- <control><senderid> and
+  # <password>, <operation><authentication><login> -- not in any header or
+  # query parameter Cauldron's built-in check could examine. See the
+  # header, and fauna/recipe.yaml for the identical trade made for the
+  # identical reason.
+  scheme: none
+
+responses:
+  error:
+    # No Recipe-wide shape fits: three of the four answers below are XML,
+    # one is JSON, and each error entry overrides style for itself. Set
+    # here only so an undeclared failure has something to fall back to.
+    style: text
+
+routes:
+  # Every route shares the one real path and method. Ordered so the most
+  # specific marker is tried first -- see the header's finding #1: a body
+  # naming a sender, well-formed or not, always outranks a body that names
+  # none at all.
+  #
+  # senderid present -- well-formed, malformed, or missing its <operation>
+  # section entirely, all three checked live and all three land here.
+  # cauldron_test_sender belongs to no real partner, which is the only kind
+  # of senderid this Recipe could ever have sent.
+  - method: POST
+    path: /ia/xml/xmlgw.phtml
+    selects_body: senderid
+    error: invalid_request
+
+  # No senderid, but something was sent -- checked live with plain junk
+  # text under the JSON field this Recipe's cases wrap it in (see the
+  # header). xml is this Recipe's own field name, not Sage Intacct's; it
+  # exists only so this marker has something distinct from "senderid" to
+  # be found in.
+  - method: POST
+    path: /ia/xml/xmlgw.phtml
+    selects_body: xml
+    error: missing_sender_id
+
+  # Nothing sent at all -- the true fallback, reached only when a request
+  # carries no body whatsoever.
+  - method: POST
+    path: /ia/xml/xmlgw.phtml
+    error: missing_payload
+
+  # GET is blocked by the edge itself -- see the header's finding #3. A
+  # dedicated route, not the auto-generated method_not_allowed a missing
+  # method would otherwise get, because GET's own answer is a different
+  # tier entirely and Cauldron's built-in 405 has only one shape to offer.
+  - method: GET
+    path: /ia/xml/xmlgw.phtml
+    error: edge_method_blocked
+
+  # The application's own 405, reached by every wrong method except GET --
+  # see the header's finding #3. Two of the five checked live are routed
+  # explicitly, each with its own literal sentence; PUT, DELETE and HEAD
+  # were checked live too (same status, same Content-Type, same GW-0020
+  # code, same template with only the method's name changed) and are
+  # stated in the header rather than routed individually, since routing
+  # three more identical-shaped answers would not show anything the two
+  # here do not already.
+  - method: PATCH
+    path: /ia/xml/xmlgw.phtml
+    error: patch_not_allowed
+
+  - method: OPTIONS
+    path: /ia/xml/xmlgw.phtml
+    error: options_not_allowed
+
+errors:
+  # {"errorno":"GW-0011","description":"Invalid request [Request ID:
+  # ...]"} -- checked live three separate ways (unregistered sender,
+  # malformed XML, missing operation section), byte-identical every time
+  # apart from the trailing request id. The id is per-request and not
+  # pinned.
+  invalid_request:
+    status: 400
+    style: text
+    headers:
+      Content-Type: "text/xml; charset=UTF-8"
+    message: |
+      <?xml version="1.0" encoding="UTF-8"?>
+              <response>
+                  <control>
+                      <status>failure</status>
+                  </control>
+                  <errormessage>
+                      <error>
+              <errorno>GW-0011</errorno><description>Invalid request</description>                </error>
+                  </errormessage>
+              </response>
+
+  # {"errorno":"GW-0024","description":"Missing sender ID [Request ID:
+  # ...]"} -- checked live with plain non-XML text as the body.
+  missing_sender_id:
+    status: 400
+    style: text
+    headers:
+      Content-Type: "text/xml; charset=UTF-8"
+    message: |
+      <?xml version="1.0" encoding="UTF-8"?>
+              <response>
+                  <control>
+                      <status>failure</status>
+                  </control>
+                  <errormessage>
+                      <error>
+              <errorno>GW-0024</errorno><description>Missing sender ID</description>                </error>
+                  </errormessage>
+              </response>
+
+  # {"errorno":"GW-0022","description":"Missing request payload [Request
+  # ID: ...]"} -- checked live with a genuinely empty body.
+  missing_payload:
+    status: 400
+    style: text
+    headers:
+      Content-Type: "text/xml; charset=UTF-8"
+    message: |
+      <?xml version="1.0" encoding="UTF-8"?>
+              <response>
+                  <control>
+                      <status>failure</status>
+                  </control>
+                  <errormessage>
+                      <error>
+              <errorno>GW-0022</errorno><description>Missing request payload</description>                </error>
+                  </errormessage>
+              </response>
+
+  # Cloudflare's own default 405 page, not this application's -- see the
+  # header's finding #3 and the gap about what is deliberately not
+  # reproduced (a per-request ray id, a bot-challenge script). The static
+  # parts a real client would actually read are kept.
+  edge_method_blocked:
+    status: 405
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |
+      <html><body><h1>405 Method Not Allowed</h1>
+      A request was made of a resource using a request method not supported by that resource
+      </body></html>
+
+  # {"errorno":"GW-0020","description":"PATCH is not supported [Request ID:
+  # ...]"} -- checked live. OPTIONS, PUT, DELETE and HEAD answer the
+  # identical template with only the method's name changed -- see the
+  # header and errors.options_not_allowed below for the one other literal
+  # example this Recipe carries.
+  patch_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: "text/xml; charset=UTF-8"
+    message: |
+      <?xml version="1.0" encoding="UTF-8"?>
+              <response>
+                  <control>
+                      <status>failure</status>
+                  </control>
+                  <errormessage>
+                      <error>
+              <errorno>GW-0020</errorno><description>PATCH is not supported</description>                </error>
+                  </errormessage>
+              </response>
+
+  # {"errorno":"GW-0020","description":"OPTIONS is not supported [Request
+  # ID: ...]"} -- checked live.
+  options_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: "text/xml; charset=UTF-8"
+    message: |
+      <?xml version="1.0" encoding="UTF-8"?>
+              <response>
+                  <control>
+                      <status>failure</status>
+                  </control>
+                  <errormessage>
+                      <error>
+              <errorno>GW-0020</errorno><description>OPTIONS is not supported</description>                </error>
+                  </errormessage>
+              </response>
+
+  # {"ia::result": {"ia::error":{"message":"Forbidden","code":"GW-403"}}}
+  # -- checked live, GET and POST alike, on a path this application has no
+  # route for at all. See the header's finding #5: JSON, not XML, from a
+  # tier that decides routing before any XML is ever parsed.
+  unknown_route:
+    status: 403
+    # "nested" wraps once, under one literal key -- not what this envelope
+    # needs, which nests two levels deep under two keys that both happen to
+    # contain "::". "flat" is used instead purely for its dotted-path
+    # message_field/code_field, which do nest; this is not a claim that
+    # Sage Intacct's own envelope is flat in the sense every other flat
+    # Recipe here means it.
+    style: flat
+    message_field: "ia::result.ia::error.message"
+    code_field: "ia::result.ia::error.code"
+    headers:
+      Content-Type: application/json
+    message: Forbidden
+    code: "GW-403"
+
+fixtures:
+  empty: {}
+
+# Every case below carries source. A verified date means this Recipe called
+# api.intacct.com with exactly the request shown, this same day, and
+# recorded exactly what came back (apart from the per-request Request ID
+# inside Sage Intacct's own message text, which is never pinned); its
+# absence means the case was read from Sage Intacct's own published
+# developer documentation and never called -- see the header for why so
+# much of this API could not be called at all.
+conformance:
+  - name: a well-formed envelope with an unregistered sender is Invalid request
+    # cauldron_test_sender is syntactically fine and belongs to no real
+    # partner -- this is the only kind of senderid this Recipe could ever
+    # send. The XML text here is wrapped as the value of a JSON field named
+    # xml purely so Cauldron's own request format has somewhere to put it;
+    # see the header for why, and for why this is not a claim about Sage
+    # Intacct's real Content-Type or envelope.
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/xmlgw.phtml
+      json:
+        xml: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <request>
+            <control>
+              <senderid>cauldron_test_sender</senderid>
+              <password>cauldron_test_password</password>
+              <controlid>cauldron-control-0001</controlid>
+              <uniqueid>false</uniqueid>
+              <dtdversion>3.0</dtdversion>
+            </control>
+            <operation>
+              <authentication>
+                <login>
+                  <userid>cauldron_test_user</userid>
+                  <companyid>cauldron_test_company</companyid>
+                  <password>cauldron_test_password</password>
+                </login>
+              </authentication>
+              <content>
+                <function controlid="function1">
+                  <getAPISession/>
+                </function>
+              </content>
+            </operation>
+          </request>
+    expect:
+      status: 400
+      headers:
+        Content-Type: "text/xml; charset=UTF-8"
+      body_matches: "GW-0011"
+
+  - name: genuinely malformed XML answers the identical Invalid request
+    # A mismatched closing tag -- <operation> opened and </control> closed
+    # in its place. Not a different, more specific error: the same GW-0011
+    # the well-formed-but-unregistered case above gets. See the header's
+    # finding #1.
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/xmlgw.phtml
+      json:
+        xml: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <request>
+            <control>
+              <senderid>cauldron_test_sender</senderid>
+              <password>cauldron_test_password</password>
+              <controlid>cauldron-control-0002</controlid>
+              <uniqueid>false</uniqueid>
+              <dtdversion>3.0</dtdversion>
+            </control>
+            <operation>
+            </control>
+          </request>
+    expect:
+      status: 400
+      body_matches: "GW-0011"
+
+  - name: a control block with no operation section answers the same again
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/xmlgw.phtml
+      json:
+        xml: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <request>
+            <control>
+              <senderid>cauldron_test_sender</senderid>
+              <password>cauldron_test_password</password>
+              <controlid>cauldron-control-0003</controlid>
+              <uniqueid>false</uniqueid>
+              <dtdversion>3.0</dtdversion>
+            </control>
+          </request>
+    expect:
+      status: 400
+      body_matches: "GW-0011"
+
+  - name: plain junk text with no sender at all is a different message
+    # "not xml at all", wrapped as this Recipe's own xml field -- see the
+    # header. No senderid anywhere in it, which is what selects this route
+    # rather than the one above.
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/xmlgw.phtml
+      json:
+        xml: not xml at all
+    expect:
+      status: 400
+      body_matches: "GW-0024"
+
+  - name: a genuinely empty body is a third message again
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/xmlgw.phtml
+    expect:
+      status: 400
+      body_matches: "GW-0022"
+
+  - name: GET is blocked before this application ever sees the request
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /ia/xml/xmlgw.phtml
+    expect:
+      status: 405
+      headers:
+        Content-Type: text/html
+      body_matches: "405 Method Not Allowed"
+
+  - name: PATCH reaches the application and gets its own real 405
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /ia/xml/xmlgw.phtml
+    expect:
+      status: 405
+      headers:
+        Content-Type: "text/xml; charset=UTF-8"
+      body_matches: "PATCH is not supported"
+
+  - name: and so does OPTIONS, with only the method's name different
+    source: https://api.intacct.com/ia/xml/xmlgw.phtml
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: OPTIONS
+      path: /ia/xml/xmlgw.phtml
+    expect:
+      status: 405
+      headers:
+        Content-Type: "text/xml; charset=UTF-8"
+      body_matches: "OPTIONS is not supported"
+
+  - name: an unrouted path is refused by a third tier, in JSON
+    source: https://api.intacct.com/ia/xml/nosuchroute
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /ia/xml/nosuchroute
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body:
+        "ia::result.ia::error.message": Forbidden
+        "ia::result.ia::error.code": "GW-403"
+
+  - name: the same unrouted path answers identically to POST
+    source: https://api.intacct.com/ia/xml/nosuchroute
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /ia/xml/nosuchroute
+    expect:
+      status: 403
+      body:
+        "ia::result.ia::error.message": Forbidden
+        "ia::result.ia::error.code": "GW-403"
