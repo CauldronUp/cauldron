@@ -176,9 +176,15 @@ func (r *router) matchSelecting(method, path, query, body string, params url.Val
 	slash := len(path) > 1 && strings.HasSuffix(path, "/")
 
 	var (
-		best      route
-		bestVars  map[string]string
-		bestScore = -1
+		best     route
+		bestVars map[string]string
+		// No starting value, because a score can be negative: a greedy
+		// segment scores below zero so that a route spelling a request out
+		// always beats one that swallows everything. Seeded at -1, the first
+		// greedy route to match tied with the sentinel and lost to it, and
+		// the request fell through to a 405 naming a method it had already
+		// used. found is the guard instead.
+		bestScore int
 		found     bool
 	)
 
@@ -249,7 +255,7 @@ func (r *router) matchSelecting(method, path, query, body string, params url.Val
 			score += 1000 * len(candidate.spec.MatchesQuery)
 		}
 
-		if score > bestScore {
+		if !found || score > bestScore {
 			best, bestVars, bestScore, found = candidate, vars, score, true
 		}
 	}
