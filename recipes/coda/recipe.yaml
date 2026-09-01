@@ -1,0 +1,650 @@
+# Coda Recipe for Cauldron
+#
+# Two things about Coda are worth reproducing exactly, and they pull in
+# opposite directions: its failures say too much, and its writes say too
+# little.
+#
+# 1. A failure states one fact three times, twice in the words for the HTTP
+#    status.
+#
+#    Checked against coda.io with no credential at all:
+#
+#      HTTP/1.1 401 Unauthorized
+#      {"statusCode":401,"statusMessage":"Unauthorized","message":"Unauthorized"}
+#
+#    The status line says 401. statusCode says 401 again, as a number.
+#    statusMessage says "Unauthorized", in words. message says "Unauthorized"
+#    a second time -- Coda's own description says message is "the same as
+#    statusMessage otherwise", so absent a specific detail it is the fourth
+#    restatement of the first fact in one response, not a fourth fact. A
+#    client has three fields to choose from to learn the one thing the status
+#    line already said, and picks one, and the other two sit there agreeing
+#    with it forever.
+#
+# 2. A missing credential and a wrong one are not two failures. They are one.
+#
+#    Checked three ways against /apis/v1/whoami: no Authorization header at
+#    all, a bearer token that has never been issued, and a syntactically
+#    fine but nonexistent one. All three came back as the identical 74 bytes
+#    above -- same status, same body, same ETag. Coda does not have a
+#    "credential absent" failure distinct from a "credential wrong" one, and
+#    this Recipe does not invent one: authentication_error is both.
+#
+# 3. The credential is checked before the path is. A request for
+#    /apis/v1/docs (real) and a request for a path that has never existed
+#    came back as the same 401, byte for byte, with no auth on either. Coda
+#    will not tell an unauthenticated caller whether the endpoint it guessed
+#    exists. This is also the one place this Recipe's engine and Coda agree
+#    for free: Cauldron checks a Recipe's credential before it ever consults
+#    the router, for every Recipe, so an unauthenticated request to a route
+#    this file does not declare answers with the same authentication_error
+#    Coda would give it.
+#
+# 4. Writing a row does not write a row. POST, PUT and DELETE on a row all
+#    answer 202 with a requestId and nothing about what was written -- Coda's
+#    own words are "This endpoint will always return a 202, so long as the
+#    doc and table exist and are accessible", and "Row inserts/upserts are
+#    generally processed within several seconds." The row a client just sent
+#    is not in the next listing, not at its own id, and not anywhere else,
+#    for an unspecified number of seconds. The only receipt is the request
+#    id, and the only way to learn what happened to it is
+#    GET /mutationStatus/{requestId} -- which answers completed and,
+#    sometimes, a warning, and never the requestId it was asked about, so
+#    there is nothing in that body either to confirm which write it is
+#    reporting on beyond the URL a client already used to ask.
+#
+#    This is read from Coda's own published description
+#    (https://coda.io/apis/v1/openapi.json) rather than called: doing so
+#    would mean writing to a real doc with a real token, which this Recipe
+#    does not do. Marked documented rather than verified throughout.
+#
+# One more thing, also only from the description and not asserted as a case:
+# Coda's own OpenAPI document titles itself "Superhuman Docs API" and lists
+# docs.superhuman.com as its only server, with no mention of coda.io anywhere
+# in it -- a company describing itself under a name its own working endpoint
+# does not use. coda.io/apis/v1 is what this Recipe targets, because it is
+# what answered every call made against it.
+#
+# No rate-limit header was present on any response captured for this Recipe,
+# and none is documented on the 429 either -- TooManyRequestsError carries no
+# headers block at all, so a client cannot learn how long to wait from
+# anything Coda sends.
+#
+# Known fidelity gap, stated rather than hidden: a real insert's addedRowIds
+# and a real update or delete's echoed id are decided by what was sent and by
+# server-side row placement, neither of which this Recipe computes. The
+# insert route answers a fixed example id instead of one derived from the
+# request. PUT and DELETE row are not modelled as separate routes: both
+# share the identical 202-and-requestId shape the POST route already
+# demonstrates, plus an echoed row id the insert response never carries --
+# a real asymmetry, written down here rather than built twice for no new
+# lesson.
+#
+# Tokens below are fixtures, not secrets.
+
+recipe: coda
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://coda.io/developers/apis/v1
+  spec: https://coda.io/apis/v1/openapi.json
+  spec_hash: 3b23231b026892e54b25f8e0293bffd86056e2a77eb7dc186a4863d6b4a3e874
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-coda-token
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: items
+    cursor_field: nextPageToken
+    cursor_url: absolute
+  error:
+    style: flat
+    message_field: message
+    status_field: statusCode
+
+resources:
+  user:
+    # whoami carries no id anywhere in its schema. loginId -- the email
+    # address -- is the closest thing to one, and it is not called an
+    # identifier either.
+    id:
+      style: opaque
+      field: "-"
+      carried_by: loginId
+    fields:
+      name:
+        type: string
+        required: true
+      loginId:
+        type: string
+        required: true
+      tokenName:
+        type: string
+      scoped:
+        type: boolean
+        default: false
+    constants:
+      type: user
+
+  doc:
+    id:
+      style: opaque
+      length: 8
+    fields:
+      name:
+        type: string
+        required: true
+      owner:
+        type: string
+      ownerName:
+        type: string
+      # Hidden partitions, not fields Coda sends on a doc: nothing in a doc's
+      # own body says which folder or workspace holds it under these names,
+      # both already travel as the folder and workspace objects instead.
+      folderId:
+        type: string
+        in: "-"
+      workspaceId:
+        type: string
+        in: "-"
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+    constants:
+      type: doc
+
+  table:
+    id:
+      # grid-pqRst-U in Coda's own example. A view is the same style with a
+      # different prefix, which this Recipe does not mint.
+      style: prefixed
+      prefix: "grid-"
+      other_prefixes:
+        - "view-"
+    fields:
+      docId:
+        type: string
+        in: "-"
+      name:
+        type: string
+        required: true
+      tableType:
+        type: string
+        default: table
+    constants:
+      type: table
+
+  row:
+    id:
+      # i-tuVwxYz in Coda's own example.
+      style: prefixed
+      prefix: "i-"
+    fields:
+      docId:
+        type: string
+        in: "-"
+      tableId:
+        type: string
+        in: "-"
+      name:
+        type: string
+      index:
+        type: integer
+      # Column id to value, and the keys are whatever the table's own
+      # columns are. Modelled the same way Stripe's metadata is: free-form,
+      # accepted and echoed without Cauldron knowing what any of it means.
+      values:
+        type: map
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+    constants:
+      type: row
+
+  # What a row insert answers with. Not a row: a receipt.
+  mutation:
+    id:
+      style: opaque
+      field: requestId
+      length: 20
+    fields:
+      # Only present when keyColumns is unset, by Coda's own description --
+      # and even then, this Recipe cannot compute which ids a real insert
+      # would mint from the rows it was sent, so every insert answers the
+      # same example array rather than one sized to the request.
+      addedRowIds:
+        type: list
+        default:
+          - i-newRow01
+
+  # What GET /mutationStatus/{requestId} answers. The identifier that
+  # addressed it is not echoed anywhere in the body -- MutationStatus has
+  # exactly two properties, completed and warning, and neither is it.
+  mutation_status:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      completed:
+        type: boolean
+        default: false
+      warning:
+        type: string
+
+routes:
+  - method: GET
+    path: /whoami
+    resource: user
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /docs
+    resource: doc
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+      limit_param: limit
+      cursor_param: pageToken
+
+  - method: GET
+    path: /docs/{id}
+    resource: doc
+    operation: get
+
+  - method: GET
+    path: /docs/{docId}/tables
+    resource: table
+    operation: list
+    scope:
+      - docId
+    pagination:
+      style: cursor
+      limit: 25
+      limit_param: limit
+      cursor_param: pageToken
+
+  - method: GET
+    path: /docs/{docId}/tables/{id}
+    resource: table
+    operation: get
+    scope:
+      - docId
+
+  - method: GET
+    path: /docs/{docId}/tables/{tableId}/rows
+    resource: row
+    operation: list
+    scope:
+      - docId
+      - tableId
+    pagination:
+      style: cursor
+      limit: 25
+      limit_param: limit
+      cursor_param: pageToken
+
+  - method: GET
+    path: /docs/{docId}/tables/{tableId}/rows/{id}
+    resource: row
+    operation: get
+    scope:
+      - docId
+      - tableId
+
+  # Always 202, per Coda's own words, so long as the doc and table exist.
+  # Never the row: a request id, and sometimes the ids of the rows it will
+  # add once it has run.
+  - method: POST
+    path: /docs/{docId}/tables/{tableId}/rows
+    resource: mutation
+    operation: create
+    status: 202
+
+  - method: GET
+    path: /mutationStatus/{id}
+    resource: mutation_status
+    operation: get
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    fields:
+      statusMessage: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: Not Found
+    fields:
+      statusMessage: Not Found
+
+  # Not exercised by a natural route -- nothing here models per-doc sharing
+  # -- but the same triple as every other failure, so arm demonstrates the
+  # shape recurs rather than being special to 401.
+  forbidden:
+    status: 403
+    message: Forbidden
+    fields:
+      statusMessage: Forbidden
+
+  parameter_missing:
+    status: 400
+    message: Bad Request
+    fields:
+      statusMessage: Bad Request
+
+  rate_limit:
+    status: 429
+    message: Too Many Requests
+    fields:
+      statusMessage: Too Many Requests
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    user:
+      - id: user1
+        name: Ada Lovelace
+        loginId: ada@cauldron.example
+        tokenName: Cauldron test token
+        scoped: false
+
+    doc:
+      - id: AbCDeFGH
+        name: Product Launch Hub
+        owner: ada@cauldron.example
+        ownerName: Ada Lovelace
+        folderId: fl-1234
+        workspaceId: ws-1234
+        createdAt: "2026-04-11T00:18:57.946Z"
+        updatedAt: "2026-08-14T09:12:00.000Z"
+      - id: IjKlMnOp
+        name: Onboarding Checklist
+        owner: ada@cauldron.example
+        ownerName: Ada Lovelace
+        folderId: fl-1234
+        workspaceId: ws-1234
+        createdAt: "2026-05-02T00:00:00.000Z"
+        updatedAt: "2026-05-02T00:00:00.000Z"
+
+    table:
+      - id: grid-pqRst-U
+        docId: AbCDeFGH
+        name: Tasks
+        tableType: table
+
+    row:
+      - id: i-tuVwxYz
+        docId: AbCDeFGH
+        tableId: grid-pqRst-U
+        name: Feed Baker
+        index: 0
+        values:
+          c-tuVwxYz: Feed Baker
+          c-bCdeFgh: Not started
+        createdAt: "2026-08-10T00:00:00.000Z"
+        updatedAt: "2026-08-10T00:00:00.000Z"
+      - id: i-CdEfgHi
+        docId: AbCDeFGH
+        tableId: grid-pqRst-U
+        name: Walk the dog
+        index: 1
+        values:
+          c-tuVwxYz: Walk the dog
+          c-bCdeFgh: Done
+        createdAt: "2026-08-11T00:00:00.000Z"
+        updatedAt: "2026-08-12T09:00:00.000Z"
+      # Deliberately no third row. A client just upserted "Buy groceries"
+      # into this table and received a 202 and req-still-running below --
+      # generally processed within several seconds, by Coda's own words, and
+      # this fixture is what the table looks like inside that window. It is
+      # not distinguishable from a table where the write never happened.
+
+    mutation: []
+
+    mutation_status:
+      - id: req-still-running
+        completed: false
+      - id: req-finished-with-warning
+        completed: true
+        warning: "1 row could not be parsed and was skipped."
+
+conformance:
+  - name: a failure states one fact three times
+    source: https://coda.io/apis/v1/whoami
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /whoami
+    expect:
+      status: 401
+      body:
+        # A number, restating the status line.
+        statusCode: 401
+        # Words, restating it again.
+        statusMessage: Unauthorized
+        # And a third time: Coda's own description says this is "the same as
+        # statusMessage otherwise", so absent a specific detail it is not a
+        # fourth fact, it is the same one twice more.
+        message: Unauthorized
+
+  - name: a missing credential and a wrong one are the same failure
+    source: https://coda.io/apis/v1/whoami
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /whoami
+      headers:
+        Authorization: Bearer junk-token-not-real-1234567890
+    expect:
+      status: 401
+      body:
+        # Identical, byte for byte, to the no-credential case above. Coda
+        # was checked against both directly and answered the same 74 bytes
+        # either way.
+        statusCode: 401
+        statusMessage: Unauthorized
+        message: Unauthorized
+
+  - name: the credential is checked before the path is
+    # A path that has never existed, unauthenticated, answered exactly the
+    # same 401 as /apis/v1/docs unauthenticated -- Coda will not say whether
+    # a guessed endpoint exists until the caller proves who they are. This
+    # is also the one place this Recipe's engine matches Coda for free:
+    # Cauldron checks a credential before it ever asks its own router
+    # whether a path exists, so this Recipe never declaring
+    # /this-is-not-a-real-path-xyz is exactly why the answer is
+    # authentication_error rather than unknown_route.
+    source: https://coda.io/apis/v1/this-is-not-a-real-path-xyz
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /this-is-not-a-real-path-xyz
+    expect:
+      status: 401
+      body:
+        statusCode: 401
+        statusMessage: Unauthorized
+        message: Unauthorized
+
+  - name: the same triple carries every other failure too
+    # Not special to 401: forbidden, not found, bad request and rate limited
+    # all describe themselves in the OpenAPI document with the identical
+    # three-field shape, just a different pair of words. Read from the
+    # description rather than called, because provoking a real 403 needs a
+    # doc this credential is deliberately not shared into.
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    arm: forbidden
+    request:
+      method: GET
+      path: /docs/AbCDeFGH
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 403
+      body:
+        statusCode: 403
+        statusMessage: Forbidden
+        message: Forbidden
+
+  - name: a doc's identifier is not called id in the schema's own words but is one
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /docs/AbCDeFGH
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        id: AbCDeFGH
+        name: Product Launch Hub
+        type: doc
+        ownerName: Ada Lovelace
+      absent:
+        # Hidden partitions: nothing in a doc's own body names these under
+        # these keys.
+        - folderId
+        - workspaceId
+
+  - name: a listing wraps under items with a page token, not a bare array
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /docs
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        items[0].name: Product Launch Hub
+      matches:
+        # A second doc exists and was not sent back, so a token is owed.
+        nextPageToken: "."
+      absent:
+        - data
+        - docs
+        - results
+        - items[1]
+
+  - name: a row's values are a free-form map keyed by column id
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /docs/AbCDeFGH/tables/grid-pqRst-U/rows/i-tuVwxYz
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        id: i-tuVwxYz
+        name: Feed Baker
+        index: 0
+        values:
+          c-tuVwxYz: Feed Baker
+          c-bCdeFgh: Not started
+      absent:
+        - docId
+        - tableId
+
+  - name: writing a row answers a request id, never the row
+    # "This endpoint will always return a 202, so long as the doc and table
+    # exist and are accessible." Not the row, not its id, not a count.
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /docs/AbCDeFGH/tables/grid-pqRst-U/rows
+      headers:
+        Authorization: Bearer cauldron-coda-token
+      json:
+        rows:
+          - cells:
+              - column: c-tuVwxYz
+                value: Buy groceries
+    expect:
+      status: 202
+      body:
+        addedRowIds:
+          - i-newRow01
+      matches:
+        requestId: '^[0-9a-zA-Z_-]+$'
+      absent:
+        - name
+        - values
+        - index
+        - id
+
+  - name: the accepted write is not in the very next read
+    # req-still-running accepted a row a moment ago and has not finished --
+    # "generally processed within several seconds" -- and the table it was
+    # sent to still answers with only the two rows that were already there.
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /docs/AbCDeFGH/tables/grid-pqRst-U/rows
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        items[0].name: Feed Baker
+        items[1].name: Walk the dog
+      absent:
+        - items[2]
+
+  - name: the mutation status answers completed, and nothing about which mutation
+    # MutationStatus has exactly two properties. The requestId that
+    # addressed this call is not one of them.
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /mutationStatus/req-still-running
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        completed: false
+      absent:
+        - id
+        - requestId
+
+  - name: a completed mutation can still carry a warning
+    source: https://coda.io/apis/v1/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /mutationStatus/req-finished-with-warning
+      headers:
+        Authorization: Bearer cauldron-coda-token
+    expect:
+      status: 200
+      body:
+        completed: true
+      matches:
+        warning: "."
