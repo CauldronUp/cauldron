@@ -1,0 +1,566 @@
+# Semantic Scholar Academic Graph API Recipe for Cauldron
+#
+# Ask for nothing and you get a name.
+#
+#   GET /graph/v1/paper/DOI:10.1145/3197026
+#   200 {"paperId": "0e60f400b12f8beb6266c9d31225658820791ed7",
+#        "title": "Proceedings of the 18th ACM/IEEE on Joint Conference on
+#                   Digital Libraries"}
+#
+# Nothing else. Not the year, not the authors, not a single one of the two
+# dozen fields the endpoint can serve -- every one of them is opt in, and the
+# two that come back for free are the two nobody would build a citation graph
+# out of.
+#
+# (The DOI: form above is how this was checked against the live API and
+# every fixture value below came from that call. It is not how this Recipe's
+# emulator is addressed -- see the second known gap for why a real DOI
+# cannot be, and address the same record below by its paperId instead.)
+#
+# **And a field you ask for can answer null rather than disappear.** The same
+# paper, asked for with `fields=...,abstract`, answers
+# `"abstract": null` -- present, typed, explicitly nothing -- and the object
+# beside it says why: `openAccessPdf.disclaimer` reads "the following paper
+# fields have been elided by the publisher: {'abstract'}", a Python set's
+# repr, braces and quote marks and all, sitting inside a JSON string on a
+# JSON API. A client testing `"abstract" in paper` finds it. A client testing
+# `paper.abstract` finds nothing to print. Both are right, about different
+# questions, and the field does not say which one it is answering.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.semanticscholar.org on the date in its verified field.
+#
+# Three more the Recipe pins:
+#
+#   1. One host, two failure envelopes, and neither carries a status field.
+#      A bad field name or a paper that is not there answers
+#      `{"error": "..."}` -- one key, no code, no envelope. A rate limit
+#      answers `{"message": "...", "code": "429"}` -- a different key for the
+#      prose, plus a code the first shape does not have, quoted as a string
+#      rather than sent as the number it looks like. Code written against
+#      one envelope's key finds nothing on the other.
+#   2. Not found is not found three ways, and all three are one error. A
+#      paper id of forty zeros, a DOI that was never minted, and a prefix
+#      the API has never heard of --
+#      `DOI:not-a-real-doi`, `BOGUSPREFIX:123`, forty zeros -- come back
+#      identically: 404, `{"error": "Paper with id <exactly what you sent>
+#      not found"}`. The malformed request and the well-formed-but-absent one
+#      are the same failure, and the message proves it by echoing the input
+#      back verbatim rather than describing what was wrong with it.
+#   3. A closed paper's PDF is a URL that is not absent and is not a URL.
+#      `openAccessPdf` is still an object -- `{"url": "", "status": "CLOSED",
+#      "license": null}` -- so `paper.openAccessPdf.url` is the empty string,
+#      not undefined, on a paper with no PDF to link to. Three ways to say
+#      "nothing here" -- an empty string, a null, and a status code that
+#      already said so in words -- inside one small object.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The batch endpoint is not modelled beyond the found-record shape.
+#     Checked live on 2026-08-31: POST /graph/v1/paper/batch with one real id
+#     and one all-zero id, fields=title,year, answered 200 with
+#     `[{"paperId": "204e3073870fae3d05bcbc2f6a8e263d9b72e776", "title":
+#     "Attention is All you Need", "year": 2017}, null]` -- a bare JSON
+#     `null` sitting in the array, in the position the missing id was sent
+#     in, beside a real object in the position the real id was sent in.
+#     Cauldron's list operation has no way to filter by an array of ids
+#     carried in a POST body and no way to emit `null` as one entry of an
+#     otherwise-normal array, so the route below can only answer with
+#     whatever its fixture holds -- never fewer, never a null in the middle.
+#     A caller learns which of its ids resolved by reading the shape of a
+#     real response; against this Recipe every id it seeded resolves.
+#   - A real DOI cannot be looked up at all, and this is Cauldron's
+#     limitation rather than the Recipe's. The live API happily answers
+#     GET /graph/v1/paper/DOI:10.1145/3197026 -- that call is this file's
+#     first example above -- but a DOI's own syntax is
+#     "10.<registrant>/<suffix>", so the path segment after "DOI:" almost
+#     always contains a literal "/" of its own. Cauldron's router requires
+#     an exact, fixed count of "/"-delimited segments and has no wildcard or
+#     catch-all that lets one {id} placeholder absorb an embedded slash --
+#     confirmed by trying it: /graph/v1/paper/{id} compiles to four
+#     segments, the request path splits into six, and the emulator answers
+#     its generic "Unrecognised request URL." rather than ever reaching the
+#     paper lookup. A single-segment external id -- a malformed DOI with no
+#     slash in it, or a prefix the API has never heard of -- routes and
+#     404s correctly, which is why those are modelled below and a genuine
+#     DOI is not: it is not that Cauldron picked one prefix over another, it
+#     is that a slash-bearing identifier cannot reach a route at all.
+#   - The `fields` parameter is a comma-separated set the caller can combine
+#     freely -- `fields=title,year,authors` asks for three fields in one
+#     request and the real API answers all three. Cauldron's matches_query
+#     picks one route per request, so this Recipe declares two shapes
+#     (a `year`-bearing one and an `abstract`-bearing one, the two live
+#     fields sets it was written against) rather than the combinatorial
+#     surface a real fields parameter has. Asana's Recipe carries the
+#     identical gap under opt_fields, for the identical reason.
+#   - The search endpoint's envelope (pagination shape, empty-result shape,
+#     and its own error surface) could not be verified live for this
+#     Recipe: api.semanticscholar.org's public, unauthenticated pool
+#     answered 429 to essentially every /paper/search request made while
+#     researching this file, over more than a dozen attempts spaced from
+#     twenty to ninety seconds apart across several minutes. That congestion
+#     is itself recorded below, with the exact body the API sent every one
+#     of those times -- what is not recorded is a single successful search
+#     response, because none was obtained. /paper/search is therefore not
+#     modelled as a route, rather than modelled from memory of what the
+#     documentation says it should look like.
+
+recipe: semanticscholar
+capability: docs
+version: 0.1.0
+
+upstream:
+  # Semantic Scholar publishes three public APIs from the same host --
+  # Graph, Recommendations and Datasets. This Recipe covers only the Graph
+  # API, at /graph/v1.
+  api: v1
+  provider: semanticscholar
+  docs: https://api.semanticscholar.org/api-docs/graph
+
+auth:
+  # Public. An API key raises the rate limit but nothing here used one.
+  scheme: none
+
+responses:
+  error:
+    # {"error": "..."}: one key, nothing else. The 429 below overrides this
+    # for its own envelope, because it is a different shape entirely.
+    style: flat
+    message_field: error
+    # The only code this Recipe ever sends is the rate limit's "429", quoted
+    # rather than bare. code_type is Recipe-wide rather than per error, and
+    # this is the one error here that has a code at all.
+    code_type: string
+
+resources:
+  paper:
+    id:
+      # 0e60f400b12f8beb6266c9d31225658820791ed7: forty lowercase hex
+      # characters, with no prefix of its own.
+      style: hex
+      field: paperId
+      length: 40
+    fields:
+      title:
+        type: string
+      year:
+        type: integer
+      # [{authorId, name}, ...]. authorId is Semantic Scholar's own author
+      # id, not the paper's.
+      authors:
+        type: list
+      # null when the publisher elided it, absent when it was never asked
+      # for. See the header: both are real and they are not the same claim.
+      abstract:
+        type: string
+      venue:
+        type: string
+      # {"DOI": ..., "MAG": ..., "DBLP": ..., "CorpusId": ...}: whichever
+      # namespaces this paper is known under. CorpusId is a number; the rest
+      # are strings.
+      externalIds:
+        type: map
+      fieldsOfStudy:
+        type: list
+      # [{category, source}, ...]. The same category can appear twice, once
+      # per model that assigned it -- "external" and "s2-fos-model" both
+      # said Computer Science about the paper in this Recipe's fixture.
+      s2FieldsOfStudy:
+        type: list
+      publicationTypes:
+        type: list
+      # "2014-09-08": a calendar date, not a timestamp.
+      publicationDate:
+        type: string
+      journal:
+        type: map
+      citationCount:
+        type: integer
+      referenceCount:
+        type: integer
+      influentialCitationCount:
+        type: integer
+      isOpenAccess:
+        type: boolean
+      # {"url", "status", "license", "disclaimer"}. url is "" rather than
+      # absent on a closed paper -- see the header. disclaimer is only sent
+      # when a field was withheld, and carries the withheld field's name
+      # inside a Python set's repr.
+      openAccessPdf:
+        type: map
+      # {"model", "text"}: a machine-generated summary, not the abstract.
+      tldr:
+        type: map
+
+routes:
+  # No fields parameter: paperId and title, and nothing else this record
+  # carries.
+  - method: GET
+    path: /graph/v1/paper/{id}
+    resource: paper
+    operation: get
+    not_found: paper_missing
+    returns:
+      - id
+      - title
+
+  # fields names abstract: the wide shape this Recipe's fixture was recorded
+  # from, seventeen fields deep, with abstract answering null rather than
+  # being left out. The real query this was checked against also names year,
+  # so this route is declared ahead of the year-only one below: both would
+  # otherwise match and Cauldron gives a tie among query-matched routes to
+  # whichever is declared first, which would answer the wrong, narrower
+  # shape for the fields value actually used.
+  - method: GET
+    path: /graph/v1/paper/{id}
+    resource: paper
+    operation: get
+    not_found: paper_missing
+    matches_query:
+      fields: abstract
+    returns:
+      - id
+      - externalIds
+      - title
+      - venue
+      - year
+      - referenceCount
+      - citationCount
+      - influentialCitationCount
+      - isOpenAccess
+      - openAccessPdf
+      - fieldsOfStudy
+      - s2FieldsOfStudy
+      - tldr
+      - publicationTypes
+      - publicationDate
+      - journal
+      - authors
+      - abstract
+
+  # fields names year but not abstract: this shape answers title, year and
+  # authors, which is what the live API sent for exactly this fields value.
+  - method: GET
+    path: /graph/v1/paper/{id}
+    resource: paper
+    operation: get
+    not_found: paper_missing
+    matches_query:
+      fields: year
+    returns:
+      - id
+      - title
+      - year
+      - authors
+
+  # A fields value the API does not recognise: refused before any lookup
+  # happens, on a request that otherwise addresses a real paper.
+  - method: GET
+    path: /graph/v1/paper/{id}
+    matches_query:
+      fields: bogusfield
+    error: invalid_fields
+
+  # See the header's first known gap. This answers with whatever the active
+  # fixture holds, never fewer and never a null placeholder for an id that
+  # was requested and does not exist.
+  - method: POST
+    path: /graph/v1/paper/batch
+    resource: paper
+    operation: list
+    list:
+      style: bare
+    returns:
+      - id
+      - title
+      - year
+
+errors:
+  paper_missing:
+    status: 404
+    # {detail} is the identifier exactly as the caller sent it -- prefix,
+    # typo and all. See the header: three different kinds of wrong id
+    # produce this one message, verbatim, with nothing distinguishing them.
+    message: "Paper with id {detail} not found"
+
+  invalid_fields:
+    status: 400
+    message: "Unrecognized or unsupported fields: [bogusfield]"
+
+  # A wholly different envelope from the one above: message rather than
+  # error, a code the other shape never carries, and that code sent as a
+  # quoted string rather than the number "429" looks like.
+  rate_limit:
+    status: 429
+    style: flat
+    message_field: message
+    code_field: code
+    code: "429"
+    message: "Too Many Requests. Please wait and try again or apply for a key for higher rate limits. https://www.semanticscholar.org/product/api#api-key-form"
+
+fixtures:
+  empty: {}
+
+  papers:
+    paper:
+      # A conference proceedings record, not a paper -- which is why its
+      # reference count is 0 and its abstract was elided by the publisher
+      # rather than simply never written.
+      - id: 0e60f400b12f8beb6266c9d31225658820791ed7
+        title: "Proceedings of the 18th ACM/IEEE on Joint Conference on Digital Libraries"
+        venue: "ACM/IEEE Joint Conference on Digital Libraries"
+        year: 2014
+        referenceCount: 0
+        citationCount: 4
+        influentialCitationCount: 0
+        isOpenAccess: false
+        externalIds:
+          MAG: "2914173924"
+          DBLP: "conf/jcdl/2018"
+          DOI: "10.1145/3197026"
+          CorpusId: 44178220
+        openAccessPdf:
+          # Empty, not absent, not null -- on a paper isOpenAccess says is
+          # closed.
+          url: ""
+          status: CLOSED
+          license: null
+          disclaimer: "Notice: The following paper fields have been elided by the publisher: {'abstract'}. Paper or abstract available at https://api.unpaywall.org/v2/10.1145/3197026?email=<INSERT_YOUR_EMAIL> or https://doi.org/10.1145/3197026, which is subject to the license by the author or copyright owner provided with this content. Please go to the source to verify the license and copyright information for your use."
+        fieldsOfStudy:
+          - Computer Science
+        s2FieldsOfStudy:
+          - category: Computer Science
+            source: external
+          - category: Computer Science
+            source: s2-fos-model
+        tldr:
+          model: "tldr@v2.0.0"
+          text: "DL 2014, hosted by The City University London, brings JCDL and TPDL communities together with its joint program addressing a broad spectrum of topical areas such as user research, system architectures, collection policies, and specialist domains such as digital humanities, preservation, and scholarship."
+        publicationTypes:
+          - Book
+          - Conference
+        publicationDate: "2014-09-08"
+        journal:
+          name: "Proceedings of the 18th ACM/IEEE on Joint Conference on Digital Libraries"
+        authors:
+          - authorId: "145705027"
+            name: "G. Buchanan"
+          - authorId: "144940287"
+            name: "Martin Klein"
+          - authorId: "145494588"
+            name: "A. Rauber"
+          - authorId: "1718927"
+            name: "S. Cunningham"
+        # Requested and elided, so it answers null rather than being left
+        # out. See the header.
+        abstract: null
+
+  # A second, unrelated paper, seeded alone for the batch route so its
+  # single-element answer can be told apart from the multi-paper fixture
+  # above rather than accidentally including it.
+  one-paper:
+    paper:
+      - id: 204e3073870fae3d05bcbc2f6a8e263d9b72e776
+        title: "Attention is All you Need"
+        year: 2017
+
+conformance:
+  - name: nothing asked for is paperId and title, and nothing else
+    source: https://api.semanticscholar.org/graph/v1/paper/DOI:10.1145/3197026
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+    expect:
+      status: 200
+      body:
+        paperId: 0e60f400b12f8beb6266c9d31225658820791ed7
+        title: "Proceedings of the 18th ACM/IEEE on Joint Conference on Digital Libraries"
+      absent:
+        - year
+        - authors
+        - abstract
+
+  - name: asking for year also hands back authors
+    source: https://api.semanticscholar.org/graph/v1/paper/DOI:10.1145/3197026?fields=title,year,authors
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+      query:
+        fields: title,year,authors
+    expect:
+      status: 200
+      body:
+        paperId: 0e60f400b12f8beb6266c9d31225658820791ed7
+        title: "Proceedings of the 18th ACM/IEEE on Joint Conference on Digital Libraries"
+        year: 2014
+        "authors[0].authorId": "145705027"
+        "authors[0].name": "G. Buchanan"
+        "authors[3].name": "S. Cunningham"
+
+  - name: an elided field answers null rather than disappearing
+    source: "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1145/3197026?fields=title,year,authors,abstract,venue,externalIds,fieldsOfStudy,s2FieldsOfStudy,publicationTypes,publicationDate,journal,citationCount,referenceCount,influentialCitationCount,isOpenAccess,openAccessPdf,tldr"
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+      query:
+        fields: title,year,authors,abstract,venue,externalIds,fieldsOfStudy,s2FieldsOfStudy,publicationTypes,publicationDate,journal,citationCount,referenceCount,influentialCitationCount,isOpenAccess,openAccessPdf,tldr
+    expect:
+      status: 200
+      body:
+        # Present, typed, and explicitly nothing -- not the same wire state
+        # as leaving the field out.
+        abstract: null
+        "externalIds.DOI": "10.1145/3197026"
+        "externalIds.CorpusId": 44178220
+        referenceCount: 0
+        citationCount: 4
+        isOpenAccess: false
+
+  - name: and the object beside the null says why
+    source: "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1145/3197026?fields=title,year,authors,abstract,venue,externalIds,fieldsOfStudy,s2FieldsOfStudy,publicationTypes,publicationDate,journal,citationCount,referenceCount,influentialCitationCount,isOpenAccess,openAccessPdf,tldr"
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+      query:
+        fields: title,year,authors,abstract,venue,externalIds,fieldsOfStudy,s2FieldsOfStudy,publicationTypes,publicationDate,journal,citationCount,referenceCount,influentialCitationCount,isOpenAccess,openAccessPdf,tldr
+    expect:
+      status: 200
+      body:
+        # A URL that is neither absent nor a URL: the empty string, on a
+        # closed paper.
+        "openAccessPdf.url": ""
+        "openAccessPdf.status": CLOSED
+        "openAccessPdf.license": null
+      matches:
+        # A Python set's repr, braces and quote marks, inside a JSON string.
+        "openAccessPdf.disclaimer": 'elided by the publisher: \{''abstract''\}'
+
+  - name: an unrecognised fields value is refused before any lookup
+    source: "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1145/3197026?fields=bogusfield"
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+      query:
+        fields: bogusfield
+    expect:
+      status: 400
+      body:
+        error: "Unrecognized or unsupported fields: [bogusfield]"
+
+  - name: a paper id of forty zeros is not found
+    source: https://api.semanticscholar.org/graph/v1/paper/0000000000000000000000000000000000000000
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      path: /graph/v1/paper/0000000000000000000000000000000000000000
+    expect:
+      status: 404
+      body:
+        # The id sent back verbatim, in a sentence.
+        error: "Paper with id 0000000000000000000000000000000000000000 not found"
+
+  - name: a doi that was never minted answers the same way
+    source: https://api.semanticscholar.org/graph/v1/paper/DOI:not-a-real-doi
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      path: /graph/v1/paper/DOI:not-a-real-doi
+    expect:
+      status: 404
+      # Identical shape to the malformed hex id above: no format check runs
+      # before the lookup, so a typo and a genuine absence are the same
+      # failure.
+      body:
+        error: "Paper with id DOI:not-a-real-doi not found"
+
+  - name: an unrecognised external-id prefix, the same failure again
+    source: https://api.semanticscholar.org/graph/v1/paper/BOGUSPREFIX:123
+    verified: "2026-08-31"
+    fixture: papers
+    request:
+      method: GET
+      path: /graph/v1/paper/BOGUSPREFIX:123
+    expect:
+      status: 404
+      # Three different kinds of wrong id -- forty zeros, a well-formed but
+      # unminted DOI, and a prefix that names no namespace at all -- and one
+      # message shape serves all three, each time echoing back exactly what
+      # was sent.
+      body:
+        error: "Paper with id BOGUSPREFIX:123 not found"
+
+  - name: the rate limit is a different envelope, not a different message field
+    source: https://api.semanticscholar.org/graph/v1/paper/0000000000000000000000000000000000000000
+    verified: "2026-08-31"
+    arm: rate_limit
+    fixture: papers
+    request:
+      method: GET
+      # Addressed by paperId rather than by the DOI: form the source URL
+      # used. See the header: a real DOI contains a slash of its own and
+      # Cauldron's router cannot route a path segment that splits into two.
+      path: /graph/v1/paper/0e60f400b12f8beb6266c9d31225658820791ed7
+    expect:
+      status: 429
+      body:
+        # message and code, where every other failure on this host sends
+        # error and nothing else.
+        message: "Too Many Requests. Please wait and try again or apply for a key for higher rate limits. https://www.semanticscholar.org/product/api#api-key-form"
+        # Quoted, not the bare number it looks like.
+        code: "429"
+      absent:
+        - error
+
+  - name: batch answers the fixture, not the specific ids that were asked for
+    source: "https://api.semanticscholar.org/graph/v1/paper/batch?fields=title,year"
+    verified: "2026-08-31"
+    fixture: one-paper
+    request:
+      method: POST
+      path: /graph/v1/paper/batch
+      query:
+        fields: title,year
+      json:
+        ids:
+          - 204e3073870fae3d05bcbc2f6a8e263d9b72e776
+          - "0000000000000000000000000000000000000000"
+    expect:
+      status: 200
+      # A bare array -- no envelope -- with one entry, because this fixture
+      # holds one record. The header explains what the live API sends
+      # instead for this exact request: two entries, the second a bare
+      # null for the id this Recipe's emulator simply has no record of, and
+      # therefore no way to answer for at all, favourable or not.
+      body:
+        "[0].paperId": 204e3073870fae3d05bcbc2f6a8e263d9b72e776
+        "[0].title": "Attention is All you Need"
+        "[0].year": 2017
+      absent:
+        - "[1]"
