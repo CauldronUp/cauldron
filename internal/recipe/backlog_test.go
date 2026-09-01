@@ -235,13 +235,13 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 	// here must still be a candidate: an entry that stops matching is stale and
 	// fails, for the same reason the queue itself does.
 	distinct := map[string]string{
-		"Circle":         "the stablecoin company, not CircleCI",
-		"Grafana Cloud":  "a stack-management API on top of the Grafana HTTP API, which is what ships",
-		"Cloudflare R2":  "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
-		"GitHub Actions": "a separate surface of GitHub, as the row itself says",
-		"GoCardless":     "payments, where gocardlessbank is GoCardless Bank Account Data",
-		"Stripe Tax":     "a specialised extension of Stripe, as the row itself says",
-		"UPS":            "the parcel carrier, which merely spells the first three letters of Upstash",
+		"Circle":                 "the stablecoin company, not CircleCI",
+		"Grafana Cloud":          "a stack-management API on top of the Grafana HTTP API, which is what ships",
+		"Cloudflare R2":          "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
+		"GitHub Actions":         "a separate surface of GitHub, as the row itself says",
+		"GoCardless":             "payments, where gocardlessbank is GoCardless Bank Account Data",
+		"Stripe Tax":             "a specialised extension of Stripe, as the row itself says",
+		"UPS":                    "the parcel carrier, which merely spells the first three letters of Upstash",
 		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
 	}
 
