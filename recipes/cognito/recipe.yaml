@@ -1,0 +1,563 @@
+# AWS Cognito (user pools) Recipe for Cauldron
+#
+# Cognito's user-pool control plane speaks the same AWS JSON protocol
+# DynamoDB and SQS do in this collection: one path, POST /, the operation
+# named in X-Amz-Target, SigV4 in Authorization. This Recipe follows their
+# precedent directly -- auth.pattern for the signature's shape (see
+# dynamodb/recipe.yaml and sqs/recipe.yaml for why a shape check is the
+# honest ceiling: the signature differs on every request, and verifying it
+# would mean implementing SigV4, which is not what this project is for) and
+# matches_header for routing, because every operation on this host really
+# does arrive at the same path. What differs from both of those Recipes is
+# that this one was actually struck live, repeatedly, with no account and no
+# credential ever created -- neither of those two carries a single `verified:`
+# date anywhere in its conformance table, and probing cognito-idp.us-east-1
+# .amazonaws.com directly turned up an ordering neither of them assumed.
+#
+# **Three layers answer a request here, not two, and they disagree about
+# almost everything.** Checked live, repeatedly, on the date below:
+#
+#   GET  / (no headers at all)                    -> 400, Server: awselb/2.0,
+#                                                      {"code":"BadRequest","message":
+#                                                      "The server did not understand
+#                                                      the operation that was requested.",
+#                                                      "type":"client"}
+#   GET  / with a real X-Amz-Target header         -> byte-identical to the above
+#   PATCH / with a real X-Amz-Target header        -> byte-identical, no Server header
+#                                                      this time but the same body,
+#                                                      same status, x-amzn-RequestId present
+#   DELETE / with a real X-Amz-Target header       -> byte-identical again
+#   POST / with Content-Type set, no X-Amz-Target  -> 400 {"__type":"UnknownOperationException"}
+#   POST / with X-Amz-Target naming a real op,
+#         no Authorization at all                  -> 400 {"__type":"MissingAuthenticationTokenException",
+#                                                      "message":"Missing Authentication Token"}
+#
+# Layer one is an edge -- an ELB in front of the service, going by its own
+# response header -- that only ever forwards POST. Every other verb, headers
+# or no headers, credential or no credential, gets the identical "did not
+# understand the operation" body and never reaches anything Cognito itself
+# runs. Layer two is Cognito's own JSON-protocol dispatcher: it reads
+# X-Amz-Target and answers UnknownOperationException for anything it does not
+# recognise, with **no credential examined at all** -- verified by sending a
+# nonexistent operation name both with no Authorization header and with a
+# well-formed, current-dated, syntactically valid SigV4 header attached; both
+# answered the identical UnknownOperationException, because routing had
+# already failed before the credential was ever looked at. Only once the
+# target names a real operation does layer three, the credential check, run.
+#
+# That is a genuine third ordering this collection's own AfterRouting flag
+# was not built to say (see internal/recipe/auth.go for the five it already
+# records): method decides at an edge outside the application entirely, then
+# operation-name routing decides with no credential involved either way, and
+# only then is the credential examined. A boolean has two positions. This
+# Recipe sets `after_routing: true`, because that is the one position that
+# reproduces the layer this task was actually sent to establish -- operation
+# routing beating the credential, unconditionally, verified both with no
+# credential and with a plausible one, and reproduced below with neither.
+# The edge-layer method rejection is not modelled as a route at all: this
+# runtime checks a matched route's credential unconditionally once
+# AfterRouting has let it through (see internal/runtime/handler.go, the
+# refuse() call on line 150), so *any* route standing in for "wrong method" --
+# even one whose whole job is to fail -- is itself a route matchSelecting can
+# select, and gets gated behind a credential the live edge never examines.
+# Worse, declaring one pollutes this Recipe's own allowedMethods computation
+# for the POST routes above and turned an unrecognised operation name into
+# "try GET" instead of UnknownOperationException, which was tried and
+# reverted -- see the note beside the routes below. The edge's body is
+# quoted verbatim above and stays in prose rather than being forced into a
+# shape this format cannot express without breaking the finding beside it.
+#
+# **The credential check itself reports three genuinely different sentences,
+# not one.** All struck live against a POST naming a real operation
+# (ListUserPools):
+#
+#   no Authorization header at all      -> MissingAuthenticationTokenException
+#                                           "Missing Authentication Token"
+#   Authorization: Bearer junktoken12345
+#     (present, not SigV4 shaped at all) -> IncompleteSignatureException
+#                                           "Invalid key=value pair (missing
+#                                           equal-sign) in Authorization header
+#                                           (hashed with SHA-256 and encoded
+#                                           with Base64): '8lJ6YSDzYYYVJS9A3aunsw
+#                                           4xJBgPf6AuwX71hOrh+0Y='."
+#   a syntactically valid, current-dated
+#     SigV4 header signed with a key
+#     nobody issued                      -> UnrecognizedClientException
+#                                           "The security token included in
+#                                           the request is invalid."
+#
+# That maps exactly onto this format's three verdicts: absent, malformed (the
+# value is present and the pattern rules it out -- Cognito's own hashed-and-
+# base64'd complaint about the header it was actually sent, not a canned
+# line), and rejected (right shape, not a credential anybody holds). All
+# three are named below. The middle one took two tries to observe correctly:
+# a first attempt reused a stale X-Amz-Date and got InvalidSignatureException
+# ("Signature expired") instead, which is a fourth sentence this Recipe does
+# not claim, because it is a fact about clock skew rather than about which of
+# the three verdicts applies -- stated here and not modelled, since nothing
+# about the credential's shape produces it, only the wall clock does.
+#
+# Cauldron's own pattern-based check (see auth.go: "a wrongly signed request
+# is accepted") can only ever answer Accepted or Malformed on its own, the
+# same ceiling DynamoDB's and SQS's Recipes already state -- there is no key
+# list to compare a real signature against, so Rejected is never reached
+# organically. The one case below demonstrating UnrecognizedClientException
+# arms it for a single request, the device rootly/recipe.yaml, mezmo/recipe.yaml
+# and transloadit/recipe.yaml already use in this collection for a shape the
+# routing and credential mechanism cannot trigger on its own.
+#
+# **A user pool id embeds a region, and the wrong one is not distinguishable
+# from one that never existed.** This could not be checked through the
+# JSON-protocol operations above -- DescribeUserPool needs a real signature to
+# reach at all -- but a second, genuinely public mechanism on the same host
+# answered it directly: GET /{userPoolId}/.well-known/jwks.json, which needs
+# no credential of any kind (it exists so a relying party can verify a JWT
+# without holding an API credential at all). Struck live, no account, no key:
+#
+#   /us-east-1_ZZZZZZZZZ/.well-known/jwks.json   (right-region shape, no such pool)
+#     -> 404 {"message":"User pool us-east-1_ZZZZZZZZZ does not exist."}
+#   /eu-west-1_ZZZZZZZZZ/.well-known/jwks.json   (this host is us-east-1)
+#     -> 404 {"message":"User pool eu-west-1_ZZZZZZZZZ does not exist."}
+#   /not-a-pool-id-at-all/.well-known/jwks.json  (fails the id's own regex)
+#     -> 400 {"message":"1 validation error detected: Value 'not-a-pool-id-
+#             at-all' at 'userPoolId' failed to satisfy constraint: Member
+#             must satisfy regular expression pattern: [\w-]+_[0-9a-zA-Z]+",
+#             "reasonCode":null}
+#
+# The us-east-1 host answers a eu-west-1-shaped id with the identical
+# ResourceNotFoundException template a same-region id that never existed
+# gets, word for word except the id echoed back. Nothing about this host
+# checks whether the region embedded in the id agrees with the region it was
+# asked at all; it only checks whether the *pattern* is satisfied
+# ([\w-]+_[0-9a-zA-Z]+, which is why the third probe above gets a different
+# status and a different exception entirely) and then whether a pool by that
+# exact name exists in *this* account, in *this* region, full stop. A pool id
+# copied from the wrong region's config is indistinguishable, byte for byte,
+# from a pool id that was never real -- both are "does not exist."
+#
+# Not modelled as a route: jwks.json is on cognito-idp.us-east-1.amazonaws.com,
+# the same host as everything above, but it needs no credential at all where
+# every JSON-protocol operation needs one, and Cauldron's auth is one scheme
+# for the whole Recipe with no per-route exemption (see route.go: there is no
+# field for "this one route skips the credential check"). Bunny's Recipe
+# names the identical trade for its own second host and Mezmo's for its
+# second product; here it is the same trade for a second *mechanism* on the
+# same host. The finding is recorded here, live-verified, rather than forced
+# into a shape this format cannot express without misdescribing every other
+# route.
+#
+# One more, smaller and not modelled for the same reason: POST / with
+# Content-Type omitted entirely -- not merely a wrong operation, no
+# Content-Type header at all -- answers the identical edge-layer "did not
+# understand the operation" body a wrong method gets, not UnknownOperationException.
+# So the edge does not only gate on method; it also gates on Content-Type
+# before Cognito's own dispatcher ever sees the request. Struck live and
+# stated here; adding a fourth axis to this Recipe's routing to capture it
+# would buy one more sentence at the cost of the two orderings that actually
+# answer this task's question.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of roughly forty documented UserPoolType fields this Recipe declares
+#     nine. LambdaConfig, SchemaAttributes, Policies, EmailConfiguration,
+#     SmsConfiguration, DeviceConfiguration, VerificationMessageTemplate and
+#     every other nested configuration block are real and absent.
+#   - Status is a real, documented field (type: string, no enum given) and is
+#     not declared here: AWS's own worked DescribeUserPool response, quoted
+#     in full in its API reference, never populates it, so this Recipe has no
+#     value to cite and does not invent one.
+#   - Every route other than ListUserPools and DescribeUserPool -- create,
+#     delete, every Admin* operation, every Auth* operation actually used to
+#     sign a user in, every operation this backlog entry's own line ("the
+#     token lifecycle is the whole integration") points at -- is real and not
+#     modelled. This Recipe is about the wire protocol's own shape and its
+#     three-layer ordering, not a port of user-pool administration.
+#   - No account was ever created and no IAM credential was ever requested,
+#     guessed or used. The two 200 cases below are read from AWS's own
+#     published API reference worked examples (ListUserPools and
+#     DescribeUserPool, both dated in the reference as June 2023 and both
+#     re-fetched today) and carry no `verified:` date; every 400 case was
+#     struck live against cognito-idp.us-east-1.amazonaws.com today and does.
+#
+# Every value in the fixture below not minted by this Recipe (the pool ids,
+# names, ARN, dates) is AWS's own worked example, quoted verbatim, not this
+# Recipe's invention. The Authorization values below are fixtures and belong
+# to no AWS account.
+
+recipe: cognito
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: "2016-04-18"
+  docs: https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/Welcome.html
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape only -- see the header and dynamodb/recipe.yaml's
+  # own note on why a real signature is never verified.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+  absent_error: missing_authentication_token
+  malformed_error: incomplete_signature
+  rejected_error: unrecognized_client
+  # Operation routing beats the credential, unconditionally -- verified with
+  # no credential and with a syntactically valid one alike. See the header.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: NextToken
+  resource:
+    style: wrapped
+    # Empty: each resource wraps under its own name, the same device
+    # dynamodb/recipe.yaml uses ("Item", "Table") for the identical reason --
+    # DescribeUserPool answers {"UserPool": {...}}.
+  # The JSON protocol's own envelope: a __type naming the exception, a
+  # message beside it (when there is one -- UnknownOperationException has
+  # none at all, see the errors table below), both capitalised, nothing
+  # called "code" or "error".
+  error:
+    style: flat
+    code_field: __type
+    code_type: string
+    message_field: message
+    type_field: "-"
+
+resources:
+  UserPool:
+    collection: UserPools
+    id:
+      # "us-east-1_EXAMPLE" -- a region prefix, an underscore, an opaque
+      # suffix. Not uuid, not hex, not numeric; opaque is the closest this
+      # vocabulary has, and see the header for what the region prefix does
+      # and does not mean to this host.
+      style: opaque
+      field: Id
+    fields:
+      Name:
+        type: string
+      Arn:
+        type: string
+      EstimatedNumberOfUsers:
+        type: integer
+        default: 0
+      MfaConfiguration:
+        type: string
+      DeletionProtection:
+        type: string
+      UserPoolTier:
+        type: string
+      # Unix epoch seconds with a fractional component (1689721665.239 in
+      # AWS's own worked example) -- neither this format's "timestamp" (a
+      # bare integer) nor "timestamp_ms" (integer milliseconds) is quite
+      # this shape, the same gap transloadit/recipe.yaml's execution_duration
+      # is declared against. number is the honest type; the value is AWS's
+      # own, not computed by this Recipe.
+      CreationDate:
+        type: number
+      LastModifiedDate:
+        type: number
+      # Real on UserPoolDescriptionType (the list shape) and absent from
+      # UserPoolType (the describe shape) -- see the header and the
+      # conformance cases below for the contrast this proves.
+      ReplicaRegions:
+        type: list
+
+routes:
+  # Every operation is POST / with the operation named in X-Amz-Target,
+  # exactly as dynamodb/recipe.yaml and sqs/recipe.yaml already model this
+  # protocol. The convenience paths a REST-shaped guess would reach for --
+  # /userpools, /userpools/{id} -- are URLs this host does not serve.
+  - method: POST
+    path: /
+    matches_header:
+      X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+    resource: UserPool
+    operation: list
+    # UserPoolDescriptionType, not the full record -- see the header and the
+    # "list answers a narrower shape" conformance case below.
+    returns: [id, Name, CreationDate, LastModifiedDate, ReplicaRegions]
+    pagination:
+      # MaxResults is documented "Required: Yes", 1-60 -- an AWS list
+      # operation that refuses to default this the way DynamoDB's and SQS's
+      # own Limit parameters do.
+      style: cursor
+      limit: 60
+      max_limit: 60
+      limit_param: MaxResults
+      cursor_param: NextToken
+      in: body
+
+  - method: POST
+    path: /
+    matches_header:
+      X-Amz-Target: AWSCognitoIdentityProviderService.DescribeUserPool
+    resource: UserPool
+    operation: get
+    id_from: body:UserPoolId
+
+  # No route below stands in for the edge-layer rejection (GET, PATCH, DELETE
+  # -- see the header): declaring one, even one whose whole job is to fail,
+  # is a route matchSelecting can select, which brings it inside AfterRouting's
+  # "a route matched, now check the credential" branch and pollutes this
+  # Recipe's own allowedMethods computation for every POST route above (a
+  # bare GET fallback here made an unrecognised X-Amz-Target report "try
+  # GET" instead of UnknownOperationException, which is worse than the gap
+  # it was meant to close). The edge layer's body is quoted verbatim in the
+  # header instead, live-verified, and left unrouted rather than forced.
+  #
+  # A route with no matches_header at all -- an explicit "whatever X-Amz-Target
+  # says, answer unknown" catch-all -- was tried here first and removed for
+  # the identical reason: it is itself a matchable route, so AfterRouting
+  # gated *it* behind the credential check too, and an unrecognised operation
+  # with no Authorization header answered "authentication_required" instead
+  # of UnknownOperationException. Declaring nothing and letting matchSelecting
+  # fail outright is what lets Cauldron's own pre-credential unknown_route
+  # fallback (see internal/runtime/handler.go, lines 114-145, which run
+  # before the AfterRouting check on line 150) answer it, credential-free,
+  # exactly as the live host does -- overridden below to the UnknownOperationException
+  # shape rather than Cauldron's generic one.
+
+errors:
+  missing_authentication_token:
+    status: 400
+    code: MissingAuthenticationTokenException
+    message: Missing Authentication Token
+
+  # The exact sentence Cognito's own hashing-and-base64 complaint produced
+  # for "Authorization: Bearer junktoken12345", quoted verbatim. A different
+  # value would echo a different digest -- see the header.
+  incomplete_signature:
+    status: 400
+    code: IncompleteSignatureException
+    message: "Invalid key=value pair (missing equal-sign) in Authorization header (hashed with SHA-256 and encoded with Base64): '8lJ6YSDzYYYVJS9A3aunsw4xJBgPf6AuwX71hOrh+0Y='."
+
+  # Reached only by arming it -- see the header for why Cauldron's own
+  # pattern-based check can never conclude Rejected on its own.
+  unrecognized_client:
+    status: 400
+    code: UnrecognizedClientException
+    message: The security token included in the request is invalid.
+
+  # Cauldron's own built-in name for "no route matched at all" -- reached
+  # with no route declared for it, and so with no credential ever examined,
+  # for both an absent and an unrecognised X-Amz-Target alike. No message
+  # field at all on the real host -- the whole body is
+  # {"__type":"UnknownOperationException"} -- which is why message_field is
+  # overridden to nothing here rather than inheriting the Recipe-wide one.
+  unknown_route:
+    status: 400
+    message_field: "-"
+    code: UnknownOperationException
+
+fixtures:
+  empty: {}
+
+  # AWS's own worked examples, quoted verbatim from two different pages of
+  # its published API reference -- a us-west-2 pool for the ListUserPools
+  # example and a us-east-1 pool for DescribeUserPool's, because that is how
+  # AWS's own documentation shows them and this Recipe does not force the two
+  # into agreeing about a region neither call was ever struck against.
+  account:
+    UserPool:
+      - id: us-west-2_EXAMPLE1
+        Id: us-west-2_EXAMPLE1
+        Name: user pool 1
+        CreationDate: 1681502497.741
+        LastModifiedDate: 1681502497.741
+        ReplicaRegions:
+          - us-west-2
+          - us-east-1
+      - id: us-east-1_EXAMPLE
+        Id: us-east-1_EXAMPLE
+        Name: my-test-user-pool
+        Arn: arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_EXAMPLE
+        EstimatedNumberOfUsers: 0
+        MfaConfiguration: OPTIONAL
+        DeletionProtection: ACTIVE
+        UserPoolTier: ESSENTIALS
+        CreationDate: 1689721665.239
+        LastModifiedDate: 1689721665.239
+
+conformance:
+  - name: a real operation name with no credential at all is Cognito's own sentence, not the edge's
+    # Struck live: POST / with X-Amz-Target naming ListUserPools and no
+    # Authorization header whatsoever. Fully organic here -- after_routing
+    # lets the route match on the header alone before the credential is ever
+    # considered, exactly as the live host does.
+    source: https://cognito-idp.us-east-1.amazonaws.com/
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+      json:
+        MaxResults: 60
+    expect:
+      status: 400
+      body:
+        __type: MissingAuthenticationTokenException
+        message: Missing Authentication Token
+
+  - name: a credential that is present and not SigV4-shaped gets a third sentence, quoting its own hash back
+    source: https://cognito-idp.us-east-1.amazonaws.com/
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+        Authorization: Bearer junktoken12345
+      json:
+        MaxResults: 60
+    expect:
+      status: 400
+      body:
+        __type: IncompleteSignatureException
+        message: "Invalid key=value pair (missing equal-sign) in Authorization header (hashed with SHA-256 and encoded with Base64): '8lJ6YSDzYYYVJS9A3aunsw4xJBgPf6AuwX71hOrh+0Y='."
+
+  - name: a syntactically valid signature nobody issued is a fourth sentence, reached only by arming it
+    # Real and live-verified (see the header for the two tries this took --
+    # a stale test date answered "Signature expired" instead, a fact about
+    # the clock rather than about the credential). Cauldron's own pattern
+    # check cannot conclude Rejected on its own, so this arms the shape for
+    # one request rather than claiming the router reaches it organically.
+    source: https://cognito-idp.us-east-1.amazonaws.com/
+    verified: "2026-09-01"
+    arm: unrecognized_client
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAJUNKJUNKJUNKJUNK/20260901/us-east-1/cognito-idp/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        MaxResults: 60
+    expect:
+      status: 400
+      body:
+        __type: UnrecognizedClientException
+        message: The security token included in the request is invalid.
+
+  - name: an operation name nobody recognises is refused before any credential is looked at
+    # Struck live with no Authorization header at all -- see the next case
+    # for the same request with a valid-shaped credential attached, which
+    # answers byte-identical.
+    source: https://cognito-idp.us-east-1.amazonaws.com/
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ThisOperationDoesNotExist
+      json: {}
+    expect:
+      status: 400
+      body:
+        __type: UnknownOperationException
+      absent:
+        - message
+
+  - name: and a valid-shaped credential does not change that -- routing wins regardless
+    # Struck live with a syntactically valid, current-dated SigV4 header
+    # attached to the identical bogus target. Byte-identical to the case
+    # above: the credential is never reached, because the operation was
+    # never recognised.
+    source: https://cognito-idp.us-east-1.amazonaws.com/
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ThisOperationDoesNotExist
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAJUNKJUNKJUNKJUNK/20260901/us-east-1/cognito-idp/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json: {}
+    expect:
+      status: 400
+      body:
+        __type: UnknownOperationException
+
+  - name: listing answers a narrower shape than describing does, not merely a shorter list
+    # AWS's own worked ListUserPools response, quoted in the header and in
+    # full in its API reference -- read, not observed, since no account
+    # exists to call it. ReplicaRegions is real here and absent from the
+    # describe shape below; Arn, MfaConfiguration and EstimatedNumberOfUsers
+    # are the reverse.
+    source: https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ListUserPools.html
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/us-east-1/cognito-idp/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        MaxResults: 60
+    expect:
+      status: 200
+      body:
+        "UserPools[0].Id": us-west-2_EXAMPLE1
+        "UserPools[0].Name": user pool 1
+        "UserPools[0].ReplicaRegions[0]": us-west-2
+      absent:
+        - "UserPools[0].Arn"
+        - "UserPools[0].MfaConfiguration"
+        - "UserPools[0].EstimatedNumberOfUsers"
+
+  - name: the pagination cursor is NextToken, which is Cognito's own word
+    # A name a Recipe chooses is only a claim if something asserts it where
+    # the value exists -- the same device fireworks/recipe.yaml and
+    # dynamodb/recipe.yaml use for their own cursor names. Asking for one of
+    # two records holds the token that comes back.
+    source: https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_ListUserPools.html
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.ListUserPools
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/us-east-1/cognito-idp/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        MaxResults: 1
+    expect:
+      status: 200
+      matches:
+        NextToken: "."
+
+  - name: describing the same account's pool answers the full shape, without ReplicaRegions
+    source: https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DescribeUserPool.html
+    fixture: account
+    request:
+      method: POST
+      path: /
+      headers:
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.DescribeUserPool
+        Authorization: "AWS4-HMAC-SHA256 Credential=CAULDRONKEY/20260115/us-east-1/cognito-idp/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      json:
+        UserPoolId: us-east-1_EXAMPLE
+    expect:
+      status: 200
+      body:
+        "UserPool.Id": us-east-1_EXAMPLE
+        "UserPool.Name": my-test-user-pool
+        "UserPool.Arn": arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_EXAMPLE
+        "UserPool.MfaConfiguration": OPTIONAL
+        "UserPool.EstimatedNumberOfUsers": 0
+      absent:
+        - "UserPool.ReplicaRegions"
