@@ -5070,6 +5070,14 @@ func providers() []provider {
 			npm:    []string{"buttondown"},
 		},
 		{
+			recipe: "windmill",
+			npm:    []string{"windmill-client"},
+		},
+		{
+			recipe: "nuvei",
+			npm:    []string{"nuvei"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
