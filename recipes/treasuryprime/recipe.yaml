@@ -1,0 +1,572 @@
+# Treasury Prime Recipe for Cauldron
+#
+# Treasury Prime is banking-as-a-service: the bank is real, the ledger is
+# real, and the sandbox answers with the same shapes production does. The
+# reason to emulate it anyway is the question this group of Recipes exists
+# to answer -- once a payment is submitted it cannot be un-submitted, and
+# Treasury Prime is the one of the three that says exactly where that line
+# sits and exactly what verb crosses it.
+#
+# **Cancelling is a status write, not a DELETE and not a call to a
+# sub-resource.** Treasury Prime's own guide is explicit about the mechanism
+# and quotes the request in full:
+#
+#   "To cancel an ACH, call the Update an ACH endpoint to update its status
+#   to canceled":
+#
+#     curl -u $API_KEY_ID:$API_SECRET_KEY https://api.treasuryprime.com/ach/ach_1029384756 \
+#         -X PATCH -H 'Content-Type: application/json' -d '{"status": "canceled"}'
+#
+# (docs.treasuryprime.com/docs/making-your-first-ach-transfer, "Canceling an
+# ACH Transfer"). The OpenAPI description for PATCH /ach/{id} carries the
+# identical worked example -- request {"status": "canceled"}, response the
+# full ACH object with status now "canceled" -- and, separately, PATCH
+# /wire/{id} documents the same mechanism for wires ({"status": "canceled"},
+# summary "Canceling a wire transfer"). One verb, reused across two payment
+# rails: this is Treasury Prime's general answer to "how do you stop a
+# payment," not a one-off on the ACH resource.
+#
+# **The window is exactly one status value, and it is documented in prose
+# rather than enforced by anything this Recipe could call and watch fail.**
+# "An ACH transfer originated on the Treasury Prime platform may be canceled
+# while it is in a status of pending. Once the ACH transitions from pending
+# to processing, it may no longer be canceled." That is the whole rule. The
+# OpenAPI spec for PATCH /ach/{id} documents exactly one response -- 200,
+# the worked example above -- and no 4xx of any kind, for this operation or
+# for PATCH /wire/{id}. No account was ever opened, so no transfer of this
+# Recipe's own was ever moved into processing to try cancelling it there,
+# and the vendor's own reference does not show what trying answers either.
+# That is not a gap this Recipe is hiding: it is the honest shape of what
+# exists to find. The rule is published; the refusal is not, anywhere this
+# Recipe looked, and no case below invents one.
+#
+# **The full status enum, in the field description's own order: pending,
+# processing, sent, returned, canceled, error.** pending is the only
+# cancelable state. processing, sent, returned, canceled and error are all
+# states a client can no longer act on:
+#
+#   - canceled and error are unambiguously terminal -- one means the
+#     transfer never reached the network, the other means it failed during
+#     processing (insufficient funds, suspected fraud, failed validation).
+#   - returned is terminal for the transfer itself; the ACH protocol has no
+#     further state to move it to.
+#   - sent is terminal in practice though not in name, and the field
+#     description says why in as many words: "Because the ACH protocol does
+#     not provide for a success response, successful transfers will remain
+#     in the sent state in perpetuity." Nothing ever moves a transfer off
+#     sent to confirm it arrived -- there is no better word coming.
+#   - processing is the one state that is neither cancelable nor terminal:
+#     the transfer cannot be stopped and has not yet been handed to the
+#     network either, so for a window a caller cannot cancel a transfer that
+#     has also not yet done anything irreversible.
+#
+# **A route the sandbox answers with no credential at all.** GET / on both
+# hosts -- verified live, byte for byte the same on each:
+#
+#   api.treasuryprime.com   {"api_version":"1","version":"1.18.809-gb966d7a4","time":"..."}
+#   api.sandbox.treasuryprime.com   the same shape, same version string
+#
+# and GET /health, also unauthenticated on the sandbox host, answers a
+# four-part breakdown -- iapps, api, auth, gateway -- each with its own
+# version and status_ok. That is not filler: it names the architecture the
+# rest of this header depends on. This host is at least four services deep,
+# and which one answers a given request is exactly what decides whether a
+# credential is checked before or after routing.
+#
+# **Routing order depends on whether anything resembling a credential was
+# attempted at all -- not on the path and not on the method.** This is the
+# same split Sendcloud's Recipe records elsewhere in this collection
+# (auth.after_routing's own comment calls that arrangement out as a sixth
+# answer the flag cannot express), reached independently on a completely
+# different host. Checked live, every combination, 2026-09-01:
+#
+#   GET   /ach                       no credential  -> 403 {"error":"Access denied: /ach"}
+#   PATCH /ach                       no credential  -> 404 {"error":"404 Not Found"} (PATCH is not a
+#                                                      registered method on the collection)
+#   POST  /ach                       no credential  -> 403 {"error":"Access denied: /ach"} (create is
+#                                                      registered; only the credential is missing)
+#   PUT/PATCH/DELETE /ach            no credential  -> 404, identical body, all three
+#   GET   /ach/{any-string}          no credential  -> 403 {"error":"Access denied: /ach/{id}"}
+#   PATCH /ach/{any-string}          no credential  -> 403, identical shape
+#   POST/PUT/DELETE /ach/{any-string} no credential -> 404, identical body, all three
+#   GET   /totally-bogus-path        no credential  -> 404 {"error":"404 Not Found"}
+#
+#   GET   /totally-bogus-path        Basic junk:junk -> 403 {"name":"forbidden","status":
+#                                     "403 Forbidden","message":"The request was a legal
+#                                     request but the server is refusing to respond to it."}
+#   GET   /ach                       Basic junk:junk -> 403, byte-identical body
+#   POST  /ach                       Basic junk:junk -> 403, byte-identical body
+#   GET   /totally-bogus-path        Bearer junk      -> 401 {"name":"unauthorized!","status":
+#                                     "401 Unauthorized","message":"Authentication is
+#                                     possible but has failed or not yet been provided."}
+#   GET   /ach                       Bearer junk      -> 401, byte-identical body
+#
+# Read top to bottom: with no Authorization header at all, the request
+# reaches the application, and the application resolves its own route
+# first -- a real method on a real path is refused for its credential
+# (403, naming the path); anything else 404s, GET and PATCH and POST alike.
+# The moment anything is sent that could be a credential -- a well-formed
+# Basic pair that is wrong, a Basic header that will not even base64-decode,
+# a Bearer token, all checked -- the answer stops depending on the path or
+# the method at all: an entirely invented path gets the identical gateway
+# response a real, fully-routed one does. That is only explicable if the
+# credential is being checked by something in front of the application --
+# the "gateway" and "auth" components /health names separately from "api" --
+# and Basic and Bearer land on two different sentences there, 403 for one
+# shape and 401 for the other, neither of which is the application's own
+# "Access denied" wording.
+#
+# auth.after_routing is one setting for the whole Recipe, and this host
+# needs something that flag cannot express at all: a genuinely public route
+# (GET / and GET /health, both modelled below) sitting beside routes that
+# are gated, on a host where gating itself depends on whether a credential
+# was attempted rather than on the path. Cauldron's auth check has no
+# per-route exemption -- Temporal's Recipe elsewhere in this collection
+# names the identical limit for the identical reason. So this Recipe sets
+# auth.scheme: none and pairs every gated route with its own fallback,
+# the way Census's and Temporal's Recipes do: a route naming
+# matches_header answers when the fixture credential is presented, and an
+# identical method+path declaring only `error:` answers everything else,
+# which is what reproduces the finding this collection's brief asks after
+# specifically -- an unrouted path 404s and a wrong method 404s, with no
+# credential sent at all, because nothing about auth exists on those paths
+# to check in the first place. There is no real 405 anywhere on this host:
+# PUT, PATCH and DELETE where they are not registered all get the identical
+# "404 Not Found" body an invented path gets.
+#
+# What this cannot also reproduce is the credential-present short-circuit
+# quoted above: a Basic pair that is wrong, or a Bearer token, answering the
+# identical gateway sentence on a path that does not exist. A single
+# fallback route only ever answers one body regardless of what was sent, so
+# it is written here to match the more common accident -- forgetting the
+# header entirely -- and the gateway's own two sentences are quoted above
+# rather than wired to a case that would have to pretend one route produces
+# both.
+#
+# The live 403 for an unauthenticated real route also echoes the specific
+# path back -- "Access denied: /ach" and "Access denied: /ach/{id}" are two
+# different sentences for two different routes. This Recipe's fallback
+# answers a fixed "Access denied" with no path template; the case below
+# asserts that fixed half and no more.
+#
+# This Recipe also never routes POST /ach at all -- see the fidelity gaps
+# for why -- so a POST here 404s where live Treasury Prime would 403 it for
+# the same missing credential a GET gets. That is a deliberate cost of not
+# modelling how a transfer is created, not a finding about the wire.
+#
+# **Only Basic is modelled.** Every curl example in Treasury Prime's own
+# documentation authenticates the same way -- `-u $API_KEY_ID:$API_SECRET_KEY`
+# -- which is Basic with the key id as the username and the secret as the
+# password, the Column/Modern Treasury arrangement elsewhere in this
+# collection. A caller who reaches for Bearer instead gets the third
+# sentence quoted above, live, and this Recipe does not reproduce it: one
+# Recipe holds one scheme, and Basic is the one the vendor's own examples
+# use throughout.
+#
+# **Amounts are decimal strings, not integer minor units.** "100.00", not
+# 10000. Every other banking Recipe in this collection -- Increase, Column,
+# Modern Treasury, Mercury -- uses an integer and puts the direction in the
+# sign or a separate field; Treasury Prime is the one that sends a string
+# with a decimal point, per the schema's own pattern:
+# `^-?[0-9]+[.][0-9][0-9]$`.
+#
+# **The pagination guide's own worked example does not agree with its own
+# rule.** "page_cursor: Pagination cursor, value is the object ID" is the
+# documented contract, and the worked example for listing ACH transfers
+# hands back `"page_next": "https://api.treasuryprime.com/ach?page_cursor=acct_456"`
+# for a page whose second (last) item has `"id": "ach_1234567891"` and
+# `"account_id": "acct_456"`. The cursor is the account, not the object --
+# on the one worked example the guide itself provides for this exact
+# resource. Quoted rather than smoothed over.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No money moves. There is no route here that creates an ACH transfer,
+#     which is the position Increase, Column, Mercury and Bill.com already
+#     take in this collection. One consequence is stated in the auth
+#     section above: POST /ach is not routed at all, so this Recipe answers
+#     404 to it where live Treasury Prime would 403 for a missing
+#     credential -- a cost of the choice not to model creation, not a claim
+#     about the wire.
+#   - The cancel route (PATCH /ach/{id}) is modelled for exactly the one
+#     case Treasury Prime's own reference documents: a pending transfer,
+#     cancelled. What happens to a transfer already in processing is not
+#     modelled at all -- see the header above for why: nobody, including
+#     Treasury Prime's own reference, has published it.
+#   - wire, book, check, hold, account, counterparty, card and every apply/
+#     KYC endpoint are real, documented, and not modelled. wire's own
+#     PATCH-to-cancel example is quoted above only as corroboration that the
+#     mechanism generalises; no wire route exists here.
+#   - Webhooks (`ach.update`) are documented and not modelled.
+#   - No spec_hash is recorded despite upstream.spec naming a real,
+#     fetched document: Cauldron's fingerprint tool was not run against it,
+#     and a hash typed by hand would be a claim about a computation that
+#     never happened.
+#
+# Tokens below are fixtures, not secrets. Object ids, amounts, dates and
+# response shapes below that are not restated from a live 2026-09-01 call
+# are copied verbatim from Treasury Prime's own published documentation and
+# OpenAPI description (docs.treasuryprime.com and its embedded
+# api-reference/openapi-payments.json) -- none is invented, and no case
+# below claims a body this Recipe never read somewhere.
+
+recipe: treasuryprime
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://docs.treasuryprime.com/docs/making-your-first-ach-transfer
+  spec: https://docs.treasuryprime.com/api-reference/openapi-payments.json
+
+auth:
+  # None at the Recipe level, deliberately -- see the header. A genuinely
+  # public route sits beside gated ones on a host where gating depends on
+  # whether a credential was attempted rather than on the path, which
+  # Cauldron's single auth check cannot express. Every gated route below
+  # carries its own matches_header and a header-less fallback instead, the
+  # same mechanism Census's and Temporal's Recipes use for their own,
+  # differently-shaped versions of the same problem.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    # A full URL, not a bare token -- see the header's pagination finding.
+    cursor_field: page_next
+    cursor_url: absolute
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  ach_transfer:
+    collection: data
+    id:
+      # Real ids in Treasury Prime's own examples vary in length --
+      # ach_1029384756 (10), ach_5merj00eudnp (12), ach_01123456789 (11) --
+      # so no fixed length is claimed.
+      style: opaque
+      prefix: ach_
+    fields:
+      account_id:
+        type: string
+      counterparty_id:
+        type: string
+      # A decimal string, not integer minor units -- see the header.
+      amount:
+        type: string
+      currency:
+        type: string
+        default: USD
+      # credit (send money to the counterparty) or debit (receive money
+      # from them).
+      direction:
+        type: string
+      # pending, processing, sent, returned, canceled, error -- see the
+      # header for which are terminal. Read-only: a client only ever
+      # changes this by writing "canceled" while it is still pending.
+      status:
+        type: string
+        default: pending
+      sec_code:
+        type: string
+      service:
+        type: string
+        default: standard
+      description:
+        type: string
+        null_when_unset: true
+      # The banking day the transfer counts for, according to the network.
+      effective_date:
+        type: string
+      # If the ACH has been returned, the return reason code -- "R01" would
+      # mean insufficient funds. Absent otherwise, per the schema's own
+      # words, which is why no case below asserts a value for it.
+      error:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: string
+      updated_at:
+        type: string
+        null_when_unset: true
+
+routes:
+  # Genuinely unauthenticated, on both hosts -- see the header. A fixed
+  # health/version line, not a resource, so it is routed raw.
+  - method: GET
+    path: /
+    raw:
+      content_type: application/json;charset=utf-8
+      text: '{"api_version":"1","version":"1.18.809-gb966d7a4","time":"2026-09-01T11:39:25.089Z"}'
+
+  - method: GET
+    path: /health
+    raw:
+      content_type: application/json
+      text: '{"iapps":{"version":"0.1.127-gaf4d6588","time":"2026-09-01T11:39:33.578Z","status":"status_ok","api_version":"1","heartbeat":171799494},"api":{"version":"1.18.809-gb966d7a4","time":"2026-09-01T11:39:33.579Z","status":"status_ok","queue":[{"size":0,"queue_name":"default"}],"api_version":"1"},"auth":{"version":"1.4.60-gce24e2c1","auth_version":"1","time":"2026-09-01T11:39:33.575Z","status":"status_ok"},"gateway":{"version":"1.1.107-ge7bbee7a","time":"2026-09-01T11:39:33+00:00","gateway_version":"1","status":"status_ok"}}'
+
+  - method: GET
+    path: /ach
+    resource: ach_transfer
+    operation: list
+    matches_header:
+      Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+    pagination:
+      style: cursor
+      limit: 100
+      cursor_param: page_cursor
+      limit_param: page_size
+
+  # No credential presented at all -- see the header for why this is the
+  # one live behaviour a single fallback route can reproduce faithfully.
+  - method: GET
+    path: /ach
+    error: access_denied
+
+  - method: GET
+    path: /ach/{id}
+    resource: ach_transfer
+    operation: get
+    matches_header:
+      Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+
+  - method: GET
+    path: /ach/{id}
+    error: access_denied
+
+  # The one route this Recipe models a real write for -- see the header.
+  # Only a pending transfer being cancelled is modelled; a transfer outside
+  # that window is not, because nothing published shows what it answers.
+  - method: PATCH
+    path: /ach/{id}
+    resource: ach_transfer
+    operation: update
+    matches_header:
+      Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+
+  - method: PATCH
+    path: /ach/{id}
+    error: access_denied
+
+errors:
+  # The application's own sentence for an unauthenticated request to a real,
+  # routed method+path. Live it reads "Access denied: {the specific path}";
+  # only the fixed prefix is asserted here -- see the header.
+  access_denied:
+    status: 403
+    message: "Access denied"
+
+  # What a genuinely unrouted path answers, and also what a real path
+  # answers to a method nothing is registered for -- the identical body
+  # either way. There is no real 405 anywhere on this host; see the header.
+  unknown_route:
+    status: 404
+    message: "404 Not Found"
+
+  method_not_allowed:
+    status: 404
+    message: "404 Not Found"
+
+fixtures:
+  empty: {}
+
+  # Both records are Treasury Prime's own worked examples for listing ACH
+  # transfers (docs.treasuryprime.com/reference/ach, "List ACH"), quoted
+  # rather than invented -- see the header's pagination finding for exactly
+  # this response.
+  small-bank:
+    ach_transfer:
+      - id: ach_1234567890
+        account_id: acct_123
+        counterparty_id: cp_123
+        amount: "10.00"
+        currency: USD
+        direction: credit
+        sec_code: ccd
+        service: standard
+        status: pending
+        effective_date: "2018-10-30T23:57:11Z"
+        created_at: "2018-10-30T23:57:11Z"
+        updated_at: "2018-10-30T23:57:11Z"
+      # The record whose own id does not match the pagination cursor the
+      # same worked example hands back -- see the header.
+      - id: ach_1234567891
+        account_id: acct_456
+        counterparty_id: cp_456
+        amount: "1.00"
+        currency: USD
+        direction: credit
+        sec_code: ccd
+        service: standard
+        status: pending
+        effective_date: "2018-10-30T23:57:09Z"
+        created_at: "2018-10-30T23:57:09Z"
+        updated_at: "2018-10-30T23:57:09Z"
+
+      # The "Canceling an ACH Transfer" guide's own worked example --
+      # docs.treasuryprime.com/docs/making-your-first-ach-transfer and the
+      # identical example embedded in the OpenAPI description for
+      # PATCH /ach/{id}. Fixtured as already cancelled, so the GET case
+      # below shows the resting state the PATCH case's response also shows.
+      - id: ach_1029384756
+        account_id: acct_1234567890
+        counterparty_id: cp_0987654321
+        amount: "100.00"
+        currency: USD
+        direction: credit
+        sec_code: ppd
+        service: standard
+        status: canceled
+        effective_date: "2017-11-03"
+        created_at: "2017-11-02T11:55:14Z"
+        updated_at: "2017-11-02T11:55:14Z"
+
+# Every case below carries source. A verified date means this exact request
+# was struck against api.sandbox.treasuryprime.com on that date and this is
+# what came back. Its absence means the case reproduces a worked example
+# from Treasury Prime's own documentation or OpenAPI description and was
+# never called -- no account exists and none was created; doing so would
+# mean opening a real bank account to write this file.
+conformance:
+  - name: the root path answers with no credential at all, on both hosts
+    source: https://api.sandbox.treasuryprime.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 200
+      body:
+        api_version: "1"
+      matches:
+        version: "."
+        time: "."
+
+  - name: and so does the health check, naming four services rather than one
+    source: https://api.sandbox.treasuryprime.com/health
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /health
+    expect:
+      status: 200
+      body:
+        iapps.status: status_ok
+        api.status: status_ok
+        auth.status: status_ok
+        gateway.status: status_ok
+
+  - name: an unrouted path answers the same 404 with no credential sent at all
+    source: https://api.sandbox.treasuryprime.com/totally-bogus-path
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-path
+    expect:
+      status: 404
+      body:
+        error: "404 Not Found"
+
+  - name: a method nothing registers on a real path 404s the same way, not a 405
+    source: https://api.sandbox.treasuryprime.com/ach
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /ach
+    expect:
+      status: 404
+      body:
+        error: "404 Not Found"
+
+  - name: a real route with no credential is refused for that, not routed away
+    source: https://api.sandbox.treasuryprime.com/ach
+    verified: "2026-09-01"
+    fixture: small-bank
+    request:
+      method: GET
+      path: /ach
+    expect:
+      status: 403
+      matches:
+        error: "Access denied"
+
+  - name: cancelling a pending transfer is a status write, and this is the whole body
+    # Treasury Prime's own worked example for PATCH /ach/{id}, quoted in
+    # full in the header. The request is exactly {"status": "canceled"} and
+    # nothing else -- no reason, no confirmation flag, no separate cancel
+    # endpoint.
+    source: https://docs.treasuryprime.com/reference/patch_ach-id
+    fixture: small-bank
+    request:
+      method: PATCH
+      path: /ach/ach_1029384756
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+      json:
+        status: canceled
+    expect:
+      status: 200
+      body:
+        status: canceled
+        amount: "100.00"
+        account_id: acct_1234567890
+
+  - name: a transfer already cancelled reads that way afterward, with nothing else changed
+    source: https://docs.treasuryprime.com/reference/get_ach-id
+    fixture: small-bank
+    request:
+      method: GET
+      path: /ach/ach_1029384756
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        status: canceled
+        sec_code: ppd
+        currency: USD
+
+  - name: a listing pages by a full URL, not a bare cursor token
+    source: https://docs.treasuryprime.com/reference/pagination
+    fixture: small-bank
+    request:
+      method: GET
+      path: /ach
+      query:
+        page_size: "2"
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        data[0].id: ach_1234567890
+        data[1].account_id: acct_456
+      matches:
+        # A URL, not a short opaque token -- see the header. (The scheme
+        # here is Cauldron's own test harness, not a claim about Treasury
+        # Prime's; the shape being asserted is the query string.)
+        page_next: "\\?page_cursor="
+
+  - name: amount travels as a decimal string, never as an integer
+    source: https://docs.treasuryprime.com/reference/ach
+    fixture: small-bank
+    request:
+      method: GET
+      path: /ach/ach_1234567890
+      headers:
+        Authorization: Basic Y2F1bGRyb25fdGVzdF9rZXlfaWQ6dGVzdF9jYXVsZHJvbl90cmVhc3VyeXByaW1lX3NlY3JldF9rZXlfMDAwMDAw
+    expect:
+      status: 200
+      body:
+        amount: "10.00"
+        direction: credit
