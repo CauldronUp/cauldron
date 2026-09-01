@@ -1,0 +1,576 @@
+# Duffel Recipe for Cauldron
+#
+# Duffel refuses a request that does not name a version before it does
+# anything else -- before it even checks who is asking. Call
+# /air/airports with no Duffel-Version header and no Authorization header
+# at all, and the answer is 400, not 401:
+#
+#   {"errors":[{"documentation_url":"https://duffel.com/docs/api/overview/response-handling",
+#     "title":"Missing version header","type":"invalid_request_error",
+#     "message":"The 'Duffel-Version' header needs to be set to a valid API version.",
+#     "code":"missing_version_header"}],"meta":{"request_id":"...","status":400}}
+#
+# Add a *wrong* version and the shape holds but the claim changes: the header
+# was read, understood as an attempt, and rejected as one.
+#
+#   code: unsupported_version
+#   message: "The version set in the 'Duffel-Version' header is no longer
+#             supported by the API. Please upgrade."
+#
+# Both were checked against api.duffel.com directly, unauthenticated, on
+# 2026-08-31: no header is "you didn't say"; the wrong header is "you said,
+# and it's gone". A client that only checks for a 4xx cannot tell a version
+# it forgot to send from a version the provider retired out from under it,
+# and the two call for different fixes -- one is a one-line header add, the
+# other is reading the changelog for what moved.
+#
+# Cauldron cannot reproduce the ordering. `required_headers` is enforced in
+# the runtime after the API-key check (internal/runtime/handler.go checks
+# authorised() before missingHeader()), so an unauthenticated request to this
+# Recipe answers 401 first, where the real API answers 400 first regardless
+# of the key. Every case below that exercises the version header therefore
+# carries a valid key -- a concession to the engine's fixed check order, not
+# a claim about what Duffel does when both are wrong at once. That specific
+# combination (no key, no version) is real, observed, and unwritable as a
+# passing case here.
+#
+# The same fixed order hides a second thing observed live: an entirely
+# unrecognised path (/air/nonexistent_resource_xyz) answers 404 even with no
+# Authorization header at all, while a *recognised* path with a bad or
+# missing key answers 401. Duffel resolves the route before it checks the
+# key; Cauldron always checks the key first. So the "not found" case below
+# also has to carry a valid key to reach the code path it is demonstrating,
+# for the same reason.
+#
+# Duffel also sends three different authentication_error shapes depending on
+# exactly how the Authorization header is wrong -- absent
+# (missing_authorization_header), present without "Bearer " (
+# invalid_authorization_header), and present with a well-formed but unknown
+# token (access_token_not_found) -- all observed directly. The runtime's
+# authorised() check is one boolean with one named failure per Recipe: it
+# cannot tell these three apart, so this Recipe can model exactly one. It
+# models the first, because it is the one that pairs with a case that needs
+# no key substitution to reproduce exactly what was sent live.
+#
+# Two more things worth pinning, from Duffel's own published documentation
+# rather than from a call:
+#
+#   1. An offer expires. expires_at is a real deadline -- "typically within
+#      30 minutes" -- and after it passes the same offer id that worked a
+#      minute ago answers 422 offer_expired on order creation. A documented
+#      identifier that goes stale on a timer is not a shape the format can
+#      enforce dynamically (there is no declarative "reject after N minutes
+#      have elapsed"), so this Recipe fixes it by identity instead: one
+#      fixture offer id always triggers offer_expired when it appears in an
+#      order create body, and every other offer id succeeds. The 422 and its
+#      exact wording are documented precisely; the clock that would make a
+#      *fresh* offer go stale on its own is not modelled at all, and saying
+#      so is the point.
+#   2. offer_expired, offer_no_longer_available and price_changed are three
+#      different reasons an order create can fail on an offer that looked
+#      fine a moment ago, and they carry three different error types
+#      (invalid_state_error for the first, airline_error for the other two).
+#      Only the first is modelled here; the other two are real and undeclared,
+#      stated rather than silently absent.
+#
+# Untouched by design: no account was created, no real key was requested or
+# used, and no call in this file's history could have created, held or paid
+# for a booking. The order-creation route exists only to demonstrate the
+# 422, not to be exercised with a real offer.
+
+recipe: duffel
+capability: scheduling
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://duffel.com/docs/api/overview/welcome
+  # Duffel does not publish a directly fetchable OpenAPI description at a
+  # stable URL. Checked: duffel.com/docs/api and its welcome page (no linked
+  # spec), duffel.com/openapi.{json,yml} and half a dozen sibling guesses
+  # (404), docs.duffel.com (redirects back into duffel.com/docs, not a spec
+  # host), and the duffelhq GitHub org (five hand-written client libraries,
+  # no machine-readable description in any of them). Every "documented"
+  # source below cites the specific human-readable docs page instead.
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - duffel_test_cauldron00000000000000000000
+
+# Enforced ahead of routing in the real API and after the API key in this
+# one -- see the file header. Applies to every method because Duffel's own
+# wording ("needs to be set" on every request) does not scope it to reads.
+required_headers:
+  Duffel-Version: missing_version_header
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    # Duffel's own field name, not this project's default "cursor".
+    cursor_field: meta.after
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: type
+    fields:
+      # The request id is real and constant here because nothing in this
+      # format can compute one per request inside an error envelope; Duffel's
+      # own is per-request and unpredictable, the same gap Mistral and Paddle
+      # already state this way.
+      #
+      # meta.status -- which the real API also sends, echoing the HTTP status
+      # inside the body -- is deliberately left undeclared. status_field
+      # exists for exactly this shape and places the value inside each error
+      # *entry*; Duffel's meta sits beside the errors array, one level up,
+      # shared by all of them, and there is no equivalent hook for a status
+      # that varies per failure at the envelope level of a list-style error.
+      # Forcing it into the entry would put "status" at errors[0].status,
+      # which is not where Duffel puts it, so it is stated as missing rather
+      # than served in the wrong place.
+      meta:
+        request_id: cauldron0000duffel0000000000001
+
+resources:
+  airport:
+    id:
+      style: prefixed
+      prefix: arp_
+    fields:
+      name:
+        type: string
+      iata_code:
+        type: string
+      iata_country_code:
+        type: string
+      iata_city_code:
+        type: string
+      icao_code:
+        type: string
+        null_when_unset: true
+      city_name:
+        type: string
+      time_zone:
+        type: string
+      latitude:
+        type: number
+      longitude:
+        type: number
+      # A nested object naming the airport's city and that city's own
+      # airports, per Duffel's reference. Left as a free-form map: the
+      # airports-within-a-city recursion is not worth a second resource for
+      # what this Recipe uses it for.
+      city:
+        type: map
+
+  offer:
+    id:
+      style: prefixed
+      prefix: off_
+    fields:
+      total_amount:
+        type: string
+      total_currency:
+        type: string
+      base_amount:
+        type: string
+        null_when_unset: true
+      base_currency:
+        type: string
+        null_when_unset: true
+      tax_amount:
+        type: string
+        null_when_unset: true
+      tax_currency:
+        type: string
+        null_when_unset: true
+      # The deadline. See the file header -- documented precisely, enforced
+      # not at all: this Recipe cannot make a fixture go stale on a clock.
+      expires_at:
+        type: datetime
+      live_mode:
+        type: boolean
+        default: false
+      passengers:
+        type: list
+      slices:
+        type: list
+      conditions:
+        type: map
+      owner:
+        type: map
+
+  order:
+    id:
+      style: prefixed
+      prefix: ord_
+    fields:
+      booking_reference:
+        type: string
+        default: CAULDRN
+      offer_id:
+        type: string
+      live_mode:
+        type: boolean
+        default: false
+      total_amount:
+        type: string
+      total_currency:
+        type: string
+      passengers:
+        type: list
+      slices:
+        type: list
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /air/airports
+    resource: airport
+    operation: list
+    # The one route in this Recipe that also models the *wrong-value* half
+    # of the version check (the fallback route directly below). Cauldron has
+    # no Recipe-wide way to say "every route checks this header's value";
+    # each pair has to be declared per route, so the wrong-version behaviour
+    # is demonstrated once here rather than repeated on every path. The
+    # airports/{id}, offers/{id} and orders routes below still enforce that
+    # the header is *present* (required_headers is Recipe-wide) but do not
+    # check its value.
+    matches_header:
+      Duffel-Version: v2
+    pagination:
+      style: cursor
+      limit: 50
+      cursor_param: after
+    not_found: unknown_route
+
+  # Reached only when Duffel-Version is present and not "v2" -- an absent
+  # header never gets here at all, because required_headers answers first.
+  - method: GET
+    path: /air/airports
+    error: unsupported_version
+
+  - method: GET
+    path: /air/airports/{id}
+    resource: airport
+    operation: get
+    not_found: unknown_route
+
+  - method: GET
+    path: /air/offers/{id}
+    resource: offer
+    operation: get
+    not_found: unknown_route
+
+  # Reached only when the create body names the one fixture offer this
+  # Recipe treats as expired. Every other offer id falls through to the
+  # ordinary create below. See the file header for why identity stands in
+  # for a clock.
+  - method: POST
+    path: /air/orders
+    selects_body: "off_cauldron00000000000000expired1"
+    error: offer_expired
+
+  - method: POST
+    path: /air/orders
+    resource: order
+    operation: create
+    # Documented at
+    # https://duffel.com/docs/api/overview/response-handling/order-and-booking-creation
+    # rather than observed: creating a real order was never attempted.
+    status: 201
+
+errors:
+  missing_version_header:
+    status: 400
+    code: missing_version_header
+    type: invalid_request_error
+    message: "The 'Duffel-Version' header needs to be set to a valid API version."
+    fields:
+      title: Missing version header
+      documentation_url: https://duffel.com/docs/api/overview/response-handling
+
+  unsupported_version:
+    status: 400
+    code: unsupported_version
+    type: invalid_request_error
+    message: "The version set in the 'Duffel-Version' header is no longer supported by the API. Please upgrade."
+    fields:
+      title: Unsupported version
+      documentation_url: https://duffel.com/docs/api/overview/response-handling
+
+  # Models missing_authorization_header specifically -- see the file header
+  # for why this is the one of three real shapes the format can hold.
+  authentication_error:
+    status: 401
+    code: missing_authorization_header
+    type: authentication_error
+    message: "The 'Authorization' header needs to be set and contain a valid API token."
+    fields:
+      title: Missing authorization header
+      documentation_url: https://duffel.com/docs/api/overview/response-handling
+
+  # Also raised directly for a path this Recipe does not route at all, via
+  # the runtime's own unknown_route fallback -- declaring the name here
+  # replaces the project's generic default with Duffel's actual wording.
+  unknown_route:
+    status: 404
+    code: not_found
+    type: invalid_request_error
+    message: The resource you are trying to access does not exist.
+    fields:
+      title: Not found
+      documentation_url: https://duffel.com/docs/api/overview/response-handling
+
+  offer_expired:
+    status: 422
+    code: offer_expired
+    type: invalid_state_error
+    message: The selected offer has already expired
+    fields:
+      title: Offer no longer available
+      documentation_url: https://duffel.com/docs/api/overview/response-handling
+
+fixtures:
+  empty: {}
+
+  small-network:
+    airport:
+      - id: arp_cauldron0000000000000000001
+        name: London Heathrow Airport
+        iata_code: LHR
+        iata_country_code: GB
+        iata_city_code: LON
+        icao_code: EGLL
+        city_name: London
+        time_zone: Europe/London
+        latitude: 51.4700
+        longitude: -0.4543
+        city:
+          id: cit_cauldron000000000000000001
+          name: London
+          iata_country_code: GB
+          iata_code: LON
+      - id: arp_cauldron0000000000000000002
+        name: Los Angeles International Airport
+        iata_code: LAX
+        iata_country_code: US
+        iata_city_code: QLA
+        icao_code: KLAX
+        city_name: Los Angeles
+        time_zone: America/Los_Angeles
+        latitude: 33.9425
+        longitude: -118.4081
+        city:
+          id: cit_cauldron000000000000000002
+          name: Los Angeles
+          iata_country_code: US
+          iata_code: QLA
+    offer:
+      # Live for another 30 minutes of fixture time, per Duffel's own stated
+      # window. Fetching it works; nothing here checks the clock against it.
+      - id: off_cauldron0000000000000000001
+        total_amount: "245.00"
+        total_currency: GBP
+        base_amount: "200.00"
+        base_currency: GBP
+        tax_amount: "45.00"
+        tax_currency: GBP
+        expires_at: "2026-08-31T13:00:00Z"
+        live_mode: false
+        passengers: []
+        slices: []
+        conditions: {}
+        owner: {}
+      # Never actually reached by a request: the create route matches this
+      # id by the literal marker in the request body (selects_body), not by
+      # looking the fixture up and checking expires_at against a clock. Its
+      # presence here is documentation of what a real expired offer would
+      # still look like on a GET, not part of the mechanism.
+      - id: off_cauldron00000000000000expired1
+        total_amount: "180.00"
+        total_currency: GBP
+        base_amount: "150.00"
+        base_currency: GBP
+        tax_amount: "30.00"
+        tax_currency: GBP
+        expires_at: "2026-08-30T09:00:00Z"
+        live_mode: false
+        passengers: []
+        slices: []
+        conditions: {}
+        owner: {}
+
+conformance:
+  # Observed directly. The one auth failure this format can model exactly,
+  # because the request needs no substitution to reach it: a correct version
+  # header and genuinely no Authorization header at all is exactly what was
+  # sent to produce this.
+  - name: a correct version header does not excuse a missing key
+    source: https://api.duffel.com/air/airports?limit=1
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /air/airports
+      headers:
+        Duffel-Version: v2
+    expect:
+      status: 401
+      body:
+        "errors[0].code": missing_authorization_header
+        "errors[0].type": authentication_error
+        "errors[0].message": "The 'Authorization' header needs to be set and contain a valid API token."
+        "errors[0].title": Missing authorization header
+        "meta.request_id": cauldron0000duffel0000000000001
+
+  # The exact body was observed live (no key, no version, 2026-08-31). The
+  # request below adds a valid key to reach the same check in this engine's
+  # fixed order -- see the file header -- so it is deliberately left
+  # unverified: the wording is real, this precise request/response pairing
+  # was not the one sent.
+  - name: no version header names the header, not a version
+    source: https://api.duffel.com/air/airports?limit=1
+    request:
+      method: GET
+      path: /air/airports
+      headers:
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+    expect:
+      status: 400
+      body:
+        "errors[0].code": missing_version_header
+        "errors[0].type": invalid_request_error
+        "errors[0].message": "The 'Duffel-Version' header needs to be set to a valid API version."
+
+  # Same caveat as above: the exact wording was observed live with both
+  # "v99" and "v1" and no key at all; the key here is added to reach the
+  # check in this engine, not because it was part of what was sent.
+  - name: a wrong version is a different claim than a missing one
+    source: https://api.duffel.com/air/airports?limit=1
+    request:
+      method: GET
+      path: /air/airports
+      headers:
+        Duffel-Version: v1
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+    expect:
+      status: 400
+      body:
+        "errors[0].code": unsupported_version
+        "errors[0].type": invalid_request_error
+        "errors[0].message": "The version set in the 'Duffel-Version' header is no longer supported by the API. Please upgrade."
+
+  # Body observed byte for byte against an unrouted path with no key at all
+  # (2026-08-31). Left unverified for the same reason as the two cases
+  # above: this engine checks the key before it resolves the route, so
+  # reaching this exact 404 here needs one attached.
+  - name: an unrecognised path answers with Duffel's own not-found shape
+    source: https://api.duffel.com/air/nonexistent_resource_xyz
+    request:
+      method: GET
+      path: /air/nowhere
+      headers:
+        Duffel-Version: v2
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+    expect:
+      status: 404
+      body:
+        "errors[0].code": not_found
+        "errors[0].type": invalid_request_error
+        "errors[0].title": Not found
+        "errors[0].message": The resource you are trying to access does not exist.
+
+  # From Duffel's own reference (duffel.com/docs/api/v2/airports), not
+  # called: no key exists to call it with.
+  - name: an airport is addressed by an arp_ id and pages by a cursor
+    source: https://duffel.com/docs/api/v2/airports
+    fixture: small-network
+    request:
+      method: GET
+      path: /air/airports
+      query:
+        limit: "1"
+      headers:
+        Duffel-Version: v2
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        "data[0].id": arp_cauldron0000000000000000001
+        "data[0].iata_code": LHR
+      matches:
+        "meta.after": ".+"
+
+  # From the same reference page and its offers page
+  # (duffel.com/docs/api/v2/offers): the field exists, the deadline is
+  # real, and neither was exercised against a live account.
+  - name: an offer expires and says exactly when
+    source: https://duffel.com/docs/api/v2/offers
+    fixture: small-network
+    request:
+      method: GET
+      path: /air/offers/off_cauldron0000000000000000001
+      headers:
+        Duffel-Version: v2
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+    expect:
+      status: 200
+      body:
+        id: off_cauldron0000000000000000001
+        expires_at: "2026-08-31T13:00:00Z"
+        total_amount: "245.00"
+        total_currency: GBP
+
+  # From duffel.com/docs/api/overview/response-handling: the code, type and
+  # message are quoted from the same table the file header cites. Booking
+  # was never attempted; this exercises the declared failure, not a real
+  # order.
+  - name: an order create refuses an offer past its expiry
+    source: https://duffel.com/docs/api/overview/response-handling
+    fixture: small-network
+    request:
+      method: POST
+      path: /air/orders
+      headers:
+        Duffel-Version: v2
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+      json:
+        data:
+          type: instant
+          selected_offers:
+            - off_cauldron00000000000000expired1
+    expect:
+      status: 422
+      body:
+        "errors[0].code": offer_expired
+        "errors[0].type": invalid_state_error
+        "errors[0].message": The selected offer has already expired
+
+  # From the same response-handling page and the orders page
+  # (duffel.com/docs/api/v2/orders): the 201 and the booking_reference
+  # field are both documented, neither observed.
+  - name: creating an order with a live offer answers 201 with a reference
+    source: https://duffel.com/docs/api/overview/response-handling/order-and-booking-creation
+    fixture: small-network
+    request:
+      method: POST
+      path: /air/orders
+      headers:
+        Duffel-Version: v2
+        Authorization: Bearer duffel_test_cauldron00000000000000000000
+      json:
+        data:
+          type: instant
+          selected_offers:
+            - off_cauldron0000000000000000001
+    expect:
+      status: 201
+      matches:
+        id: '^ord_'
+        booking_reference: '^[A-Z0-9]+$'
