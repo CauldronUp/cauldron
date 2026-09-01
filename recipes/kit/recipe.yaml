@@ -1,0 +1,685 @@
+# Kit (formerly ConvertKit) Recipe for Cauldron
+#
+# Second of a group of three newsletter platforms answering: is a subscriber
+# a person or a subscription, and what happens to them when they
+# unsubscribe? See recipes/buttondown/recipe.yaml for the control case and
+# the header comment there for why no recipes/substack/recipe.yaml exists.
+#
+# Kit's answer, quoted rather than derived, because the vendor states it
+# twice in two different ways and the two statements are worth setting side
+# by side:
+#
+#   "Unsubscribes the subscriber from all future emails, moving them to the
+#   `cancelled` state. Returns `204 No Content` on success. The subscriber
+#   record, history, and tags are retained -- they are not deleted from the
+#   account." -- POST /v4/subscribers/{id}/unsubscribe, developers.kit.com
+#
+#   "Note: this is the API equivalent of the subscriber clicking
+#   unsubscribe. Treat it as consent-revoking and effectively permanent --
+#   only re-subscribe someone with their explicit permission." -- the same
+#   page, immediately below
+#
+# A subscriber is a person, one integer id for life, and unsubscribing is a
+# one-way status change on that same record -- the same shape Buttondown's
+# Recipe in this collection already states from its own schema, arrived at
+# here from the opposite direction: not a field's own documentation, but an
+# entire endpoint whose only job is that one transition.
+#
+# "One-way" is not editorial. It is the absence of a second endpoint, traced
+# through every documented request body that touches a subscriber:
+#
+#   - POST /v4/subscribers (create): the request schema accepts `state`
+#     with a full enum and "Defaults to `active`" -- but only on a genuinely
+#     new record. Its own description says plainly that when the email
+#     address already exists, "it updates the first name" and nothing else;
+#     the endpoint's own note underneath is more direct still: "Updating the
+#     subscriber state with this endpoint is not supported at this time."
+#     The same field, the same endpoint, honoured once and refused forever
+#     after.
+#   - PUT /v4/subscribers/{id} (update): the request schema is
+#     {first_name, email_address, fields} and required: [email_address].
+#     `state` is not a property this schema has at all -- not documented as
+#     ignored, simply absent.
+#   - POST .../unsubscribe: the only documented state-changing route left,
+#     and it only ever writes `cancelled`.
+#
+# No fourth route exists to write anything else. A subscriber who
+# unsubscribed through the API can be read, tagged, and kept in every
+# sequence and form they already belonged to -- and cannot be moved back to
+# active by any documented call this Recipe could find. (A human can still
+# resubscribe by re-confirming through Kit's own hosted forms; nothing about
+# that path is an API call.)
+#
+# This Recipe cannot mechanically prove the unsubscribe route's own side
+# effect, and says so rather than faking it: the request body it actually
+# takes is `{}`, documented with an empty example, so nothing arrives on the
+# wire to drive a stored record's state to cancelled. Cauldron's update
+# operation merges what a request sends; sending nothing merges nothing.
+# Reaching for a fixed-value transition regardless of body content is not a
+# primitive this format has, the same gap Census's Recipe in this collection
+# states for a sync trigger that answers only an id and never the record it
+# touched. The 204-empty-body shape below is real and asserted; the write it
+# stands for is quoted above instead of proven.
+#
+# Kit was ConvertKit. The rename did not retire the old surface -- checked
+# live today, every one of these four combinations answers:
+#
+#   GET /v3/subscribers  on api.convertkit.com  -> 401, v3's own shape
+#   GET /v3/subscribers  on api.kit.com          -> 401, byte-identical
+#   GET /v4/subscribers  on api.convertkit.com   -> 401, v4's own shape
+#   GET /v4/subscribers  on api.kit.com           -> 401, byte-identical
+#
+# Both hostnames answer both API generations, identically -- this is one
+# backend reachable two ways, not a migration with a compatibility shim
+# bolted on. Kit's own upgrade guide states outright, in these words: "V4
+# supports OAuth for applications and API Keys for automating simple tools
+# ... V4 API Keys are not compatible with V3" -- and the two really are
+# unrelated mechanisms, not a renamed header:
+#
+#   v3 (api_secret, query string):
+#     no credential at all         -> 401 {"error":"Authorization Failed",
+#                                          "message":"API Key not present"}
+#     ?api_secret=<junk>           -> 401 {"error":"Authorization Failed",
+#                                          "message":"API Key not valid"}
+#     ?api_key=<junk>              -> 401, the identical "API Key not valid"
+#                                          -- checked live: v3's own auth
+#                                          check does not distinguish which
+#                                          of its two query parameter names
+#                                          was sent, only whether the value
+#                                          it names checks out. api_key is
+#                                          undocumented for this endpoint
+#                                          (only api_secret is) and this
+#                                          Recipe wires the documented one.
+#     Authorization: Bearer <any>  -> 401, identical "API Key not present"
+#                                          -- v3 does not read a header at
+#                                          all; sending one is the same as
+#                                          sending nothing.
+#
+#   v4 (X-Kit-Api-Key header, or OAuth Bearer):
+#     no credential at all         -> 401 {"errors":["Authentication Failed"]}
+#     X-Kit-Api-Key: <junk>        -> 401 {"errors":["The API key is invalid"]}
+#     Authorization: Bearer <junk> -> 401 {"errors":["The access token is
+#                                          invalid"]}, plus
+#                                          WWW-Authenticate: Bearer
+#                                          realm="ConvertKit API",
+#                                          error="invalid_token",
+#                                          error_description="..."
+#
+# A query-string secret that a header-based scheme silently ignores, and a
+# header-based scheme that a query-string API silently ignores -- the two
+# generations do not merely use different transports, each is blind to the
+# other's. And the WWW-Authenticate challenge above still says
+# realm="ConvertKit API" -- the retired brand name, live on the current
+# API's own OAuth challenge header, checked today.
+#
+# v4 genuinely offers two credential kinds at once, not one scheme with two
+# names for it: an X-Kit-Api-Key long-lived key (rate limited at 120
+# requests per rolling 60 seconds, per Kit's own authentication page) and an
+# OAuth 2.0 Bearer access token (600 requests per 60 seconds, and required
+# outright for the bulk and purchase-creation endpoints this Recipe does not
+# model). Cauldron's auth block is one scheme per Recipe; the header-key path
+# is the one wired as the accepted route below, because it is the one this
+# Recipe could exercise start to finish without an OAuth app. The Bearer
+# failure shape is real and checked live -- see the conformance case citing
+# the WWW-Authenticate header -- but no request in this Recipe is ever
+# accepted by it.
+#
+# Routing and auth, on v4: checked live, an unrouted path and a real path
+# with an unregistered method both fall through to whichever credential
+# verdict applies -- GET /v4/this-is-not-a-real-endpoint with no credential
+# answers the identical {"errors":["Authentication Failed"]} the real
+# GET /v4/subscribers does. Auth is checked before routing here, the
+# FireHydrant/Pipedream order elsewhere in this collection and the opposite
+# of Buttondown's in this same group. Cauldron's own credential check is
+# also unconditional and also runs before routing, so this is the one part
+# of this Recipe's ordering claim Cauldron's default behaviour already
+# matches without any extra device.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - v3's full response is modelled only for list and get; tags, forms,
+#     sequences, custom fields and the unsubscribe endpoint are real,
+#     documented v3 routes and are not declared.
+#   - PUT /v3/unsubscribe is real and is deliberately left out entirely.
+#     Its own published worked example answers {"subscriber": {..., "state":
+#     "active", ...}} -- the identical body the "view a single subscriber"
+#     example on the same page uses, state and all, which cannot be the
+#     shape an unsubscribe call actually returns. That looks like a
+#     copy-pasted example nobody updated, not a claim about the wire, and
+#     serving either the documented "active" or the behaviourally-expected
+#     "cancelled" would be choosing which of the vendor's own contradicting
+#     signals to trust with no live call possible to settle it. Left out
+#     entirely, per the brief this Recipe was written against: a fabricated
+#     value is worse than an absent route.
+#   - v4's location, attribution and tags embeds (the `include` query
+#     parameter) are documented and not modelled -- the same shape Clover's
+#     Recipe elsewhere in this collection already states for its own
+#     `?expand=` parameter: asking for more changes the shape of what comes
+#     back, and this Recipe does not claim to reproduce the wider shape.
+#   - v4's cursor pagination (`after`/`before`, opaque per Kit's own
+#     pagination guide) is real; this Recipe declares the parameter names
+#     and does not attempt to fabricate an opaque token value nothing here
+#     observed.
+#   - The default `status=active` filter on GET /v4/subscribers -- "By
+#     default only active subscribers are returned" -- is documented and not
+#     enforced by this Recipe's fixture, the same default-filter trap
+#     route.go's own Filters documentation names for GitHub and Alpaca. A
+#     caller who unsubscribed someone and then listed subscribers expecting
+#     to see them would see them for the wrong reason here (a small fixture
+#     with no filtering at all) rather than the right one (asking for
+#     status=cancelled).
+#   - v3's list envelope carries total_subscribers, page and total_pages
+#     beside the subscribers array itself -- checked in its own published
+#     example, not observed. None of the three is declared here; no case
+#     below asserts a v3 listing's page metadata, only its 401s and its
+#     single-record shape.
+#   - Bulk create, purchases, and every endpoint Kit's own docs mark
+#     "Requires OAuth authentication" outright are not modelled: this
+#     Recipe's one wired scheme is the API key, and declaring a route that
+#     needs the other would either be silently accepted by the wrong
+#     credential or never reachable at all.
+#
+# Every case below not carrying a verified date was read from
+# developers.kit.com/api-reference/v4.json (openapi: 3.0.3, info.title:
+# "Kit API", version "4.0") or from the v3 legacy reference pages under the
+# same domain, not observed against a real account -- this Recipe was
+# written with no credential and created no account. Keys below are
+# fixtures and belong to no account.
+
+recipe: kit
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: v4
+  provider: kit
+  docs: https://developers.kit.com/api-reference/subscribers/get-a-subscriber
+  spec: https://developers.kit.com/api-reference/v4.json
+  spec_hash: f4716fccb173ee7e6ca94fc59f7adf943d69ab0e23e14a5f9238988d271208f0
+  spec_seen: "2026-09-01"
+  supersedes:
+    - version: v3
+      host: api.convertkit.com
+      note: >-
+        Still live today, on both api.convertkit.com and api.kit.com, with
+        an entirely different credential transport (query string, not a
+        header) that v4 does not read and v3 does not read v4's. See the
+        header.
+
+# One scheme per Recipe; v4's X-Kit-Api-Key header is the one wired, because
+# it is the one path this Recipe could exercise without an OAuth app. v3's
+# query-string credential and v4's OAuth Bearer failure are both real and
+# both checked live, and both are represented as explicit routes below with
+# their own matches_header/matches_query, the same device Turso's and
+# Census's Recipes in this collection use for a host that answers more ways
+# than one fixed scheme can say at once.
+auth:
+  scheme: none
+
+responses:
+  # {"subscriber": {...}} for one, {"subscribers": [...]} for many -- both
+  # generations agree on this much.
+  resource:
+    style: wrapped
+    key: subscriber
+  list:
+    style: wrapped
+    key: subscribers
+  # {"errors": ["..."]} -- bare strings, not objects. "All errors are now
+  # returned with a consistent response shape," Kit's own upgrade guide
+  # says of v4, "a JSON object with a single attribute `errors`, an array
+  # of strings" -- and the wire agrees, checked live on every 401 above.
+  error:
+    style: string_list
+    key: errors
+
+resources:
+  # v4's shape. id is a plain integer -- unlike Buttondown's TypeID in this
+  # same group -- and canceled_at is spelled the American way while the
+  # state value it accompanies is spelled "cancelled" the British way, on
+  # the same record, in the same published schema. Both spellings are the
+  # vendor's own.
+  subscriber:
+    id:
+      style: numeric
+      type: number
+    fields:
+      first_name:
+        type: string
+        null_when_unset: true
+      email_address:
+        type: string
+      # active, cancelled, bounced, complained, inactive -- see the header
+      # for which of these an API caller can ever reach and which it
+      # cannot leave once reached.
+      state:
+        type: string
+        default: active
+      created_at:
+        type: datetime
+      # Custom field values, keyed by whatever the account defined -- see
+      # resource.go's own field type for exactly this shape (Stripe's
+      # metadata is the type's other citation).
+      fields:
+        type: map
+        default: {}
+      canceled_at:
+        type: datetime
+        null_when_unset: true
+
+  # v3's shape: a different envelope, a different id semantics (still
+  # numeric, but a different record space from v4's, per Kit's own upgrade
+  # guide -- the two are not declared to share identifiers here because
+  # nothing in the published materials says they do), and no canceled_at at
+  # all.
+  subscriber_v3:
+    id:
+      style: numeric
+      type: number
+    fields:
+      first_name:
+        type: string
+        null_when_unset: true
+      email_address:
+        type: string
+      state:
+        type: string
+        default: active
+      created_at:
+        type: datetime
+      fields:
+        type: map
+        default: {}
+
+routes:
+  # ---- v4 --------------------------------------------------------------
+  # The full three-way credential split, checked live and reproduced in
+  # full only here -- see the header for why the other v4 routes below
+  # carry the simpler two-way version instead.
+  - method: GET
+    path: /v4/subscribers
+    resource: subscriber
+    operation: list
+    matches_header:
+      X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+    pagination:
+      style: cursor
+      cursor_param: after
+      limit_param: per_page
+
+  - method: GET
+    path: /v4/subscribers
+    matches_header:
+      Authorization: Bearer junk-oauth-token-not-real-00000000
+    error: invalid_token
+
+  - method: GET
+    path: /v4/subscribers
+    matches_header:
+      X-Kit-Api-Key: junk-api-key-not-real-000000000000
+    error: invalid_api_key
+
+  - method: GET
+    path: /v4/subscribers
+    error: authentication_failed
+
+  - method: GET
+    path: /v4/subscribers/{id}
+    resource: subscriber
+    operation: get
+    matches_header:
+      X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+
+  - method: GET
+    path: /v4/subscribers/{id}
+    error: authentication_failed
+
+  - method: POST
+    path: /v4/subscribers
+    resource: subscriber
+    operation: create
+    status: 201
+    matches_header:
+      X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+
+  - method: POST
+    path: /v4/subscribers
+    error: authentication_failed
+
+  # first_name, email_address and fields only -- state is not a property
+  # this schema has. See the header: a case proving state cannot move here
+  # would need the emulator to refuse a key its own generic update
+  # operation cannot be told to refuse, so it is described rather than
+  # proven.
+  - method: PUT
+    path: /v4/subscribers/{id}
+    resource: subscriber
+    operation: update
+    matches_header:
+      X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+
+  - method: PUT
+    path: /v4/subscribers/{id}
+    error: authentication_failed
+
+  # Requires a valid credential and answers 204 empty regardless -- see the
+  # header for why this Recipe stops at the shape and does not claim to
+  # move the fixture's own state field.
+  - method: POST
+    path: /v4/subscribers/{id}/unsubscribe
+    resource: subscriber
+    operation: update
+    status: 204
+    empty_body: true
+    matches_header:
+      X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+
+  - method: POST
+    path: /v4/subscribers/{id}/unsubscribe
+    error: authentication_failed
+
+  # A path this API generation has never had. See the header: auth is
+  # checked before routing here, so this needs no credential to reach --
+  # unlike the corresponding case in Buttondown's Recipe in this group.
+  - method: GET
+    path: /v4/this-is-not-a-real-endpoint
+    error: authentication_failed
+
+  # ---- v3 ----------------------------------------------------------------
+  # Query-string credential, not a header -- see the header for why a
+  # Bearer token sent against this path is refused exactly as though
+  # nothing had been sent at all.
+  - method: GET
+    path: /v3/subscribers
+    resource: subscriber_v3
+    operation: list
+    matches_query:
+      api_secret: cauldron-kit-fixture-v3-secret-0000000000
+    pagination:
+      style: page
+      limit_param: "-"
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v3/subscribers
+    matches_query:
+      api_secret: junk-secret-not-real-000000000000
+    error: v3_key_invalid
+
+  - method: GET
+    path: /v3/subscribers
+    error: v3_key_missing
+
+  - method: GET
+    path: /v3/subscribers/{id}
+    resource: subscriber_v3
+    operation: get
+    matches_query:
+      api_secret: cauldron-kit-fixture-v3-secret-0000000000
+
+  - method: GET
+    path: /v3/subscribers/{id}
+    error: v3_key_missing
+
+errors:
+  # v4's generic no-credential-at-all shape.
+  authentication_failed:
+    status: 401
+    message: Authentication Failed
+
+  # v4, X-Kit-Api-Key present and wrong.
+  invalid_api_key:
+    status: 401
+    message: The API key is invalid
+
+  # v4, Authorization: Bearer present and wrong -- the only failure on this
+  # whole surface that carries a WWW-Authenticate challenge, and the only
+  # place the retired brand name still appears live. See the header.
+  invalid_token:
+    status: 401
+    message: The access token is invalid
+    headers:
+      WWW-Authenticate: >-
+        Bearer realm="ConvertKit API", error="invalid_token",
+        error_description="The access token is invalid"
+
+  # v3's absent-credential shape: two flat top-level strings, "error" fixed
+  # and "message" carrying the sentence -- not v4's array-of-strings
+  # envelope at all. api_key and api_secret both funnel here when neither
+  # is sent.
+  v3_key_missing:
+    status: 401
+    style: flat
+    message_field: message
+    code_field: "-"
+    message: API Key not present
+    fields:
+      error: Authorization Failed
+
+  # v3, present and wrong -- checked live for both api_secret and api_key
+  # as the parameter name, byte-identical either way. See the header for
+  # why only api_secret, the documented one, is wired as a route.
+  v3_key_invalid:
+    status: 401
+    style: flat
+    message_field: message
+    code_field: "-"
+    message: API Key not valid
+    fields:
+      error: Authorization Failed
+
+fixtures:
+  empty: {}
+
+  small-account:
+    subscriber:
+      - id: 9001
+        first_name: Alice
+        email_address: alice@example.com
+        state: active
+        created_at: "2026-06-01T09:00:00Z"
+        fields: {}
+
+      # The record this fixture exists to carry: still present, still at
+      # the same id, still tagged and sequenced (not modelled here, but not
+      # deleted either) -- see the header.
+      - id: 9002
+        first_name: Bob
+        email_address: bob@example.com
+        state: cancelled
+        created_at: "2026-05-14T11:00:00Z"
+        canceled_at: "2026-08-20T14:32:00Z"
+        fields: {}
+
+  small-account-v3:
+    subscriber_v3:
+      - id: 501
+        first_name: Carol
+        email_address: carol@example.com
+        state: active
+        created_at: "2026-04-02T08:00:00Z"
+        fields: {}
+
+conformance:
+  - name: v4 -- no credential at all
+    source: https://api.kit.com/v4/subscribers
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/subscribers
+    expect:
+      status: 401
+      body:
+        "errors[0]": Authentication Failed
+
+  - name: v4 -- a wrong X-Kit-Api-Key gets its own sentence
+    source: https://api.kit.com/v4/subscribers
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/subscribers
+      headers:
+        X-Kit-Api-Key: junk-api-key-not-real-000000000000
+    expect:
+      status: 401
+      body:
+        "errors[0]": The API key is invalid
+
+  - name: v4 -- a wrong OAuth Bearer token gets a different sentence and a WWW-Authenticate challenge naming the old brand
+    source: https://api.kit.com/v4/subscribers
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/subscribers
+      headers:
+        Authorization: Bearer junk-oauth-token-not-real-00000000
+    expect:
+      status: 401
+      header_matches:
+        WWW-Authenticate: 'realm="ConvertKit API"'
+      body:
+        "errors[0]": The access token is invalid
+
+  - name: v4 -- old and new hostnames answer the same 401 for the same request
+    # Struck live against both api.kit.com and api.convertkit.com with no
+    # credential; both answered byte-identical bodies. Cauldron has one
+    # host per running Recipe, so only one call is replayed here -- the
+    # cross-host equivalence itself is stated in the header, not something
+    # a single-host emulator has a second host to prove.
+    source: https://api.convertkit.com/v4/subscribers
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/subscribers
+    expect:
+      status: 401
+      body:
+        "errors[0]": Authentication Failed
+
+  - name: v4 -- an unrouted path is refused before routing is ever consulted
+    source: https://api.kit.com/v4/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/this-is-not-a-real-endpoint
+    expect:
+      status: 401
+      body:
+        "errors[0]": Authentication Failed
+
+  - name: v4 -- a subscriber's record carries state, not a bare active/inactive flag
+    source: https://developers.kit.com/api-reference/subscribers/get-a-subscriber
+    fixture: small-account
+    request:
+      method: GET
+      path: /v4/subscribers/9002
+      headers:
+        X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "subscriber.id": 9002
+        "subscriber.state": cancelled
+        "subscriber.canceled_at": "2026-08-20T14:32:00Z"
+
+  - name: v4 -- a plain create defaults to active and accepts an explicit state on the same request
+    source: https://developers.kit.com/api-reference/subscribers/create-a-subscriber
+    fixture: small-account
+    request:
+      method: POST
+      path: /v4/subscribers
+      headers:
+        X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+      json:
+        email_address: dave@example.com
+    expect:
+      status: 201
+      body:
+        "subscriber.email_address": dave@example.com
+        "subscriber.state": active
+
+  - name: v4 -- unsubscribing answers 204 with nothing in the body
+    source: https://developers.kit.com/api-reference/subscribers/unsubscribe-subscriber
+    fixture: small-account
+    request:
+      method: POST
+      path: /v4/subscribers/9001/unsubscribe
+      headers:
+        X-Kit-Api-Key: cauldron-kit-fixture-key-0000000000000000
+      json: {}
+    expect:
+      status: 204
+      no_body: true
+
+  - name: v3 -- no credential at all gets v3's own two-key envelope
+    source: https://api.convertkit.com/v3/subscribers
+    verified: "2026-09-01"
+    fixture: small-account-v3
+    request:
+      method: GET
+      path: /v3/subscribers
+    expect:
+      status: 401
+      body:
+        error: Authorization Failed
+        message: API Key not present
+
+  - name: v3 -- a wrong api_secret gets a different sentence under the same two keys
+    source: https://api.convertkit.com/v3/subscribers
+    verified: "2026-09-01"
+    fixture: small-account-v3
+    request:
+      method: GET
+      path: "/v3/subscribers?api_secret=junk-secret-not-real-000000000000"
+    expect:
+      status: 401
+      body:
+        error: Authorization Failed
+        message: API Key not valid
+
+  - name: v3 -- a Bearer header is not read at all, and is refused exactly like no credential
+    source: https://api.convertkit.com/v3/subscribers
+    verified: "2026-09-01"
+    fixture: small-account-v3
+    request:
+      method: GET
+      path: /v3/subscribers
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        message: API Key not present
+
+  - name: v3 -- old hostname, new hostname, identical failure
+    source: https://api.kit.com/v3/subscribers
+    verified: "2026-09-01"
+    fixture: small-account-v3
+    request:
+      method: GET
+      path: /v3/subscribers
+    expect:
+      status: 401
+      body:
+        message: API Key not present
+
+  - name: v3 -- a subscriber wraps under its own singular key, same as v4's
+    source: https://developers.kit.com/api-reference/v3/subscribers
+    fixture: small-account-v3
+    request:
+      method: GET
+      path: /v3/subscribers/501
+      query:
+        api_secret: cauldron-kit-fixture-v3-secret-0000000000
+    expect:
+      status: 200
+      body:
+        "subscriber.id": 501
+        "subscriber.email_address": carol@example.com
+        "subscriber.state": active
