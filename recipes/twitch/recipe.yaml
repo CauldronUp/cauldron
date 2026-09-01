@@ -1,0 +1,415 @@
+# Twitch Helix API Recipe for Cauldron
+#
+# Two credentials, checked in a fixed order, and only one of them ever gets to
+# speak.
+#
+# Every Helix call needs a Client-Id header and an OAuth bearer token, and the
+# two are not equal partners. Checked live against api.twitch.tv on
+# 2026-08-31, with no account, no app and no real credential ever sent:
+#
+#   no headers at all                          -> 401 OAuth token is missing
+#   Client-Id (bogus), no Authorization        -> 401 OAuth token is missing
+#   Authorization: Bearer <bogus>, no Client-Id -> 401 Invalid OAuth token
+#   both headers, both bogus                   -> 401 Invalid OAuth token
+#
+# Presenting a Client-Id changes nothing about the first message, and its
+# absence changes nothing about the third: the token is judged first, and
+# Client-Id is never mentioned unless the token has already passed. A request
+# with a well-formed token and no Client-Id at all was never sent -- that
+# would need a real token, which this project will not obtain -- so what
+# Twitch says at that gate is read from its own reference docs rather than
+# observed, below.
+#
+# Cauldron's own auth check is a single yes/no gate ahead of routing, with one
+# declared failure for "no". That is exactly Twitch's own first branch --
+# token present and valid, or not -- so the order above is reproduced
+# faithfully: this Recipe's required_headers entry for Client-Id (see
+# runtime/handler.go, which checks auth before required headers) is never
+# reached by a request the bearer check has already refused, the same way
+# Twitch's own Client-Id message is never reached by one. What the gate cannot
+# do is hold two different sentences for its one failure -- "missing" for no
+# header and "invalid" for a wrong one -- because both collapse to the same
+# boolean. This Recipe serves "OAuth token is missing" and says so in Known
+# fidelity gaps below rather than serving a case that would claim the other
+# sentence too.
+#
+# **The Client-Id requirement is real and has its own wording, found in the
+# reference doc rather than on any authentication page.** Searching
+# dev.twitch.tv/docs/api/reference/ for the phrase turns up eight 401s, all
+# about Client-Id, none of them about a missing token:
+#
+#   "The Client-Id header is required."
+#   "The ID in the Client-Id header must match the Client ID in the OAuth
+#   token."
+#
+# The first is what a valid token with no Client-Id draws, by the reference
+# doc's own words; the second is what a valid token and a real but
+# mismatched Client-Id draws, on Get Channel Information and half a dozen
+# other routes phrased identically. Both are documented rather than observed
+# -- neither can be reached without a token Twitch would accept -- and the
+# second is not modelled in the routes below at all: it is a cross-check
+# between two credentials, one of which is a header this format's
+# required_headers can only ask "is it present," never "does it match the
+# other one." Recording that here is the honest half of not forcing it.
+#
+# **A malformed path is a 404 with an empty message, not a missing one.**
+#
+#   GET /helix/nosuchpath  ->  404  {"error":"Not Found","status":404,"message":""}
+#
+# Checked with and without both headers attached -- the shape does not move.
+# An empty string is not the same as no message, and rendering it needed a
+# workaround: an error's own `message` is only ever written to the body when
+# it is non-empty, which is right for "the field was left blank" and wrong
+# for "the provider really sends nothing here." A `fields:` override, applied
+# after that check, can plant a literal "" where the guard would otherwise
+# have refused it -- confirmed with `cauldron verify` against a scratch
+# Recipe before it was trusted here. See errors.unknown_route below.
+#
+# **The pagination cursor is not null on the last page. It is not there.**
+# Twitch's own guide is explicit about the shape: "The Pagination object is
+# empty if there are no more pages to return in the direction you're
+# paging," with its own example reading `"pagination": {}`. So the envelope
+# key survives every page and the cursor inside it does not, which is a
+# distinct claim from Stripe's has_more or Slack's null next_cursor -- this
+# format tells "the field is absent" and "the field is null" apart, and
+# Twitch is the absent one, wrapped in an object that itself never goes
+# away. Modelled below by asking the games/top route for both the object and
+# the cursor as two separate constants, rather than one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Every 200 in this Recipe is read from dev.twitch.tv/docs/api/reference/
+#     rather than called. Producing a real one needs a registered application
+#     and a user or app access token Twitch has actually issued, and this
+#     project creates neither -- see the portfolio's bank-automation rule
+#     restated for every provider here: no account, ever, for a Recipe.
+#   - The two different sentences for "no token" and "a wrong token" cannot
+#     both be served from one auth gate. See the header above: this Recipe
+#     serves the first and states the second as prose only.
+#   - A valid token beside a real but mismatched Client-Id cannot be checked
+#     at all: required_headers asks whether a header is present, not whether
+#     its value agrees with another header's, and Twitch's own docs describe
+#     exactly that comparison. Recorded above and not modelled.
+#   - Rate limiting is real and documented -- Ratelimit-Limit,
+#     Ratelimit-Remaining and a Ratelimit-Reset epoch second -- and never once
+#     appeared on any of the unauthenticated 401s or the malformed-path 404s
+#     actually sent for this Recipe. Whether that is because the bucket lives
+#     behind the auth check or because CloudFront answers the edge case before
+#     Twitch's own service does, this Recipe cannot tell from the outside, so
+#     it declares no rate_limit error and no route claims the headers.
+#   - Only two resources are modelled, of a Helix surface with dozens: top
+#     games, because it is the endpoint this Recipe's evidence is built
+#     around, and users, because its shape is simple and fully tabulated in
+#     the reference doc. Streams, channels, clips, chat, EventSub and
+#     everything else are absent.
+#   - A malformed path is a 404 on real Twitch whatever the credentials --
+#     checked with none at all and with two bogus headers, identically. This
+#     format checks auth ahead of routing for every request, unconditionally,
+#     so an uncredentialed request here is refused for its missing token
+#     before Twitch's own path-not-found branch would ever run. The
+#     conformance case for the 404 below therefore sends the fixture's own
+#     accepted credentials to reach the route at all, which demonstrates the
+#     body shape faithfully and cannot demonstrate that real Twitch reaches
+#     it with no credentials whatsoever.
+#   - box_art_url is recorded as an opaque string. The reference doc excerpts
+#     reachable while writing this Recipe described it only as "Box art image
+#     URL" with no example shown, so the well-known {width}x{height}
+#     template in the real value is not claimed here.
+
+recipe: twitch
+capability: media
+version: 0.1.0
+
+upstream:
+  api: helix
+  docs: https://dev.twitch.tv/docs/api/reference/
+
+auth:
+  # The token half of the pair. See the header for why Client-Id is a
+  # required_headers entry instead of a second auth scheme -- this format has
+  # one scheme per Recipe, and Twitch's own precedence (token first, Client-Id
+  # only once the token has passed) falls out of that ordering for free: see
+  # runtime/handler.go, which checks auth before required_headers.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldrontwitchaccesstoken0000000000000000
+
+# The other half. Checked second, and only reached once the token above has
+# already passed -- which is also why this Recipe can state its message from
+# the docs but never observe it: reaching this gate needs the token gate to
+# have let a request through first, and no token this project holds does
+# that.
+required_headers:
+  Client-Id: missing_client_id
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: bare
+  error:
+    # {"error": "Unauthorized", "status": 401, "message": "..."} -- three
+    # statements of one failure, the middle one a bare HTTP reason phrase
+    # rather than a code.
+    style: flat
+    type_field: error
+    status_field: status
+    message_field: message
+    code_field: "-"
+
+resources:
+  game:
+    id:
+      # Numeric-looking and sent as a string, the same shape as a Discord
+      # snowflake: nothing in this Recipe parses it as a number and nothing
+      # a real client does should either.
+      style: digits
+    fields:
+      name:
+        type: string
+      box_art_url:
+        type: string
+
+  user:
+    id:
+      style: digits
+    fields:
+      login:
+        type: string
+      display_name:
+        type: string
+      type:
+        type: string
+      broadcaster_type:
+        type: string
+      description:
+        type: string
+      profile_image_url:
+        type: string
+      offline_image_url:
+        type: string
+      view_count:
+        type: integer
+      created_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /helix/games/top
+    resource: game
+    operation: list
+    list:
+      cursor_field: pagination.cursor
+      # The envelope key that outlives its own cursor. See the header: the
+      # object is always there and the cursor inside it is not, once there is
+      # nothing more to page through.
+      fields:
+        pagination: {}
+    pagination:
+      style: cursor
+      cursor_param: after
+      limit_param: first
+      limit: 20
+      max_limit: 100
+
+  - method: GET
+    path: /helix/users
+    resource: user
+    operation: list
+
+  # A path Twitch has never had, refused before anything about credentials or
+  # routing inside Helix runs. Both headers were attached when this was
+  # checked and the shape did not move: this is not a credential failure
+  # wearing a 404's clothes.
+  - method: GET
+    path: /helix/nosuchpath
+    error: unknown_route
+
+errors:
+  authentication_error:
+    status: 401
+    type: Unauthorized
+    # See the header: the sentence a totally uncredentialed request draws.
+    # "Invalid OAuth token" is the real, different sentence a present-but-wrong
+    # token draws instead, and this single gate cannot serve both.
+    message: "OAuth token is missing"
+
+  missing_client_id:
+    status: 401
+    type: Unauthorized
+    # Documented, not observed -- see the header for why this gate can never
+    # be reached by a request this project is able to send.
+    message: "The Client-Id header is required."
+
+  unknown_route:
+    status: 404
+    type: "Not Found"
+    # The empty string is the real message, not a placeholder for one. See
+    # the header for how this format's own guard against a blank field is
+    # worked around for a provider that genuinely sends nothing here.
+    fields:
+      message: ""
+
+fixtures:
+  empty: {}
+
+  top_games:
+    game:
+      - id: "90000001"
+        name: Cauldron Quest
+        box_art_url: "https://static-cdn.jtvnw.net/ttv-boxart/90000001-285x380.jpg"
+      - id: "90000002"
+        name: Boiling Point
+        box_art_url: "https://static-cdn.jtvnw.net/ttv-boxart/90000002-285x380.jpg"
+
+  channel:
+    user:
+      - id: "900100200"
+        login: cauldronfixtures
+        display_name: CauldronFixtures
+        type: ""
+        broadcaster_type: partner
+        description: Fixture data for Cauldron.
+        profile_image_url: "https://static-cdn.jtvnw.net/user-default-pictures-uv/cauldron-profile.png"
+        offline_image_url: ""
+        view_count: 42
+        created_at: "2020-01-15T09:00:00Z"
+
+conformance:
+  # Observed. Checked with no headers at all: the message is about the
+  # token, and only the token.
+  - name: no credentials at all names the token, not the client id
+    source: https://api.twitch.tv/helix/games/top
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /helix/games/top
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+        status: 401
+        message: "OAuth token is missing"
+
+  # Observed. A Client-Id was attached and the message did not move, which is
+  # the finding: the token is judged before Client-Id is ever read.
+  - name: a client id present with no token changes nothing
+    source: https://api.twitch.tv/helix/games/top
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /helix/games/top
+      headers:
+        Client-Id: cauldrontwitchclientid0000000000
+    expect:
+      status: 401
+      body:
+        message: "OAuth token is missing"
+
+  # Documented, not observed -- see the header for why. The token is the
+  # fixture's own accepted one; Client-Id is withheld, which is the one
+  # combination this project can produce that the real API never let it
+  # reach.
+  - name: a valid token without a client id is refused for the client id alone
+    source: https://dev.twitch.tv/docs/api/reference/#get-extension-analytics
+    fixture: top_games
+    request:
+      method: GET
+      path: /helix/games/top
+      headers:
+        Authorization: Bearer cauldrontwitchaccesstoken0000000000000000
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+        status: 401
+        message: "The Client-Id header is required."
+
+  # Documented, not observed. Both headers present and accepted, listing the
+  # whole two-record fixture in one page: the pagination object is there and
+  # empty, cursor absent from inside it rather than null.
+  - name: the last page carries an empty pagination object, not a null cursor
+    source: https://dev.twitch.tv/docs/api/guide/
+    fixture: top_games
+    request:
+      method: GET
+      path: /helix/games/top
+      headers:
+        Authorization: Bearer cauldrontwitchaccesstoken0000000000000000
+        Client-Id: cauldrontwitchclientid0000000000
+    expect:
+      status: 200
+      body:
+        "data[0].id": "90000001"
+        "data[0].name": Cauldron Quest
+        "data[1].id": "90000002"
+        pagination: {}
+
+  # Documented, not observed. Asking for one at a time leaves a second record
+  # behind, and the cursor that comes back is that first record's own id --
+  # this format's cursor is the last id on the page, not a synthetic token.
+  - name: a page with more behind it carries the cursor inside the same object
+    source: https://dev.twitch.tv/docs/api/guide/
+    fixture: top_games
+    request:
+      method: GET
+      path: /helix/games/top
+      query:
+        first: "1"
+      headers:
+        Authorization: Bearer cauldrontwitchaccesstoken0000000000000000
+        Client-Id: cauldrontwitchclientid0000000000
+    expect:
+      status: 200
+      body:
+        "data[0].id": "90000001"
+        "pagination.cursor": "90000001"
+      absent:
+        - data[1]
+
+  # Documented, not observed. The user object's fields, tabulated in the
+  # reference doc rather than shown there as one example response.
+  - name: a user answers with the fields the reference doc tabulates
+    source: https://dev.twitch.tv/docs/api/reference/#get-users
+    fixture: channel
+    request:
+      method: GET
+      path: /helix/users
+      headers:
+        Authorization: Bearer cauldrontwitchaccesstoken0000000000000000
+        Client-Id: cauldrontwitchclientid0000000000
+    expect:
+      status: 200
+      body:
+        "data[0].id": "900100200"
+        "data[0].login": cauldronfixtures
+        "data[0].display_name": CauldronFixtures
+        "data[0].broadcaster_type": partner
+        "data[0].view_count": 42
+        "data[0].created_at": "2020-01-15T09:00:00Z"
+
+  # Observed shape, credentialed request -- see the header's new fidelity
+  # gap. Real Twitch answers this 404 with no headers at all, and with both
+  # of them bogus, identically; this format checks auth ahead of routing
+  # unconditionally, so an uncredentialed request here would be refused for
+  # its token before Twitch's path is ever consulted. The fixture's own
+  # accepted token is used so this case can be run at all, and the body
+  # asserted is the one actually seen on the wire, empty message included.
+  - name: an unrecognised path is a 404 with a genuinely empty message
+    source: https://api.twitch.tv/helix/nosuchpath
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /helix/nosuchpath
+      headers:
+        Authorization: Bearer cauldrontwitchaccesstoken0000000000000000
+        Client-Id: cauldrontwitchclientid0000000000
+    expect:
+      status: 404
+      body:
+        error: "Not Found"
+        status: 404
+        message: ""
