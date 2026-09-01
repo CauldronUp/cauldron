@@ -174,6 +174,74 @@ type SecurityScheme struct {
 
 // Schema is the subset of JSON Schema an OpenAPI description uses for the
 // shapes this package cares about.
+// Prose is a string field in a description that may not hold a string.
+//
+// description is specified as a string, and Livepeer's own published document
+// puts a $ref there instead -- pointing at another schema's description so the
+// wording is written once. That is a reasonable thing to want and it is not
+// what the specification says, and the whole 156KB file was unreadable because
+// of two fields using it.
+//
+// What this package does with a description is nothing: it fingerprints paths,
+// methods, response codes and field types. So a description it cannot read
+// costs nothing to discard, and discarding it is much better than refusing the
+// document that contains it. The same reasoning already applies to Schema.Type,
+// which accepts the 3.1 sequence form Telnyx uses.
+type Prose string
+
+// UnmarshalYAML accepts a string, and quietly accepts anything else as empty.
+func (p *Prose) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		*p = ""
+
+		return nil
+	}
+
+	var text string
+	if err := node.Decode(&text); err != nil {
+		*p = ""
+
+		return nil
+	}
+
+	*p = Prose(text)
+
+	return nil
+}
+
+// Fields is a properties map that may not be a map.
+//
+// Livepeer's document puts a $ref directly under properties -- pointing at
+// another schema's whole property set, so it does not have to be repeated --
+// where the specification calls for a mapping of names to schemas. Three places
+// in one file do it, and the file is otherwise perfectly ordinary.
+//
+// A $ref this package cannot expand yields no fields, which is what an
+// unreadable properties block means anyway. The alternative is refusing the
+// document, and a fingerprint of the paths and methods it does declare is worth
+// more than nothing.
+type Fields map[string]*Schema
+
+// UnmarshalYAML accepts a mapping, and quietly accepts anything else as empty.
+func (f *Fields) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		*f = nil
+
+		return nil
+	}
+
+	var raw map[string]*Schema
+	if err := node.Decode(&raw); err != nil {
+		*f = nil
+
+		return nil
+	}
+
+	*f = raw
+
+	return nil
+}
+
 type Schema struct {
 	Ref string `yaml:"$ref"`
 	// Type is a word in OpenAPI 3.0 and may be a sequence in 3.1, where
@@ -181,14 +249,14 @@ type Schema struct {
 	// published description uses the sequence form and this package refused to
 	// read the whole file because of it, which is a poor reason to be unable
 	// to check a Recipe.
-	Type        SchemaType         `yaml:"type"`
-	Format      string             `yaml:"format"`
-	Nullable    bool               `yaml:"nullable"`
-	Enum        []any              `yaml:"enum"`
-	Properties  map[string]*Schema `yaml:"properties"`
-	Required    RequiredNames      `yaml:"required"`
-	Items       *Schema            `yaml:"items"`
-	Description string             `yaml:"description"`
+	Type        SchemaType    `yaml:"type"`
+	Format      string        `yaml:"format"`
+	Nullable    bool          `yaml:"nullable"`
+	Enum        []any         `yaml:"enum"`
+	Properties  Fields        `yaml:"properties"`
+	Required    RequiredNames `yaml:"required"`
+	Items       *Schema       `yaml:"items"`
+	Description Prose         `yaml:"description"`
 	// AllOf is followed because it is how most descriptions express "this
 	// object plus these fields", and ignoring it loses half the properties of
 	// anything built that way.
