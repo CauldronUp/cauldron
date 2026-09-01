@@ -57,7 +57,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 |---|---|
 | Detection engine (Composer, npm, Go modules) | Working. 340 of 393 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
-| Recipe runtime (routing, state, auth, pagination) | Working |
+| Recipe runtime (routing, state, auth, pagination) | Working. A credential check reports whether nothing was sent, something unusable was, or a well-formed credential was refused, and a Recipe may answer each differently -- most providers do not, and for those one message still covers all three |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe. Of the 103 Recipes that emit events, 45 declare one and 58 fall back to a default modelled on Stripe's and not equal to it -- Stripe's own Recipe now declares the fuller real thing -- so the fallback is a convention rather than a claim about any provider |
 | Fault injection, clock control, request log | Working |
 | Network conditions (latency, throttling, timeouts, resets) | Working. Toxiproxy's vocabulary, applied to the emulated providers |
@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 3872 cases, 1286 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 3873 cases, 1287 of them checked against a live API |
 | Spec drift (`cauldron drift`) | Working. 57 Recipes are checked against their provider's own OpenAPI document; 336 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
@@ -322,7 +322,7 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 3872 cases, 1286 run against
+That second line is the honest one. Of every Recipe: 3873 cases, 1287 run against
 a live account and 2586 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
@@ -2572,7 +2572,7 @@ Six are Customer.io's, **whose API answers its marketing site's 404** -- a 3817
 byte HTML page, byte-identical across both API hosts and both kinds of mistake,
 so a typo in an API path returns a web page.
 
-Three are Pipedream's, where **sending nothing is a worse diagnosis than sending
+Four are Pipedream's, where **sending nothing is a worse diagnosis than sending
 rubbish**: no credential answers `404 {"error": "record not found"}` while a
 junk token answers a proper `401`. The record supposedly not found is the
 caller's own account.
@@ -2604,8 +2604,11 @@ field** -- a complete `data`/`id`/`type`/`attributes` object as an attribute's
 value, rather than a reference with the body in `included`.
 
 Four are FireHydrant's, which **says which credential problem you have**, in two
-distinct sentences. Twelve Recipes have had to pick one of their provider's two
-messages; this is the exception.
+distinct sentences. Writing it is what finally closed the gap: a dozen Recipes
+before it had discarded half of their provider's answer because the credential
+check returned one bool. It now returns which way the credential failed --
+absent, malformed, or presented and refused -- and a Recipe names an error per
+verdict, so FireHydrant serves both sentences with nothing armed.
 
 Five are Axiom's, **whose own guide documents an endpoint that does not exist**.
 The path its ingest guide names 404s; the one that answers is labelled
