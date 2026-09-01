@@ -25,6 +25,7 @@ Two rules apply to everything here:
 | AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
 | ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
 | AWS SNS | Topics, subscriptions, delivery failures |
+| ~~Substack~~ | **Assessed and refused: there is no API to model.** Probed live with no account. `substack.com/api/v1/*` is real and answers, and it is the web client's own internals -- four incompatible failure envelopes across five endpoints (`403` plain text, a `401` JSON body with an HTML `<a>` tag inside the message meant for React to render, a full single-page-application shell for both a real path and an invented one, and a `404` with an empty body and no `Content-Type` at all), authenticated by session cookie, with no key any integration could hold. The one thing Substack calls a Developer API is approval-gated behind a seven-to-ten-day wait, publishes no technical reference of any kind -- no paths, no auth header name, no example JSON, only a legal document naming categories of data -- and returns a public subscriber **count** on a creator profile, never a subscriber record. The question its group was written to ask, whether a subscriber is a person or a subscription, has no vendor surface to answer it against |
 | ~~AWS SES~~ | Shipped. Accepted-not-delivered, the invisible suppression list |
 | ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
 | ~~AWS Secrets Manager~~ | Shipped. Undeducible ARNs, rotation stages, scheduled deletion |
