@@ -1,0 +1,434 @@
+# Brave Search API Recipe for Cauldron
+#
+# The one thing Brave's own schema guarantees about a successful response is
+# the word "search". Checked against the Pydantic models a maintained client
+# generates from Brave's OpenAPI description (helmut-hoffer-von-ankershoffen/
+# brave-search-python-client, response class WebSearchApiResponse):
+#
+#   type: Literal["search"]                  -- the only required field
+#   query, mixed, web, news, videos,
+#   infobox, faq, discussions, locations,
+#   summarizer                               -- every one of them `X | None`
+#
+# Ten fields on the top-level object and nine of them are optional, including
+# "web" -- the ordinary search results -- and "query", which echoes what was
+# asked. A client written against one captured response and assuming its keys
+# describe the shape is assuming something Brave's own types do not promise.
+# "news" is one of the nine: present when the query has a news angle, absent
+# otherwise, and nothing about the status code or the other fields says which
+# you are looking at. That is the behaviour this Recipe exists to pin down,
+# and see the vocabulary note below for how much of it the format can state.
+#
+# No account was created and no key was requested, guessed, or used. Every
+# case citing a verified date below was sent to api.search.brave.com directly,
+# with no token, a junk one, or a path that does not exist; Brave documents a
+# free tier and this project did not sign up for one.
+#
+# **A missing token and a wrong one are both 422, and the body is what tells
+# them apart.** No X-Subscription-Token at all:
+#
+#   422  {"error":{"code":"VALIDATION","detail":"Unable to validate request
+#         parameter(s)","meta":{"errors":[{"input":null,
+#         "loc":["header","x-subscription-token"],"msg":"Field required",
+#         "type":"missing"}]},"status":422},"type":"ErrorResponse"}
+#
+# A token that is merely wrong, checked directly -- ?q=test with
+# X-Subscription-Token: junktoken1234567890 -- answers the same status and a
+# different error entirely:
+#
+#   422  {"error":{"code":"SUBSCRIPTION_TOKEN_INVALID","detail":"The provided
+#         subscription token is invalid.","meta":{"component":"authentication"
+#         },"status":422},"type":"ErrorResponse"}
+#
+# Same status, so a client branching on 401-vs-422 learns nothing; the code
+# inside the envelope is the only place the two failures disagree. And an
+# empty header (X-Subscription-Token: with nothing after the colon) answers
+# byte for byte the same as leaving the header out, checked directly both
+# ways -- so "sent, but blank" and "never sent" are one state, not two.
+#
+# **The auth check runs before routing decides what you asked for.** A
+# request to a path this Recipe does not otherwise model --
+# /res/v1/web/searchXYZ, a typo one segment past the real endpoint -- gets the
+# identical VALIDATION body with no token and the identical
+# SUBSCRIPTION_TOKEN_INVALID with a wrong one, checked directly. So did
+# /res/v1/images/search and /res/bogus. Whatever decides which resource you
+# meant runs after whatever decides whether you are allowed to ask at all.
+# That stops being true one level up: a path outside the /res tree entirely,
+# such as /nonexistent or /foo/bar, answers 403 with an empty body and no
+# Content-Type at all, whatever credential is attached -- checked directly.
+# Two different gates, and the second one does not produce JSON.
+#
+# Cauldron routes by the exact paths a Recipe declares, so this is only
+# reproduced for the one path this Recipe models plus the one typo'd path
+# above: both carry the same three-way split (missing token, wrong token,
+# success). Every other path -- the general "/res/* still hits the gate"
+# rule, and the "outside /res/* is a bare 403" rule one level up -- is a
+# stated gap rather than a route, because reproducing either faithfully would
+# mean answering for every path this Recipe does not model, and Cauldron's
+# router has no such wildcard. A path this Recipe has not declared answers
+# its own generic 404 here, which is not what either real gate sends.
+#
+# **Rate limiting is documented and its headers were checked absent, not
+# present.** Brave's own guide names four response headers -- X-RateLimit-
+# Limit, X-RateLimit-Policy, X-RateLimit-Remaining, X-RateLimit-Reset -- and
+# says "every API response includes headers" to track them. Checked directly
+# against every failure above, none of the four appeared: not on the missing-
+# token 422, not on the wrong-token 422, not on the malformed-path repeats of
+# either. Whether they appear on a 200 is not something this project can
+# check without a key, so the gap is stated rather than guessed at, and no
+# rate-limit header is served here at all -- serving one with an invented
+# number would be exactly the fabrication Step 3 rules out, and serving the
+# real header names with no value would be a different lie.
+#
+# **The vocabulary question this Recipe exists to raise.** id_style, list
+# style, error style: all of them describe one route's response, once. What
+# Brave's schema actually claims is that nine top-level keys of one route's
+# response are independently optional, and the format has no way to declare
+# "this key is sometimes there" as a property of a field -- only routes
+# compose into different answers. This Recipe reaches for the closest
+# construction available: two routes at the same path, chosen by matches_query
+# on the query text, so that one answers with "web" alone and the other
+# answers with "web" and "news" beside it. That models two points on the
+# axis, not the axis itself -- a real caller does not choose which clusters
+# come back, Brave's ranking does, from nine independent optionals compounding
+# into hundreds of possible shapes. Nothing here claims those two routes are
+# the only two shapes Brave sends; they are the two this Recipe can name a
+# trigger for.
+#
+# **The auth gate itself does not fit auth.scheme.** A single scheme produces
+# one failure, and Brave's missing-token and wrong-token cases differ in code,
+# detail and meta -- three fields, not one. This Recipe declares auth.scheme
+# none and rebuilds the gate out of ordinary routes matched on
+# matches_header, the same repair ScrapingBee's Recipe already made for a
+# provider with the same two-shaped problem.
+#
+# **The nested error style has no slot for Brave's "meta".** The style
+# supports one message field, one code field, one type field, one status
+# field, nested under one key. Brave's inner object carries a fourth thing --
+# meta, holding either the validation detail (which header, which rule) or
+# {"component": "authentication"} -- and there is nowhere in the declared
+# style to put a fifth arbitrary structured value inside the same envelope. So
+# code, detail and status are modelled exactly as observed, and meta is not
+# reproduced at all: a stated omission rather than a flattened or renamed
+# stand-in for something the format cannot place where the real body puts it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not implement search. Both routes answer with the same
+#     two fixture results regardless of the query text; what changes between
+#     them is only whether a "news" cluster rides beside "web", chosen by a
+#     marker in the query rather than by anything a ranking algorithm
+#     decided. Algolia's Recipe states the identical gap for the identical
+#     reason.
+#   - Only "web" and "news" are modelled, of nine optional top-level
+#     clusters. mixed, videos, infobox, faq, discussions, locations and
+#     summarizer are absent from every response this Recipe serves, which is
+#     a real shape Brave can send (a plain web query with nothing else
+#     triggered) and not a claim that those seven never appear.
+#   - A web result here carries only title, url and description. Brave's own
+#     schema puts a dozen more optional fields on each one -- page_age,
+#     profile, language, extra_snippets, and a further eleven possible nested
+#     result subtypes (Article, Recipe, Product, and so on) -- none of which
+#     are modelled.
+#   - Brave's SearchResult carries no position or ordinal field at all --
+#     checked against the schema, not merely absent from this Recipe -- which
+#     is itself worth contrasting with Serper's Recipe here, whose organic
+#     results are addressed by exactly the position field Brave's are not
+#     given.
+#   - count, offset, country, search_lang and every other optional request
+#     parameter are unmodelled; every route here answers the same fixture
+#     regardless of what else was asked.
+#   - Pagination is not modelled. Brave's query.more_results_available is
+#     absent from every response here, and there is no second page to turn
+#     to.
+
+recipe: bravesearch
+capability: search
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api-dashboard.search.brave.com/app/documentation/web-search/get-started
+
+auth:
+  # See the header comment: a single scheme cannot produce Brave's two
+  # differently-shaped 422s, so the gate is rebuilt below out of ordinary
+  # routes matched on the header's value instead.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    # A dotted key nests, the same way Segment's data.sources does: the
+    # collection sits two levels down, at web.results, with siblings of its
+    # own beside it rather than at the top of the body.
+    key: web.results
+    fields:
+      # The one field Brave's own schema requires.
+      type: search
+      # Siblings of "results" inside the same "web" object, not siblings of
+      # "web" itself -- setPath descends into the object results was already
+      # written into rather than replacing it.
+      web.type: search
+      web.family_friendly: true
+  error:
+    style: nested
+    key: error
+    message_field: detail
+    code_field: code
+    status_field: status
+    # Brave's inner object has no field called type; the outer sibling below
+    # covers the "type" Brave does send.
+    type_field: "-"
+    fields:
+      # A sibling of "error", not a field inside it -- exactly where Brave
+      # puts it, and exactly where a Recipe-wide error field always lands.
+      type: ErrorResponse
+  resource:
+    style: bare
+
+resources:
+  result:
+    id:
+      style: opaque
+      # Checked against the schema: a SearchResult carries no id and no
+      # position. Cauldron still keys the record internally, because it has
+      # to be found somehow, but emitting one Brave never sends would put a
+      # field on the wire real code cannot rely on.
+      field: "-"
+    fields:
+      title:
+        type: string
+        required: true
+      url:
+        type: string
+        required: true
+      description:
+        type: string
+
+routes:
+  # No token at all, or one sent and left empty -- observed identical, so one
+  # route covers both.
+  - method: GET
+    path: /res/v1/web/search
+    matches_header:
+      X-Subscription-Token: ""
+    error: missing_token
+
+  # A query with nothing to say beyond "web". No news marker in q, so the
+  # route below it -- the one that answers with news too -- does not match.
+  - method: GET
+    path: /res/v1/web/search
+    resource: result
+    operation: list
+    matches_header:
+      X-Subscription-Token: cauldronbravesearchfixturekey00000000
+    list:
+      fields:
+        query.original: cauldron search recipe
+
+  # The same fixture key, and a query carrying the one marker this Recipe
+  # answers with a "news" cluster beside "web". Real Brave decides this from
+  # the query's own content and this project cannot -- see the header
+  # comment -- so a literal marker stands in for that judgement.
+  - method: GET
+    path: /res/v1/web/search
+    resource: result
+    operation: list
+    matches_header:
+      X-Subscription-Token: cauldronbravesearchfixturekey00000000
+    matches_query:
+      q: cauldronnews
+    list:
+      fields:
+        query.original: cauldronnews
+        news.type: news
+        news.mutated_by_goggles: false
+        news.results:
+          - title: Cauldron ships a documentation-only Recipe
+            url: https://example.com/news/cauldron-recipe-shipped
+            source: Example Times
+            breaking: false
+            is_live: false
+
+  # Anything else reaching this path: a token that is present and simply
+  # wrong. Zero declared matchers, so it only wins when neither route above
+  # does.
+  - method: GET
+    path: /res/v1/web/search
+    error: invalid_token
+
+  # The malformed-suffix path, checked directly to answer identically to the
+  # real endpoint above. See the header comment: this is reproduced only
+  # because this exact path was checked, not because Cauldron models the
+  # general "anything under /res/* hits the same gate" rule.
+  - method: GET
+    path: /res/v1/web/searchXYZ
+    matches_header:
+      X-Subscription-Token: ""
+    error: missing_token
+
+  - method: GET
+    path: /res/v1/web/searchXYZ
+    error: invalid_token
+
+errors:
+  missing_token:
+    status: 422
+    code: VALIDATION
+    message: Unable to validate request parameter(s)
+
+  invalid_token:
+    status: 422
+    code: SUBSCRIPTION_TOKEN_INVALID
+    message: The provided subscription token is invalid.
+
+fixtures:
+  empty: {}
+
+  results:
+    result:
+      - id: r1
+        title: "Cauldron: fixtures for API integrations"
+        url: https://cauldronup.example/
+        description: An emulator that models what a provider actually sends.
+      - id: r2
+        title: Cauldron on GitHub
+        url: https://github.com/example/cauldron
+        description: Source and documentation.
+
+conformance:
+  - name: no token at all is a 422 naming the missing header
+    source: https://api.search.brave.com/res/v1/web/search?q=test
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=test
+    expect:
+      status: 422
+      headers:
+        Content-Type: application/json
+      body:
+        "error.code": VALIDATION
+        "error.detail": Unable to validate request parameter(s)
+        "error.status": 422
+        type: ErrorResponse
+
+  - name: an empty token answers byte for byte the same as no token
+    source: https://api.search.brave.com/res/v1/web/search?q=test
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=test
+      headers:
+        X-Subscription-Token: ""
+    expect:
+      status: 422
+      body:
+        "error.code": VALIDATION
+
+  - name: a token that is merely wrong is a different code at the same status
+    source: https://api.search.brave.com/res/v1/web/search?q=test
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=test
+      headers:
+        X-Subscription-Token: junktoken1234567890
+    expect:
+      status: 422
+      body:
+        "error.code": SUBSCRIPTION_TOKEN_INVALID
+        "error.detail": The provided subscription token is invalid.
+        type: ErrorResponse
+      absent:
+        # Brave's own field name for this failure's extra detail, and the one
+        # this Recipe has no slot for. Its absence here is the honest half of
+        # the header comment's claim, not an oversight to fix.
+        - error.meta
+
+  - name: none of the documented rate-limit headers survive an auth failure
+    source: https://api-dashboard.search.brave.com/documentation/guides/rate-limiting
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=test
+      headers:
+        X-Subscription-Token: junktoken1234567890
+    expect:
+      status: 422
+      absent_headers:
+        - X-RateLimit-Limit
+        - X-RateLimit-Policy
+        - X-RateLimit-Remaining
+        - X-RateLimit-Reset
+
+  - name: a malformed path one segment past the real one hits the same gate
+    source: https://api.search.brave.com/res/v1/web/searchXYZ?q=test
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/searchXYZ?q=test
+    expect:
+      status: 422
+      body:
+        "error.code": VALIDATION
+
+  - name: and the same malformed path answers the wrong-token shape too
+    source: https://api.search.brave.com/res/v1/web/searchXYZ?q=test
+    verified: "2026-09-01"
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/searchXYZ?q=test
+      headers:
+        X-Subscription-Token: junktoken1234567890
+    expect:
+      status: 422
+      body:
+        "error.code": SUBSCRIPTION_TOKEN_INVALID
+
+  - name: type is the only field a successful body has to carry
+    source: https://raw.githubusercontent.com/helmut-hoffer-von-ankershoffen/brave-search-python-client/main/src/brave_search_python_client/responses/web_search.py
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=cauldron+search+recipe
+      headers:
+        X-Subscription-Token: cauldronbravesearchfixturekey00000000
+    expect:
+      status: 200
+      body:
+        type: search
+        web.type: search
+        "web.results[0].title": "Cauldron: fixtures for API integrations"
+        "web.results[0].url": https://cauldronup.example/
+      absent:
+        # Documented as `X | None`, and this query carries no marker for any
+        # of them.
+        - news
+        - mixed
+        - videos
+        - infobox
+
+  - name: a query with a news angle carries a news cluster beside web
+    source: https://raw.githubusercontent.com/helmut-hoffer-von-ankershoffen/brave-search-python-client/main/src/brave_search_python_client/responses/web_search.py
+    fixture: results
+    request:
+      method: GET
+      path: /res/v1/web/search?q=cauldronnews
+      headers:
+        X-Subscription-Token: cauldronbravesearchfixturekey00000000
+    expect:
+      status: 200
+      body:
+        type: search
+        "news.type": news
+        "news.results[0].title": Cauldron ships a documentation-only Recipe
+        "news.results[0].breaking": false
+        "web.results[0].title": "Cauldron: fixtures for API integrations"
