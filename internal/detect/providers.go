@@ -4161,6 +4161,11 @@ func providers() []provider {
 			npm:    []string{"@splitsoftware/splitio"},
 		},
 		{
+			// The vendor's own Node library.
+			recipe: "descope",
+			npm:    []string{"@descope/node-sdk"},
+		},
+		{
 			// The vendor's own client.
 			recipe: "flagsmith",
 			npm:    []string{"flagsmith"},
