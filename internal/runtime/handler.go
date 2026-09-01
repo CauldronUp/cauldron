@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -102,6 +103,38 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	exchange.Resource = matched.spec.Resource
 	exchange.Op = matched.spec.Operation
+
+	// A route that answers with bytes rather than with a record. arXiv sends
+	// Atom and nothing else; Healthchecks' ping sends a short line of plain
+	// text; NOAA's data service sends CSV unless asked otherwise. Rendering
+	// any of those as JSON would be wrong about the one thing a client
+	// actually does with the response, which is parse it.
+	//
+	// Before the operation switch, because a raw route has no operation, and
+	// before the error table, because a raw route is not a failure -- which
+	// is the distinction this whole mechanism exists to restore.
+	if raw := matched.spec.Raw; raw != nil {
+		s.writeRouteHeaders(w, matched, nil)
+
+		if raw.ContentType != "" {
+			w.Header().Set("Content-Type", raw.ContentType)
+		}
+
+		status := matched.spec.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		w.WriteHeader(status)
+
+		if !raw.Empty {
+			fmt.Fprint(w, raw.Text)
+		}
+
+		exchange.Status = status
+
+		return
+	}
 
 	// A route that exists only to fail. Jira's old search endpoint answers 410
 	// Gone to a path thousands of integrations still call, and the distinction

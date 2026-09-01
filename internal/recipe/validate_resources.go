@@ -12,7 +12,11 @@ import (
 // function. Each of these appends through the same add, so the order and the
 // wording of every problem are unchanged.
 func (r *Recipe) validateResources(add func(string, ...any)) {
-	if len(r.Resources) == 0 {
+	// Unless every route answers with recorded bytes. arXiv sends Atom and
+	// nothing else, so there is no record for a resource to describe, and
+	// requiring one produced exactly what this rule exists to prevent: a
+	// declaration written to satisfy the schema that no route could reach.
+	if len(r.Resources) == 0 && !r.everyRouteIsRaw() {
 		add("at least one resource is required")
 	}
 
@@ -236,4 +240,20 @@ func (r *Recipe) validateResources(add func(string, ...any)) {
 			}
 		}
 	}
+}
+
+// everyRouteIsRaw reports whether this Recipe answers only with recorded
+// bytes, which is the one case where it owes no resource.
+func (r *Recipe) everyRouteIsRaw() bool {
+	if len(r.Routes) == 0 {
+		return false
+	}
+
+	for _, route := range r.Routes {
+		if route.Raw == nil && route.Error == "" {
+			return false
+		}
+	}
+
+	return true
 }

@@ -70,6 +70,10 @@ type Route struct {
 	// answers a create with 201, Stripe with 200, and a client checking for one
 	// exact code is not being unreasonable.
 	Status int `yaml:"status"`
+	// Raw is a body this route sends verbatim, for a provider that does not
+	// send JSON. A route with one answers no resource and runs no
+	// operation: it is the recorded bytes and nothing else.
+	Raw *RawBody `yaml:"raw"`
 	// Fields are constants this route adds to its response body, on top of
 	// whatever the Recipe-wide response constants already put there.
 	//

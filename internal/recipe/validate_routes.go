@@ -69,6 +69,28 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 		}
 		seen[key] = true
 
+		// A route answering with recorded bytes reaches no operation and
+		// touches no resource either, for the same reason: there is no record
+		// behind it to render.
+		if route.Raw != nil {
+			if route.Operation != "" || route.Resource != "" {
+				add("%s: declares a raw body and an operation or resource, and it can only ever send the bytes", where)
+			}
+
+			if route.Error != "" {
+				add("%s: declares a raw body and an error %q, and it can only ever do one", where, route.Error)
+			}
+
+			// An empty body that nobody meant is a Recipe with a hole in it,
+			// and a hole that serves 200 with nothing looks exactly like a
+			// provider that answers with nothing. Saying so is cheap.
+			if route.Raw.Text == "" && !route.Raw.Empty {
+				add("%s: raw.text is empty; set raw.empty to say the provider really sends nothing", where)
+			}
+
+			continue
+		}
+
 		// A route that only ever fails reaches no operation and touches no
 		// resource, so requiring either would be asking for a declaration that
 		// cannot mean anything.
