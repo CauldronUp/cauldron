@@ -122,25 +122,32 @@ func routeSegments(routes []Route) map[string]bool {
 	return spelled
 }
 
-// sendsBodyMarker reports whether any case sends a JSON body containing the
-// marker a selects_body route is waiting for.
+// sendsBodyMarker reports whether any case sends a body containing the marker a
+// selects_body route is waiting for.
 //
 // The comparison is over the body rendered back to text, which is what the
 // runtime matches against, so a marker inside a nested string counts exactly
 // as it would at request time.
+//
+// Form bodies count too, and did not until Expensify. Its API takes a JSON
+// document inside a form field, so every one of its cases posts a form -- and
+// this saw none of them, reported every selects_body route as unreachable, and
+// pushed three cases into declaring a JSON body their client does not send. A
+// check that only looks at half the ways a body can be sent does not report a
+// missing case; it reports a missing case shape.
 func sendsBodyMarker(cases []Case, marker string) bool {
 	for _, c := range cases {
-		if len(c.Request.JSON) == 0 {
-			continue
+		if len(c.Request.JSON) > 0 {
+			rendered, err := json.Marshal(c.Request.JSON)
+			if err == nil && strings.Contains(string(rendered), marker) {
+				return true
+			}
 		}
 
-		rendered, err := json.Marshal(c.Request.JSON)
-		if err != nil {
-			continue
-		}
-
-		if strings.Contains(string(rendered), marker) {
-			return true
+		for _, value := range c.Request.Form {
+			if strings.Contains(value, marker) {
+				return true
+			}
 		}
 	}
 
