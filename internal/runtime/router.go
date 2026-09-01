@@ -101,12 +101,51 @@ func mentions(query, field string) bool {
 		at += from
 		end := at + len(field)
 
-		if (at == 0 || !isNameRune(query[at-1])) && (end == len(query) || !isNameRune(query[end])) {
+		if boundaryBefore(query, at) && boundaryAfter(query, end) {
 			return true
 		}
 
 		from = at + 1
 	}
+}
+
+// boundaryBefore reports whether the character before a match ends a word.
+//
+// A percent-escape is a delimiter wearing a disguise. In a form-encoded body
+// the punctuation around a value is escaped, so a marker sitting immediately
+// after a quote or a brace is preceded by the last hex digit of %22 or %7B --
+// which is a digit, which is a name character, so the whole-word check refused
+// a match that is plainly a whole word.
+//
+// Expensify is what found it: its API takes a JSON document inside a form
+// field, so every structural character in that document arrives percent-
+// encoded, and three cases had to be rewritten to route by a JSON body they
+// do not really send.
+func boundaryBefore(s string, at int) bool {
+	if at == 0 {
+		return true
+	}
+
+	if !isNameRune(s[at-1]) {
+		return true
+	}
+
+	// Two hex digits and a percent sign: the escape is the boundary.
+	return at >= 3 && s[at-3] == '%' && isHexDigit(s[at-2]) && isHexDigit(s[at-1])
+}
+
+// boundaryAfter is the plain check, and stays plain on purpose.
+//
+// The escape problem is one-sided. A percent-escape that FOLLOWS a match
+// starts with '%', which is not a name character, so the ordinary test
+// already calls it a boundary. Only the escape before a match hides its
+// delimiter behind a hex digit.
+func boundaryAfter(s string, end int) bool {
+	return end == len(s) || !isNameRune(s[end])
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 func isNameRune(c byte) bool {
