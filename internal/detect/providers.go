@@ -4182,6 +4182,27 @@ func providers() []provider {
 			npm:    []string{"cronitor"},
 		},
 		{
+			// The vendor's own TypeScript SDK, from the rootlyhq organisation.
+			recipe: "rootly",
+			npm:    []string{"@rootly/ts"},
+		},
+		{
+			// Not the vendor's own -- FireHydrant ships no JavaScript SDK -- but
+			// the Backstage plugin is a real client of this API.
+			recipe: "firehydrant",
+			npm:    []string{"@backstage-community/plugin-firehydrant"},
+		},
+		{
+			// The vendor's own API client. The bare turso package is the CLI.
+			recipe: "turso",
+			npm:    []string{"@tursodatabase/api"},
+		},
+		{
+			// The vendor's own TypeScript SDK.
+			recipe: "make",
+			npm:    []string{"@makehq/sdk"},
+		},
+		{
 			// The vendor's own Node SDK.
 			recipe: "infobip",
 			npm:    []string{"@infobip-api/sdk"},
