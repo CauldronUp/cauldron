@@ -4975,9 +4975,11 @@ func providers() []provider {
 		},
 		{
 			// The OpenAPI client Ory generates from the same description this
-			// Recipe fingerprints, plus the Kratos-only build of it.
+			// Recipe fingerprints. Not @ory/kratos-client, which the kratos
+			// Recipe already claims and should: a package maps to one Recipe,
+			// and the Kratos-only build belongs to the Kratos one.
 			recipe: "ory",
-			npm:    []string{"@ory/client", "@ory/kratos-client"},
+			npm:    []string{"@ory/client"},
 			gomod:  []string{"github.com/ory/client-go"},
 		},
 		{
