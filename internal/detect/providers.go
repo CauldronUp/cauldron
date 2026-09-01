@@ -4155,6 +4155,16 @@ func providers() []provider {
 			npm:    []string{"libhoney"},
 		},
 		{
+			// The vendor's own JavaScript client.
+			recipe: "gitbook",
+			npm:    []string{"@gitbook/api"},
+		},
+		{
+			// A third-party client; Coda ships no JavaScript SDK.
+			recipe: "coda",
+			npm:    []string{"coda-js"},
+		},
+		{
 			// The vendor's own JavaScript wrapper.
 			recipe: "unsplash",
 			npm:    []string{"unsplash-js"},
