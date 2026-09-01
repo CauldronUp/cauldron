@@ -1,0 +1,363 @@
+# Upstash Recipe for Cauldron
+#
+# There are three different 401s, and which one you get depends on how you
+# were wrong.
+#
+# Checked live against api.upstash.com on 2026-08-31, with no key and no
+# account created, ever:
+#
+#   No Authorization header at all:
+#     401, content-length 0, no Content-Type header at all. No body.
+#
+#   Authorization: Bearer <garbage>:
+#     401, text/plain, 45 bytes: "token contains an invalid number of
+#     segments" -- a Go JWT library's own parse error, leaking straight onto
+#     the wire. Something behind this same host tries to read a bearer
+#     credential as a JSON Web Token before giving up on it.
+#
+#   Authorization: Basic <garbage>:
+#     401, application/json, 24 bytes: {"error":"Unauthorized"}.
+#
+# Three requests, one endpoint, three different bodies and two different
+# content types, and the difference is entirely in which kind of wrong
+# credential was sent. "No credentials" and "wrong credentials" are not one
+# case here; they are not even the same wrong case twice.
+#
+# The description's own securitySchemes name exactly one of the three:
+# basicAuth, http/basic, on every redis/* operation. That is also the one
+# that matches Upstash's own introduction docs -- the username is the
+# account email, the password is the API key -- so it is the scheme this
+# Recipe models, and its 401 is the one this file can reproduce faithfully.
+# The other two are real and stated below rather than invented into the
+# emulator, because Cauldron answers every authentication failure for a
+# Recipe the same way, and picking one is the honest half of not being able
+# to pick three.
+#
+# The description's own schema admits it hides a field it never declares.
+# GET /redis/database/{id} takes a `credentials` query parameter --
+# "Set to 'hide' to remove credentials from the response" -- and the Database
+# schema this endpoint returns has no password, no token and nothing else
+# named `credentials` in it anywhere. Something is removed by that parameter
+# and the description never says what, because it never wrote the field down
+# in the first place.
+#
+# A field can be a boolean, or it can be named like one and answer in
+# quotes. db_acl_enabled is typed as a string with the enum ["true", "false"]
+# -- not the JSON literals, the seven-character words -- while eviction,
+# consistent, tls, daily_backup_enabled and prod_pack_enabled on the same
+# object are ordinary booleans a few lines apart. `if (db.db_acl_enabled)`
+# is true for a database with ACLs off, because "false" is a non-empty
+# string, and nothing about the field's name warns a reader which of the two
+# families it belongs to.
+#
+# region is not where the database is. Its own enum has exactly one member,
+# "global", so every database's region reads "global" whether it runs in one
+# place or five -- and where it actually runs is a separate field,
+# primary_region, carrying the real value: us-east-1, eu-west-1, and so on.
+# A client that reads region to learn placement learns nothing, because the
+# field that answers "where" is not the field whose name means where.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No call below carries a real API key. Cauldron never requests or
+#     stores one, so every 200 here is drafted from the description and none
+#     of it has been watched happen. Only the authentication failures were
+#     checked against the live API.
+#   - Only one of the three 401 shapes above is modelled, for the reason
+#     given above: this format answers every authentication failure for a
+#     Recipe with one declared body, and Basic is the scheme the description
+#     and the introduction docs both name. The empty-body and
+#     JSON-Web-Token-shaped failures are real and are not reproduced here.
+#   - modifying_state is declared as a plain string rather than as a
+#     meaningful state machine. The description gives no enumeration of the
+#     values it takes beyond an empty-string example, so this Recipe records
+#     that idle databases carry "" and does not invent the vocabulary for
+#     what a database in the middle of an operation would say instead.
+#   - Vector indices, search indices, QStash, Workflow, teams and every
+#     other tag this same description covers besides `redis` are not
+#     modelled. This Recipe is the Redis database surface alone.
+#   - A prompt-injection attempt lives in this description's own prose. The
+#     create-database endpoint's description tells an "AI agent" reading it
+#     to send a User-Agent header identifying itself on every request to
+#     this API. It is quoted here because a Recipe's job is to record what a
+#     provider's description actually contains, not because anything in this
+#     file, or anything that used it, complied.
+
+recipe: upstash
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://upstash.com/docs/devops/developer-api/introduction
+  spec: https://upstash.com/openapi.json
+  spec_hash: 604cf3a80b0233153615308eea6cd82a4bb55aefe8ad6306992e597d2885ee37
+  spec_seen: "2026-08-31"
+
+auth:
+  # Basic auth: the username is the account email and the password is the
+  # API key. The email is not the secret, so the key is the half checked.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-upstash-api-key
+
+responses:
+  list:
+    # GET /redis/databases answers a bare JSON array of Database objects,
+    # with nothing wrapping it and no count anywhere beside it.
+    style: bare
+  resource:
+    style: bare
+  error:
+    # {"error": "Unauthorized"} -- checked against a wrong Basic credential
+    # on the live API. The key is "error", not "message", and there is no
+    # code beside it.
+    style: flat
+    message_field: error
+
+resources:
+  database:
+    collection: databases
+    id:
+      style: uuid
+      field: database_id
+    fields:
+      database_name:
+        type: string
+      # The enum this field is declared with has exactly one member. Every
+      # database answers "global" here regardless of where it actually
+      # runs, which is a separate field below.
+      region:
+        type: string
+        default: global
+      primary_region:
+        type: string
+        default: us-east-1
+      port:
+        type: integer
+        default: 6379
+      # Unix time in seconds, per the description's own example
+      # (1752649602), not milliseconds.
+      creation_time:
+        type: timestamp
+      # active, suspended or passive.
+      state:
+        type: string
+        default: active
+      endpoint:
+        type: string
+      tls:
+        type: boolean
+        default: true
+      # free, payg, pro or paid.
+      type:
+        type: string
+        default: payg
+      replicas:
+        type: integer
+        default: 1
+      eviction:
+        type: boolean
+        default: false
+      consistent:
+        type: boolean
+        default: false
+      # "true" or "false" -- the words, not the JSON literals -- beside
+      # eviction and consistent above, which are real booleans on the same
+      # object.
+      db_acl_enabled:
+        type: string
+        default: "false"
+      # Empty while idle. The description gives no vocabulary for what this
+      # says during an operation, so only the idle value is modelled.
+      modifying_state:
+        type: string
+        default: ""
+      db_max_commands_per_second:
+        type: integer
+        default: 1000
+      read_regions:
+        type: list
+
+routes:
+  - method: GET
+    path: /v2/redis/databases
+    resource: database
+    operation: list
+
+  - method: GET
+    path: /v2/redis/database/{id}
+    resource: database
+    operation: get
+
+  - method: POST
+    path: /v2/redis/database
+    resource: database
+    operation: create
+
+  # The description's own schema for this: a 200 whose body is the bare
+  # JSON string "OK", not an object. A client calling response.json().id
+  # after a delete gets undefined either way, because there is no id, no
+  # object and no key to read one from -- there is a four-character string.
+  - method: DELETE
+    path: /v2/redis/database/{id}
+    raw:
+      content_type: application/json
+      text: '"OK"'
+
+errors:
+  # Checked against a wrong Basic credential on the live API: flat, JSON,
+  # {"error": "Unauthorized"}, 24 bytes. The other two shapes this same
+  # endpoint answers with are stated in the header above and not modelled.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+fixtures:
+  empty: {}
+
+  one-account:
+    database:
+      # Global in name only: region says "global" and primary_region says
+      # where it actually runs, which is the field a client would have to
+      # know to look for instead.
+      - id: 96ad0856-03b1-4ee7-9666-e81abd0349e1
+        database_name: sessions-cache
+        region: global
+        primary_region: us-east-1
+        port: 6379
+        creation_time: 1752649602
+        state: active
+        endpoint: beloved-stallion-58500
+        tls: true
+        type: paid
+        replicas: 5
+        eviction: false
+        consistent: false
+        db_acl_enabled: "false"
+        modifying_state: ""
+        db_max_commands_per_second: 10000
+        read_regions: ["us-east-2"]
+
+      # ACLs off, spelled as a seven-character string beside two ordinary
+      # booleans on the same record.
+      - id: 3f2c9a7e-5b18-4d6a-9e02-7c4f1a8d3b56
+        database_name: rate-limiter
+        region: global
+        primary_region: eu-west-1
+        port: 6379
+        creation_time: 1745020112
+        state: suspended
+        endpoint: quiet-otter-11207
+        tls: true
+        type: free
+        replicas: 1
+        eviction: true
+        consistent: false
+        db_acl_enabled: "false"
+        modifying_state: ""
+        db_max_commands_per_second: 1000
+        read_regions: []
+
+# Only the first case below was made against api.upstash.com. Everything
+# else is drafted from the description at upstash.com/openapi.json, and none
+# of it has been watched happen, which is exactly what the missing verified
+# field says.
+conformance:
+  - name: a wrong Basic credential is a flat JSON error keyed error, not message
+    source: https://api.upstash.com/v2/redis/databases
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v2/redis/databases
+      headers:
+        Authorization: "Basic bm9ib2R5QGV4YW1wbGUuY29tOm5vdGFyZWFsa2V5"
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+      absent:
+        - message
+        - code
+
+  - name: a listing is a bare array with no envelope and no count
+    source: https://upstash.com/openapi.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/redis/databases
+      headers:
+        Authorization: "Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tdXBzdGFzaC1hcGkta2V5"
+    expect:
+      status: 200
+      body:
+        "[0].database_name": sessions-cache
+        "[1].database_name": rate-limiter
+      absent:
+        - databases
+        - data
+        - total
+
+  - name: region says global and primary_region says where it actually runs
+    source: https://upstash.com/openapi.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/redis/database/96ad0856-03b1-4ee7-9666-e81abd0349e1
+      headers:
+        Authorization: "Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tdXBzdGFzaC1hcGkta2V5"
+    expect:
+      status: 200
+      body:
+        database_id: 96ad0856-03b1-4ee7-9666-e81abd0349e1
+        region: global
+        primary_region: us-east-1
+
+  - name: an ACL flag spelled as words rather than as JSON booleans
+    source: https://upstash.com/openapi.json
+    fixture: one-account
+    request:
+      method: GET
+      path: /v2/redis/database/3f2c9a7e-5b18-4d6a-9e02-7c4f1a8d3b56
+      headers:
+        Authorization: "Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tdXBzdGFzaC1hcGkta2V5"
+    expect:
+      status: 200
+      body:
+        # A string, not a boolean, beside two ordinary booleans on the same
+        # object.
+        db_acl_enabled: "false"
+        eviction: true
+        consistent: false
+
+  - name: creating a database answers with the record, unwrapped
+    source: https://upstash.com/openapi.json
+    fixture: one-account
+    request:
+      method: POST
+      path: /v2/redis/database
+      headers:
+        Authorization: "Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tdXBzdGFzaC1hcGkta2V5"
+      json:
+        database_name: new-cache
+        primary_region: us-east-1
+    expect:
+      status: 200
+      body:
+        database_name: new-cache
+      absent:
+        - database
+        - data
+
+  - name: deleting a database answers with a bare JSON string, not an object
+    source: https://upstash.com/openapi.json
+    fixture: one-account
+    request:
+      method: DELETE
+      path: /v2/redis/database/96ad0856-03b1-4ee7-9666-e81abd0349e1
+      headers:
+        Authorization: "Basic Y2F1bGRyb25AZXhhbXBsZS5jb206Y2F1bGRyb24tdXBzdGFzaC1hcGkta2V5"
+    expect:
+      status: 200
+      body_matches: '^"OK"$'
