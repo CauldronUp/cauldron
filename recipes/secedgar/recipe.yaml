@@ -1,0 +1,334 @@
+# SEC EDGAR Recipe for Cauldron
+#
+# **The same field is a string in one endpoint and an integer in another.**
+#
+#   /submissions/CIK0000320193.json      "cik": "0000320193"
+#   /api/xbrl/companyconcept/...json     "cik": 320193
+#
+# Same company, same field name, same API, two types. A client that reads cik
+# from one endpoint and passes it to the other sends 320193 where the path
+# wants 0000320193, and gets a 404. Nothing in either response says the two
+# disagree, and a language that coerces on comparison makes the bug quieter
+# still: "0000320193" == 320193 is false everywhere, so the check that would
+# have caught it silently does not fire.
+#
+# **And the padding is load-bearing.** /submissions/CIK320193.json is a 404 for
+# a company whose CIK genuinely is 320193. The identifier has to be padded to
+# ten digits to be usable in the path, and the endpoint that gives it to you as
+# an integer has already thrown the padding away.
+#
+# **The failures are XML.** data.sec.gov is S3 underneath, so a missing company
+# answers an S3 error document:
+#
+#   <?xml version="1.0" encoding="UTF-8"?>
+#   <Error><Code>NoSuchKey</Code>...</Error>
+#
+# A client calling .json() on a 404 from a .json path throws on the first
+# character. The content type is application/xml and the status is honest --
+# it is only the body that is from a different API than the one requested.
+#
+# Written against the live API rather than a document: every case below was
+# checked against data.sec.gov on the date in its verified field.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - **filings.recent is columnar and this Recipe does not reproduce it.**
+#     It is not a list of filings. It is fourteen parallel arrays -- accession
+#     Number, filingDate, form, and eleven more -- each exactly 1000 long,
+#     where filing i is assembled by reading index i out of every one of them.
+#     A client indexing form[0] and filingDate[3] pairs a form with the wrong
+#     date and nothing errors. Cauldron's list styles are envelope, bare,
+#     wrapped, map and tuple; none of them describes a record split across
+#     sibling arrays by position, so filings is declared a map here and served
+#     as an opaque object. The shape is recorded in this comment because it is
+#     the most interesting thing about the endpoint and the vocabulary cannot
+#     yet say it.
+#   - The 404 body omits RequestId and HostId. Upstream sends both and both are
+#     different on every request; inventing a pair would be inventing evidence,
+#     so the served body carries the three elements whose values are determined
+#     by the request and stops there.
+#   - filings.files, which pages the older filings into separate documents, is
+#     not modelled. Only the first 1000 filings are reachable upstream without
+#     following it.
+#   - One company is served, of roughly eight hundred thousand.
+
+recipe: secedgar
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: edgar
+  docs: https://www.sec.gov/search-filings/edgar-application-programming-interfaces
+
+auth:
+  # No key. The SEC asks for a User-Agent that identifies the caller and
+  # rate-limits on it, but nothing is rejected for want of a credential.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: bare
+  error:
+    # Not JSON at all. The body is an S3 error document, so a client calling
+    # .json() on it throws on the letter less-than.
+    style: text
+
+resources:
+  company:
+    id:
+      # Padded to ten digits, and the padding is what makes it usable in a
+      # path. Declared opaque rather than numeric for exactly that reason:
+      # numeric would licence dropping the zeros.
+      style: opaque
+      field: cik
+    fields:
+      # A string here. An integer in the concept resource below.
+      cik:
+        type: string
+      entityType:
+        type: string
+      sic:
+        type: string
+      sicDescription:
+        type: string
+      name:
+        type: string
+      tickers:
+        type: list
+      exchanges:
+        type: list
+      ein:
+        type: string
+      # Four digits, month then day, as a string. "0926" is the 26th of
+      # September and is not a number anyone should do arithmetic on.
+      fiscalYearEnd:
+        type: string
+      stateOfIncorporation:
+        type: string
+      category:
+        type: string
+      phone:
+        type: string
+      # Fourteen parallel arrays under "recent", assembled by index. Served as
+      # an opaque map because no list style describes it. See the header.
+      filings:
+        type: map
+
+  concept:
+    id:
+      # The path segment is CIK0000320193. The body's cik is 320193. They are
+      # the same company and not the same value, so the identifier cannot be
+      # any field of the record and is declared absent from it.
+      style: opaque
+      field: "-"
+    fields:
+      # An integer here. A string in the company resource above. This is the
+      # whole finding and it is two declarations apart.
+      cik:
+        type: integer
+      taxonomy:
+        type: string
+      tag:
+        type: string
+      label:
+        type: string
+      entityName:
+        type: string
+      # Keyed by unit of measure -- USD, shares, USD/shares -- and which keys
+      # exist depends on the tag being asked about. A client reading units.USD
+      # on a share-count tag finds undefined.
+      units:
+        type: map
+
+  fact:
+    id:
+      style: opaque
+      field: accn
+    fields:
+      accn:
+        type: string
+      # An integer, unpadded, in a document whose sibling endpoint pads it.
+      cik:
+        type: integer
+      entityName:
+        type: string
+      loc:
+        type: string
+      end:
+        type: string
+      val:
+        type: integer
+
+routes:
+  # The company, whose cik comes back as a padded string.
+  - method: GET
+    path: /submissions/CIK{id}.json
+    resource: company
+    operation: get
+    not_found: no_such_key
+
+  # The same company's cik, as an integer, two paths away.
+  - method: GET
+    path: /api/xbrl/companyconcept/CIK{id}/us-gaap/AccountsPayableCurrent.json
+    resource: concept
+    operation: get
+    not_found: no_such_key
+
+  # The one endpoint here whose collection is an ordinary array.
+  - method: GET
+    path: /api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/CY2023Q1I.json
+    resource: fact
+    operation: list
+    fields:
+      taxonomy: us-gaap
+      tag: AccountsPayableCurrent
+      ccp: CY2023Q1I
+      uom: USD
+      label: Accounts Payable, Current
+      pts: 3767
+
+  # The unpadded CIK, which is a 404 for a company that exists.
+  - method: GET
+    path: /submissions/CIK320193.json
+    error: no_such_key
+
+errors:
+  no_such_key:
+    status: 404
+    # The exact body upstream sends, less RequestId and HostId, which differ on
+    # every request. S3's vocabulary, not EDGAR's: NoSuchKey is a statement
+    # about an object in a bucket.
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>submissions/CIK0000000000.json</Key></Error>
+    headers:
+      Content-Type: application/xml
+
+fixtures:
+  empty: {}
+
+  apple:
+    company:
+      - id: "0000320193"
+        cik: "0000320193"
+        entityType: operating
+        sic: "3571"
+        sicDescription: Electronic Computers
+        name: Apple Inc.
+        tickers:
+          - AAPL
+        exchanges:
+          - Nasdaq
+        ein: "942404110"
+        fiscalYearEnd: "0926"
+        stateOfIncorporation: CA
+        category: Large accelerated filer
+        phone: (408) 996-1010
+        filings: {}
+    concept:
+      - id: "0000320193"
+        cik: 320193
+        taxonomy: us-gaap
+        tag: AccountsPayableCurrent
+        label: Accounts Payable, Current
+        entityName: Apple Inc.
+        units: {}
+    fact:
+      - id: "0001104659-23-035153"
+        accn: "0001104659-23-035153"
+        cik: 1750
+        entityName: AAR CORP
+        loc: US-IL
+        end: "2023-02-28"
+        val: 158700000
+
+conformance:
+  - name: the cik is a padded string here
+    source: https://data.sec.gov/submissions/CIK0000320193.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /submissions/CIK0000320193.json
+    expect:
+      status: 200
+      body:
+        # Ten characters, six of them zeros, and quoted.
+        cik: "0000320193"
+        name: Apple Inc.
+
+  - name: and an integer two paths away
+    source: https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/AccountsPayableCurrent.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /api/xbrl/companyconcept/CIK0000320193/us-gaap/AccountsPayableCurrent.json
+    expect:
+      status: 200
+      body:
+        # Unquoted. The same company, the same field name, the same API.
+        # A client that carries this value back to the other endpoint 404s.
+        cik: 320193
+        entityName: Apple Inc.
+        tag: AccountsPayableCurrent
+
+  - name: the padding is load-bearing and dropping it is a 404
+    source: https://data.sec.gov/submissions/CIK320193.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /submissions/CIK320193.json
+    expect:
+      # For a company whose CIK is 320193. The identifier the other endpoint
+      # hands you is not the identifier this one accepts.
+      status: 404
+
+  - name: and the failure is not JSON
+    source: https://data.sec.gov/submissions/CIK320193.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /submissions/CIK320193.json
+    expect:
+      status: 404
+      headers:
+        # A .json path answering XML. Calling .json() on this throws.
+        Content-Type: application/xml
+      body_matches: "<Code>NoSuchKey</Code>"
+
+  - name: the error speaks about buckets rather than companies
+    source: https://data.sec.gov/submissions/CIK0000000000.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /submissions/CIK320193.json
+    expect:
+      status: 404
+      # S3's words. Nothing here mentions a company, a CIK, or a filing.
+      body_matches: "The specified key does not exist."
+
+  - name: the frames collection is an ordinary array in an envelope
+    source: https://data.sec.gov/api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/CY2023Q1I.json
+    verified: "2026-08-31"
+    fixture: apple
+    request:
+      method: GET
+      path: /api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/CY2023Q1I.json
+    expect:
+      status: 200
+      body:
+        taxonomy: us-gaap
+        ccp: CY2023Q1I
+        uom: USD
+        "data[0].accn": "0001104659-23-035153"
+        # Unpadded again, and a different company from the one above.
+        "data[0].cik": 1750
+        "data[0].entityName": AAR CORP
+        "data[0].val": 158700000
