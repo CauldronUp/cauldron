@@ -1,0 +1,429 @@
+# Sinch Recipe for Cauldron
+#
+# Sinch is not one API on one host. It is several product APIs -- SMS,
+# Verification, Voice, Numbers, Conversation -- each on its own subdomain, and
+# the naive guess at a root, api.sinch.com, is not one of them: it resolves
+# (even over a public resolver, 2026-09-01) to three private, unroutable
+# 10.65.x.x addresses and every connection to it times out. There is no
+# gateway behind that name for a public client to reach. Two product hosts
+# checked the same day answer as different applications entirely --
+# verificationapi-v1.sinch.com sits behind CloudFront and answers 405 with
+# Allow: POST to a GET, api-gateway shaped -- and this Recipe models exactly
+# one of them: the SMS ("xms") REST API at us.sms.api.sinch.com, which is
+# what capability: sms means here.
+#
+# That host also settles a question ten Recipes in this collection have had
+# to answer separately: whether a missing credential and a wrong one produce
+# different responses. Checked live, 2026-09-01, against a route this Recipe
+# declares: no request carrying no Authorization header at all, and no
+# request carrying a completely wrong bearer token, and both come back 401
+# with Content-Length: 0 -- no body, no WWW-Authenticate, nothing to
+# distinguish "you sent nothing" from "you sent the wrong thing". A client
+# cannot tell a missing credential from a typo in one from the response
+# alone. (A third case, a path that matches no route at all on this host,
+# comes back as a *different* shape again -- a Spring Boot default error page
+# with a JSESSIONID cookie and a Basic realm challenge, which is evidence
+# that api-gateway-shaped routing sits in front of an application underneath
+# it. Cauldron checks authentication before it ever looks at the path, for
+# every Recipe, so that difference cannot be reproduced here: it is reported
+# rather than modelled.)
+#
+# The one thing most worth documenting about this API is what a batch send
+# does not tell you. Twilio has no multi-recipient primitive at all -- N
+# recipients is N requests. Bandwidth accepts an array of recipients in one
+# request and answers with one message id covering all of them, and a client
+# has to search for that id later to learn that one of three recipients
+# failed and two succeeded. Sinch's batches endpoint takes the same shape --
+# one POST, a "to" array, one response -- and answers with *only* the batch:
+# id, to, from, body, timestamps, and which delivery_report mode was asked
+# for. There is no status field anywhere on it, for the batch or for any
+# recipient in it, in any of the three real response fixtures checked
+# (sinch/sinch-sdk-java's own OpenAPI contract test fixtures, 2026-09-01).
+# Finding out what happened means a second call, to a delivery report
+# endpoint the batch response gives no pointer to beyond its own id -- and
+# even then, the *default* report a client gets is a "summary": recipients
+# bucketed by status *code*, as counts, with no phone numbers attached unless
+# the batch was created with delivery_report: full. Bandwidth's search
+# always answers one row per recipient; Sinch's summary answers zero rows per
+# recipient by default. A client has to know to ask for "full" before the
+# send even happens, or it never learns which of the three numbers were the
+# one that failed -- only that one of them, somewhere, did.
+#
+# And the record renames itself learning that, the same way Bandwidth's does.
+# A batch's own identifier travels as "id" on every route that answers with
+# the batch. Ask for its delivery report and the same value comes back as
+# "batch_id" -- a second name for the thing a client already has an id for,
+# on the very next call it is likely to make.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's opaque id style mints mixed-case alphanumeric strings. Real
+#     Sinch batch ids are Crockford-base32, uppercase and digits only. The
+#     length (26) is faithful; the alphabet is not.
+#   - The recipient-level delivery report
+#     (.../delivery_report/{recipient_msisdn}) is not modelled. It is
+#     addressed by an E.164 phone number, and none of this format's id
+#     styles (prefixed, numeric, timestamp, opaque, uuid, hex, digits) fits
+#     that: "digits" is documented as being for identifiers that must not be
+#     parsed as numbers, which is true of a phone number, but its own
+#     description is "long numeric strings" and a leading "+" is not a
+#     digit. Declaring one would claim a shape this format has no way to
+#     check.
+#   - No rate_limit error is declared. This host answers two different
+#     shapes for two different statuses on the same day (401 empty, 400/403
+#     JSON {code, text}), and Sinch's own community answers describe 429 as
+#     both a per-service-plan send limit and a separate 1-req/sec limit on
+#     status queries without ever showing a body for either. Guessing which
+#     of the two known shapes a third status takes is exactly the unverified
+#     claim this collection exists to avoid, so it is left undeclared rather
+#     than guessed.
+#   - A batch id that does not exist is not covered by a conformance case.
+#     Reaching a genuine 404 here needs a real service plan and a real
+#     batch id that was deleted or never existed, neither of which is
+#     reachable without an account; a specific code and message would be
+#     invented rather than observed.
+#   - api.sinch.com's private-IP resolution and the Verification API's
+#     405-behind-CloudFront are recorded above as observed facts and are not
+#     modelled as routes: this Recipe describes one product's one host, not
+#     Sinch's whole estate.
+
+recipe: sinch
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.sinch.com/docs/sms/api-reference
+
+auth:
+  # A bearer token in the Authorization header. The service_plan_id in the
+  # path is not itself a credential -- it is how a request is scoped, the
+  # same role account_sid plays for Twilio -- and is declared as a field
+  # below so routes can be scoped by it, with in: "-" because no response
+  # observed here ever echoes it back.
+  scheme: bearer
+  prefix: "Bearer "
+  keys:
+    - cauldron00000000sinchapitoken0000
+
+responses:
+  list:
+    style: wrapped
+  # {code, text}. Confirmed for 400 and 403 by Sinch's own community answers;
+  # this Recipe uses it as the default for every declared failure except the
+  # one observed to be empty (see errors.authentication_error below).
+  error:
+    style: flat
+    code_field: code
+    message_field: text
+
+resources:
+  # What a batch send answers with, and what a batch listing and a batch
+  # fetch answer with too -- the same shape on all three routes, and no
+  # status field on any of them.
+  batch:
+    collection: batches
+    id:
+      style: opaque
+      length: 26
+    fields:
+      service_plan_id:
+        type: string
+        in: "-"
+      # An array even for one recipient, which is faithful here: unlike the
+      # id, "to" really is the same property under the same name wherever a
+      # batch is returned.
+      to:
+        type: list
+      from:
+        type: string
+      body:
+        type: string
+      canceled:
+        type: boolean
+        default: false
+      type:
+        type: string
+        default: mt_text
+      created_at:
+        type: datetime
+      modified_at:
+        type: datetime
+      # none, summary, full, per_recipient, per_recipient_final. What a
+      # client asked for when it created the batch -- not what happened,
+      # because nothing in this object is what happened.
+      delivery_report:
+        type: string
+        default: none
+      expire_at:
+        type: datetime
+      callback_url:
+        type: string
+      client_reference:
+        type: string
+      feedback_enabled:
+        type: boolean
+        default: false
+      flash_message:
+        type: boolean
+        default: false
+
+  # The same batch, asked for a second time at a different path, and the
+  # identifier that got it here is not one of its own properties: the value
+  # is the batch's id, and the property is called batch_id.
+  delivery_report:
+    id:
+      style: opaque
+      length: 26
+      field: batch_id
+    fields:
+      service_plan_id:
+        type: string
+        in: "-"
+      type:
+        type: string
+        default: delivery_report_sms
+      # Status buckets, not recipients. Each entry is {code, status, count,
+      # recipients}, and recipients is an empty list unless the batch asked
+      # for delivery_report: full -- summary mode reports how many hit each
+      # status and does not say who.
+      statuses:
+        type: list
+      total_message_count:
+        type: integer
+      client_reference:
+        type: string
+
+routes:
+  # Sinch's own status-code reference says a POST that creates a resource
+  # answers 201, and a batch is a resource this creates.
+  - method: POST
+    path: /xms/v1/{service_plan_id}/batches
+    resource: batch
+    operation: create
+    status: 201
+    scope: [service_plan_id]
+
+  - method: GET
+    path: /xms/v1/{service_plan_id}/batches/{id}
+    resource: batch
+    operation: get
+    scope: [service_plan_id]
+
+  - method: GET
+    path: /xms/v1/{service_plan_id}/batches
+    resource: batch
+    operation: list
+    scope: [service_plan_id]
+    pagination:
+      style: page
+      limit: 30
+      limit_param: page_size
+      cursor_param: page
+      # Sinch's own list example starts counting pages at 0, which Algolia
+      # and Elasticsearch also do and which this format has a dedicated field
+      # for precisely because it is so easy to get backwards.
+      first_page: 0
+    list:
+      count_field: count
+      page_field: page
+      limit_field: page_size
+
+  - method: GET
+    path: /xms/v1/{service_plan_id}/batches/{id}/delivery_report
+    resource: delivery_report
+    operation: get
+    scope: [service_plan_id]
+
+errors:
+  # Observed live, 2026-09-01: no body at all, for a missing token and for a
+  # wrong one alike. This Recipe cannot reproduce the zero bytes: Cauldron's
+  # runtime supplies a fixed fallback sentence ("Invalid API key provided.")
+  # for this specific named error whenever a Recipe's own message is empty,
+  # and YAML gives no way to say "empty on purpose" instead of "unset" --
+  # message: "" and no message: line at all reach the runtime identically.
+  # style: text is still the closest available shape (a plain-text body, no
+  # JSON envelope, matching the fact that the real one is not JSON either),
+  # and it is declared knowing it will carry a sentence the real host does
+  # not send, which is recorded here rather than concealed by a case that
+  # avoided asserting the body.
+  authentication_error:
+    status: 401
+    style: text
+
+  # {code, text}, from Sinch's own OpenAPI contract test fixture -- a code
+  # that is a machine-readable identifier rather than a number, and a
+  # sentence naming the specific bad parameter.
+  invalid_request:
+    status: 400
+    code: syntax_invalid_parameter_format
+    message: "'foo' is not a valid identifier"
+
+fixtures:
+  empty: {}
+
+  small-plan:
+    batch:
+      - id: 01FC66621XXXXX119Z8PMV1QPQ
+        service_plan_id: cauldron00sinchserviceplan001
+        to:
+          - "+15551231234"
+          - "+15551256344"
+        from: "+15551231234"
+        canceled: false
+        body: "Hi there! How are you?"
+        type: mt_text
+        created_at: "2026-08-24T14:15:22Z"
+        modified_at: "2026-08-24T14:17:22Z"
+        delivery_report: full
+        expire_at: "2026-08-26T14:15:22Z"
+        client_reference: cauldron-ref-001
+        feedback_enabled: false
+        flash_message: false
+
+    delivery_report:
+      # Same id as the batch above, under a different name. One recipient
+      # delivered, one failed, and delivery_report: full is the only reason
+      # either phone number appears here at all.
+      - id: 01FC66621XXXXX119Z8PMV1QPQ
+        service_plan_id: cauldron00sinchserviceplan001
+        type: delivery_report_sms
+        statuses:
+          - code: 0
+            status: Delivered
+            count: 1
+            recipients:
+              - "+15551231234"
+          - code: 11
+            status: Failed
+            count: 1
+            recipients:
+              - "+15551256344"
+        total_message_count: 2
+        client_reference: cauldron-ref-001
+
+# Two cases are observed against the real host; the rest are read from
+# Sinch's own OpenAPI contract test fixtures (sinch/sinch-sdk-java), which are
+# generated from the same description their SDKs are, and are marked
+# documented rather than verified because reaching them for real needs a
+# service plan this Recipe does not have.
+conformance:
+  - name: a missing bearer token is refused, and the real API sends no body at all
+    source: https://us.sms.api.sinch.com/xms/v1/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches
+    expect:
+      # The real host answers with Content-Length: 0 here. This emulator
+      # cannot: see the comment on errors.authentication_error above for why
+      # the status is what this case can pin and the body is not.
+      status: 401
+
+  - name: and a wrong one is refused with the identical status
+    source: https://us.sms.api.sinch.com/xms/v1/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches
+      headers:
+        Authorization: "Bearer completely-wrong-token"
+    expect:
+      status: 401
+
+  - name: a batch send answers with the recipient list, not a status for any of them
+    source: https://raw.githubusercontent.com/sinch/sinch-sdk-java/main/openapi-contracts/src/test/resources/domains/sms/v1/batches/response/TextResponseDto.json
+    fixture: empty
+    request:
+      method: POST
+      path: /xms/v1/cauldron00sinchserviceplan001/batches
+      headers:
+        Authorization: "Bearer cauldron00000000sinchapitoken0000"
+      json:
+        to:
+          - "+15551231234"
+          - "+15551256344"
+        from: "+15551231234"
+        body: "Hi there!"
+    expect:
+      status: 201
+      body:
+        "to[0]": "+15551231234"
+        "to[1]": "+15551256344"
+        from: "+15551231234"
+        canceled: false
+        type: mt_text
+        delivery_report: none
+      matches:
+        id: '^[0-9a-zA-Z]{26}$'
+      # No status field of any shape, for the batch or for a recipient in it.
+      # This is the whole finding: two recipients went in and nothing came
+      # back that says what happened to either one.
+      absent:
+        - status
+        - delivered
+        - statuses
+        - message_count
+
+  - name: a batch listing wraps under its own collection name, counting pages from zero
+    source: https://raw.githubusercontent.com/sinch/sinch-sdk-java/main/openapi-contracts/src/test/resources/domains/sms/v1/batches/response/ListBatchesResponseDtoPage0.json
+    fixture: small-plan
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches
+      headers:
+        Authorization: "Bearer cauldron00000000sinchapitoken0000"
+    expect:
+      status: 200
+      body:
+        page: 0
+        "batches[0].id": 01FC66621XXXXX119Z8PMV1QPQ
+        "batches[0].delivery_report": full
+
+  - name: the default delivery report is counts by status code, not recipients
+    source: https://raw.githubusercontent.com/sinch/sinch-sdk-java/main/openapi-contracts/src/test/resources/domains/sms/v1/deliveryreports/BatchDeliveryReportSMSDto.json
+    fixture: small-plan
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches/01FC66621XXXXX119Z8PMV1QPQ/delivery_report
+      headers:
+        Authorization: "Bearer cauldron00000000sinchapitoken0000"
+    expect:
+      status: 200
+      body:
+        total_message_count: 2
+        "statuses[0].status": Delivered
+        "statuses[0].count": 1
+        "statuses[0].recipients[0]": "+15551231234"
+        "statuses[1].status": Failed
+        "statuses[1].recipients[0]": "+15551256344"
+
+  - name: the batch's own id becomes batch_id on its delivery report
+    source: https://raw.githubusercontent.com/sinch/sinch-sdk-java/main/openapi-contracts/src/test/resources/domains/sms/v1/deliveryreports/BatchDeliveryReportSMSDto.json
+    fixture: small-plan
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches/01FC66621XXXXX119Z8PMV1QPQ/delivery_report
+      headers:
+        Authorization: "Bearer cauldron00000000sinchapitoken0000"
+    expect:
+      status: 200
+      body:
+        batch_id: 01FC66621XXXXX119Z8PMV1QPQ
+      absent:
+        - id
+
+  - name: a validation failure is a code and a sentence, not a numeric status
+    source: https://raw.githubusercontent.com/sinch/sinch-sdk-java/main/openapi-contracts/src/test/resources/domains/sms/v1/error-response.json
+    fixture: empty
+    arm: invalid_request
+    request:
+      method: GET
+      path: /xms/v1/cauldron00sinchserviceplan001/batches
+      headers:
+        Authorization: "Bearer cauldron00000000sinchapitoken0000"
+    expect:
+      status: 400
+      body:
+        code: syntax_invalid_parameter_format
+        text: "'foo' is not a valid identifier"
