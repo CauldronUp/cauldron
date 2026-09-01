@@ -1,0 +1,574 @@
+# Duo (Cisco Duo Security) Recipe for Cauldron
+#
+# The score question does not apply here. Duo is the control in this group of
+# three: it is a second factor, not a risk score, and the question this whole
+# batch was written to answer -- score, verdict, or both, and does the verdict
+# carry the thresholds that produced it -- has no purchase on an API whose
+# answer is "did the person on the other end of the push notification tap
+# Approve." There is no score type, no range, no threshold. There is a
+# challenge, and it resolves to allow, deny, or still-waiting.
+#
+# What Duo has instead of a score's smallest addressable unit is a txid. POST
+# /auth/v2/auth with async=1 answers immediately with nothing but
+# {"txid": "..."} -- not a result, not a status, just an id -- and everything
+# about the outcome has to be fetched afterwards by polling
+# GET /auth/v2/auth_status?txid=... , which long-polls for the next update and
+# answers the same two fields every time: result (allow, deny, or waiting) and
+# status (a longer, provider-specific vocabulary -- calling, answered, pushed,
+# push_failed, timeout, fraud, allow, bypass, deny, locked_out, sent -- that
+# does not collapse cleanly onto result's three words). So yes, a Duo decision
+# is addressable by id afterwards, in the most literal way of the three
+# providers in this group: the id is not a side effect of the response, it is
+# the entire synchronous response, and the decision itself lives one request
+# later. The synchronous path (no async param) skips the id entirely and
+# answers with result/status/status_msg directly -- the same two fields,
+# through a different door, with nothing to poll and nothing to address
+# afterwards. Source for all of the above: https://duo.com/docs/authapi,
+# which is prose with embedded JSON examples rather than a machine-readable
+# spec -- no upstream.spec is recorded because none was found.
+#
+# The other half of this Recipe is the signature, and it is the AWS SigV4
+# situation this collection already has a precedent for: see
+# recipes/dynamodb/recipe.yaml. Every Duo Auth API request is signed --
+# HMAC-SHA512 in the current (v5) scheme, HMAC-SHA1 in the legacy v2 one --
+# over a canonical string built from the timestamp, method, host, path, and
+# params, sent as "Authorization: Basic base64(ikey:hexdigest)": the
+# integration key as the username, the signature as the password, in
+# hexadecimal ASCII. Verifying that would mean implementing Duo's signing
+# algorithm, which is not what this project is for. Cauldron checks the
+# credential the same way dynamodb/recipe.yaml does: by shape, with
+# auth.pattern, against the ikey alone -- and the Recipe says plainly, in the
+# same words, that a wrongly signed request is accepted. The password half of
+# every Basic pair below is never inspected at all once the username matches;
+# only the username's shape ("DI" followed by eighteen letters and digits, the
+# format Duo's own documentation example uses) is checked.
+#
+# Four things established by probing api-12345678.duosecurity.com directly --
+# an arbitrary, never-provisioned subdomain, chosen because Duo's Auth API has
+# no single public hostname at all: every customer is issued their own
+# api-XXXXXXXX.duosecurity.com. Nothing about the credential or routing checks
+# below turned out to depend on that subdomain naming a real account -- the
+# edge answered every probe identically regardless -- which is itself the
+# reason this could be probed live without signing up for anything:
+#
+#   1. Missing and wrong are different sentences, and both are structured.
+#      No Authorization header at all: {"code": 40101, "message": "Missing
+#      request credentials", "stat": "FAIL"}. A well-formed Basic pair whose
+#      username is not a recognised integration key: {"code": 40102,
+#      "message": "Invalid integration key in request credentials",
+#      "stat": "FAIL"}. Both are genuinely different codes, not one message
+#      wearing two sentences -- struck live, on 2026-09-01, against
+#      POST /auth/v2/auth with an empty body.
+#   2. A header that is present but is not Basic-shaped at all --
+#      "Authorization: Bearer junk-not-real", "Authorization: garbagenospace",
+#      no space anywhere in the value -- is told the same thing an absent
+#      header is: 40101, not 40102. Duo draws its absent/wrong line at
+#      "is this even a Basic pair", the same place Together draws it at "is
+#      this even prefixed with Bearer " elsewhere in this collection. Struck
+#      live; not modelled as its own case below, because Cauldron's
+#      auth.pattern mechanism collapses "not Basic-shaped" and "Basic-shaped
+#      but the wrong username" into the same Malformed verdict (see the gap
+#      note), and this Recipe only claims the case it can reproduce
+#      faithfully -- the sharper one, 40102 -- rather than both.
+#   3. Routing is resolved before the credential, for every method and every
+#      path, with no exception found. GET /auth/v2/nosuchroute and
+#      POST /auth/v2/nosuchroute both answered 404 {"code": 40401, "message":
+#      "Resource not found", "stat": "FAIL"} whether or not a credential was
+#      sent. GET /auth/v2/auth -- a real path, wrong method -- answered 405
+#      {"code": 40501, "message": "Method not allowed", "stat": "FAIL"} with
+#      no credential at all, and POST /auth/v2/ping (also a real path, wrong
+#      method) answered the identical 405 shape. Duo's own 405 carries no
+#      Allow header at all; Cauldron's computed one is attached automatically
+#      whenever a real 405 is declared this way (see the route.go comment on
+#      Allow), so this is the one place this Recipe's 405 does not match the
+#      wire byte for byte -- recorded rather than hidden.
+#   4. GET /auth/v2/ping needs no credential at all and answers
+#      {"response": {"time": 1788263573}, "stat": "OK"} -- struck live twice,
+#      both times a plain successful body with nothing else in it.
+#      GET /auth/v2/check demands the same credential every other route here
+#      does and answers the identical {"response": {"time": ...}, "stat":
+#      "OK"} shape once it is satisfied. Neither is modelled as a route:
+#      Cauldron's auth scheme is one setting for the whole Recipe with no
+#      per-route exemption (recipes/firehydrant/recipe.yaml hit the same wall
+#      over its own /v1/noauth/ping and made the same call), and the
+#      auth.pattern mechanism this Recipe needs for the signature finding
+#      requires the Recipe-wide gate to be on for every route it protects.
+#      Recorded here, both live, rather than forced into a route that would
+#      cost the sharper finding to keep the smaller one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - A wrongly signed request is accepted. Cauldron checks the integration
+#     key's shape and never inspects the password half of the Basic pair at
+#     all, so any string in that slot -- a real signature, a stale one, the
+#     word "wrong" -- authenticates once the username matches. See the header
+#     above; this is the same trade dynamodb/recipe.yaml makes for SigV4.
+#   - 40103 ("Invalid signature in request credentials") is Duo's own
+#     documented answer for a real integration key paired with a signature
+#     that does not verify -- a case this Recipe cannot reach naturally,
+#     because Cauldron never computes or checks a signature to disagree with.
+#     It is declared and reached with `arm` below, sourced from Duo's own
+#     documentation, carrying no verified date, so its shape is not lost even
+#     though the check that would produce it is not modelled.
+#   - 40104 ("Missing request timestamp") and 40105 ("Request timestamp is too
+#     far from the server time") are both documented and neither is declared.
+#     Both describe a clock/timestamp check Cauldron has no concept of at all
+#     -- there is no request-timestamp validation anywhere in this runtime --
+#     and declaring the errors without any way to reach them would be a
+#     claim about a mechanism that is not there.
+#   - Cauldron's Malformed verdict, produced by auth.pattern, cannot
+#     distinguish "not Basic-shaped at all" from "Basic-shaped, wrong
+#     username" -- both fail the same check in the same way. Duo's own wire
+#     tells these two apart (40101 vs 40102, see finding 2 above); this
+#     Recipe's malformed_error names the 40102 entry, which means it claims
+#     the sharper, more heavily verified finding and leaves the coarser one
+#     ("not Basic-shaped") to prose rather than to a case that Cauldron would
+#     actually answer wrong.
+#   - Only /auth/v2/preauth, /auth/v2/auth and /auth/v2/auth_status are
+#     modelled. /auth/v2/enroll, /auth/v2/enroll_status, the Admin API
+#     entirely, and every factor besides push (passcode, sms, phone) are not.
+#   - preauth's "Verified Push" variant -- the one that returns a txid,
+#     expiration and verification_code from preauth itself, before /auth is
+#     ever called -- is quoted in this header from Duo's own documentation
+#     but not built into a fixture or a case: modelling it faithfully would
+#     mean preauth minting the same kind of addressable id /auth does, and
+#     this Recipe already demonstrates that mechanism once, at /auth. A
+#     second copy would add a fixture rather than a finding.
+#   - The synchronous (non-async) /auth response and the polled
+#     /auth_status response share the same two fields (result, status) with
+#     the same possible values, and neither response echoes back a txid of
+#     its own -- the id that addresses a challenge only ever appears once,
+#     in the async /auth response that mints it. That asymmetry is
+#     deliberate on Duo's part and is reproduced deliberately here via
+#     `returns`, not smoothed over.
+#
+# Every key, ikey and signature below is a fixture invented for this Recipe,
+# not a real Duo credential, and no account was ever created to write it.
+
+recipe: duo
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://duo.com/docs/authapi
+
+auth:
+  # HTTP Basic, integration key as username, HMAC signature as password --
+  # Duo's own words. Checked by shape rather than by value: see the header.
+  scheme: basic
+  # The default already reads the username for comparison; named here so a
+  # reader does not have to know that to know what is being checked.
+  credential: username
+  # Routing wins over the credential for every method and path this Recipe
+  # struck, with no exception found -- see finding 3 above.
+  after_routing: true
+  # "DI" followed by eighteen letters and digits, the shape Duo's own
+  # documentation example ("DIWJ8X6AEYOR5OMC6TQ1") uses. The password half of
+  # the pair is never looked at once this matches -- seeing the header's own
+  # section on the signature before assuming otherwise.
+  pattern: '^DI[A-Z0-9]{18}$'
+  absent_error: missing_credentials
+  # The sharper of Duo's two live sentences; see the header's fidelity gap on
+  # why the coarser one (a header that is not Basic-shaped at all) is not
+  # claimed here.
+  malformed_error: invalid_integration_key
+
+responses:
+  resource:
+    style: wrapped
+    key: response
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    type_field: "-"
+    fields:
+      stat: FAIL
+  success:
+    # Stamped on every successful body this Recipe struck or read, beside
+    # whatever "response" holds.
+    fields:
+      stat: OK
+
+resources:
+  # The addressable half: a challenge that can be polled later. Minted by
+  # async /auth, looked up by /auth_status. This is the resource that carries
+  # a real id, because this is the half of the API that hands one out.
+  challenge:
+    id:
+      style: uuid
+      field: txid
+    fields:
+      # allow, deny, or waiting. The coarse word -- three values, and no
+      # fourth for "no opinion": a request that reaches /auth_status is
+      # always in exactly one of these three states, never in a state that
+      # declines to say.
+      result:
+        type: string
+        default: waiting
+      # calling, answered, pushed, push_failed, timeout, fraud, allow,
+      # bypass, deny, locked_out, sent. The finer word, and it does not
+      # collapse onto result's three: "pushed" and "sent" both mean
+      # result=waiting, and "bypass" and "allow" both mean result=allow, so
+      # code branching on result alone cannot recover which of these
+      # happened, and code branching on status alone has no fixed set of
+      # three to fall back to.
+      status:
+        type: string
+        default: pushed
+      status_msg:
+        type: string
+
+  # The unaddressable half: what the synchronous path answers with. Deliberately
+  # a separate resource rather than the same one with a field list trimmed
+  # down, because id: field "-" is the honest way to say this half of the API
+  # never hands out anything to poll -- the same mechanism Marqeta's balance
+  # token and Dwolla's HAL records use elsewhere in this collection for a
+  # record that is real and genuinely has nothing to address it by.
+  challenge_outcome:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      result:
+        type: string
+        default: allow
+      status:
+        type: string
+        default: allow
+      status_msg:
+        type: string
+        default: "Success. Logging you in..."
+
+routes:
+  # Duo's own docs are explicit that async=1 changes the shape of what comes
+  # back, not just whether it comes back sooner -- see the header. Declared
+  # ahead of the fallback below because a route naming a body marker beats an
+  # equally-scoring route that names none.
+  #
+  # The marker is "1" rather than the fuller "async=1": Cauldron's own
+  # coverage check reads a form body one field's value at a time rather than
+  # as the assembled key=value string the router itself matches against (see
+  # internal/recipe/case.go's sendsBodyMarker), so a marker has to be the
+  # literal value of some field this case sends. async's value is the literal
+  # string "1" -- "value '1' enables asynchronous mode" is Duo's own wording
+  # -- and nothing else in either case's body below is a bare, word-bounded
+  # "1": the device id ends in "891", where the digit before it keeps "1"
+  # from standing alone.
+  - method: POST
+    path: /auth/v2/auth
+    resource: challenge
+    operation: create
+    selects_body: "1"
+    # Nothing but the id. No result, no status, no status_msg -- the decision
+    # itself is not in this response at all, only the address it will
+    # eventually be found at.
+    returns:
+      - id
+
+  - method: POST
+    path: /auth/v2/auth
+    resource: challenge_outcome
+    operation: create
+    # No returns override needed: this resource has no id to accidentally
+    # expose, which is the point.
+
+  - method: GET
+    path: /auth/v2/auth_status
+    resource: challenge
+    operation: get
+    id_from: query:txid
+    # The response never carries its own txid either -- a caller already
+    # holds the one it is polling with, and Duo does not repeat it back.
+    returns:
+      - result
+      - status
+      - status_msg
+    # Never seeded and never issued read the same here as anywhere else in
+    # this format: a 404 rather than a third status invented for the
+    # occasion.
+    not_found: challenge_not_found
+
+errors:
+  missing_credentials:
+    status: 401
+    code: "40101"
+    message: "Missing request credentials"
+
+  invalid_integration_key:
+    status: 401
+    code: "40102"
+    message: "Invalid integration key in request credentials"
+
+  # Documented, not observed -- see the header's fidelity gaps for why
+  # Cauldron cannot reach this on its own. Reached with `arm` in one case
+  # below so its shape is not lost even though the check that produces it is
+  # not modelled.
+  invalid_signature:
+    status: 401
+    code: "40103"
+    message: "Invalid signature in request credentials"
+
+  method_not_allowed:
+    status: 405
+    code: "40501"
+    message: "Method not allowed"
+
+  unknown_route:
+    status: 404
+    code: "40401"
+    message: "Resource not found"
+
+  # A never-issued or already-resolved-and-expired txid. Duo does not
+  # distinguish the two on the wire and neither does this entry.
+  challenge_not_found:
+    status: 404
+    code: "40401"
+    message: "Resource not found"
+
+fixtures:
+  empty: {}
+
+  one-integration:
+    challenge:
+      # The exact txid Duo's own /auth documentation shows for a Duo Push
+      # request, holding the exact result/status/status_msg its own
+      # /auth_status documentation shows being polled back -- two separate
+      # worked examples from the same page, joined here into one fixture
+      # record because both are genuinely Duo's own words about the same
+      # kind of request.
+      - id: 45f7c92b-f45f-4862-8545-e0f58e78075a
+        result: waiting
+        status: pushed
+        status_msg: "Pushed a login request to your phone..."
+
+# Every case below not carrying a verified date is read from
+# https://duo.com/docs/authapi and was never struck against a real Duo
+# account: no integration key exists to strike /auth or /auth_status with. A
+# verified date means the exact request shown was struck live against
+# api-12345678.duosecurity.com on that date -- see the header for why that
+# subdomain, never provisioned to anyone, was the right thing to probe.
+conformance:
+  - name: no credential at all is one structured code
+    source: https://api-12345678.duosecurity.com/auth/v2/auth
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/v2/auth
+    expect:
+      status: 401
+      body:
+        code: 40101
+        message: "Missing request credentials"
+        stat: FAIL
+
+  - name: a well-formed pair with the wrong key is a different one
+    # Live: the sharper of Duo's two sentences, and the one this Recipe's
+    # malformed_error claims -- see the header for why the coarser sentence
+    # (a header that is not Basic-shaped at all) is not modelled as its own
+    # case even though it was also struck live.
+    source: https://api-12345678.duosecurity.com/auth/v2/auth
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic anVua2lrZXk6anVua3NrZXk="
+    expect:
+      status: 401
+      body:
+        code: 40102
+        message: "Invalid integration key in request credentials"
+        stat: FAIL
+
+  - name: an unrouted path answers before any credential is examined
+    source: https://api-12345678.duosecurity.com/auth/v2/nosuchroute
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /auth/v2/nosuchroute
+    expect:
+      status: 404
+      body:
+        code: 40401
+        message: "Resource not found"
+        stat: FAIL
+
+  - name: a real path with the wrong method answers before the credential too
+    # Live, with no Authorization header sent at all -- the same ordering as
+    # the unrouted case above, and the reason after_routing is set rather
+    # than left at its default.
+    source: https://api-12345678.duosecurity.com/auth/v2/auth
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /auth/v2/auth
+    expect:
+      status: 405
+      body:
+        code: 40501
+        message: "Method not allowed"
+        stat: FAIL
+
+  - name: async mode answers with nothing but an address
+    source: https://duo.com/docs/authapi
+    fixture: one-integration
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      form:
+        username: cauldron-test-user
+        factor: push
+        device: DPFZRS9FB0D46QFTM891
+        async: "1"
+    expect:
+      status: 200
+      body:
+        stat: OK
+      matches:
+        response.txid: "^[0-9a-f-]{36}$"
+      absent:
+        - response.result
+        - response.status
+        - response.status_msg
+
+  - name: and the decision itself is not in that response at all
+    # The same case, read the other way: nothing here says allow, deny, or
+    # waiting. That is not an omission this Recipe is filling in -- it is
+    # the finding. See the header.
+    source: https://duo.com/docs/authapi
+    fixture: one-integration
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      form:
+        username: cauldron-test-user
+        factor: push
+        device: DPFZRS9FB0D46QFTM891
+        async: "1"
+    expect:
+      status: 200
+      absent:
+        - response.result
+        - response.status
+
+  - name: the synchronous path answers the opposite way round
+    # No async param anywhere in this body, so it falls through to the
+    # unaddressable resource -- challenge_outcome, not challenge -- and its
+    # defaults are Duo's own documented synchronous example (result=allow,
+    # status=allow). Compare the two cases above: the same two fields this
+    # format can express, id and everything else, and this call gets the one
+    # they do not.
+    source: https://duo.com/docs/authapi
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      form:
+        username: cauldron-test-user
+        factor: push
+        device: DPFZRS9FB0D46QFTM891
+    expect:
+      status: 200
+      body:
+        response.result: allow
+        response.status: allow
+        response.status_msg: "Success. Logging you in..."
+        stat: OK
+      absent:
+        - response.txid
+        - response.id
+
+  - name: polling by txid answers the same two fields, still with no id of its own
+    source: https://duo.com/docs/authapi
+    fixture: one-integration
+    request:
+      method: GET
+      path: /auth/v2/auth_status
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      query:
+        txid: 45f7c92b-f45f-4862-8545-e0f58e78075a
+    expect:
+      status: 200
+      body:
+        response.result: waiting
+        response.status: pushed
+        response.status_msg: "Pushed a login request to your phone..."
+        stat: OK
+      absent:
+        - response.txid
+
+  - name: result stays inside a three-word enum with no fourth for no opinion
+    # allow, deny, or waiting -- Duo's own documented set, and there is no
+    # value in it for "no policy configured" or "not evaluated". The
+    # still-waiting case above shows one end of it; this shows the other,
+    # with a different factor and no device at all, still landing on the
+    # same unaddressable synchronous shape.
+    source: https://duo.com/docs/authapi
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      form:
+        username: cauldron-test-user
+        factor: auto
+    expect:
+      status: 200
+      body:
+        response.result: allow
+
+  - name: a real key with the wrong signature is documented, not reachable
+    # Duo's own answer to a genuine integration key paired with a signature
+    # that does not verify -- 40103, distinct from both 40101 and 40102.
+    # Armed rather than reached naturally: Cauldron never computes or checks
+    # a signature to disagree with, which is the fidelity gap the header
+    # states plainly. Source is Duo's documentation, not a live account, so
+    # this case carries no verified date even though it is armed.
+    source: https://duo.com/docs/authapi
+    arm: invalid_signature
+    fixture: empty
+    request:
+      method: POST
+      path: /auth/v2/auth
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      form:
+        username: cauldron-test-user
+        factor: auto
+    expect:
+      status: 401
+      body:
+        code: 40103
+        message: "Invalid signature in request credentials"
+        stat: FAIL
+
+  - name: a never-issued txid answers the same as an expired one
+    source: https://duo.com/docs/authapi
+    fixture: one-integration
+    request:
+      method: GET
+      path: /auth/v2/auth_status
+      headers:
+        Authorization: "Basic RElDQVVMRFJPTlRFU1QwMDAwMDE6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg=="
+      query:
+        txid: 00000000-0000-0000-0000-000000000000
+    expect:
+      status: 404
+      body:
+        code: 40401
+        message: "Resource not found"
+        stat: FAIL
