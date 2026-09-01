@@ -4182,6 +4182,17 @@ func providers() []provider {
 			npm:    []string{"cronitor"},
 		},
 		{
+			// The vendor's own Node SDK.
+			recipe: "infobip",
+			npm:    []string{"@infobip-api/sdk"},
+		},
+		{
+			// The vendor's own Node client for the tracking API, which is
+			// one of the two hosts this Recipe describes.
+			recipe: "customerio",
+			npm:    []string{"customerio-node"},
+		},
+		{
 			// The vendor's own SDK.
 			recipe: "inngest",
 			npm:    []string{"inngest"},
