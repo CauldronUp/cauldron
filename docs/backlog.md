@@ -148,7 +148,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 |---|---|
 | ~~Supabase~~ | Shipped. Auth, storage, database REST and realtime |
 | Redis Cloud | Keys, TTLs, streams, pub/sub |
-| Upstash | Redis REST, queues, rate limits |
+| ~~Upstash~~ | Shipped. Three different requests to the same endpoint with no valid credential answer three different 401s -- an empty body with no Content-Type, a JSON-Web-Token parser's own error text for a bearer token, and `{"error": "Unauthorized"}` for the documented Basic scheme -- and this format can only reproduce one of them at a time. Also: `region` is a one-member enum, `"global"`, so it says nothing about where a database actually runs, which is `primary_region` instead; `db_acl_enabled` is a string `"true"`/`"false"` beside ordinary booleans on the same object; and a database delete answers 200 with the bare JSON string `"OK"`, not an object |
 | ~~MongoDB Atlas~~ | Shipped, the Administration API, written against the OpenAPI document MongoDB publishes. The version of the API you are talking to is a date inside a content type: GET /groups/{groupId}/clusters documents one 200 with three content types under it -- vnd.atlas.2023-01-01+json, 2023-02-01+json and 2024-08-05+json -- resolving to three separately named schemas, all current. And the difference is not cosmetic: the legacy view carries mongoURI, srvAddress, diskSizeGB and providerSettings and the newest carries none of them, so the field an application connects with is present under one date and absent under the next, same URL, same credentials, same instant. Also: the schema names carry the date (ClusterDescription20240805), failure is better documented than success (more operations describe a 401 than a 200), and the credential is HTTP Digest -- challenge-response, on a cloud API written in the 2020s. Digest is stated and not served, and so is the Content-Type echo |
 | ~~Neon~~ | Shipped. Branches, databases, endpoints |
 | ~~PlanetScale~~ | Shipped, written against the Swagger 2.0 document PlanetScale serves from its own API host. The field called state is not the state of the deployment: a deploy request carries state -- "Whether the deploy request is open or closed" -- beside deployment_state, "The deployment state of the deploy request", so a request abandoned after review and one whose migration ran an hour ago both read closed. Also: the id is "The ID of the deploy request" and every path takes the number instead, which is per database, so the globally unique identifier addresses nothing; a request outlives the branch it came from, still naming it while branch_deleted says it is gone; and next_page is "null when this is the last page" where Confluence omits the field entirely. The ten deploy-lifecycle endpoints are stated as not modelled, because each advances a state machine this format cannot express |
@@ -294,7 +294,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Netlify~~ | Shipped. A deploy id exists long before the site is live |
-| Render | Assess — services, deploys, the build-then-live gap |
+| ~~Render~~ | Shipped, written against `render-public-api-1.json`, which is not at the well-known `render.com/openapi.json` -- that URL is a different product, an AI docs-search API, and the real description sits three redirects deeper at `api-docs.render.com`. A listing does not answer with the records: `serviceList` and `deployList` are both arrays of `{cursor, service}`/`{cursor, deploy}`, so the record is one level down under its own name and a client reading `response[0].id` gets undefined. Triggering a deploy answers 201 from an eleven-value status enum, long before any of them is `live`. And three boolean-shaped fields on one resource are spelled three ways -- `suspended` is `"suspended"`/`"not_suspended"`, `autoDeploy` is `"yes"`/`"no"`, `notifyOnFail` is a three-way `"default"`/`"notify"`/`"ignore"` -- and none of them is `true` or `false` |
 | ~~Fly.io~~ | Shipped, and the comparison this row asked for is in the file: the Machines API is served and the older platform API is recorded as a stated gap, because it is GraphQL at a different host and is a second Recipe rather than more of this one. The headline is that `started` does not mean your application is up -- a machine has a `state`, everybody reads it, and three other fields on the same object independently contradict it. `host_status` can be `unreachable` (started, on a host Fly cannot currently talk to -- not stopped, not failed, not anything `state` has a word for), `cordoned` can be true (started and taking no new traffic, on purpose, and nothing in `state` says so), and `checks` can be `critical` (the process is running and failing the health check that exists to describe exactly that). Four answers to "is this machine up" on one object, disagreeing by design |
 | ~~Heroku~~ | Shipped. Assess — the API still uses `Accept: application/vnd.heroku+json; version=3`, so a missing header is a different response rather than an error |
 | Linode | Assess — instances and the async provisioning lifecycle, beside Vultr and DigitalOcean |
@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**214 more listings across 129 Recipes declare no paging at all**, and the
+**216 more listings across 130 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1207,7 +1207,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Netlify~~ | Shipped. A deploy has an id before it has a site, ready is not published, and a missing URL means two different things |
-| Render | Blocked on documentation, like Sift and Klarna. The shape looked good -- list endpoints appear to wrap each element beside a cursor, and `suspended` appears to be a string enum rather than a boolean -- and none of that could be confirmed: `api-docs.render.com` 404s on its reference pages and the OpenAPI spec its own docs point to is not at the URL given. Revisit with an account or a spec that resolves |
+| ~~Render~~ | Shipped, and both suspicions this row raised were right. The spec was not blocked, only mislaid: `api-docs.render.com` does 404 on the URLs guessed at here, but its own "OpenAPI Spec" reference page names the real one, `api-docs.render.com/v1.0/openapi/render-public-api-1.json`, which resolves. And `suspended` really is a string enum, `"suspended"`/`"not_suspended"`, not a boolean -- beside two more of the same shape, `autoDeploy` as `"yes"`/`"no"` and `notifyOnFail` as a three-way switch. List endpoints do wrap each element beside a cursor, `{cursor, service}`, which this format can reproduce for the wrapping and not for the per-item cursor sitting beside it |
 | ~~Fly.io~~ | Shipped, and **not** for the reason this row gave: the older platform API is GraphQL at a different host, and this format speaks REST, so the two-shapes half is stated in the header and not modelled. What shipped is better anyway. `state: started` does not mean the application is up, and three fields on the same object independently say so -- `host_status` can be `unreachable`, `cordoned` can be true, and `checks[0].status` can be `critical`. Four answers to one question, disagreeing by design. Plus: `instance_id` is unique per *version*, so anything keyed on it loses its history at every deploy, and `nonce` is returned once, at creation, and only if a lease duration was asked for |
 | ~~Heroku~~ | Shipped, and the header was the smaller half. A successful list is **206**: Heroku pages with the `Range` header and answers `206 Partial Content` while there is more, with the resume point in `Next-Range` rather than in the body -- so comparing against 200 rejects every page but the last, and testing `ok` accepts them and never looks for the rest. The `Accept` version header is a 406 when missing, errors are keyed by `id` rather than `code`, `url` is on an error only sometimes, and a formation with `quantity: 0` is a process type that exists and is not running |
 | ~~Hetzner Cloud~~ | Shipped, and the row was exactly right. Powering off a server answers 201 with a job: status running, progress 0, finished null, and the machine still on. Every mutation in the API is that shape, so nothing that changes anything answers with the thing it changed. An action can fail long after its 201, its reason is an object rather than a sentence, progress reaches 100 while still running, a server has nine statuses of which eight are not running, and `locked` is a separate question from `status` whose refusal is a 423 |
@@ -1289,7 +1289,7 @@ what normalisation does not fix.
 | Provider | Why |
 |---|---|
 | ~~Razorpay~~ | Shipped. Capture is a separate call and an uncaptured authorisation is auto-refunded, so doing nothing is a decision; amounts are in paise; the fee and tax do not exist until capture; and BAD_REQUEST_ERROR is the code on almost every failure, so reason is the only thing worth branching on |
-| Paystack | Amounts are in kobo, the smallest unit of a currency whose smallest unit most code has never met |
+| ~~Paystack~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **The row's own premise is the part that could not be checked** -- every amount-bearing endpoint needs a secret key, so whether amounts really are in kobo is documented and unverified, and the Recipe models no amount field rather than claiming one. What was verified is a **negative** finding: every response carries `{status, message, data}` with a boolean beside the HTTP status, the shape that lets a body disagree with its own status line, and on the whole key-free surface the two always agree -- `true` with 200, `false` with 401, no 200 ever carrying `false`. Also pinned: a 401 whose machine-readable code is `invalid_Key`, with a capital K inside a snake_case value; an unknown country answering 200 with an empty array, indistinguishable from a real country it has no banks for and with the success flag saying `true` for both; malformed paging values (`perPage=abc`, `-1`, twenty digits) all accepted in silence; and cursor paging that exists only behind an opt-in `use_cursor=true`. Stated and not served: the nested `data.status` of `"failed"` its documentation describes on a verified transaction, which would be a third statement of one outcome and the likeliest to disagree |
 | Flutterwave | The verify endpoint is the source of truth and the redirect parameters are not, which is the whole of the fraud surface |
 | Mercado Pago | A payment can sit in in_process for days, and the status detail rather than the status says why |
 | dLocal | The settlement currency is not the charge currency and the rate is fixed at a moment you did not choose |
@@ -1482,7 +1482,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Fifty-four Recipes send at least one identifier as a number now, and each
+Fifty-five Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
@@ -1779,10 +1779,15 @@ per row.
 | Intelcom / Dragonfly | The introduction page at developers.intelcomexpress.com, which names six APIs and their required call order | Every reference page under it: `/reference/tracking-api` and friends 404, and the site's own `llms.txt` answers 200 with the ReadMe shell | A partner login, or one captured response per endpoint |
 | Sift | Prose describing a 0-100 score | The score response body. The scale is decimals on the wire and prose in the docs, and that number is what every integration branches on | One real response |
 | Klarna | Navigation | Every schema. The portal renders through JavaScript | An account or a published spec |
-| Render | Marketing | `api-docs.render.com` 404s on its reference pages and the OpenAPI its own docs name is not at that URL | A spec that resolves |
 
-The useful observation is that four of these five are ReadMe or JavaScript
-portals, and the fifth is a login. A provider that publishes a spec file --
+Render was on this row too, on the same complaint -- `api-docs.render.com`
+404s on the reference pages this was tried against. It was not blocked: its
+own "OpenAPI Spec" page names the real file, `render-public-api-1.json`,
+three redirects past the well-known `render.com/openapi.json`, and that one
+resolves. Shipped; see the hosting and deployment table above.
+
+The useful observation is that three of these four are ReadMe or JavaScript
+portals, and the fourth is a login. A provider that publishes a spec file --
 in its own repository, or at a URL that answers with the spec rather than
 with a page about the spec -- is a provider that can be modelled honestly.
 That is now the first thing checked, not the last.
