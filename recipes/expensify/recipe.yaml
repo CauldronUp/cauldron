@@ -1,0 +1,468 @@
+# Expensify Recipe for Cauldron
+#
+# Checked live, 2026-09-01, with no account and no real credential ever sent.
+#
+# The task this Recipe was written to help answer is whether a posted
+# accounting record can be deleted or only reversed, and what a delete
+# attempt gets told instead. Expensify's own documentation answers it more
+# starkly than either NetSuite or Sage Intacct in this same group: there is
+# no delete and no void anywhere in this API's vocabulary for a report that
+# has left Open. Expensify's own help article states it in as many words --
+# "The API does not support deleting or voiding submitted/approved reports"
+# -- and the one lever that exists, the report status updater, is one-way
+# and silent about everything else: "Only reports in the Approved status can
+# be updated to Reimbursed. All other reports will be ignored." Not refused.
+# Not erred. Ignored -- the same word Expensify's own docs use for a request
+# this API simply declines to notice. NetSuite refuses a delete on a linked
+# invoice with a real error and Sage Intacct refuses a delete on a paid bill
+# with a real error; Expensify's answer to the same attempt is to have never
+# offered the button at all. No route below models the status updater,
+# because no worked request or response for it appears anywhere in
+# Expensify's own documentation and this Recipe never held a credential to
+# call it and observe one -- see the gaps at the bottom.
+#
+# Two structural things had to be worked out before any of that, and both
+# are worth stating up front because they shape every route below.
+#
+# First, this is not a REST API and does not pretend to be one. Every
+# request is POST https://integrations.expensify.com/Integration-Server
+# /ExpensifyIntegrations, application/x-www-form-urlencoded, and the entire
+# request -- the operation, the credentials, every parameter -- is JSON text
+# sitting as the value of one form field, requestJobDescription. Unlike this
+# group's own Sage Intacct Recipe, which had to wrap raw XML in a JSON field
+# as a stated concession to Cauldron's own request vocabulary (see
+# sageintacct/recipe.yaml and, before that, fauna/recipe.yaml, whose FQL-in-
+# JSON case names the same trade), Expensify needs no concession at all:
+# Cauldron's request.form sends exactly application/x-www-form-urlencoded,
+# and the JSON blob is simply the literal string value of one field. What
+# looks unusual about Expensify's wire shape turns out to be the one thing
+# in this group's three providers that this format already had a box for.
+#
+# Second, the credential lives inside that JSON body -- a "credentials"
+# object with partnerUserID and partnerUserSecret -- not in a header or a
+# query parameter, so auth.scheme is none here for the same reason it is
+# none in fauna/recipe.yaml: Cauldron's built-in credential check has
+# nowhere on the HTTP request to look. What is modelled instead is five
+# fixed answers, picked apart by selects_body the way Fauna's single query
+# endpoint is, keyed on words that a real request already contains rather
+# than words invented to make the routing work.
+#
+# Five things checked live, all of them sharp:
+#
+#   1. HTTP status is 200 on every one of this API's own failures, without
+#      exception -- missing parameter, malformed JSON, an unsupported
+#      action, wrong credentials, no credentials. The real answer lives in
+#      a field inside the body named responseCode, which repurposes ordinary
+#      HTTP numbers (403, 404, 410, 500) as an application-level vocabulary
+#      with no transport meaning left in them at all. Bill.com in this same
+#      collection makes the identical move -- response_status, always 200 --
+#      but keeps its own numbering (0 success, 1 failure). Expensify borrows
+#      HTTP's numbers and then answers a genuine authentication failure with
+#      404, a status that has never meant "not found" here.
+#
+#   2. Content-Type is not sent at all for the outer validation failures
+#      (missing requestJobDescription, malformed JSON, an unsupported
+#      action) and is sent -- as text/plain, on a JSON body -- once a
+#      request reaches a real action handler and its credential check.
+#      Two different untruths about the same kind of body, depending only
+#      on how far the request got before failing.
+#
+#   3. An unsupported or retired action answers 410 before any credential is
+#      examined, wrong or absent alike: this Recipe's own probe against
+#      inputSettings.type "combinedReportData" got 410 with a plainly
+#      invented partnerUserSecret still sitting in the body, unexamined. A
+#      currently live action (policyList) reaches the credential check
+#      every time. So action dispatch happens before authentication, and a
+#      request naming a dead action can never be used to learn whether its
+#      credentials would have worked.
+#
+#   4. Absent and wrong credentials are told apart, in both the message and
+#      the responseCode: a body with no "credentials" key at all gets 403
+#      "No authentication method specified"; the identical body with a
+#      credentials object holding values nobody issued gets 404
+#      "Authentication error". Two sentences, two numbers, the same as
+#      auth.absent_error and auth.rejected_error exist to say for a header-
+#      based credential -- except nothing here is a header, so this Recipe
+#      says it with two routes and two named errors instead.
+#
+#   5. The container beneath the app answers a wrong method and an unrouted
+#      path in its own voice, not the app's: DELETE and PUT on the real path
+#      each get a GlassFish error page, HTML, 405, and the two pages
+#      disagree with each other about a single letter's case --
+#      "Http method DELETE is not supported by this URL" against "HTTP
+#      method PUT is not supported by this URL" -- which is not a
+#      difference either message means to make. An unrecognised path gets a
+#      different container page again, 404, HTML, with a fresh JSESSIONID
+#      cookie set on every request. Every one of the five findings above
+#      describes the servlet the path routes to; these two describe the
+#      servlet container underneath it, and Cauldron's own routing has no
+#      concept of that second tier -- see the gap below.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No resource is modelled. Nothing successful was ever observed --
+#     credentials, once real, were never going to be created for this task
+#     -- and no worked success example appears in Expensify's own published
+#     reference for any job type this Recipe could cite rather than invent.
+#     Every route below answers a failure, and every one of those failures
+#     was called live and is exactly what came back.
+#   - The report status updater -- the one operation this API offers in
+#     place of delete or void -- is not routed, for the reason stated at
+#     the top: no worked request or response for it exists in Expensify's
+#     own documentation, and this Recipe never held a credential to call it.
+#     The finding that matters -- that it is one-way and silently ignores
+#     anything else -- is stated above in the vendor's own words instead.
+#   - Cauldron's own method-not-allowed handling always sets a real Allow
+#     header (internal/runtime/handler.go sets it unconditionally before the
+#     Recipe's own error is written). The live GlassFish 405 sends no Allow
+#     header at all. This Recipe cannot suppress Cauldron's header from a
+#     Recipe file, and states the mismatch here rather than implying the
+#     served Allow header is something Expensify sent.
+#   - GET answering identically to POST on the main endpoint is verified and
+#     routed; HEAD and OPTIONS were not probed and are not claimed.
+#   - The root path (/) and its 303 redirect to /Integration-Server/doc/,
+#     and the documentation site itself, are not modelled: neither bears on
+#     the question this Recipe exists to answer.
+#   - Cauldron's own JSON error envelope always sets Content-Type:
+#     application/json. The live missing-parameter and malformed-JSON
+#     failures send no Content-Type header at all -- see the header's
+#     second finding -- and that specific absence could not be reproduced
+#     here; the case for those two routes does not assert a Content-Type
+#     value because there is a real one to compare it against and this
+#     Recipe would rather assert nothing than assert the wrong header.
+#   - Writing this Recipe found two bugs, both in how a case's body is
+#     read rather than in anything about Expensify, and both are fixed
+#     rather than worked around. A percent-escape is now a word boundary,
+#     so a marker sitting behind an encoded quote is a whole word; and the
+#     reachability check that insists a selects_body route has a case
+#     reaching it now counts form bodies, which it did not. Between them
+#     they had forced three of this file's cases to declare a JSON body no
+#     Expensify client sends. Every case here now sends the form it was
+#     sent as. The details are on the "a retired action is refused..." case
+#     below.
+#
+# Credentials below are fixtures and were never valid.
+
+recipe: expensify
+capability: accounting
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://integrations.expensify.com/Integration-Server/doc/
+
+auth:
+  # The credential is a JSON field inside a form field, not anything HTTP
+  # has a name for -- see the header. Modelled as fixed routes below,
+  # matched on words a real request body already contains, the same
+  # mechanism fauna/recipe.yaml uses for its own single, credential-in-body
+  # endpoint.
+  scheme: none
+
+responses:
+  error:
+    # Nested nowhere, one message field and one code field, and the code is
+    # a repurposed HTTP status living inside an HTTP 200 -- see the header's
+    # first finding. Every error route below sets status: 200 for exactly
+    # that reason; the two container-level failures (a wrong method, an
+    # unrouted path) override both the status and the style, because those
+    # two never reach the application layer that produces this envelope at
+    # all.
+    style: flat
+    message_field: responseMessage
+    code_field: responseCode
+    code_type: number
+    type_field: "-"
+
+routes:
+  # Declaration order carries a real claim here, not just a disambiguation
+  # trick: Cauldron scores several matching selects_body routes equally (a
+  # flat +1000 each) and breaks the tie by which was declared first, so
+  # putting the action-dispatch route ahead of the two credential routes is
+  # what makes a body naming a retired action AND carrying a credentials
+  # object take the 410 rather than the credential answer -- which is
+  # exactly the header's third finding (action dispatch runs before
+  # authentication) rather than an artefact of file order.
+  #
+  # A recognised-but-retired action. Answers 410 whatever the credentials
+  # object says, including a well-formed one -- see the header's third
+  # finding. Verified live.
+  - method: POST
+    path: /Integration-Server/ExpensifyIntegrations
+    selects_body: combinedReportData
+    error: action_not_supported
+
+  # A credentials object holding something that is not this Recipe's -- the
+  # sharper of the two credential answers, and the one a live integration
+  # actually hits: a rotated or mistyped secret. Verified live against a
+  # currently supported action (policyList).
+  - method: POST
+    path: /Integration-Server/ExpensifyIntegrations
+    selects_body: partnerUserSecret
+    error: authentication_error
+
+  # A recognised action with no "credentials" key in the body whatsoever.
+  # Verified live. Ordered after the case above so a body carrying both
+  # partnerUserSecret and policyList -- every credentialed request to this
+  # action -- takes the credential route; this one is reached only when
+  # partnerUserSecret is genuinely absent.
+  - method: POST
+    path: /Integration-Server/ExpensifyIntegrations
+    selects_body: policyList
+    error: missing_authentication_method
+
+  # requestJobDescription present and not valid JSON. Verified live with
+  # exactly this text as the field's value.
+  - method: POST
+    path: /Integration-Server/ExpensifyIntegrations
+    selects_body: not-json
+    error: invalid_json
+
+  # The fallback: no requestJobDescription field in the form body at all,
+  # which is also what a genuinely empty POST produces. Verified live.
+  - method: POST
+    path: /Integration-Server/ExpensifyIntegrations
+    error: missing_param
+
+  # The identical fallback, GET rather than POST -- this endpoint reads the
+  # same way regardless of method, verified live rather than assumed.
+  - method: GET
+    path: /Integration-Server/ExpensifyIntegrations
+    error: missing_param
+
+errors:
+  # Content-Type appears here and did not for the fallback below it -- see
+  # the header's second finding. text/plain is the real, false label on a
+  # genuine JSON body: reaching this route means an action handler and its
+  # credential check ran, and that code path sets a header the outer
+  # validation path never does.
+  authentication_error:
+    status: 200
+    code: "404"
+    headers:
+      Content-Type: "text/plain;charset=utf-8"
+    message: Authentication error
+
+  missing_authentication_method:
+    status: 200
+    code: "403"
+    headers:
+      Content-Type: "text/plain;charset=utf-8"
+    message: No authentication method specified
+
+  action_not_supported:
+    status: 200
+    code: "410"
+    # The literal action this Recipe probed with. Real wording is
+    # "'{verb}' action '{action}' not supported.", but only one pair was
+    # ever exercised live, so only that pair is pinned rather than a
+    # template this Recipe never checked against a second action. No
+    # Content-Type here, unlike the two errors above -- action dispatch
+    # rejected this request before reaching the code path that sets one.
+    message: "'get' action 'combinedReportData' not supported."
+
+  invalid_json:
+    status: 200
+    code: "500"
+    message: "'requestJobDescription' is not valid JSON: A JSONObject text must begin with '{' at 1 [character 2 line 1]"
+
+  missing_param:
+    status: 200
+    code: "500"
+    message: "'requestJobDescription' is missing"
+
+  # The servlet container's own 404, not the application's -- see the
+  # header's fifth finding. A fresh JSESSIONID is set on every request;
+  # this Recipe pins the shape a real one takes rather than the value,
+  # which is generated per request and never repeats.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html;charset=ISO-8859-1"
+      Set-Cookie: "JSESSIONID=0000000000000000000000000; Path=/Integration-Server; HttpOnly"
+    message: |
+      <html>
+          <head>
+              <title>Page not found</title>
+          </head>
+          <body>
+              <h1>Page not found</h1>
+          </body>
+      </html>
+
+  # GlassFish's own error page, reached only for a method this endpoint's
+  # container has no handler for. The literal body observed for DELETE;
+  # PUT answers the same page with one word's case changed ("HTTP" rather
+  # than "Http") -- see the header's fifth finding and the case below for
+  # why only one of the two is served rather than templated.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |
+      <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><title>GlassFish Server Open Source Edition  4.1.1  - Error report</title><style type="text/css"><!--H1 {font-family:Tahoma,Arial,sans-serif;color:white;background-color:#525D76;font-size:22px;} H2 {font-family:Tahoma,Arial,sans-serif;color:white;background-color:#525D76;font-size:16px;} H3 {font-family:Tahoma,Arial,sans-serif;color:white;background-color:#525D76;font-size:14px;} BODY {font-family:Tahoma,Arial,sans-serif;color:black;background-color:white;} B {font-family:Tahoma,Arial,sans-serif;color:white;background-color:#525D76;} P {font-family:Tahoma,Arial,sans-serif;background:white;color:black;font-size:12px;}A {color : black;}HR {color : #525D76;}--></style> </head><body><h1>HTTP Status 405 - Http method DELETE is not supported by this URL</h1><hr/><p><b>type</b> Status report</p><p><b>message</b>Http method DELETE is not supported by this URL</p><p><b>description</b>The specified HTTP method is not allowed for the requested resource.</p><hr/><h3>GlassFish Server Open Source Edition  4.1.1 </h3></body></html>
+
+fixtures:
+  empty: {}
+
+# Every case below was called live, 2026-09-01, against
+# integrations.expensify.com, with no credential that was ever real. No
+# resource is modelled -- see the header -- so every case here asserts a
+# failure.
+conformance:
+  - name: no requestJobDescription field answers a missing-parameter sentence
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /Integration-Server/ExpensifyIntegrations
+    expect:
+      status: 200
+      body:
+        responseMessage: "'requestJobDescription' is missing"
+        responseCode: 500
+
+  - name: and GET answers the identical body
+    # This endpoint is not gated by method at all -- verified by sending
+    # the same bodyless request with GET rather than POST and getting back
+    # the byte-identical 200.
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /Integration-Server/ExpensifyIntegrations
+    expect:
+      status: 200
+      body:
+        responseMessage: "'requestJobDescription' is missing"
+        responseCode: 500
+
+  - name: a requestJobDescription that is not JSON still answers HTTP 200
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /Integration-Server/ExpensifyIntegrations
+      form:
+        requestJobDescription: not-json
+    expect:
+      status: 200
+      body:
+        responseMessage: "'requestJobDescription' is not valid JSON: A JSONObject text must begin with '{' at 1 [character 2 line 1]"
+        responseCode: 500
+
+  - name: a retired action is refused before its credentials are ever read
+    # A plainly invented partnerUserSecret sits right in this body and is
+    # never examined -- the 410 arrives regardless. See the header's third
+    # finding.
+    #
+    # Sent as a form, which is what was sent to the live API. Writing this
+    # Recipe found two reasons it could not be, and both are fixed rather
+    # than worked around here:
+    #
+    # The whole-word check that selects_body routes on treated the trailing
+    # hex digit of a percent-encoded byte as an ordinary word character, so
+    # a marker sitting immediately after an encoded quote or brace --
+    # %22combinedReportData -- failed a test that same marker passes beside
+    # a literal quote. Every marker in this file sits inside quoted JSON
+    # text inside a form field, so every honest rendering of it defeated the
+    # mechanism this Recipe needs to route on.
+    #
+    # And the reachability check that insists a selects_body route has a
+    # case reaching it inspected only a case's JSON body, so it saw none of
+    # these and called every route unreachable.
+    #
+    # A percent-escape is a delimiter now, and a form body counts as a body.
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /Integration-Server/ExpensifyIntegrations
+      form:
+        requestJobDescription: '{"type":"get","credentials":{"partnerUserID":"cauldron_test","partnerUserSecret":"cauldron_test_secret"},"inputSettings":{"type":"combinedReportData"}}'
+    expect:
+      status: 200
+      body:
+        responseMessage: "'get' action 'combinedReportData' not supported."
+        responseCode: 410
+
+  - name: wrong credentials on a live action are Authentication error, 404
+    # policyList is a currently supported "get" action -- unlike
+    # combinedReportData above, this one reaches the real credential check.
+    # Content-Type appears here and did not above: see the header's second
+    # finding.
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /Integration-Server/ExpensifyIntegrations
+      form:
+        requestJobDescription: '{"type":"get","credentials":{"partnerUserID":"cauldron_test","partnerUserSecret":"cauldron_test_secret"},"inputSettings":{"type":"policyList"}}'
+    expect:
+      status: 200
+      body:
+        responseMessage: Authentication error
+        responseCode: 404
+      headers:
+        Content-Type: "text/plain;charset=utf-8"
+
+  - name: and no credentials object at all is a different failure, 403
+    # The identical action, the identical inputSettings, and the only thing
+    # removed is the "credentials" key -- not emptied, removed. See the
+    # header's fourth finding: two sentences and two numbers, not one
+    # collapsed answer. See two cases above for why this is request.json
+    # rather than request.form.
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /Integration-Server/ExpensifyIntegrations
+      form:
+        requestJobDescription: '{"type":"get","inputSettings":{"type":"policyList"}}'
+    expect:
+      status: 200
+      body:
+        responseMessage: No authentication method specified
+        responseCode: 403
+
+  - name: a wrong method is refused by the container, not the application
+    # DELETE on the real path never reaches the servlet that produces every
+    # case above -- it is answered by GlassFish itself, HTML, 405, with no
+    # Allow header (see the header's known gap: Cauldron's own runtime adds
+    # one anyway).
+    source: https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /Integration-Server/ExpensifyIntegrations
+    expect:
+      status: 405
+      headers:
+        Content-Type: text/html
+      body_matches: "Http method DELETE is not supported by this URL"
+
+  - name: an unrecognised path is the container's 404, not the application's
+    # A fresh JSESSIONID cookie is set on this response and was not set on
+    # any application-layer response above.
+    source: https://integrations.expensify.com/Integration-Server/NoSuchRoute
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /Integration-Server/NoSuchRoute
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html;charset=ISO-8859-1"
+      header_matches:
+        Set-Cookie: "^JSESSIONID="
+      body_matches: "Page not found"
