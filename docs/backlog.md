@@ -3690,3 +3690,30 @@ all of which are queued above and all of which are batch-shaped for the same
 reason: an analytics SDK buffers on the client and flushes. That is a decision
 about what this format models, which is larger than one provider and should be
 made on its own evidence rather than as a side effect of wanting this one.
+
+## Five providers want a credential failure per route, and one wants it per scheme
+
+`auth` describes one credential and one way of refusing it. That is right for
+most of this collection, and five Recipes have now had to work around it the
+same way -- `scheme: none`, plus a `matches_header` pair on every route, so the
+credential is checked once per declared route rather than once for the Recipe.
+
+The workaround is honest and it is expensive. Every route gains a duplicate,
+declaration order stops being obvious, and a reader has to reconstruct the
+credential rule from five places instead of reading it in one.
+
+What each of them actually needs:
+
+| Recipe | What it wants that `auth` cannot say |
+|---|---|
+| Flagsmith | A **different status and body per path** for the same wrong key. Three failures in three formats -- a printed Python tuple served as JSON, a zero-byte 404, and a bare array holding one object -- and which one you get depends on the endpoint, not on the credential |
+| Anvil | A **different answer per scheme**. A wrong Basic credential is a GraphQL `{"errors":[...]}` envelope; a wrong Bearer one is a singular `{"error":...}` with a `WWW-Authenticate` header the Basic failure never carries. Same host, same request, two shapes chosen by the word in front of the credential |
+| Baserow | Both at once, and a **third ordering** besides: URL pattern, then credential, then the specific id and the method. Its two live prefixes, `Token` and `JWT`, answer different error codes |
+| Backblaze | **Two protocols on one vendor**, a JSON native API and an S3 gateway, whose credential failures share no vocabulary. `scheme: none` with per-route `matches_header` is the only way to gate both |
+| Make | Four answers, three verdicts. Fixed for three of them by naming an error per verdict; the fourth -- `Bearer` with a uuid, "Invalid bearer token." -- is a **scheme Make recognises and refuses**, which is a fourth thing to know about a credential rather than a fourth way of failing |
+
+Two shapes would cover all five: a credential failure declared on a route,
+overriding the Recipe-wide one, and a verdict that can depend on which scheme
+was presented. Neither is written yet. What is written is that each of these
+files says plainly which of its provider's answers it is serving and which it is
+not, which is the thing that must not be lost if this is ever built.
