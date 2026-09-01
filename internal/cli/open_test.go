@@ -36,7 +36,7 @@ func TestOpenPrintsAMountedRecipe(t *testing.T) {
 func TestOpenNamesWhatIsAvailable(t *testing.T) {
 	url := liveServer(t)
 
-	_, stderr, code := run(t, "open", "netsuite", "--print", "--url", url, "-path", t.TempDir())
+	_, stderr, code := run(t, "open", unshipped, "--print", "--url", url, "-path", t.TempDir())
 
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)

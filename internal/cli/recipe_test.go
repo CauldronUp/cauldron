@@ -48,13 +48,13 @@ func TestRecipeInfoDescribesTheRecipe(t *testing.T) {
 }
 
 func TestRecipeInfoSuggestsAlternativesWhenUnknown(t *testing.T) {
-	_, stderr, code := run(t, "recipe", "info", "netsuite")
+	_, stderr, code := run(t, "recipe", "info", unshipped)
 
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
 
-	if !strings.Contains(stderr, `no recipe named "netsuite"`) {
+	if !strings.Contains(stderr, `no recipe named "`+unshipped+`"`) {
 		t.Errorf("stderr = %q", stderr)
 	}
 

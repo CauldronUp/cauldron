@@ -47,7 +47,7 @@ func TestVerifyListsEveryCaseWhenAsked(t *testing.T) {
 }
 
 func TestVerifyRejectsAnUnknownRecipe(t *testing.T) {
-	_, stderr, code := run(t, "verify", "netsuite")
+	_, stderr, code := run(t, "verify", unshipped)
 
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
