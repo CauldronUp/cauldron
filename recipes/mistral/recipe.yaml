@@ -1,0 +1,504 @@
+# Mistral AI Recipe for Cauldron
+#
+# What follows is two kinds of evidence and this file does not blur them.
+# Observed: struck live against api.mistral.ai on 2026-08-31, with no API key
+# at all -- every case below carrying a `verified:` date was read off the
+# wire that day, bytes and all. Documented: everything else -- the model
+# listing's fields, the chat completion shape, the finish_reason vocabulary
+# -- is read from the OpenAPI 3.1 description at docs.mistral.ai/openapi.yaml
+# and carries no `verified:` date, because reaching those routes with a
+# result costs an account, and answering a chat completion costs money.
+# Nothing here was called with a real key, and nothing ever will be.
+#
+# It answers the OpenAI SDK's own shape, mostly.
+#
+# Point an OpenAI client at api.mistral.ai and /v1/models and
+# /v1/chat/completions answer close enough that it works, which is the
+# whole premise of "OpenAI-compatible." The unauthenticated failure is where
+# it stops, and it stops completely: this is a FastAPI app, not a
+# Kong-fronted OpenAI clone, and it answers like one.
+#
+#   Mistral:  {"detail": "Invalid API Key"}
+#   OpenAI:   {"error": {"message": "...", "type": "...", "code": "...", "param": null}}
+#
+# No error object, no type, no code, no param -- a client that reads
+# error.message against Mistral reads undefined, because there is no
+# "error" key to descend into. detail is a bare string here and an array of
+# {loc, msg, type} objects on a 422, which is FastAPI's own default shape
+# leaking straight through: the same top-level key, two different bodies
+# under it, depending on what went wrong.
+#
+# And missing a key is not distinguished from sending the wrong one.
+# Requested with no Authorization header at all, with a syntactically
+# plausible bearer token that is not a real key, with DELETE, with OPTIONS --
+# every one of those, against every matched route, answered the identical
+# 401 and the identical body. There is exactly one authentication failure
+# here, not two.
+#
+# The one place authentication is not checked first is the one place it does
+# not need to be: a path nothing recognises answers 404 before anything asks
+# who is asking, with a completely different envelope --
+# {"message": "no Route matched with those values", "request_id": "..."} --
+# no "detail" key anywhere in it. Two failure shapes, from the same host, and
+# which one a client gets depends on whether the path exists, not on
+# whether the credential does.
+#
+# Four more, all from the description:
+#
+#   1. A completion is minted as cmpl-, not chatcmpl-. OpenAI's own Recipe in
+#      this collection says client code really does prefix-match
+#      "chatcmpl-" in the wild; that code silently stops matching the moment
+#      it is pointed at this "OpenAI-compatible" host, and nothing about the
+#      response says so.
+#   2. AssistantMessage has no refusal field. Not null -- absent from the
+#      schema entirely, because OpenAI's own Recipe describes refusal and
+#      content as nullable siblings and reading refusal is how a client is
+#      meant to notice a decline without content coming back empty. Ported
+#      to this host, that read finds nothing to read: the field was never
+#      declared, so it can never be null, present, or anything else. A
+#      decline here has nowhere to go but into content itself.
+#   3. Two ways to run out of room, not one. finish_reason's enum has both
+#      length and model_length, undocumented beyond the enum listing them
+#      separately -- one value for the ceiling the caller asked for and a
+#      second for the ceiling the model itself has, and OpenAI's vocabulary
+#      has no second word for that at all.
+#   4. error is a finish_reason. Fifth value in the same enum, beside stop,
+#      length, model_length and tool_calls, arriving however every other
+#      value in that list arrives: inside a 200, with a completion id, with
+#      usage, with nothing in the status line to say a completion failed
+#      partway through.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No model runs. A completion answers with whatever the resource's own
+#     defaults say, always the same shape, because a create route cannot
+#     branch on what was asked -- OpenAI's own Recipe in this collection
+#     says so about its own create route too.
+#   - model_length and error are documented above as real, separate values
+#     in finish_reason's own enum, and neither is a conformance case. OpenAI
+#     has a GET for a stored completion and this Recipe seeds several named
+#     ones through it; Mistral has no such GET, so the only chat completion
+#     shape reachable here at all is the one create's own defaults produce,
+#     and that is where the refusal-field and id-prefix claims below are
+#     asserted instead.
+#   - The runtime checks credentials before it checks the route, for every
+#     Recipe, unconditionally. Mistral does the opposite for a path nothing
+#     matches -- 404 before authentication, observed with no key present at
+#     all -- and this Recipe cannot reproduce that ordering. The unknown_route
+#     case below is written with a valid fixture key so the emulator's own
+#     table is reached; the shape it asserts is the one Mistral sent with no
+#     key whatsoever.
+#   - The 422 validation shape (detail as an array of {loc, msg, type}) is
+#     declared as HTTPValidationError in the description and is not
+#     conformance-tested, because reaching it needs a request that clears
+#     authentication first, which needs a key this Recipe will never hold.
+#   - Streaming (text/event-stream, declared beside the JSON response on the
+#     same route) is not modelled.
+#   - Embeddings, agents, fine-tuning, files, batch and the moderation and
+#     OCR endpoints are not modelled. Chat completions and models only, to
+#     match the surface OpenAI's own Recipe in this collection covers.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: mistral
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.mistral.ai/api/
+  spec: https://docs.mistral.ai/openapi.yaml
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-mistral-fixture-key-000000000000
+
+responses:
+  # No has_more_field or cursor_field: the description's ModelList is
+  # {object, data} and nothing else, and the only list route this Recipe
+  # has is this one, so there is no case that could ever assert either name
+  # where its value exists.
+  list:
+    style: wrapped
+    key: data
+    fields:
+      object: list
+  resource:
+    style: bare
+  # A bare string under "detail", which is what a plain FastAPI
+  # HTTPException renders. No object, no code, no type -- a client reading
+  # error.message here finds undefined, because there is no "error" key.
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  model:
+    id:
+      style: opaque
+    constants:
+      object: model
+    fields:
+      created:
+        type: timestamp
+      owned_by:
+        type: string
+        default: mistralai
+      # base or fine-tuned. A fine-tuned card carries job and root beside it,
+      # declared below on the fine-tuned fixture, none of which OpenAI's own
+      # Model schema has ever had a place for.
+      type:
+        type: string
+        default: base
+      max_context_length:
+        type: integer
+        default: 32768
+      aliases:
+        type: list
+      # completion_chat, function_calling, vision and the rest, nested. A
+      # richer card than OpenAI ever answers on this route: OpenAI's Model is
+      # {id, object, created, owned_by} and nothing else.
+      capabilities:
+        type: map
+      # Only present on a fine-tuned card.
+      job:
+        type: string
+        null_when_unset: true
+      root:
+        type: string
+        null_when_unset: true
+      archived:
+        type: boolean
+        null_when_unset: true
+
+  # A create route cannot branch on what was asked -- OpenAI's own Recipe in
+  # this collection says so plainly, and it is why every field here carries
+  # its own literal default rather than the route selecting between named
+  # fixtures. Mistral has no GET for a stored completion the way OpenAI
+  # does, so a create's default answer is the only chat completion shape
+  # this Recipe can ever put in front of a case.
+  completion:
+    id:
+      style: prefixed
+      prefix: "cmpl-"
+      length: 32
+    constants:
+      object: chat.completion
+    fields:
+      created:
+        type: timestamp
+      model:
+        type: string
+      index:
+        type: integer
+        in: choices[0]
+        as: index
+        default: 0
+      finish_reason:
+        type: string
+        in: choices[0]
+        as: finish_reason
+        default: stop
+      role:
+        type: string
+        in: choices[0].message
+        as: role
+        default: assistant
+      # No sibling refusal field is declared, because AssistantMessage in
+      # the description has none. Not null -- absent, on every completion
+      # this route can ever answer.
+      content:
+        type: string
+        in: choices[0].message
+        as: content
+        default: The Eiffel Tower is 330 metres tall including its antennas.
+      prompt_tokens:
+        type: integer
+        in: usage
+        as: prompt_tokens
+        default: 18
+      completion_tokens:
+        type: integer
+        in: usage
+        as: completion_tokens
+        default: 13
+      total_tokens:
+        type: integer
+        in: usage
+        as: total_tokens
+        default: 31
+
+routes:
+  - method: GET
+    path: /v1/models
+    resource: model
+    operation: list
+
+  - method: GET
+    path: /v1/models/{id}
+    resource: model
+    operation: get
+
+  - method: POST
+    path: /v1/chat/completions
+    resource: completion
+    operation: create
+    # None of the request comes back. What is served is an answer and a
+    # bill, the same claim OpenRouter's Recipe in this collection makes about
+    # its own completions route.
+    returns:
+      - id
+      - object
+      - created
+      - model
+      - index
+      - finish_reason
+      - role
+      - content
+      - prompt_tokens
+      - completion_tokens
+      - total_tokens
+
+errors:
+  # Observed on api.mistral.ai on 2026-08-31: no Authorization header at
+  # all, and separately a syntactically plausible bearer token that is not a
+  # real key, both against GET /v1/models. Identical status, identical body,
+  # every time -- there is one authentication failure here, not a pair.
+  authentication_error:
+    status: 401
+    message: "Invalid API Key"
+
+  # Observed the same day, against a path nothing maps to. A completely
+  # different envelope from the one above -- no "detail" key anywhere in it
+  # -- and reached with no Authorization header sent at all, which the case
+  # below cannot reproduce; see the fidelity gap in the header.
+  unknown_route:
+    status: 404
+    message_field: message
+    message: "no Route matched with those values"
+    fields:
+      # The real value is per-request and unpredictable. This fixture is
+      # deterministic, by design: identifiers here come from a seeded
+      # generator or not at all, never from the wall clock or from
+      # unseeded randomness.
+      request_id: cau1dron0000000000000000000000f3
+
+fixtures:
+  empty: {}
+
+  catalogue:
+    model:
+      # A base model. Capabilities nested, function calling on, vision off --
+      # none of which OpenAI's own /v1/models has ever answered.
+      - id: mistral-large-latest
+        created: 1741290000
+        owned_by: mistralai
+        type: base
+        max_context_length: 131072
+        aliases: []
+        capabilities:
+          completion_chat: true
+          completion_fim: false
+          function_calling: true
+          fine_tuning: false
+          vision: false
+          classification: false
+
+      # A fine-tuned model. Named the way OpenAI itself names a fine-tuned
+      # checkpoint -- ft: -- and carrying job and root beside it, which is
+      # where the resemblance to OpenAI's Model schema ends.
+      - id: "ft:open-mistral-7b:587a6b29:20240514:7e773925"
+        created: 1755000000
+        owned_by: mistralai
+        type: fine-tuned
+        max_context_length: 32768
+        aliases: []
+        job: job-2a9c9c1e1acb4b6c8f7e6c1a2b3c4d5e
+        root: open-mistral-7b
+        archived: false
+        capabilities:
+          completion_chat: true
+          completion_fim: false
+          function_calling: false
+          fine_tuning: false
+          vision: false
+          classification: false
+
+# Cases carrying `verified: "2026-08-31"` were checked that day against
+# api.mistral.ai with no API key. The rest are derived from
+# docs.mistral.ai/openapi.yaml and carry no date, because reaching them with
+# a result needs an account this Recipe will never hold.
+conformance:
+  - name: an unrecognised credential and no credential answer identically
+    source: https://api.mistral.ai/v1/models
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/models
+    expect:
+      status: 401
+      body:
+        detail: Invalid API Key
+
+  - name: and so does one that merely looks like a real key
+    # Same status, same body, sent with a syntactically plausible bearer
+    # token rather than no header at all. There is one authentication
+    # failure on this host, not a pair that differ by reason.
+    source: https://api.mistral.ai/v1/models
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: Bearer notarealkey
+    expect:
+      status: 401
+      body:
+        detail: Invalid API Key
+
+  - name: the failure is a sentence and nothing to switch on
+    # No error object, no type, no code, no param. error.message against
+    # this host is undefined, because there is no "error" key to descend
+    # into at all.
+    source: https://api.mistral.ai/v1/models
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/models
+    expect:
+      status: 401
+      body:
+        detail: Invalid API Key
+      absent:
+        - error
+        - error.type
+        - error.code
+        - code
+        - type
+
+  - name: a path nothing maps to answers in a shape with no detail key at all
+    # Observed with no Authorization header sent whatsoever. Sent here with
+    # the fixture key so the emulator's own route table is reached -- see
+    # the fidelity gap above about check order -- but the body asserted is
+    # the one the real host sent with no credential present.
+    source: https://api.mistral.ai/v1/nonexistent-path-xyz
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/nonexistent-path-xyz
+      headers:
+        Authorization: Bearer cauldron-mistral-fixture-key-000000000000
+    expect:
+      status: 404
+      body:
+        message: "no Route matched with those values"
+        request_id: cau1dron0000000000000000000000f3
+      absent:
+        - detail
+
+  - name: the catalogue pages by nothing at all
+    source: https://docs.mistral.ai/openapi.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: Bearer cauldron-mistral-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        object: list
+        "data[0].id": mistral-large-latest
+        "data[0].object": model
+      absent:
+        - has_more
+        - next_page_token
+        - total
+
+  - name: a fine-tuned model is named the way OpenAI names one and carries what it never did
+    # ft:, the same convention OpenAI itself uses for a fine-tuned
+    # checkpoint. Where the resemblance ends is job and root and a nested
+    # capabilities object, none of which OpenAI's Model schema has ever
+    # defined a place for.
+    source: https://docs.mistral.ai/openapi.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: Bearer cauldron-mistral-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        "data[1].id": "ft:open-mistral-7b:587a6b29:20240514:7e773925"
+        "data[1].type": fine-tuned
+        "data[1].job": job-2a9c9c1e1acb4b6c8f7e6c1a2b3c4d5e
+        "data[1].root": open-mistral-7b
+        "data[1].capabilities.function_calling": false
+
+  - name: a completion is minted cmpl-, not chatcmpl-
+    # OpenAI's own Recipe in this collection says code in the wild really
+    # does prefix-match "chatcmpl-". Pointed at this host instead, that
+    # match silently stops working, and nothing in the response says so.
+    source: https://docs.mistral.ai/openapi.yaml
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/chat/completions
+      headers:
+        Authorization: Bearer cauldron-mistral-fixture-key-000000000000
+      json:
+        model: mistral-large-latest
+        messages:
+          - role: user
+            content: How tall is the Eiffel Tower?
+    expect:
+      status: 200
+      body:
+        object: chat.completion
+        model: mistral-large-latest
+        "choices[0].finish_reason": stop
+        "choices[0].message.content": The Eiffel Tower is 330 metres tall including its antennas.
+      matches:
+        id: '^cmpl-'
+      absent:
+        # None of the request comes back, and OpenAI's chatcmpl- prefix
+        # never appears here either.
+        - messages
+
+  - name: refusal has nowhere to go because the field was never declared
+    # OpenAI's own Recipe describes content and refusal as nullable
+    # siblings, and reading refusal is how a client notices a decline
+    # without content coming back empty. AssistantMessage here has no such
+    # field at all -- not null, absent from the schema -- so that read finds
+    # nothing, on every completion this host ever answers.
+    source: https://docs.mistral.ai/openapi.yaml
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/chat/completions
+      headers:
+        Authorization: Bearer cauldron-mistral-fixture-key-000000000000
+      json:
+        model: mistral-large-latest
+        messages:
+          - role: user
+            content: Say something you would rather not.
+        temperature: 0.2
+    expect:
+      status: 200
+      body:
+        "choices[0].message.role": assistant
+        "choices[0].index": 0
+      absent:
+        - "choices[0].message.refusal"
+        - temperature
