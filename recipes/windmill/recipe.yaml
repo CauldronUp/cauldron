@@ -1,0 +1,468 @@
+# Windmill Recipe for Cauldron
+#
+# Windmill is open source, and app.windmill.dev -- the hosted hub -- turns out
+# to answer real, unauthenticated requests against a live "demo" workspace,
+# so this Recipe is a mix: the auth and routing findings below were struck
+# live against api.windmill.dev's real edge on the date given, and the two
+# "what does a run answer" shapes are read from the OpenAPI description the
+# same host serves at /api/openapi.yaml (info.version: 1.798.1, fetched
+# directly) because no credential this project holds could actually start a
+# script running.
+#
+# Windmill gives a caller two different verbs for the one question this
+# collection keeps asking, and they answer it two different ways:
+#
+#   POST /api/w/{workspace}/jobs/run/p/{path}
+#     -> 201, Content-Type: text/plain, body: a bare UUID and nothing else.
+#        Not even wrapped in {}. No status field, no state, not even the
+#        AsyncOperation envelope Temporal Cloud's Recipe in this collection
+#        wraps its own bare id in -- Windmill's create response is leaner
+#        than that one by a whole JSON object.
+#   POST /api/w/{workspace}/jobs/run_wait_result/p/{path}
+#     -> 200, application/json, schema: {} in Windmill's own description --
+#        genuinely untyped. This call blocks until the job finishes and
+#        answers with whatever the script itself returned, with no envelope
+#        Windmill added on top: no "status", no "success", nothing but the
+#        job's own result. A script that returns {"ok": true} is
+#        indistinguishable on the wire from a script whose whole business
+#        logic is reporting failure by returning {"ok": false} -- Windmill's
+#        framework is silent either way, because by the time this call
+#        returns, the only voice left is the script's own.
+#
+# So: yes, there is a synchronous path, and Windmill is candid that it is
+# opt-in per call rather than a property of the job. Call the first verb and
+# the 201 tells you nothing has finished, or even started for certain. Call
+# the second and the response body only ever exists once the job is over --
+# but nothing about *that* response says whether "over" meant "succeeded".
+#
+# The polling endpoint is real, and the identifier lines up. GET
+# /api/w/{workspace}/jobs_u/get/{id} takes the exact same value run/p just
+# handed back -- both are typed `format: uuid` in the one description, one
+# id, one meaning, unlike Census's sync_run_id in this collection (which
+# addresses an object no reachable route would confirm) or Turso's DbId
+# (which addresses nothing at all). This is the cleanest "does the trigger's
+# id work at the polling endpoint" answer this task found.
+#
+# What that route answers with, though, could not be pinned down. It is a
+# `oneOf` of QueuedJob and CompletedJob, told apart by a `type` discriminator,
+# and CompletedJob's own completion signal is a flat `success: boolean` --
+# not an enum, and no third value anywhere in the schema for "some of it
+# failed". Whether a Windmill flow with a caught step failure still reports
+# `success: true` at the top -- the Airbyte/Census question this group of
+# Recipes exists to answer -- is a real question this Recipe could not
+# resolve: no credential could reach a completed job to look at, and the
+# description gives no worked example for either branch, only field names
+# and types. Recorded as unresolved rather than guessed at; see the fidelity
+# gaps.
+#
+# What *was* reachable without any credential at all is jobs_u/get itself.
+# Checked live: GET /api/w/demo/jobs_u/get/<a nil UUID> and the identical
+# call against a workspace slug that does not exist both answer the same
+# plain-text 404 -- no Authorization header sent, none asked for. The `_u`
+# in the path is not decorative. Every other route this Recipe struck,
+# including the two run verbs above, refuses a request with no credential;
+# this one, alone among them, was never asked for one and works anyway,
+# and does not even appear to check that the workspace segment names a real
+# workspace before it goes looking for the job. Two different bodies, in
+# fact, and both name a Rust source file and line number in plain text:
+#
+#   .../jobs_u/get/<uuid>       -> "Not found: Job not found at name <uuid> (jobs.rs:2432)"
+#   .../jobs_u/get_logs/<uuid>  -> "Not found: Job Logs not found at name <uuid> (jobs.rs:2878)"
+#
+# A caller who never authenticated learns which file and which line raised
+# the 404, on the public internet, on the vendor's own flagship hosted
+# instance.
+#
+# The path-parameter check that runs before that lookup is its own finding.
+# GET .../jobs_u/get/not-a-uuid-at-all does not 404 -- it is 400, "Invalid
+# URL: Cannot parse `id` with value `not-a-uuid-at-all`: UUID parsing
+# failed: invalid character: found `n` at 0", Rust's own uuid crate error
+# folded straight into the response the way SingleStore's Recipe in this
+# collection found encoding/hex's Go error folded into its own 401. This one
+# needed no credential to reach either.
+#
+# Auth genuinely has two tiers here, not one, on every route that needs it.
+# Struck live, all against POST /api/w/demo/jobs/run/p/f/examples/hello:
+#
+#   no Authorization header at all       -> 401 "Unauthorized" (12 bytes, plain text)
+#   Authorization: junktoken12345        -> 401 "Unauthorized" (no "Bearer " prefix at all)
+#   Authorization: Basic anVuazpqdW5r    -> 401 "Unauthorized" (right header, wrong scheme)
+#   Authorization: Bearer  (empty)       -> 401 "Unauthorized"
+#   Authorization: Bearer junk-not-real-000000
+#                                        -> 401 "Not authorized: Unauthorized"
+#
+# Everything that is not shaped like `Bearer <something>` collapses into the
+# same twelve-byte sentence absence gets; only a value that clears the shape
+# check and still names nothing real earns the longer one. That is Cauldron's
+# own Absent/Malformed verdict boundary, drawn independently by Windmill's own
+# check -- but this Recipe cannot wire it through auth.absent_error /
+# auth.malformed_error / auth.rejected_error, because those only fire from
+# the Recipe-wide credential gate, and that gate runs before routing for
+# every path once any scheme but "none" is declared. Windmill's real edge
+# does not work that way: a path it never registered answers a plain routing
+# 404 with no credential involved at all (GET /api/this-is-not-real, checked
+# both with and without a junk token, identical empty-bodied 404 either
+# time), so this Recipe uses auth.scheme: none and reproduces both tiers
+# with matches_header, the way census/recipe.yaml and turso/recipe.yaml in
+# this collection already do for the same structural reason. The two
+# messages are real; only the field names that would have carried them are
+# not the ones this Recipe declares.
+#
+# Method mismatch answers three different ways depending on what else is
+# true about the path, all struck live:
+#
+#   GET  /api/version                 (public, no credential ever needed)
+#     POST -> 405, Allow: GET,HEAD, empty body
+#   GET  /api/w/demo/jobs_u/get/<uuid> (real route, needs no credential)
+#     POST -> 405, Allow: GET,HEAD, empty body
+#   POST /api/w/demo/jobs/run/p/f/examples/hello (real route, credential-gated)
+#     GET  -> 401 "Unauthorized" -- not 405 -- but still carries
+#             Allow: POST,HEAD, and the POST-method calls above never carry
+#             an Allow header at all, checked directly.
+#
+# So a real 405 exists on this host, with a real Allow header, on every path
+# this Recipe could reach without a credential -- and the moment a path
+# needs one, a wrong method stops being a routing question and starts being
+# an auth question, except that the machinery computing Allow keeps running
+# underneath and the header survives into the 401 anyway. Three routes,
+# three still-consistent readings of one mechanism.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API token was ever requested,
+#     guessed, or used. The 201 (run/p) and 200 (run_wait_result) success
+#     shapes are read from openapi.yaml's own schemas, not observed, and
+#     carry no verified date; the 401s, 404s, 400 and 405s were all struck
+#     live against api.windmill.dev's real "demo" workspace and do.
+#   - CompletedJob and QueuedJob are not modelled as fixtures at all. The
+#     description gives field names and types -- id, success, canceled,
+#     duration_ms, started_at, and a dozen more -- and not one worked
+#     example value for any of them. Inventing a duration or a timestamp to
+#     fill a required field would be a number nobody read anywhere; this
+#     Recipe leaves the "found" half of jobs_u/get out entirely rather than
+#     do that; see the header above for why that also means the
+#     partial-failure question stays open.
+#   - Only one script path (f/examples/hello) and one workspace slug (demo,
+#     and separately a nonexistent one, to prove the workspace segment is
+#     not checked) were ever struck. Windmill's own {path} segment can carry
+#     slashes -- a script's own folder path -- and Cauldron's router matches
+#     one path template segment per slash, so the literal path below stands
+#     in for the general case rather than expressing it.
+#   - run_wait_result's GET variant (query-string args instead of a JSON
+#     body), run_and_stream, the whole flow surface, schedules, resources,
+#     variables, and every workspace-admin endpoint are real and undeclared.
+#     This Recipe is scoped to the one question the task named.
+#   - The version string returned -- "EE v1.798.1" -- names an Enterprise
+#     Edition build. Whether the open-source CE build answers identically is
+#     not stated; only the hosted instance was reachable here.
+
+recipe: windmill
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: 1.798.1
+  provider: windmill
+  docs: https://www.windmill.dev/docs/core_concepts/webhooks
+  spec: https://app.windmill.dev/api/openapi.yaml
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer, but expressed as scheme none plus fixed routes below --
+  # the same trade census/recipe.yaml and turso/recipe.yaml make in this
+  # collection, and for the identical reason: a path this Recipe never
+  # registers has to fall through to Cauldron's own unknown_route 404
+  # untouched by auth, because that is what the live host does, and a
+  # Recipe-wide bearer scheme would 401 that path instead. See the header.
+  scheme: none
+
+responses:
+  error:
+    style: text
+
+routes:
+  # Public. Never asked this Recipe -- or the live host -- for a credential.
+  - method: GET
+    path: /api/version
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: "EE v1.798.1"
+
+  - method: POST
+    path: /api/version
+    error: method_not_allowed_get_head
+    headers:
+      Allow: "GET,HEAD"
+
+  # jobs_u/get: real, reachable, and -- alone among every route in this
+  # Recipe -- never gated on a credential at all. See the header. Only the
+  # "not found" and "malformed id" shapes are modelled; see the fidelity
+  # gaps for why a "found" job is not.
+  - method: GET
+    path: /w/{workspace}/jobs_u/get/00000000-0000-0000-0000-000000000000
+    error: job_not_found
+
+  - method: GET
+    path: /w/{workspace}/jobs_u/get/not-a-uuid-at-all
+    error: invalid_uuid
+
+  - method: POST
+    path: /w/{workspace}/jobs_u/get/00000000-0000-0000-0000-000000000000
+    error: method_not_allowed_get_head
+    headers:
+      Allow: "GET,HEAD"
+
+  # The async trigger. 201, text/plain, a bare UUID -- see the header for
+  # why no resource is declared for it: there is nothing here to be a
+  # record. The literal script path stands in for Windmill's own
+  # slash-carrying {path} segment; see the fidelity gaps.
+  - method: POST
+    path: /w/{workspace}/jobs/run/p/f/examples/hello
+    matches_header:
+      Authorization: Bearer cauldron-windmill-fixture-token-0000000000000000
+    status: 201
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: "00000000-0000-4000-8000-000000000000"
+
+  - method: POST
+    path: /w/{workspace}/jobs/run/p/f/examples/hello
+    matches_header:
+      Authorization: Bearer junk-not-real-000000
+    error: not_authorized_rejected
+
+  - method: POST
+    path: /w/{workspace}/jobs/run/p/f/examples/hello
+    error: unauthorized_generic
+
+  - method: GET
+    path: /w/{workspace}/jobs/run/p/f/examples/hello
+    error: unauthorized_generic
+    headers:
+      Allow: "POST,HEAD"
+
+  # The sync alternative: blocks until the job finishes and answers the
+  # script's own return value with no envelope -- see the header. Gated
+  # behind the identical two-tier credential check; only the gate itself
+  # was reachable without an account, so no 200 case is modelled here.
+  - method: POST
+    path: /w/{workspace}/jobs/run_wait_result/p/f/examples/hello
+    error: unauthorized_generic
+
+errors:
+  # Absence and shape-failure both land here -- see the header for the four
+  # separately-struck ways of sending nothing that counts.
+  unauthorized_generic:
+    status: 401
+    message: "Unauthorized"
+
+  # The one message reserved for a credential that cleared the shape check
+  # (a genuine "Bearer <value>") and still named nothing real.
+  not_authorized_rejected:
+    status: 401
+    message: "Not authorized: Unauthorized"
+
+  # Rust's own uuid crate error, folded straight into the response -- see
+  # the header's SingleStore comparison. The value quoted is the exact one
+  # this Recipe sent; a different malformed id would name a different
+  # character at a different offset.
+  invalid_uuid:
+    status: 400
+    message: "Invalid URL: Cannot parse `id` with value `not-a-uuid-at-all`: UUID parsing failed: invalid character: found `n` at 0"
+
+  # Leaks the backend's own source file and line -- see the header. Two
+  # different lines for two different lookups; this Recipe only reproduces
+  # the one route it models.
+  job_not_found:
+    status: 404
+    message: "Not found: Job not found at name 00000000-0000-0000-0000-000000000000 (jobs.rs:2432)"
+
+  # A real 405 with a real Allow header, on the two routes reachable without
+  # a credential. See the header for the third route, where the identical
+  # machinery survives into a 401 instead.
+  #
+  # The live body here is genuinely zero bytes -- Content-Length: 0, no
+  # message at all -- and this format has no field for an error entry that
+  # answers nothing: an empty `message` falls back to Cauldron's own generic
+  # "An error occurred." rather than sending nothing, because the runtime
+  # reads an empty string as "not declared" rather than "declared empty".
+  # The status and the Allow header are what conformance below asserts;
+  # the body text is not, and is not claimed to match.
+  method_not_allowed_get_head:
+    status: 405
+    message: "Method Not Allowed"
+
+fixtures:
+  empty: {}
+
+# Every case below carries source. A verified date means this Recipe called
+# app.windmill.dev with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from openapi.yaml and never
+# called -- see the header for exactly which shapes that applies to.
+conformance:
+  - name: the version string is public and needs nothing
+    source: https://app.windmill.dev/api/version
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/version
+    expect:
+      status: 200
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: "^EE v1\\.798\\.1$"
+
+  - name: a wrong method on a public route is a real 405 with a real Allow header
+    # The live body is zero bytes; this format cannot declare that on an
+    # error entry, so only the status and the Allow header are asserted --
+    # see the errors table.
+    source: https://app.windmill.dev/api/version
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/version
+    expect:
+      status: 405
+      headers:
+        Allow: "GET,HEAD"
+
+  - name: the job-status lookup needs no credential at all
+    source: https://app.windmill.dev/api/w/demo/jobs_u/get/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /w/demo/jobs_u/get/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 404
+      body_matches: "^Not found: Job not found at name 00000000-0000-0000-0000-000000000000 \\(jobs\\.rs:2432\\)$"
+
+  - name: and does not check that the workspace segment names a real workspace either
+    source: https://app.windmill.dev/api/w/nonexistent-workspace-abc123xyz/jobs_u/get/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /w/nonexistent-workspace-abc123xyz/jobs_u/get/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 404
+      body_matches: "^Not found: Job not found at name 00000000-0000-0000-0000-000000000000 \\(jobs\\.rs:2432\\)$"
+
+  - name: a malformed id is a 400 naming the exact byte, not a 404
+    source: https://app.windmill.dev/api/w/demo/jobs_u/get/not-a-uuid-at-all
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /w/demo/jobs_u/get/not-a-uuid-at-all
+    expect:
+      status: 400
+      body_matches: "UUID parsing failed: invalid character: found `n` at 0"
+
+  - name: a wrong method on the open route is still a real 405
+    source: https://app.windmill.dev/api/w/demo/jobs_u/get/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /w/demo/jobs_u/get/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 405
+      headers:
+        Allow: "GET,HEAD"
+
+  - name: triggering a run answers a bare UUID and nothing else
+    # Never observed: no credential this project holds could actually start
+    # a script. The status, Content-Type and the fact that the body is
+    # nothing but an id are all read from openapi.yaml's own schema for this
+    # route; see the header.
+    source: https://app.windmill.dev/api/openapi.yaml
+    fixture: empty
+    request:
+      method: POST
+      path: /w/demo/jobs/run/p/f/examples/hello
+      headers:
+        Authorization: Bearer cauldron-windmill-fixture-token-0000000000000000
+      json: {}
+    expect:
+      status: 201
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: "^[0-9a-f-]{36}$"
+
+  - name: no credential at all is refused with the generic sentence
+    source: https://app.windmill.dev/api/w/demo/jobs/run/p/f/examples/hello
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /w/demo/jobs/run/p/f/examples/hello
+      json: {}
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: "^Unauthorized$"
+      absent_headers:
+        - Allow
+
+  - name: a well-shaped credential that names nothing real earns the sharper sentence
+    source: https://app.windmill.dev/api/w/demo/jobs/run/p/f/examples/hello
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /w/demo/jobs/run/p/f/examples/hello
+      headers:
+        Authorization: Bearer junk-not-real-000000
+      json: {}
+    expect:
+      status: 401
+      body_matches: "^Not authorized: Unauthorized$"
+
+  - name: a wrong method on the credential-gated route is still 401, but keeps the Allow header
+    source: https://app.windmill.dev/api/w/demo/jobs/run/p/f/examples/hello
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /w/demo/jobs/run/p/f/examples/hello
+    expect:
+      status: 401
+      headers:
+        Allow: "POST,HEAD"
+      body_matches: "^Unauthorized$"
+
+  - name: the synchronous run verb is gated by the identical check
+    source: https://app.windmill.dev/api/w/demo/jobs/run_wait_result/p/f/examples/hello
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /w/demo/jobs/run_wait_result/p/f/examples/hello
+      json: {}
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: a path this host never registered is a routing miss even with a credential attached
+    # Struck live both ways -- with the junk Bearer token shown here and with
+    # no header at all -- and both answered the identical empty-bodied 404.
+    # Only status is asserted: the real body is zero bytes, and Cauldron's
+    # own generic unknown_route fallback (reached because no route below
+    # matches this path) sends a short message rather than nothing, the
+    # same gap the 405 cases above have. This case is what proves the order
+    # in the header's routing-vs-auth claim: routing loses this path before
+    # auth is ever consulted, on the real host and here alike.
+    source: https://app.windmill.dev/api/this-is-not-real
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/this-is-not-real
+      headers:
+        Authorization: Bearer junk-not-real-000000
+    expect:
+      status: 404
