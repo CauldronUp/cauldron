@@ -1,0 +1,399 @@
+# Mapbox Geocoding v5 Recipe for Cauldron
+#
+# Every route here needs a token, and this project never uses one -- so the
+# only part of the live API this Recipe could observe directly is the part
+# that runs before a token is checked against anything real: the shape of the
+# refusal itself. Everything after "you may proceed" -- the coordinates, the
+# feature shapes, the envelope -- is read from docs.mapbox.com and marked as
+# such rather than quietly folded in beside what was actually called.
+#
+# What the live probes found, and found consistently across five different
+# kinds of malformed request:
+#
+#   GET /geocoding/v5/mapbox.places/london.json                          -> 401 {"message":"Not Authorized - No Token"}
+#   GET .../london.json?access_token=                                    -> 401 {"message":"Not Authorized - No Token"}
+#   GET .../london.json?access_token=pk.junktoken12345                   -> 401 {"message":"Not Authorized - Invalid Token"}
+#   GET /geocoding/v5/mapbox.bogus/london.json?access_token=<junk>       -> 401 {"message":"Not Authorized - Invalid Token"}
+#   GET .../mapbox.places/999,999.json?access_token=<junk>               -> 401 {"message":"Not Authorized - Invalid Token"}
+#
+# **The token is checked before the path is.** A dataset that does not exist
+# (mapbox.bogus) and coordinates that do not exist on Earth (999,999) both
+# vanish behind the same "Invalid Token" message a well-formed request gets
+# with the same bad token -- verified by sending both together and reading
+# back the identical 44-byte body. There is no way to observe how Mapbox
+# validates a path or a coordinate pair without a real token, because nothing
+# downstream of auth is ever reached, on this endpoint, by any request this
+# project is permitted to make.
+#
+# **And missing really does differ from wrong**, which is worth pinning
+# precisely because most APIs do not bother: an absent access_token and an
+# empty one both come back as "No Token" (exactly 39 bytes, confirmed with
+# xxd), while any non-empty string that fails to validate -- garbage, a
+# plausible-looking pk.-prefixed value, anything -- comes back as
+# "Invalid Token" (44 bytes) instead. Two sentences, two states, and a client
+# whose retry logic assumes "unauthorized" is one thing will handle a
+# misconfigured .env file identically to a revoked key, when Mapbox itself is
+# already telling them apart.
+#
+# **The trap the task asked about, confirmed straight from Mapbox's own
+# reference:** every coordinate pair in a Mapbox response -- center,
+# geometry.coordinates, a feature's bbox -- travels as [longitude, latitude].
+# Reverse geocoding's own path parameter is documented in those words: "A
+# `longitude,latitude` pair". A feature's geometry can also carry flags no
+# GeoJSON reader expects to find inside a geometry object at all --
+# `interpolated` and `omitted`, sitting beside `type` and `coordinates` on an
+# address Mapbox had to estimate rather than match exactly -- which is worth
+# recording because it means "geometry" is not the fixed two-key shape the
+# GeoJSON spec describes; Mapbox's own is a superset of it.
+#
+# Does the FeatureCollection nesting fit this format's resource vocabulary?
+# Mostly, and cleanly: `features` is a real, filterable collection of
+# independently-identified resources (each with its own dotted, prefixed id),
+# which is exactly what `list: style: wrapped, key: features` was built to
+# describe, and `type: "FeatureCollection"` and the attribution notice below
+# are both constants a real request repeats unchanged, which is exactly what
+# `list.fields` was built to hold. What does not fit is `query`: Mapbox echoes
+# the caller's search terms back as their own top-level array
+# (`["825","s","milwaukee",...]`), and there is no envelope concept for "echo
+# an arbitrary piece of the request here" the way `url` echoes a path or
+# `has_more_field` names a boolean -- so this Recipe leaves `query` off rather
+# than mis-declaring it as a constant it is not. Inside one feature, `geometry`
+# and `properties` are exactly the free-form "the caller's shape, not ours"
+# case `map` already exists for -- the same idiom Nominatim uses for `address`
+# and Open-Meteo uses for `hourly_units` -- and `context` is a `list` of small
+# objects whose own internal shape is visible only in the fixture, the same
+# way a list's entries always are. Nothing about GeoJSON needed a construct
+# this format does not already have.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's own auth check is a single yes/no gate (internal/runtime/
+#     auth.go: authorised() returns a bool), and the single named failure it
+#     raises -- "authentication_error" -- cannot itself distinguish an empty
+#     credential from a wrong one, because both simply fail the same
+#     membership test against `auth.keys`. The two real messages above are
+#     both true and both recorded, but only "Invalid Token" is what a
+#     configured-with-a-bad-key sandbox naturally answers with; "No Token" is
+#     declared as its own named error (`no_token`) and reached in this
+#     Recipe's cases with `arm`, because nothing about the request itself
+#     -- present or absent, empty or not -- changes which one the runtime
+#     would otherwise pick.
+#   - The success shape (every feature field, the envelope, the coordinate
+#     order) is read from Mapbox's reference documentation, not observed,
+#     because observing it needs a real token and this project never uses
+#     one. Every case below says which kind of evidence it is.
+#   - 403 "Forbidden", 404 "Not Found", 422 (several messages, including
+#     "Query too long" and an invalid bbox), and 429 "Rate limit exceeded" are
+#     documented in Mapbox's own reference table, but not modelled here: the
+#     table gives a status and a sentence per code, not a full envelope, and
+#     guessing whether other fields ride along with them would be exactly the
+#     kind of invention this project exists to avoid.
+#   - Rate-limit headers are advertised for CORS
+#     (x-rate-limit-limit/-remaining/-reset/-interval, per
+#     Access-Control-Expose-Headers) but were never actually present on any
+#     401 this project could trigger, across five separate probes -- so
+#     whether they appear on a real 200 is unconfirmed rather than modelled.
+#   - Mapbox's own `limit` parameter (how many features come back) is
+#     documented but not modelled: this Recipe's one route declares no
+#     pagination at all, so Cauldron pages it at ten reading "limit" by
+#     default, which is a guess rather than something read from Mapbox's own
+#     behaviour.
+
+recipe: mapbox
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v5
+  docs: https://docs.mapbox.com/api/search/geocoding-v5/
+
+auth:
+  # In the query string, which is where every probe here sent it and where
+  # Mapbox's own docs put it. That means the token ends up in access logs and
+  # browser history the same way Giphy's and Trello's do -- reproducing that
+  # exactly is the point of a Recipe, not a bug in this one.
+  scheme: query
+  param: access_token
+  keys:
+    - cauldron_mapbox_fixture_key
+
+responses:
+  list:
+    style: wrapped
+    key: features
+    fields:
+      type: FeatureCollection
+      # A fixed legal notice, not a per-request value -- Mapbox's own
+      # reference shows this exact sentence on every example. Read, not
+      # observed: no live response ever reached this project.
+      attribution: "NOTICE: © 2018 Mapbox and its suppliers. All rights reserved. Use of this data is subject to the Mapbox Terms of Service (https://www.mapbox.com/about/maps/). This response and the information it contains may not be retained. POI(s) provided by Foursquare."
+  error:
+    # {"message": "..."} and nothing else -- confirmed by the exact byte
+    # length of both live 401 bodies (39 and 44 bytes), which leaves no room
+    # for a second field.
+    style: flat
+    message_field: message
+
+resources:
+  feature:
+    id:
+      # "address.4356035406756260" -- the feature's own place_type before a
+      # long opaque number, which is not this format's usual underscore-style
+      # prefix (cus_abc123) but the same idea. No route here ever mints one,
+      # so Prefix is simply the shape the one recorded fixture happens to
+      # use; OtherPrefixes lists the rest of Mapbox's own documented place
+      # types, the same way Auth0's other_prefixes lists connections a
+      # Recipe's one route does not mint.
+      style: prefixed
+      prefix: "address."
+      other_prefixes:
+        - "poi."
+        - "neighborhood."
+        - "locality."
+        - "postcode."
+        - "district."
+        - "place."
+        - "region."
+        - "country."
+    constants:
+      type: Feature
+    fields:
+      place_type:
+        type: list
+      relevance:
+        type: number
+      # Free-form, and often empty ({}) on an address the way the recorded
+      # fixture below shows -- but not always: a POI's properties carries
+      # whatever that category of place has.
+      properties:
+        type: map
+      text:
+        type: string
+      place_name:
+        type: string
+      # Present only on a fuzzy match: the term Mapbox actually matched
+      # against, and the full name assembled around it, when neither is the
+      # query the caller typed.
+      matching_text:
+        type: string
+      matching_place_name:
+        type: string
+      # The house number alone, when the feature is an address.
+      address:
+        type: string
+      # [longitude, latitude]. Documented in those words for the reverse
+      # endpoint's own path parameter.
+      center:
+        type: list
+      # {type, coordinates}, and sometimes more: Mapbox's own geometry can
+      # carry interpolated/omitted flags a GeoJSON reader has no reason to
+      # expect inside a geometry object.
+      geometry:
+        type: map
+      # The hierarchy of encompassing places, each a small object with its
+      # own id -- and each id can carry a different prefix than the feature's
+      # own, because a neighbourhood, a postcode, a place, a region and a
+      # country are five different feature types answering inside one array.
+      context:
+        type: list
+
+routes:
+  # Forward and reverse geocoding are the same route on the wire: a free-text
+  # query and a "longitude,latitude" pair both go in {query}, and Mapbox
+  # tells them apart by parsing what is inside it, not by the path. Unlike
+  # Nominatim, which gives /search and /reverse two different paths and two
+  # different envelopes, Mapbox never has to reconcile two shapes because
+  # there is only ever the one.
+  - method: GET
+    path: /geocoding/v5/{dataset}/{query}.json
+    resource: feature
+    operation: list
+
+errors:
+  # The naturally-reachable shape: a credential that is present and wrong.
+  # This is what Cauldron's own auth check (a single membership test against
+  # auth.keys) produces for any non-empty value that is not on the list,
+  # which is the only branch of the two real ones the runtime reaches on its
+  # own.
+  authentication_error:
+    status: 401
+    message: "Not Authorized - Invalid Token"
+
+  # The other real shape: no credential at all, or an empty one. Not reached
+  # by the runtime's own auth check -- which cannot distinguish "empty" from
+  # "wrong" -- so every case below that needs it arms it explicitly instead.
+  no_token:
+    status: 401
+    message: "Not Authorized - No Token"
+
+fixtures:
+  empty: {}
+
+  # Mapbox's own documented example response, for the query
+  # "825 s milwaukee ave deerfield il 60015" -- read from
+  # docs.mapbox.com/api/search/geocoding-v5/, not observed against a live
+  # request.
+  milwaukee:
+    feature:
+      - id: "address.4356035406756260"
+        place_type: [address]
+        relevance: 1
+        properties: {}
+        text: Milwaukee Ave
+        place_name: "825 Milwaukee Ave, Deerfield, Illinois 60015, United States"
+        matching_text: South Milwaukee Avenue
+        matching_place_name: "825 South Milwaukee Avenue, Deerfield, Illinois 60015, United States"
+        address: "825"
+        # [longitude, latitude] -- the reverse of how a person would say
+        # "42 degrees north, 87 degrees west".
+        center: [-87.921434, 42.166602]
+        geometry:
+          type: Point
+          coordinates: [-87.921434, 42.166602]
+          # Flags no GeoJSON reader expects inside a geometry object.
+          interpolated: true
+          omitted: true
+        context:
+          - id: "neighborhood.287187"
+            text: Lake Cook Road
+          - id: "postcode.13903677306297990"
+            text: "60015"
+          - id: "place.5958304312090910"
+            wikidata: Q287895
+            text: Deerfield
+          - id: "region.3290978600358810"
+            short_code: US-IL
+            wikidata: Q1204
+            text: Illinois
+          - id: "country.9053006287256050"
+            short_code: us
+            wikidata: Q30
+            text: United States
+
+conformance:
+  - name: no token at all is refused for exactly that reason
+    source: https://api.mapbox.com/geocoding/v5/mapbox.places/london.json
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_token
+    request:
+      method: GET
+      path: /geocoding/v5/mapbox.places/london.json
+    expect:
+      status: 401
+      body:
+        message: "Not Authorized - No Token"
+
+  - name: an empty access_token answers exactly the same as none at all
+    source: https://api.mapbox.com/geocoding/v5/mapbox.places/london.json?access_token=
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_token
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/london.json?access_token="
+    expect:
+      status: 401
+      body:
+        message: "Not Authorized - No Token"
+
+  - name: a token that is simply wrong answers differently than no token at all
+    source: https://api.mapbox.com/geocoding/v5/mapbox.places/london.json?access_token=pk.junktoken12345
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /geocoding/v5/mapbox.places/london.json?access_token=pk.junktoken12345
+    expect:
+      status: 401
+      body:
+        message: "Not Authorized - Invalid Token"
+
+  - name: a dataset that does not exist never gets its own error, because the token is checked first
+    source: https://api.mapbox.com/geocoding/v5/mapbox.bogus/london.json?access_token=pk.junktoken12345
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /geocoding/v5/mapbox.bogus/london.json?access_token=pk.junktoken12345
+    expect:
+      status: 401
+      body:
+        message: "Not Authorized - Invalid Token"
+
+  - name: coordinates far outside the Earth never get their own error either
+    source: https://api.mapbox.com/geocoding/v5/mapbox.places/999,999.json?access_token=pk.junktoken12345
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /geocoding/v5/mapbox.places/999,999.json?access_token=pk.junktoken12345
+    expect:
+      status: 401
+      body:
+        message: "Not Authorized - Invalid Token"
+
+  - name: a feature's coordinates travel as longitude before latitude
+    source: https://docs.mapbox.com/api/search/geocoding-v5/
+    fixture: milwaukee
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/825%20s%20milwaukee%20ave%20deerfield%20il%2060015.json?access_token=cauldron_mapbox_fixture_key"
+    expect:
+      status: 200
+      body:
+        "features[0].center[0]": -87.921434
+        "features[0].center[1]": 42.166602
+        "features[0].geometry.type": Point
+        "features[0].geometry.coordinates[0]": -87.921434
+        "features[0].geometry.coordinates[1]": 42.166602
+
+  - name: geometry can carry flags a GeoJSON reader has no reason to expect
+    source: https://docs.mapbox.com/api/search/geocoding-v5/
+    fixture: milwaukee
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/825%20s%20milwaukee%20ave%20deerfield%20il%2060015.json?access_token=cauldron_mapbox_fixture_key"
+    expect:
+      status: 200
+      body:
+        "features[0].geometry.interpolated": true
+        "features[0].geometry.omitted": true
+
+  - name: an id names its own feature type before the number that makes it unique
+    source: https://docs.mapbox.com/api/search/geocoding-v5/
+    fixture: milwaukee
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/825%20s%20milwaukee%20ave%20deerfield%20il%2060015.json?access_token=cauldron_mapbox_fixture_key"
+    expect:
+      status: 200
+      body:
+        "features[0].id": "address.4356035406756260"
+
+  - name: the hierarchy beside a feature mixes five different id prefixes in one array
+    source: https://docs.mapbox.com/api/search/geocoding-v5/
+    fixture: milwaukee
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/825%20s%20milwaukee%20ave%20deerfield%20il%2060015.json?access_token=cauldron_mapbox_fixture_key"
+    expect:
+      status: 200
+      body:
+        "features[0].context[0].id": "neighborhood.287187"
+        "features[0].context[1].id": "postcode.13903677306297990"
+        "features[0].context[2].id": "place.5958304312090910"
+        "features[0].context[3].id": "region.3290978600358810"
+        "features[0].context[4].id": "country.9053006287256050"
+
+  - name: the envelope names its own shape and repeats a fixed legal notice
+    source: https://docs.mapbox.com/api/search/geocoding-v5/
+    fixture: milwaukee
+    request:
+      method: GET
+      path: "/geocoding/v5/mapbox.places/825%20s%20milwaukee%20ave%20deerfield%20il%2060015.json?access_token=cauldron_mapbox_fixture_key"
+    expect:
+      status: 200
+      body:
+        type: FeatureCollection
+        attribution: "NOTICE: © 2018 Mapbox and its suppliers. All rights reserved. Use of this data is subject to the Mapbox Terms of Service (https://www.mapbox.com/about/maps/). This response and the information it contains may not be retained. POI(s) provided by Foursquare."

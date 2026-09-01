@@ -1,0 +1,598 @@
+# Checkly Recipe for Cauldron
+#
+# Two kinds of evidence, and this file does not blur them. Observed: struck
+# live against api.checklyhq.com on 2026-09-01, no API key, ever -- every
+# case below carrying a `verified:` date was read off the wire that day,
+# bytes and all. Documented: the shape of a check, a check result and a
+# triggered test session, all read from the provider's own OpenAPI
+# description at api.checklyhq.com/openapi.json (fetched and fingerprinted
+# the same day) and carrying no `verified:` date, because reaching those
+# routes with real data costs an account this project never created.
+#
+# **Missing and wrong are not the same failure here, unlike some of this
+# collection's other observability providers.** No credential at all answers
+# `{"statusCode":401,"error":"Unauthorized","message":"Missing
+# authentication"}` with a bare `WWW-Authenticate: Bearer`. A bearer token
+# that is merely wrong -- any shape, checked with a plain word -- answers a
+# *different* sentence, `"message":"Bad token"`, with the reason folded into
+# the challenge itself: `WWW-Authenticate: Bearer error="Bad token"`. A
+# client that greps the body for the word "Unauthorized" cannot tell a typo
+# in its own key from having forgotten to send one at all, but a client that
+# reads the message can. Neither call ever needed a real key to produce, and
+# both are pinned below with the date they were checked.
+#
+# **A path nobody defined is a third, plainer shape again**:
+# `{"statusCode":404,"error":"Not Found","message":"Not Found"}`, checked
+# against a made-up path, unauthenticated, and it is the same 404 whatever
+# else is wrong with the request -- the router refuses the path before
+# anything about a credential is ever asked.
+#
+# **No rate-limit headers were ever seen**, on any of the calls above,
+# despite `/openapi.json` and the provider's own docs stating a limit of 600
+# requests per 60 seconds. Whatever enforces that, if anything does for an
+# unauthenticated caller, does not advertise a remaining count, a ceiling or
+# a reset time on the wire -- which is itself worth knowing, because code
+# written to back off on `X-RateLimit-Remaining` reaching zero has nothing
+# here to read.
+#
+# **The one thing most worth documenting is the shape neither a status code
+# nor a single JSON body can carry: a check is not one request, it is many.**
+# A Checkly check names a `locations` array -- the real regions its runs are
+# dispatched from, and `GET /v1/locations` (checked the same day, not
+# modelled below -- see the fidelity gaps) lists twenty-two of them and
+# needs no credential at all -- and every time it runs, Checkly
+# produces one `CheckResult` *per location*, not one for the check. The
+# schema is explicit about how those results relate: each carries its own
+# `runLocation`, its own `startedAt` and `stoppedAt`, its own
+# `responseTime`, and its own `hasFailures` -- and results born of the same
+# run share one `checkRunId` while disagreeing about all of that. Checkly's
+# own filtering for `GET /v2/check-results/{checkId}` takes a `location`
+# query parameter for exactly this reason: there is no such thing as asking
+# "how did this check do" without also asking "as measured from where," and
+# a check can be passing in `us-east-1` and failing in `eu-west-1` in the
+# same instant, under the same `checkRunId`, with no single field anywhere
+# that resolves the two into one answer. Code that reads the first result in
+# an array and calls that the check's status is reading one of several
+# simultaneous, independently-arrived-at truths and discarding the rest
+# without knowing it discarded anything.
+#
+# **And running one is not one request either: it is triggered, then
+# polled.** `POST /v1/test-sessions/trigger` documents itself as answering
+# before the checks it started have finished -- "This endpoint does not wait
+# for the test session to complete" -- with a 201 carrying `status: RUNNING`
+# and a `results` array that is empty because there is nothing in it yet. A
+# caller reads the outcome by asking again: `GET
+# /v1/test-sessions/{id}/completion` documents its own 408 for "still not
+# done, keep asking," distinct from every failure that means the session
+# itself failed. A client that reads the 201 and reports its `status` as the
+# answer reports "RUNNING" as a verdict on a test that has not run yet.
+#
+# **Checkly's HEARTBEAT check type shares Healthchecks' unmodellable
+# property, and nothing else here does.** Every check type this Recipe
+# otherwise describes is dispatched by Checkly's own infrastructure --
+# Checkly sends the request, from `locations`, on a schedule it owns, so a
+# failure is always something Checkly's systems directly observed and can
+# hand back as a `CheckResult`. A HEARTBEAT check inverts that: it is a
+# passive deadline, like Healthchecks' whole design, where the caller is
+# supposed to ping in and Checkly decides *silence* means failure. That
+# decision is a clock on Checkly's own server noticing nothing arrived by a
+# deadline, not a request Checkly made and got an answer to, and it has
+# exactly the same shape Healthchecks' Recipe describes at length: nothing
+# in a request/response format can carry it, because there is no request to
+# carry. This Recipe does not attempt to, for the same reason that one
+# doesn't.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no key was ever requested, guessed or
+#     used. Every 200 below is therefore documented from the OpenAPI
+#     description, not observed, and every case says so by carrying no
+#     `verified:` date.
+#   - A check result's per-check-type detail -- `apiCheckResult.assertions`,
+#     `browserCheckResult`, and the rest of the fourteen-way union the real
+#     schema nests under `CheckResult` -- is not modelled. The description
+#     puts a check's pass/fail *assertions* one level below the result this
+#     Recipe describes, inside a check-type-specific object this format's
+#     flat field map cannot express faithfully without inventing a shape for
+#     thirteen check types this Recipe never claims to tell apart. What is
+#     modelled -- `hasFailures`, `hasErrors`, `runLocation`, `checkRunId` --
+#     is the part every check type shares.
+#   - `X-Checkly-Account` is real (the docs describe it disambiguating an API
+#     key that belongs to more than one account) and is not required: the
+#     OpenAPI description marks it optional on every route that accepts it,
+#     so this Recipe does not gate on it either.
+#   - `GET /v2/check-results/{checkId}` is not paginated the way `/v1/checks`
+#     is: the description caps it to a six-hour `from`/`to` window rather
+#     than a page size, which is not a shape `pagination:` has a vocabulary
+#     for, so it is stated here rather than declared.
+#   - `GET /v1/runtimes` is also genuinely public -- 200, no credential,
+#     verified the same day as everything else here -- and is not modelled
+#     as a resource. It answers a large, versioned list of Playwright and
+#     Node runtime metadata that has nothing to do with monitoring outcomes,
+#     which is the only thing this Recipe is about.
+#   - `/v1/checks`, `/v2/check-results/{checkId}` and the test-session
+#     endpoints are declared with one Recipe-wide auth gate expressed as
+#     fixed routes rather than `auth.scheme: bearer`, because the two
+#     verified failures above need two different sentences for the same
+#     missing-vs-wrong distinction that scheme can only ever answer one way.
+#     See Healthchecks' Recipe for the same trade explained at length.
+
+recipe: checkly
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.checklyhq.com/docs/api
+  spec: https://api.checklyhq.com/openapi.json
+  spec_hash: a7aadf772dc9b64a506d2973cc1945c40608835e29a7644bdada521e4c2d54af
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer, but expressed as scheme none plus fixed routes below.
+  # Missing and wrong answer two different sentences on the real host, and a
+  # single Recipe-wide scheme can only ever produce one shape for "not
+  # authorised" -- it cannot say a plain-absent header gets one message and a
+  # present-but-wrong one gets another. See the header comment.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    fields:
+      # Restated in the status line, restated as a word, restated as a
+      # number -- three sources for one fact, the same habit EPSS's Recipe
+      # in this collection was written about.
+      statusCode: 401
+      error: Unauthorized
+
+  list:
+    style: bare
+  resource:
+    style: bare
+
+resources:
+  check:
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+      checkType:
+        type: string
+      activated:
+        type: boolean
+      muted:
+        type: boolean
+      # The star of this Recipe: the real region codes this check is
+      # dispatched from, one CheckResult per entry every time it runs.
+      locations:
+        type: list
+      tags:
+        type: list
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+        null_when_unset: true
+
+  check_result:
+    id:
+      style: uuid
+    fields:
+      checkId:
+        type: string
+      name:
+        type: string
+      hasFailures:
+        type: boolean
+      hasErrors:
+        type: boolean
+      isDegraded:
+        type: boolean
+      # What a check ran from. Filterable on its own route, and the reason:
+      # this is the field that turns "did the check pass" into "as measured
+      # from where."
+      runLocation:
+        type: string
+      # Shared by every result the same run produced, whatever their
+      # runLocation disagrees about.
+      checkRunId:
+        type: integer
+      attempts:
+        type: integer
+      resultType:
+        type: string
+      startedAt:
+        type: datetime
+        null_when_unset: true
+      stoppedAt:
+        type: datetime
+        null_when_unset: true
+      responseTime:
+        type: number
+
+  test_session:
+    id:
+      style: uuid
+      field: testSessionId
+    fields:
+      name:
+        type: string
+      testSessionLink:
+        type: string
+      # RUNNING the instant it is created, because triggering one does not
+      # wait for it to finish. See the header comment.
+      status:
+        type: string
+      startedAt:
+        type: datetime
+      # Null until the session finishes, and not stamped when a caller
+      # leaves it out -- unlike startedAt, an unset stoppedAt means "still
+      # running," not "forgot to say."
+      stoppedAt:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      timeElapsed:
+        type: number
+      errorGroupIds:
+        type: list
+      # Present from the start, per the schema, and empty until a triggered
+      # check has actually reported one -- not absent, and not stamped with
+      # anything invented.
+      results:
+        type: list
+        default: []
+
+routes:
+  # /v1/checks. Three shapes for the same path: the fixture credential
+  # reaches the resource, one specific wrong credential is pinned with the
+  # real sentence it gets, and everything else -- no header at all, or
+  # anything else this Recipe was never sent -- falls to the plainer one.
+  # Order does not decide precedence here; a route naming matches_header
+  # outranks one that names none, whichever is written first.
+  - method: GET
+    path: /v1/checks
+    resource: check
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    # limit (default 10, max 100) and page (first page 1), straight off the
+    # OpenAPI description -- documented, not observed, like the resource
+    # itself.
+    pagination:
+      style: page
+      limit: 10
+      max_limit: 100
+      limit_param: limit
+      cursor_param: page
+
+  - method: GET
+    path: /v1/checks
+    # The one wrong credential actually sent to the real host. The sentence
+    # is real; the claim that literally any other wrong value gets the same
+    # one is not verified beyond this single case, the same limit
+    # Healthchecks' Recipe names for its own credential boundary.
+    matches_header:
+      Authorization: Bearer notarealtoken12345
+    error: bad_token
+
+  - method: GET
+    path: /v1/checks
+    error: missing_authentication
+
+  # /v2/check-results/{checkId}. Documented only: reaching this with real
+  # data needs a real check, which needs a real account. filters.location
+  # is the real query parameter name, straight off the OpenAPI description.
+  - method: GET
+    path: /v2/check-results/{checkId}
+    resource: check_result
+    operation: list
+    scope: [checkId]
+    matches_header:
+      Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    filters:
+      - param: location
+        field: runLocation
+
+  - method: GET
+    path: /v2/check-results/{checkId}
+    error: missing_authentication
+
+  # Triggering a test session. Answers immediately, before anything it
+  # started has run -- see the header comment on why RUNNING is stamped here
+  # regardless of what the request asked to trigger.
+  - method: POST
+    path: /v1/test-sessions/trigger
+    resource: test_session
+    operation: create
+    matches_header:
+      Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    status: 201
+    fields:
+      status: RUNNING
+      timeElapsed: 0
+      errorGroupIds: []
+      results: []
+      stoppedAt: null
+
+  - method: POST
+    path: /v1/test-sessions/trigger
+    error: missing_authentication
+
+  # Polling the session started above, some time later, once it has actually
+  # finished -- a completely separate fixture, because this route and the
+  # one above are never the same call.
+  - method: GET
+    path: /v1/test-sessions/{id}
+    resource: test_session
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+
+  - method: GET
+    path: /v1/test-sessions/{id}
+    error: missing_authentication
+
+errors:
+  # Genuinely absent: no Authorization header at all, or anything this
+  # Recipe was not specifically sent (see the pinned bad_token case above
+  # for the one wrong value this Recipe can actually distinguish).
+  missing_authentication:
+    status: 401
+    message: "Missing authentication"
+    headers:
+      WWW-Authenticate: Bearer
+
+  # A credential that is present and simply wrong. The reason is folded into
+  # the challenge header itself, not only the body.
+  bad_token:
+    status: 401
+    message: "Bad token"
+    headers:
+      WWW-Authenticate: 'Bearer error="Bad token"'
+
+  # Overrides Cauldron's own generic "unrecognised path" fallback, because
+  # the real one is plainer than that: no per-route wording, just the same
+  # three-field shape every failure here uses, unauthenticated or not.
+  unknown_route:
+    status: 404
+    message: "Not Found"
+    fields:
+      statusCode: 404
+      error: "Not Found"
+
+fixtures:
+  empty: {}
+
+  checks:
+    check:
+      # Three locations, three independent vantage points, and the reason
+      # this check has a CheckResult for each of them rather than one.
+      - id: 3d6d5a53-9f2b-4c7a-8b1e-2a6f9c8b4d21
+        name: "Homepage availability"
+        checkType: URL
+        activated: true
+        muted: false
+        locations: [us-east-1, eu-west-1, ap-southeast-2]
+        tags: [production]
+        created_at: "2026-01-14T09:00:00.000Z"
+        updated_at: "2026-06-02T11:22:00.000Z"
+
+  check_results:
+    check_result:
+      # Same checkRunId, two locations, two different outcomes -- the point
+      # this whole Recipe exists to make. A client that reads only the first
+      # entry sees a check that passed. The second entry, from the same run,
+      # failed and took nine times as long.
+      - id: 7a1e0c2a-4b3d-4e5f-8a6b-1c2d3e4f5061
+        checkId: 3d6d5a53-9f2b-4c7a-8b1e-2a6f9c8b4d21
+        name: "Homepage availability"
+        hasFailures: false
+        hasErrors: false
+        isDegraded: false
+        runLocation: us-east-1
+        checkRunId: 918273645
+        attempts: 1
+        resultType: FINAL
+        startedAt: "2026-08-31T12:00:00.000Z"
+        stoppedAt: "2026-08-31T12:00:00.284Z"
+        responseTime: 284
+      - id: 7a1e0c2a-4b3d-4e5f-8a6b-1c2d3e4f5062
+        checkId: 3d6d5a53-9f2b-4c7a-8b1e-2a6f9c8b4d21
+        name: "Homepage availability"
+        hasFailures: true
+        hasErrors: false
+        isDegraded: false
+        runLocation: eu-west-1
+        checkRunId: 918273645
+        attempts: 2
+        resultType: FINAL
+        startedAt: "2026-08-31T12:00:00.512Z"
+        stoppedAt: "2026-08-31T12:00:03.009Z"
+        responseTime: 2497
+
+  session_running:
+    test_session:
+      - id: 3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e
+        name: "Deploy smoke test"
+        testSessionLink: "https://app.checklyhq.com/test-sessions/3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e"
+        status: RUNNING
+        startedAt: "2026-08-31T12:00:00.000Z"
+        timeElapsed: 0
+        errorGroupIds: []
+
+  session_completed:
+    test_session:
+      - id: 3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e
+        name: "Deploy smoke test"
+        testSessionLink: "https://app.checklyhq.com/test-sessions/3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e"
+        status: PASSED
+        startedAt: "2026-08-31T12:00:00.000Z"
+        stoppedAt: "2026-08-31T12:00:07.418Z"
+        timeElapsed: 7418
+        errorGroupIds: []
+
+conformance:
+  - name: no credential at all is one sentence
+    source: https://api.checklyhq.com/v1/checks
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/checks
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: Bearer
+      body:
+        statusCode: 401
+        error: Unauthorized
+        message: "Missing authentication"
+
+  - name: a credential that is merely wrong is a different sentence
+    source: https://api.checklyhq.com/v1/checks
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/checks
+      headers:
+        Authorization: Bearer notarealtoken12345
+    expect:
+      status: 401
+      headers:
+        # The reason is in the challenge itself, not only the body.
+        WWW-Authenticate: 'Bearer error="Bad token"'
+      body:
+        message: "Bad token"
+
+  - name: a path nobody defined is a third, plainer shape
+    source: https://api.checklyhq.com/v1/this-is-not-a-real-path
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-path
+    expect:
+      status: 404
+      body:
+        statusCode: 404
+        error: "Not Found"
+        message: "Not Found"
+
+  - name: a check names the many locations it runs from
+    source: https://api.checklyhq.com/openapi.json
+    fixture: checks
+    request:
+      method: GET
+      path: /v1/checks
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        "[0].name": "Homepage availability"
+        "[0].locations[0]": us-east-1
+        "[0].locations[1]": eu-west-1
+        "[0].locations[2]": ap-southeast-2
+
+  - name: one run, two locations, two different outcomes
+    source: https://api.checklyhq.com/openapi.json
+    fixture: check_results
+    request:
+      method: GET
+      path: /v2/check-results/3d6d5a53-9f2b-4c7a-8b1e-2a6f9c8b4d21
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        # The same run.
+        "[0].checkRunId": 918273645
+        "[1].checkRunId": 918273645
+        # A different vantage point and a different verdict, in the same run.
+        "[0].runLocation": us-east-1
+        "[0].hasFailures": false
+        "[1].runLocation": eu-west-1
+        "[1].hasFailures": true
+
+  - name: filtering check results by location narrows to that vantage point
+    source: https://api.checklyhq.com/openapi.json
+    fixture: check_results
+    request:
+      method: GET
+      path: /v2/check-results/3d6d5a53-9f2b-4c7a-8b1e-2a6f9c8b4d21?location=eu-west-1
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        "[0].runLocation": eu-west-1
+        "[0].hasFailures": true
+
+  - name: triggering a run answers before anything it started has run
+    source: https://api.checklyhq.com/openapi.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/test-sessions/trigger
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+      json:
+        name: "Deploy smoke test"
+    expect:
+      status: 201
+      body:
+        status: RUNNING
+        timeElapsed: 0
+        errorGroupIds: []
+        # Present and empty, not absent -- results is a real property of
+        # this response, per the schema, and nothing has finished yet to put
+        # in it.
+        results: []
+        # Nullable rather than omitted: the property exists and reads null
+        # until the session finishes.
+        stoppedAt: null
+
+  - name: polling before it finishes still shows RUNNING, with no stoppedAt yet
+    source: https://api.checklyhq.com/openapi.json
+    fixture: session_running
+    request:
+      method: GET
+      path: /v1/test-sessions/3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        status: RUNNING
+        stoppedAt: null
+
+  - name: polling the same session later shows it finished
+    source: https://api.checklyhq.com/openapi.json
+    fixture: session_completed
+    request:
+      method: GET
+      path: /v1/test-sessions/3f0a5e1c-8b2a-4a6a-9c3e-1f2a3b4c5d6e
+      headers:
+        Authorization: Bearer cauldron-checkly-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        status: PASSED
+        stoppedAt: "2026-08-31T12:00:07.418Z"
+
+  - name: without the fixture credential, the trigger route refuses the same way the listing does
+    source: https://api.checklyhq.com/v1/test-sessions/trigger
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/test-sessions/trigger
+    expect:
+      status: 401
+      body:
+        message: "Missing authentication"

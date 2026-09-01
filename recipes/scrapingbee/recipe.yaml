@@ -1,0 +1,384 @@
+# ScrapingBee Recipe for Cauldron
+#
+# ScrapingBee is a proxy: a client asks it to fetch somebody else's page, and
+# the answer wraps or forwards a response ScrapingBee did not author. That
+# makes one question sit underneath every other line of this file: whose
+# status code is this? A 404 might mean ScrapingBee could not find your
+# endpoint, or that the target site returned 404 and ScrapingBee is relaying
+# it, or -- as the wire below shows -- something in between.
+#
+# Every case in this file was sent to api.scrapingbee.com with no api_key, a
+# junk one, or a genuinely wrong one. No account was created and no real key
+# was requested, guessed, or used, per this project's standing rule for
+# providers that fetch third-party content: probing goes no further than
+# example.com, which exists for exactly this.
+#
+# **The proxy answers before it has read your request.** A request with no
+# api_key at all -- ?api_key=&url=https://example.com -- is refused before
+# url is ever looked at:
+#
+#   400  {"errors":{"api_key":{"api_key":["Missing data for required field."]}}}
+#
+# A request with a key that is merely wrong gets a different status, a
+# different shape, and never mentions url either -- not even when url is
+# ALSO missing, which was checked directly:
+#
+#   401  {"message":"Invalid api key: junkkey1234567890"}
+#
+# So url validation is unreachable from outside: whatever is wrong with it,
+# the api_key gate answers first and url is never inspected. A malformed url
+# sent alongside a bad key gets the identical 401 above, byte for byte. This
+# Recipe therefore has nothing to say about a malformed url on its own terms
+# -- not because the case was skipped, but because there is no key this
+# project may hold that would let it be observed.
+#
+# **A path ScrapingBee never routed to is a third shape again**, and it does
+# not care what key you sent: /api/v1/nonexistent?api_key=<anything> answers
+# Werkzeug's own default 404 page, in HTML, whatever the credential. Flask
+# routes the URL before any view function -- and therefore any key check --
+# ever runs, so this is the one failure in the whole Recipe that is not
+# gated behind api_key at all.
+#
+# **The central ambiguity, once a key actually works, is documented rather
+# than observed** -- this project holds no real ScrapingBee key, so nothing
+# past the auth gate was called. ScrapingBee's own docs describe it plainly
+# enough to write down anyway. By default (transparent_status_code is
+# documented as defaulting to false) a scrape that succeeded as an API call
+# answers 200 whatever the target sent back, and the target's real status
+# survives in one place only: the Spb-initial-status-code response header
+# ("the initial status code returned by the scraped page", per ScrapingBee's
+# own headers article). Spb-resolved-url carries the final URL after
+# redirects the same way. So a client reading response.status alone cannot
+# tell a scrape of a live page from a scrape of a page that is gone -- both
+# are 200 -- and has to know to read a header most HTTP clients do not
+# surface without being asked.
+#
+# Turning transparent_status_code on is documented as making ScrapingBee
+# "transparently return the same HTTP code of the page requested" -- which
+# answers the question this Recipe is about by erasing the distinction
+# Spb-initial-status-code exists to preserve: the proxy's own status and the
+# target's become the same number, and a target 404 then reads identically,
+# BY STATUS CODE ALONE, to ScrapingBee's own Werkzeug 404 above. The only
+# thing left to tell them apart is the body: one is a real page, the other
+# is Flask's boilerplate.
+#
+# example.com is used as the fixture target below because it happens to
+# demonstrate this cleanly on its own: verified directly against
+# example.com on 2026-09-01, ANY path on that host answers 404 except the
+# root, and it answers with the exact same markup as the 200 either way.
+# That fact about example.com is observed; how ScrapingBee would wrap it is
+# not, and the cases below say so.
+#
+# One more thing worth pinning: Spb-cost appears on every response this
+# project could observe, including the 400 and the 401 above and the bare
+# Werkzeug 404 -- a failure ScrapingBee never even routed. So the header's
+# presence does not mean a scrape was attempted; it appears to be stamped on
+# the whole app, not on the scraping path specifically, which weakens it as
+# a signal for "this response is about a page fetch" rather than about the
+# service in general.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's auth.scheme is a single boolean gate: a request either
+#     satisfies it or does not, and the one failure the runtime can produce
+#     from it (authentication_error) carries one status and one body shape.
+#     ScrapingBee's real gate is not that: an absent or empty api_key is a
+#     400 with a nested validation body, and a present-but-wrong one is a
+#     401 with a flat message -- two shapes, two statuses, for two states
+#     the built-in mechanism cannot distinguish. This Recipe turns
+#     auth.scheme off entirely and rebuilds the gate out of ordinary routes
+#     matched on the api_key query parameter instead, which is the only way
+#     to keep both shapes.
+#   - That rebuild has its own gap. Cauldron's query matching can ask "does
+#     this parameter equal this value" but not "is this parameter present at
+#     all" -- there is no way to match on absence the way required_headers
+#     matches on a missing header. So the missing_api_key route below only
+#     fires for api_key sent as an explicit empty string
+#     (?api_key=&url=...); an api_key parameter left out of the URL entirely
+#     falls through to the wrong-key route instead and this emulator answers
+#     401 where the real API answers 400. Both were checked directly against
+#     the real host and answer identically there -- this Recipe can reach
+#     only one of the two request shapes that produce it.
+#   - The exact 401 message echoes the credential that was sent
+#     ("Invalid api key: junkkey1234567890"), and Cauldron's built-in error
+#     writer has no substitution for the presented value at this call site
+#     the way resource_missing has {detail} for an id. The message below is
+#     a fixed string that happens to match the one credential the
+#     conformance case actually sends; a Recipe user who configures a
+#     different wrong key will still be told about "junkkey1234567890".
+#   - Everything past the api_key gate -- a successful scrape, a target that
+#     itself failed, transparent_status_code -- is documented from
+#     ScrapingBee's own articles and never observed, because observing it
+#     needs a real key this project will not hold. Those cases carry a
+#     source and no verified date, on purpose.
+#   - The fixture key combined with a url this Recipe holds no fixture for
+#     matches neither success route and falls through to the wrong-key
+#     route, answering 401 for a key that is in fact correct. That is an
+#     artifact of only two urls being modelled, not something ScrapingBee
+#     itself does.
+#   - premium_proxy, stealth_proxy, render_js, screenshots, JS scenarios and
+#     every other parameter beyond api_key, url and transparent_status_code
+#     are not modelled at all.
+
+recipe: scrapingbee
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.scrapingbee.com/documentation/
+
+# Genuinely none would be the honest label for what this Recipe checks, since
+# the mechanism below is entirely route-based -- but "none" also means no
+# credential is required at all, which is the one thing that is false here.
+# See the header comment: auth.scheme is a single pass/fail gate and
+# ScrapingBee's real one has two distinct failure shapes, so this Recipe
+# declares no scheme and rebuilds the check with matches_query on ordinary
+# routes instead.
+auth:
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: message
+
+routes:
+  # The fixture credential and a target that answers normally. Documented,
+  # not observed -- see the header comment. The HTML below is example.com's
+  # real markup, fetched directly on 2026-09-01; the envelope around it
+  # (status 200, the three Spb- headers) is ScrapingBee's documented shape,
+  # not something this project called.
+  - method: GET
+    path: /api/v1/
+    matches_query:
+      api_key: cauldronscrapingbee0000000000000000000
+      url: https://example.com
+    raw:
+      content_type: text/html; charset=utf-8
+      text: |
+        <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+    headers:
+      Spb-cost: "5"
+      Spb-initial-status-code: "200"
+      Spb-resolved-url: https://example.com/
+
+  # Same fixture key, a target that itself answers 404. ScrapingBee's own
+  # call still succeeds by default -- example.com really does answer 404 to
+  # any non-root path with its home page's own markup, verified directly on
+  # 2026-09-01 -- and the target's real status survives only in the header.
+  # This is the central claim of the whole Recipe, and it is documented, not
+  # observed: see the header comment.
+  - method: GET
+    path: /api/v1/
+    matches_query:
+      api_key: cauldronscrapingbee0000000000000000000
+      url: https://example.com/gone
+    raw:
+      content_type: text/html; charset=utf-8
+      text: |
+        <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+    headers:
+      Spb-cost: "5"
+      Spb-initial-status-code: "404"
+      Spb-resolved-url: https://example.com/gone
+
+  # transparent_status_code=true collapses the distinction the case above
+  # depends on: ScrapingBee's own status becomes the target's, so this
+  # answers 404 rather than 200 for the identical target. By status code
+  # alone that is now indistinguishable from the Werkzeug 404 further down
+  # in this file -- only the body tells them apart, and Spb-initial-status-code
+  # still carries the same number as before, now redundant with the status
+  # line rather than the only place it appeared.
+  - method: GET
+    path: /api/v1/
+    matches_query:
+      api_key: cauldronscrapingbee0000000000000000000
+      url: https://example.com/gone
+      transparent_status_code: "true"
+    status: 404
+    raw:
+      content_type: text/html; charset=utf-8
+      text: |
+        <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+    headers:
+      Spb-initial-status-code: "404"
+      Spb-resolved-url: https://example.com/gone
+
+  # api_key sent and empty. Observed directly: identical whether the
+  # parameter is left off the URL entirely or sent as api_key=. This route
+  # only catches the second form -- see the header comment's fidelity gap.
+  - method: GET
+    path: /api/v1/
+    matches_query:
+      api_key: ""
+    error: missing_api_key
+
+  # Everything else reaching this path, which in practice is every
+  # conformance case below that is not one of the exact fixture calls
+  # above: a key that does not match. An api_key left out of the URL
+  # entirely also lands here rather than on the rule above it -- the one
+  # stated gap in this Recipe's auth modelling.
+  - method: GET
+    path: /api/v1/
+    error: invalid_api_key
+
+errors:
+  # The nested validation body a missing or empty api_key gets. Three levels
+  # deep and an array of one string, because that is what marshmallow, the
+  # library behind ScrapingBee's own validation, actually sends -- checked
+  # against api.scrapingbee.com directly, not guessed at.
+  missing_api_key:
+    status: 400
+    style: flat
+    message_field: "-"
+    fields:
+      errors.api_key.api_key:
+        - "Missing data for required field."
+
+  # See the header comment: this message is fixed, and it happens to match
+  # only the one credential the conformance case below actually sends.
+  invalid_api_key:
+    status: 401
+    message: "Invalid api key: junkkey1234567890"
+
+  # Overrides Cauldron's own generic "Unrecognised request URL" so that a
+  # path this Recipe never routed answers in ScrapingBee's own words: Flask's
+  # default 404 page, HTML, reachable whatever the api_key was -- the one
+  # failure in this file that the auth gate does not sit in front of.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: |
+      <!doctype html>
+      <html lang=en>
+      <title>404 Not Found</title>
+      <h1>Not Found</h1>
+      <p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>
+
+fixtures:
+  # Every route answers recorded bytes or a named failure, so there is no
+  # record to seed. The empty fixture is here because every Recipe ships one.
+  empty: {}
+
+conformance:
+  - name: no api_key at all is a 400 before url is ever read
+    source: https://app.scrapingbee.com/api/v1/?api_key=&url=https://example.com
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/?api_key=&url=https://example.com
+    expect:
+      status: 400
+      headers:
+        Content-Type: application/json
+      body:
+        # Three levels deep, and unreachable with a dot in most languages
+        # even once you know it is there.
+        errors.api_key.api_key[0]: "Missing data for required field."
+
+  - name: leaving url out too changes nothing about that message
+    source: https://app.scrapingbee.com/api/v1/?api_key=
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/?api_key=
+    expect:
+      status: 400
+      body:
+        errors.api_key.api_key[0]: "Missing data for required field."
+
+  - name: a key that is merely wrong is a different status and a different shape
+    source: https://app.scrapingbee.com/api/v1/?api_key=junkkey1234567890&url=https://example.com
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/?api_key=junkkey1234567890&url=https://example.com
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        message: "Invalid api key: junkkey1234567890"
+      absent:
+        - errors
+
+  - name: a wrong key answers the same even with no url at all
+    source: https://app.scrapingbee.com/api/v1/?api_key=junkkey1234567890
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/?api_key=junkkey1234567890
+    expect:
+      status: 401
+      body:
+        message: "Invalid api key: junkkey1234567890"
+
+  - name: and the same again with a url that could never be fetched
+    source: https://app.scrapingbee.com/api/v1/?api_key=junkkey1234567890&url=not-a-url
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/?api_key=junkkey1234567890&url=not-a-url
+    expect:
+      # Whatever is wrong with url, it is never reached: the key is checked
+      # first and this is indistinguishable from any other wrong key.
+      status: 401
+      body:
+        message: "Invalid api key: junkkey1234567890"
+
+  - name: a path ScrapingBee never routed answers Werkzeug's own 404, not JSON
+    source: https://app.scrapingbee.com/api/v1/nonexistent?api_key=junkkey1234567890&url=https://example.com
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/nonexistent?api_key=junkkey1234567890&url=https://example.com
+    expect:
+      # Not the 401 above, even though the key is exactly as wrong: this
+      # failure happens before any view function -- and any key check --
+      # ever runs.
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: 'The requested URL was not found on the server'
+
+  - name: a scrape that succeeds carries the target's status in a header, not the status line
+    source: https://help.scrapingbee.com/en/article/what-kind-of-headers-are-returned-by-the-api-17lh4xw/
+    request:
+      method: GET
+      path: /api/v1/?api_key=cauldronscrapingbee0000000000000000000&url=https://example.com
+    expect:
+      status: 200
+      headers:
+        Content-Type: text/html; charset=utf-8
+        Spb-initial-status-code: "200"
+      body_matches: 'Example Domain'
+
+  - name: a target that 404s does not change ScrapingBee's own status
+    source: https://help.scrapingbee.com/en/article/what-kind-of-headers-are-returned-by-the-api-17lh4xw/
+    request:
+      method: GET
+      path: /api/v1/?api_key=cauldronscrapingbee0000000000000000000&url=https://example.com/gone
+    expect:
+      # 200, not 404. The only place the target's real answer survives is
+      # the header below.
+      status: 200
+      headers:
+        Spb-initial-status-code: "404"
+        Spb-resolved-url: https://example.com/gone
+      body_matches: 'Example Domain'
+
+  - name: transparent_status_code trades that header for the status line itself
+    source: https://www.scrapingbee.com/documentation/
+    request:
+      method: GET
+      path: /api/v1/?api_key=cauldronscrapingbee0000000000000000000&url=https://example.com/gone&transparent_status_code=true
+    expect:
+      # Now 404, indistinguishable by status code alone from the Werkzeug
+      # 404 above -- only the body says which one this is.
+      status: 404
+      headers:
+        Spb-initial-status-code: "404"
+      body_matches: 'Example Domain'

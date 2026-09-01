@@ -1,0 +1,436 @@
+# Cronitor Recipe for Cauldron
+#
+# Cronitor is two products behind one name, on two hosts, and neither one
+# was ever touched with a real account. Every case below carrying a
+# `verified:` date was struck live on 2026-09-01 -- an invented,
+# never-issued key and monitor slug against cronitor.link, and no
+# credential at all against cronitor.io/api. Cronitor publishes no
+# machine-readable API description this project could find, so unlike this
+# collection's other Recipes there is no `upstream.spec` and no
+# `spec_hash` here -- what is documented below is read from
+# cronitor.io/docs and carries no `verified:` date, and there is
+# deliberately no `resources:` block, because nothing about an actual
+# monitor's shape was ever confirmed against the wire. Two surfaces, both
+# genuinely observed, is what this Recipe is.
+#
+# **Cronitor's job and heartbeat monitors share Healthchecks' unmodellable
+# property exactly, and this Recipe does not attempt it either.** A cron job
+# or heartbeat monitor's entire value is Cronitor deciding a ping did *not*
+# arrive by a deadline it tracks on its own server -- the missed check-in
+# that fires the alert is a clock noticing silence, not a request Cronitor
+# received and answered. `state=fail` on a ping is a different thing
+# entirely: that is the job itself telling Cronitor it failed, which is a
+# real request with real bytes, exactly like Healthchecks' own `/fail`
+# suffix. Nothing about a deadline going unmet can be modelled in a format
+# built entirely out of requests and their responses, for the reason
+# Healthchecks' Recipe states at length, and this one does not repeat the
+# attempt.
+#
+# **A ping answers 200 with a Content-Type and nothing behind it.** `GET
+# https://cronitor.link/p/<key>/<monitor>` -- an invented key, a made-up
+# monitor slug, no account anywhere behind either -- answers 200,
+# `Content-Type: application/json`, `Content-Length: 0`. Zero bytes is not
+# valid JSON of any kind, so a client calling `.json()` on the strength of
+# that header throws, on the *success* path, on every ping this Recipe could
+# ever send. The method does not matter -- POST answers identically -- and
+# neither does a state suffix: `/run`, `/complete` and `/fail` all answer
+# the same empty 200, checked individually. Cronitor's own docs describe a
+# monitor being created automatically on its first ping under a real,
+# permissioned API key; an invented key belongs to no account, so nothing
+# was ever created by any call this Recipe made, and what is captured below
+# is what the endpoint does when the key resolves to nobody at all -- which
+# is indistinguishable, on the wire, from accepting a brand new ping for a
+# real account. There is no way to tell "silently discarded" from "silently
+# filed" from this response alone, by design.
+#
+# **The path shape under `/p/` matters more than the query string does.**
+# Drop the monitor segment and keep the trailing slash --
+# `/p/<key>/` -- and the answer changes completely: 404, real JSON,
+# `{"title": "Monitor not found"}`. Drop the slash *and* the segment --
+# `/p/<key>`, nothing after the key at all -- and the answer is neither of
+# those: a bare nginx 502, checked three times, identical every time. That
+# is very likely an accidental gap in whatever reverse proxy sits in front
+# of this host rather than a designed answer, and it is reproducible enough
+# that a client hitting it by constructing this exact shape sees a gateway
+# fault instead of a 4xx that explains anything.
+#
+# **The management API answers missing and wrong credentials with four
+# different sentences, not two, because it has two authentication schemes
+# stacked on one route and each fails in its own words.** All four are
+# `detail` on a 401, all four checked live, no account, no key:
+#
+#   nothing at all, or Basic with an empty username    "Authentication credentials were not provided."
+#   Basic with any non-empty username                  "Invalid api key"
+#   `Authorization: Bearer` with nothing after it       "Invalid token header. No credentials provided."
+#   `Authorization: Bearer <anything>`                  "Invalid credentials"
+#
+# A client that only checks for 401 cannot see any of this; a client that
+# reads `detail` can tell "I forgot the header" from "I sent a Bearer token
+# this API does not use Bearer tokens the way I typed them" from "I sent a
+# key and it is simply wrong" -- three different bugs in three different
+# places in the client's own code, surfaced as three different sentences by
+# the same route. `Vary` moves with the split too: `Accept, Cookie` when
+# nothing was presented at all, `Accept` alone the moment anything
+# credential-shaped was sent and rejected -- checked on all four cases
+# above, consistent every time.
+#
+# **Unauthenticated is not the same as unrecognised.** A path this Recipe's
+# author invented under `/api/` -- one nothing in Cronitor's routing
+# actually serves -- does not reach the 401 gate at all: it falls through to
+# the marketing site's own HTML 404 template, `text/html`, a page built for
+# a browser, not the API's JSON `detail` shape. The credential check only
+# ever runs for a path the API router recognises; anything else is refused
+# one layer further out, by a different application entirely. This is
+# observed and not modelled below as a route, because reproducing the
+# marketing site's actual page would mean vendoring several kilobytes of a
+# Next.js template that has nothing to do with monitoring and can be
+# redesigned at any time -- the fact that it happens is what this Recipe
+# states, not the exact bytes of a page uninvolved in the API's own
+# contract.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no key was ever requested, guessed or
+#     used, so there is no monitor resource in this Recipe at all -- not a
+#     fixture, not a field, not a documented-only shape. Every route below
+#     is `raw` or a named `error`, which is the whole reason `raw.go`
+#     exists: some Recipes have nothing to route to an operation.
+#   - Cronitor's Telemetry API accepts `state`, `message`, `metric`, `host`,
+#     `env`, `series` and `status_code` as query parameters per its own
+#     docs. None of that is modelled: every ping this Recipe ever sent
+#     answered the identical empty 200 regardless of what the path or query
+#     asked for, so there was nothing on the wire to distinguish one
+#     parameter's effect from another's.
+#   - No rate-limit headers were seen on any call to either host.
+#   - The 502 on a bare `/p/<key>` is recorded as observed because it was --
+#     three times, byte for byte -- but it reads as an infrastructure fault
+#     rather than a designed answer, and is flagged as such rather than
+#     presented as Cronitor's intended behaviour for a malformed ping.
+
+recipe: cronitor
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: telemetry+monitors
+  docs: https://cronitor.io/docs
+
+auth:
+  # Both hosts, genuinely credentialled or genuinely not, are expressed as
+  # fixed routes below rather than one Recipe-wide scheme -- cronitor.link
+  # takes no credential in the usual sense at all, and cronitor.io/api
+  # answers four different sentences for four different kinds of absent or
+  # wrong credential that one boolean scheme could never tell apart. See the
+  # header comment.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: detail
+
+routes:
+  # cronitor.link. An invented key and an invented monitor slug, which is
+  # every key and slug this Recipe could ever hold -- no account exists
+  # behind either one.
+  - method: GET
+    path: /p/{key}/{monitor}
+    raw:
+      content_type: application/json
+      empty: true
+
+  - method: POST
+    path: /p/{key}/{monitor}
+    raw:
+      content_type: application/json
+      empty: true
+
+  # A state suffix -- run, complete or fail, each checked individually --
+  # changes nothing about the answer.
+  - method: GET
+    path: /p/{key}/{monitor}/{state}
+    raw:
+      content_type: application/json
+      empty: true
+
+  # The monitor segment dropped but the trailing slash kept: a real,
+  # distinct refusal, in JSON, unlike either shape above or below.
+  - method: GET
+    path: /p/{key}/
+    error: monitor_not_found
+
+  # The monitor segment dropped entirely, no trailing slash: not a 4xx at
+  # all. See the header comment on why this reads as an infrastructure gap
+  # rather than a designed answer.
+  - method: GET
+    path: /p/{key}
+    status: 502
+    raw:
+      content_type: text/html
+      text: |
+        <html>
+        <head><title>502 Bad Gateway</title></head>
+        <body>
+        <center><h1>502 Bad Gateway</h1></center>
+        <hr><center>nginx/1.16.1</center>
+        </body>
+        </html>
+
+  # cronitor.io/api. Four sentences for four shapes of "not authorised", on
+  # the same collection route -- order does not decide precedence, a route
+  # naming matches_header outranks one that names none.
+  - method: GET
+    path: /api/monitors
+    matches_header:
+      # Basic, any non-empty username. This exact value is the one actually
+      # sent; the claim that literally any other non-empty username gets the
+      # same sentence is not verified beyond this single case.
+      Authorization: Basic bm90YXJlYWxrZXk6
+    error: invalid_api_key
+    headers:
+      Allow: "GET, POST, PUT, DELETE, HEAD, OPTIONS"
+
+  - method: GET
+    path: /api/monitors
+    matches_header:
+      # The literal header curl sends for -H "Authorization: Bearer" --
+      # the scheme with nothing after it at all.
+      Authorization: Bearer
+    error: bearer_no_token
+    headers:
+      Allow: "GET, POST, PUT, DELETE, HEAD, OPTIONS"
+
+  - method: GET
+    path: /api/monitors
+    matches_header:
+      Authorization: Bearer notarealkey12345
+    error: bearer_invalid
+    headers:
+      Allow: "GET, POST, PUT, DELETE, HEAD, OPTIONS"
+
+  # Nothing at all, or Basic with an empty username -- both land here,
+  # checked as two separate calls with identical results.
+  - method: GET
+    path: /api/monitors
+    error: no_credentials
+    headers:
+      Allow: "GET, POST, PUT, DELETE, HEAD, OPTIONS"
+
+  # The single-monitor route. Same fallback sentence, a narrower Allow --
+  # no POST on a route addressing one record.
+  - method: GET
+    path: /api/monitors/{id}
+    error: no_credentials
+    headers:
+      Allow: "GET, PUT, DELETE, HEAD, OPTIONS"
+
+errors:
+  no_credentials:
+    status: 401
+    message: "Authentication credentials were not provided."
+    headers:
+      WWW-Authenticate: bearer
+      Vary: "Accept, Cookie"
+
+  invalid_api_key:
+    status: 401
+    message: "Invalid api key"
+    headers:
+      WWW-Authenticate: bearer
+      Vary: Accept
+
+  bearer_no_token:
+    status: 401
+    message: "Invalid token header. No credentials provided."
+    headers:
+      WWW-Authenticate: bearer
+      Vary: Accept
+
+  bearer_invalid:
+    status: 401
+    message: "Invalid credentials"
+    headers:
+      WWW-Authenticate: bearer
+      Vary: Accept
+
+  monitor_not_found:
+    status: 404
+    message_field: title
+    message: "Monitor not found"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: a ping to a key and monitor nobody has ever heard of is still a 200 that lies about its own body
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/my-test-monitor
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef/my-test-monitor
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      no_body: true
+
+  - name: the method does not change that
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/my-test-monitor
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /p/deadbeefcafebabe0123456789abcdef/my-test-monitor
+    expect:
+      status: 200
+      no_body: true
+
+  - name: neither does a run state
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/my-test-monitor/run
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef/my-test-monitor/run
+    expect:
+      status: 200
+      no_body: true
+
+  - name: nor a complete state
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/my-test-monitor/complete
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef/my-test-monitor/complete
+    expect:
+      status: 200
+      no_body: true
+
+  - name: nor an explicit failure report, which is a real request unlike the silence Cronitor is actually built to detect
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/my-test-monitor/fail
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef/my-test-monitor/fail
+    expect:
+      status: 200
+      no_body: true
+
+  - name: dropping the monitor segment but keeping the slash is a real, distinct refusal
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef/
+    expect:
+      status: 404
+      body:
+        title: "Monitor not found"
+
+  - name: dropping the segment and the slash is not a 4xx at all
+    source: https://cronitor.link/p/deadbeefcafebabe0123456789abcdef
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /p/deadbeefcafebabe0123456789abcdef
+    expect:
+      status: 502
+      headers:
+        Content-Type: text/html
+      body_matches: '502 Bad Gateway'
+
+  - name: no credential at all names the absence
+    source: https://cronitor.io/api/monitors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors
+    expect:
+      status: 401
+      headers:
+        Vary: "Accept, Cookie"
+        Allow: "GET, POST, PUT, DELETE, HEAD, OPTIONS"
+      body:
+        detail: "Authentication credentials were not provided."
+
+  - name: a Basic credential with an empty username is folded into the same absence
+    source: https://cronitor.io/api/monitors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors
+      headers:
+        Authorization: "Basic Og=="
+    expect:
+      status: 401
+      headers:
+        Vary: "Accept, Cookie"
+      body:
+        detail: "Authentication credentials were not provided."
+
+  - name: a Basic credential with any username at all is wrong, not missing, and says so
+    source: https://cronitor.io/api/monitors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors
+      headers:
+        Authorization: Basic bm90YXJlYWxrZXk6
+    expect:
+      status: 401
+      headers:
+        # Cookie drops out of Vary the moment anything was actually presented.
+        Vary: Accept
+      body:
+        detail: "Invalid api key"
+
+  - name: a bare Bearer scheme with nothing after it is its own third sentence
+    source: https://cronitor.io/api/monitors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors
+      headers:
+        Authorization: Bearer
+    expect:
+      status: 401
+      body:
+        detail: "Invalid token header. No credentials provided."
+
+  - name: a Bearer token that is simply wrong is a fourth sentence again
+    source: https://cronitor.io/api/monitors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors
+      headers:
+        Authorization: Bearer notarealkey12345
+    expect:
+      status: 401
+      body:
+        detail: "Invalid credentials"
+
+  - name: the single-monitor route answers the same absence with a narrower Allow
+    source: https://cronitor.io/api/monitors/deadbeef
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/monitors/deadbeef
+    expect:
+      status: 401
+      headers:
+        # No POST -- this route addresses one record, not a collection.
+        Allow: "GET, PUT, DELETE, HEAD, OPTIONS"
+      body:
+        detail: "Authentication credentials were not provided."

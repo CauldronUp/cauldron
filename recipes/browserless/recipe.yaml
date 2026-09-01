@@ -1,0 +1,415 @@
+# Browserless Recipe for Cauldron
+#
+# Browserless is the other shape of proxy: instead of handing back somebody
+# else's page as a fetched response, it drives a real headless Chrome
+# against it and hands back what the browser rendered. /content is the
+# plainest of its REST endpoints -- POST a url, get back the rendered HTML --
+# and it turns out to answer the "whose failure is this" question more
+# starkly than ScrapingBee does: there is no field anywhere in its documented
+# response for the target page's own HTTP status. A 200 here could be a
+# render of the real page, a render of the page's own error page (still
+# valid HTML), or, with the documented bestAttempt option, a best-effort
+# partial capture after navigation failed outright -- and nothing in the
+# response distinguishes any of the three from each other or from a genuine
+# success.
+#
+# Every case in this file was sent to production-sfo.browserless.io, which
+# the docs list as a shared-fleet regional host. No account was created and
+# no real token was requested, guessed, or used.
+#
+# **A missing token and a wrong one are both 401, and are not the same
+# response.** No token, or an explicitly empty one, gets this, on every path
+# tried, whatever the method:
+#
+#   401  Content-Type: text/html
+#        <html><head><title>401 Authorization Required</title></head>
+#        <body><center><h1>401 Authorization Required</h1></center>
+#        <hr><center>openresty</center></body></html>
+#
+# A token that is merely wrong gets the same status and an entirely
+# different shape:
+#
+#   401  Content-Type: text/plain; charset=UTF-8
+#        Invalid API key. Please check your API key and try again.
+#        (requestId: f9f3a6ff-0200-4866-99be-048bfc62060f)
+#
+# Browserless's own OpenAPI reference collapses this into one line -- 401
+# means "the request is missing, or contains bad, authorization credentials"
+# -- as if the two were one failure. On the wire they are two layers: an
+# openresty edge in front of the application answers the first, in HTML,
+# and never reaches Browserless's own code; the application itself answers
+# the second, in plain text, with a request id attached for support to look
+# up. The status code is identical and tells a caller nothing about which
+# layer refused them -- only Content-Type and the body do that.
+#
+# **Sending the credential the way the docs for every OTHER provider expect
+# breaks the edge outright.** Browserless documents `?token=` as the only
+# way to authenticate this endpoint. Sending Authorization: Bearer <token>
+# instead -- the header-based convention nearly everything else in this
+# collection uses -- does not fall back to "missing token" or "wrong token".
+# It answers neither. Checked directly and reproduced three times:
+#
+#   500  Content-Type: text/html
+#        <html><head><title>500 Internal Server Error</title></head>
+#        <body><center><h1>500 Internal Server Error</h1></center>
+#        <hr><center>openresty</center></body></html>
+#
+# whether or not a query token is also present alongside it. That is
+# unambiguously the proxy's own failure -- a 500 from the edge itself,
+# openresty rather than the application -- and it is also the single easiest
+# mistake for an integrator coming from a Bearer-token API to make.
+#
+# **Every path tried gets one of these same three shapes**, not a 404.
+# /not-a-real-endpoint with no token answers the identical edge 401 as
+# /content with no token; with a wrong token it answers the identical
+# application 401. Unlike ScrapingBee, where a bad path is reachable and
+# answers on its own terms regardless of the key, nothing on this host
+# appears to be reachable without first satisfying both auth layers -- which
+# also means a genuine "route not found" response (browserless's OpenAPI
+# reference documents 404 as one of this endpoint's own status codes) was
+# never actually observed, because no credential this project could hold
+# gets past the layer that would need to fail that way.
+#
+# **chrome.browserless.io is a different product, not a broken alias**, and
+# is worth recording even though this Recipe does not model it. Browserless's
+# own connection-urls documentation describes it as the address dedicated
+# enterprise fleets connect through, routed to the customer's assigned
+# region by their token -- which is presumably why an entirely credential-
+# less request to it does not even reach an auth check:
+#
+#   GET https://chrome.browserless.io/content            -> 502 Bad Gateway  (nginx)
+#   GET https://chrome.browserless.io/content?token=junk  -> 401 "Please sign-up
+#                                                             for an account at
+#                                                             https://browserless.io/"
+#                                                             (no Content-Type at all)
+#
+# With nothing to identify a fleet, there may be nowhere for the edge to
+# route the request at all, which reads as an infrastructure outage (502,
+# nginx rather than openresty) and is not one -- it is a routing failure with
+# no token to route on, on a hostname this project's shared-fleet
+# probing was never going to authenticate against regardless. A third
+# unrelated shape (a "please sign up" sentence with no declared content
+# type) on the same path is exactly the kind of divergence this whole pair
+# of Recipes is about, and Cauldron has no way to express it: two hostnames
+# serving the same path with three different behaviours cannot both be
+# modelled in one flat route table keyed on method and path alone, so this
+# Recipe describes chrome.browserless.io here and models
+# production-sfo.browserless.io below.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's auth.scheme is a single boolean gate, the same limitation
+#     ScrapingBee's Recipe records: it cannot serve two different bodies for
+#     "no credential" and "wrong credential" at the same status code. This
+#     Recipe turns it off and rebuilds the check out of ordinary routes
+#     matched on the token query parameter, the same way.
+#   - The same narrower gap follows: Cauldron's query matching has no way to
+#     assert a parameter's absence, only its value, so the edge_unauthorized
+#     route below only fires for token sent as an explicit empty string
+#     (?token=). A token left out of the URL entirely was checked directly
+#     and answers identically on the real host -- this emulator instead
+#     serves the wrong-token shape for it, because that is the one route
+#     with no matches_query left to fall through to.
+#   - The application's wrong-token message carries a fresh UUID as
+#     requestId on every real call, and Cauldron's route-level errors have
+#     no per-request substitution for it. The message below is fixed, and
+#     the conformance case asserts its static wording with body_matches
+#     rather than asserting the placeholder id as if it were real.
+#   - The Authorization-header failure is modelled for the one literal
+#     header value this project actually sent, via matches_header, which
+#     compares for equality. The real edge breaks on any Authorization
+#     header at all, of any value -- Cauldron has no presence-only match for
+#     a header the way required_headers has for a missing one, only this
+#     one for a header carrying a specific value, so this is a literal
+#     example rather than a general rule, the same qualification
+#     healthchecks' Recipe already makes for its own literal path.
+#   - The same coverage gap ScrapingBee's Recipe records applies here too:
+#     the fixture token combined with a url this Recipe does not hold a
+#     fixture for matches no selects_body route and falls through to the
+#     wrong-token route, answering 401 for a token that is in fact correct.
+#     That is an artifact of only two urls being modelled, not something
+#     Browserless itself does.
+#   - Nothing downstream of both auth layers was observed: no token this
+#     project holds ever reached Browserless's own rendering logic, so the
+#     successful /content response, bestAttempt, gotoOptions and every other
+#     documented body parameter are recorded from docs.browserless.io and
+#     never called. Those cases carry a source and no verified date.
+#   - chrome.browserless.io is described above and modelled nowhere in this
+#     file, for the reason stated there.
+#   - screenshot, pdf, function, scrape and every endpoint besides /content
+#     are not modelled at all.
+
+recipe: browserless
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: rest
+  docs: https://docs.browserless.io/rest-apis/content
+  provider: browserless
+
+# See the header comment: this is a single pass/fail gate and the real
+# service answers two distinct shapes at the same status for "missing" and
+# "wrong", so this Recipe declares no scheme and checks token entirely
+# through routes instead.
+auth:
+  scheme: none
+
+routes:
+  # The one header value this project actually sent instead of the
+  # documented query parameter. See the header comment: this breaks the
+  # edge outright, and it is a literal example rather than a rule, because
+  # Cauldron cannot match "any Authorization header" the way it can match "a
+  # missing one".
+  - method: POST
+    path: /content
+    matches_header:
+      Authorization: "Bearer junktoken1234567890"
+    error: gateway_crash
+
+  # The fixture token and a target that answers normally. Documented, not
+  # observed -- nothing downstream of the auth layers was ever reached. The
+  # HTML is example.com's real markup, fetched directly on 2026-09-01;
+  # nothing about the envelope around it (status 200, Content-Type, and the
+  # complete absence of any field naming the target's own status) was
+  # called against Browserless itself.
+  - method: POST
+    path: /content
+    matches_query:
+      token: cauldronbrowserless00000000000000000000
+    # The trailing quote matters: without it this marker is a substring of
+    # the plain example.com body below and the whole-word check in
+    # SelectsBody does not know URL syntax, only word characters, so a slash
+    # already counts as a boundary. The quote pins this to a JSON value that
+    # ends exactly here.
+    selects_body: 'https://example.com/gone"'
+    raw:
+      content_type: text/html
+      text: |
+        <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+
+  - method: POST
+    path: /content
+    matches_query:
+      token: cauldronbrowserless00000000000000000000
+    selects_body: 'https://example.com"'
+    raw:
+      content_type: text/html
+      text: |
+        <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+
+  # token sent and empty. Observed directly: identical whether the parameter
+  # is left off the URL entirely or sent as token=. This route only catches
+  # the second form -- see the header comment's fidelity gap.
+  - method: POST
+    path: /content
+    matches_query:
+      token: ""
+    error: edge_unauthorized
+
+  # Everything else reaching this path: a token that does not match. A
+  # token left out of the URL entirely also lands here instead of on the
+  # rule above it -- the one stated gap in this Recipe's auth modelling.
+  - method: POST
+    path: /content
+    error: invalid_token
+
+  # The same three routes again for GET. Checked directly: the method never
+  # changed which of the three shapes answered, because the auth layers run
+  # before anything looks at the method at all. Cauldron routes by method,
+  # though, so reproducing "the method does not matter" means declaring it
+  # twice rather than once.
+  - method: GET
+    path: /content
+    matches_header:
+      Authorization: "Bearer junktoken1234567890"
+    error: gateway_crash
+
+  - method: GET
+    path: /content
+    matches_query:
+      token: ""
+    error: edge_unauthorized
+
+  - method: GET
+    path: /content
+    error: invalid_token
+
+  # A literal illustration that the auth gate does not care what path was
+  # asked for, checked directly against a path this Recipe otherwise never
+  # routes. Not a general rule -- see the header comment: no path on this
+  # host was ever observed to answer anything other than one of these three
+  # shapes, but declaring that as "every path" would need a route per path,
+  # which is not what this literal example is for.
+  - method: GET
+    path: /not-a-real-endpoint
+    matches_query:
+      token: ""
+    error: edge_unauthorized
+
+  - method: GET
+    path: /not-a-real-endpoint
+    error: invalid_token
+
+errors:
+  # openresty's own boilerplate, in front of the application entirely. No
+  # charset on the content type, unlike the application's own 401 below --
+  # checked directly, not assumed.
+  edge_unauthorized:
+    status: 401
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |
+      <html>
+      <head><title>401 Authorization Required</title></head>
+      <body>
+      <center><h1>401 Authorization Required</h1></center>
+      <hr><center>openresty</center>
+      </body>
+      </html>
+
+  # The application's own refusal, once a credential of some kind reaches
+  # it. Plain text, not JSON, and the real one carries a fresh request id
+  # this Recipe cannot mint per call -- see the header comment. The
+  # conformance case matches the static wording rather than this literal
+  # placeholder id.
+  invalid_token:
+    status: 401
+    style: text
+    headers:
+      Content-Type: "text/plain; charset=UTF-8"
+    message: "Invalid API key. Please check your API key and try again. (requestId: 00000000-0000-0000-0000-000000000000)"
+
+  # The edge itself, breaking on a header-shaped credential rather than the
+  # documented query one. See the header comment: unambiguously the proxy's
+  # own failure, and the easiest one for an integrator used to Bearer tokens
+  # to trigger by accident.
+  gateway_crash:
+    status: 500
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |
+      <html>
+      <head><title>500 Internal Server Error</title></head>
+      <body>
+      <center><h1>500 Internal Server Error</h1></center>
+      <hr><center>openresty</center>
+      </body>
+      </html>
+
+fixtures:
+  # No resources: every route answers recorded bytes or a named failure.
+  # The empty fixture is here because every Recipe ships one.
+  empty: {}
+
+conformance:
+  - name: no token at all is the edge's own 401, in html
+    source: https://production-sfo.browserless.io/content?token=
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /content?token=
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/html
+      body_matches: '401 Authorization Required'
+
+  - name: a token that is merely wrong is the same status and a different shape entirely
+    source: https://production-sfo.browserless.io/content?token=junktoken1234567890
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /content?token=junktoken1234567890
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/plain; charset=UTF-8"
+      body_matches: '^Invalid API key\. Please check your API key and try again\. \(requestId: [0-9a-f-]+\)$'
+
+  - name: a GET where the docs expect a POST answers exactly the same wrong-token shape
+    source: https://production-sfo.browserless.io/content?token=junktoken1234567890
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /content?token=junktoken1234567890
+    expect:
+      # Checked directly: the method never mattered, because the token
+      # never got as far as anything that would care what method was used.
+      status: 401
+      body_matches: 'Invalid API key'
+
+  - name: sending the credential as a header instead of the documented query parameter breaks the edge, not the app
+    source: https://production-sfo.browserless.io/content
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /content
+      headers:
+        Authorization: "Bearer junktoken1234567890"
+    expect:
+      # Neither of the two 401 shapes above -- an outright 500, from
+      # openresty, before the application's own token check ever runs.
+      status: 500
+      headers:
+        Content-Type: text/html
+      body_matches: '500 Internal Server Error'
+
+  - name: an unrouted path answers the same wrong-token shape as /content, not a 404
+    source: https://production-sfo.browserless.io/not-a-real-endpoint?token=junktoken1234567890
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /not-a-real-endpoint?token=junktoken1234567890
+    expect:
+      status: 401
+      body_matches: 'Invalid API key'
+
+  - name: and the same unrouted path with no token answers the edge's shape, not a 404 either
+    source: https://production-sfo.browserless.io/not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /not-a-real-endpoint?token=
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/html
+      body_matches: '401 Authorization Required'
+
+  - name: a render that succeeds has nowhere to put the target's own status
+    source: https://docs.browserless.io/rest-apis/content
+    request:
+      method: POST
+      path: /content?token=cauldronbrowserless00000000000000000000
+      json:
+        url: https://example.com
+    expect:
+      # Documented, not observed -- see the header comment. There is no
+      # header or body field here the way ScrapingBee's Spb-initial-status-code
+      # is -- the whole response is the rendered page and nothing else, so
+      # there is no JSON envelope left to check a field's absence in. The
+      # claim is the shape itself: text/html and nothing beside it, not a
+      # named field this format's absent check could point at.
+      status: 200
+      headers:
+        Content-Type: text/html
+      body_matches: 'Example Domain'
+
+  - name: a target that itself 404s renders identically to one that does not
+    source: https://docs.browserless.io/rest-apis/content
+    request:
+      method: POST
+      path: /content?token=cauldronbrowserless00000000000000000000
+      json:
+        url: https://example.com/gone
+    expect:
+      # example.com really does answer 404 to this path with its home
+      # page's own markup, verified directly on 2026-09-01. Browserless
+      # renders it and still answers 200: a target's own error page is
+      # valid HTML, and rendering valid HTML is what this endpoint calls
+      # success.
+      status: 200
+      body_matches: 'Example Domain'

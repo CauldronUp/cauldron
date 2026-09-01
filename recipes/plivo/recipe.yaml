@@ -1,0 +1,423 @@
+# Plivo Recipe for Cauldron
+#
+# Plivo authenticates with HTTP Basic, an auth_id as the username and an
+# auth_token as the password, and the auth_id doubles as the path scope --
+# the same shape Twilio's account_sid has. The token is the actual secret
+# (rotatable, never displayed after creation); the auth_id is public --
+# it is in the URL of every single request, in every support ticket, in every
+# dashboard screenshot -- so this Recipe checks the password half, the same
+# choice Bandwidth's Recipe makes and for the same reason: checking the
+# public half would mean a wrong secret is never rejected.
+#
+# Checked live, 2026-09-01, against https://api.plivo.com: a request with no
+# Authorization header and a request with a wrong auth_id/auth_token pair get
+# the identical answer -- 401, and not the JSON {"error": "..."} shape
+# Plivo's own official Python SDK is written to parse. It is an HTML page:
+#
+#   Could not verify your access level for that URL.
+#   You have to login with proper credentials
+#
+# with Content-Type text/html and a WWW-Authenticate: Basic challenge. That
+# is not a corner of the REST framework Plivo built -- it is a lower layer in
+# front of it answering before the request ever reaches application code, and
+# the evidence is in Plivo's own SDK: plivo-python's response handler tries
+# response.json() on every 401 and falls back to a hardcoded generic message
+# on a ValueError, which is precisely what firing AuthenticationError with
+# the SDK's own generic text rather than the server's actual sentence proves
+# happens on every single real 401. A client relying on that library's
+# exception message to say what went wrong never sees the server's own words,
+# on any 401, ever.
+#
+# A path this Recipe does not know about is a second, different 404 -- also
+# checked live, also without any credential at all -- {"message": "Not
+# Found"}, keyed "message" rather than the "error" every other status uses
+# per plivo-python's own request handler (400, 401, 403, 404 for a real
+# missing resource, 405, 409, 422, 500 all read response_json.error). Two
+# words, two different keys, both genuinely Plivo's, and which one a client
+# gets depends on whether the resource existed to be missing or the route
+# never did.
+#
+# Cauldron checks authentication before it resolves a path, for every Recipe,
+# with no per-route exception -- so the conformance case for that second 404
+# below has to carry a valid credential to reach it, where the real API needs
+# none at all. That is a limitation of what this format's runtime can
+# express, stated here rather than smoothed over in the case itself.
+#
+# The finding most worth having, though, is what a multi-recipient send
+# reports back. Plivo's dst parameter takes more than one destination in one
+# request -- numbers joined with "<" -- and the response is:
+#
+#   {"api_id": "...", "message": "message(s) queued",
+#    "message_uuid": ["<uuid-1>", "<uuid-2>", ...]}
+#
+# one uuid per recipient, in one array, in one HTTP response. Every other
+# provider in this collection that accepts more than one recipient per call
+# answers with ONE shared identifier for the whole send -- Bandwidth's is one
+# message id covering an array of "to"; Sinch's is one batch id covering an
+# array of "to" -- and a client asks that one id what happened to everyone in
+# it. Plivo shares nothing. The moment the array of message_uuids leaves the
+# response, the N recipients are N ordinary Message resources with no
+# property tying them to each other or to the request that created them: no
+# batch id, no group id, not even a shared timestamp guaranteed close enough
+# to correlate by. Finding out what happened to a three-recipient send means
+# having kept all three uuids from that one response and asking about each of
+# them by itself, one fetch per recipient -- which is Twilio's model (N
+# requests) grafted onto the back half of a single send call, rather than
+# either provider's actual approach to the problem.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The multi-recipient send itself is not modelled. Cauldron mints one
+#     identifier per created record, always as a scalar under the field name
+#     the Recipe declares; there is no way to say "this write creates N
+#     records and answers with only their bare identifiers, as a list, with
+#     none of their other fields." This Recipe's create route answers with
+#     one message_uuid as Plivo would for one recipient -- faithful to that
+#     case and silent about the array.
+#   - api_id is not modelled. It is a fresh value on every single response,
+#     success or failure, and every field in this format is either supplied
+#     by the caller or a fixed default; there is no mechanism for "a new
+#     random value on every call" outside of the resource's own identifier.
+#     A fixed constant here would be a specific false claim rather than an
+#     honest gap, so the field is left off entirely.
+#   - message_time, message_sent_time and message_updated_time are declared
+#     as plain strings rather than any of this format's time types. Plivo's
+#     own fixture spells them "2017-05-22 21:36:14+05:30" -- a space where
+#     RFC 3339 requires "T", and none of timestamp, timestamp_ms, datetime or
+#     msdate produce that. Typing them as datetime would silently reformat
+#     them into a shape the real API does not send.
+#   - No rate_limit error is declared. Plivo's own Python SDK special-cases
+#     400, 401, 403, 404, 405, 409, 422 and 500 -- reading an "error" field
+#     out of each -- and has no branch for 429 at all; an unhandled status
+#     falls through to a generic exception that never looks at the body.
+#     That is evidence the shape is not the standard one, not evidence of
+#     what it actually is, so it is left undeclared.
+#   - The Lookup API's error shape -- {api_id, error_code, message}, a third
+#     shape again -- is mentioned here because it surfaced while researching
+#     this Recipe and is worth knowing about, and is not modelled: it is a
+#     different Plivo product on a different base path.
+
+recipe: plivo
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.plivo.com/docs/messaging/api/overview
+
+auth:
+  scheme: basic
+  # The password is the secret; the auth_id is public and travels in every
+  # URL, so checking it would mean a wrong token is never rejected.
+  credential: password
+  keys:
+    - cauldronplivoauthtoken0000000000
+
+responses:
+  # {"error": "..."}, confirmed from plivo-python's own request handler,
+  # which reads exactly this key for 400, 401 (when the JSON parses at all),
+  # 403, 404, 405, 409, 422 and 500 alike. No code field travels beside it —
+  # a client cannot switch on anything but the HTTP status and the sentence.
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+
+resources:
+  # One row per recipient, always -- there is no resource here that
+  # represents "the send" as a whole, because Plivo does not have one.
+  message:
+    # Not "messages". Plivo's own list envelope calls the array "objects",
+    # the same generic word for every resource type it lists, and a client
+    # that assumes the resource's own name finds nothing there.
+    collection: objects
+    id:
+      style: uuid
+      field: message_uuid
+    fields:
+      auth_id:
+        type: string
+        in: "-"
+      from_number:
+        type: string
+      to_number:
+        type: string
+      message_direction:
+        type: string
+        default: outbound
+      # queued, sent, failed, delivered, undelivered, rejected, read.
+      message_state:
+        type: string
+        default: queued
+      message_type:
+        type: string
+        default: sms
+      # Plivo's own format, not RFC 3339: "2017-05-22 21:36:14+05:30". None
+      # of this format's time types produce a space instead of a T, so these
+      # three travel as plain, uninterpreted strings.
+      message_time:
+        type: string
+      message_sent_time:
+        type: string
+      message_updated_time:
+        type: string
+      units:
+        type: integer
+        default: 1
+      total_amount:
+        type: string
+      total_rate:
+        type: string
+      # null while the message is still in flight, the literal string "000"
+      # once a carrier confirms it delivered clean, and never absent either
+      # way -- a client testing for the key's existence always finds it.
+      error_code:
+        type: string
+        null_when_unset: true
+      # Empty string by default, not null and not absent -- a third state
+      # for the same idea error_code uses two of.
+      error_message:
+        type: string
+        default: ""
+      resource_uri:
+        type: string
+
+routes:
+  # Plivo's own SDK test fixture pins this at 202 Accepted: the message is
+  # queued, not sent, and this Recipe answers for one recipient the way the
+  # real API answers for the first uuid in an N-recipient send.
+  - method: POST
+    path: /v1/Account/{auth_id}/Message/
+    resource: message
+    operation: create
+    status: 202
+    scope: [auth_id]
+    # Nothing about the message comes back -- no from_number, no to_number,
+    # no state -- only its id and a fixed confirmation sentence.
+    returns:
+      - id
+    fields:
+      message: "message(s) queued"
+
+  - method: GET
+    path: /v1/Account/{auth_id}/Message/{id}/
+    resource: message
+    operation: get
+    scope: [auth_id]
+
+  - method: GET
+    path: /v1/Account/{auth_id}/Message/
+    resource: message
+    operation: list
+    scope: [auth_id]
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+    list:
+      style: wrapped
+      key: objects
+      count_field: meta.total_count
+      cursor_field: meta.next
+      # Plivo sends a path and query, not a whole URL -- a client that joins
+      # it to a base URL of its own gets a working next request; one that
+      # treats it as a self-sufficient address does not.
+      cursor_url: path
+
+errors:
+  # Observed live, 2026-09-01, for both a missing Authorization header and a
+  # wrong auth_id/auth_token pair: the identical HTML page, not the {"error":
+  # ...} JSON shape plivo-python is written to parse. That mismatch is the
+  # finding -- see the header comment above.
+  authentication_error:
+    status: 401
+    style: text
+    message: |-
+      Could not verify your access level for that URL.
+      You have to login with proper credentials
+    headers:
+      WWW-Authenticate: 'Basic realm="Login Required"'
+      Content-Type: "text/html; charset=utf-8"
+
+  # Observed live, 2026-09-01, for a path with no route at all: keyed
+  # "message", not "error" -- the one status this whole API answers two
+  # different ways depending on whether a resource was missing or the route
+  # never existed. Reaching this case in the emulator needs a valid
+  # credential, where the real API needed none; see the header comment.
+  unknown_route:
+    status: 404
+    message: "Not Found"
+    message_field: message
+
+  # A message_uuid that does not exist. plivo-python's own request handler
+  # confirms the shape -- it reads response_json.error for a genuine 404,
+  # the ordinary case the "message"-keyed one above is not -- but no exact
+  # wording was found in Plivo's documentation, so this declares no message
+  # and takes the runtime's own generic one rather than inventing a specific
+  # sentence nobody observed.
+  resource_missing:
+    status: 404
+
+fixtures:
+  empty: {}
+
+  small-account:
+    message:
+      # Still in flight: message_state is "sent" and error_code is absent
+      # from the fixture, so it is sent as null rather than omitted.
+      - id: 5b40a428-bfc7-4daf-9d06-726c558bf3b8
+        auth_id: MACAULDRON000000000
+        from_number: "911231231230"
+        to_number: "911231231231"
+        message_direction: outbound
+        message_state: sent
+        message_type: sms
+        message_time: "2017-05-22 21:36:14+05:30"
+        message_sent_time: "2024-08-21 18:28:49.244057+05:30"
+        message_updated_time: "2024-08-21 18:28:51.94772+05:30"
+        units: 1
+        total_amount: "0.00250"
+        total_rate: "0.00250"
+        resource_uri: /v1/Account/MACAULDRON000000000/Message/5b40a428-bfc7-4daf-9d06-726c558bf3b8/
+
+      # A carrier confirmed delivery: message_state is "delivered" and
+      # error_code is the literal string "000", Plivo's spelling for "a
+      # carrier answered and nothing was wrong."
+      - id: 0e4198f3-f04f-47d7-ae61-a152e4f4146a
+        auth_id: MACAULDRON000000000
+        from_number: "919655100565"
+        to_number: "919876543210"
+        message_direction: outbound
+        message_state: delivered
+        message_type: sms
+        message_time: "2017-05-16 20:52:51+05:30"
+        message_sent_time: "2024-08-21 18:28:49.244057+05:30"
+        message_updated_time: "2024-08-21 18:28:51.94772+05:30"
+        units: 1
+        total_amount: "0.00250"
+        total_rate: "0.00250"
+        error_code: "000"
+        resource_uri: /v1/Account/MACAULDRON000000000/Message/0e4198f3-f04f-47d7-ae61-a152e4f4146a/
+
+# Three cases are observed against the real API with no credential or a
+# wrong one, which needs no account. The rest are read from Plivo's own
+# published fixtures (plivo-python's test suite, which records the shapes
+# its assertions are written against) and marked documented rather than
+# verified, because reaching them for real needs an account this Recipe does
+# not have and sending a real message is out of scope regardless.
+conformance:
+  - name: a missing credential is refused with an HTML page, not JSON
+    source: https://api.plivo.com/v1/Account/MACAULDRON000000000/Message/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/Account/MACAULDRON000000000/Message/
+    expect:
+      status: 401
+      body_matches: "Could not verify your access level"
+      headers:
+        WWW-Authenticate: 'Basic realm="Login Required"'
+
+  - name: and a wrong auth_token answers exactly the same page
+    source: https://api.plivo.com/v1/Account/MACAULDRON000000000/Message/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/Account/MACAULDRON000000000/Message/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDp3cm9uZ3NlY3JldDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="
+    expect:
+      status: 401
+      body_matches: "Could not verify your access level"
+
+  - name: a path this Recipe does not know is a 404 keyed message, not error
+    source: https://api.plivo.com/v1/NotARealResource/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/NotARealResource/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDpjYXVsZHJvbnBsaXZvYXV0aHRva2VuMDAwMDAwMDAwMA=="
+    expect:
+      status: 404
+      body:
+        message: "Not Found"
+      absent:
+        - error
+
+  - name: a send answers a queued receipt, not a status
+    source: https://github.com/plivo/plivo-python/blob/master/tests/resources/fixtures/messageSendResponse.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/Account/MACAULDRON000000000/Message/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDpjYXVsZHJvbnBsaXZvYXV0aHRva2VuMDAwMDAwMDAwMA=="
+      form:
+        src: "911231231230"
+        dst: "911231231231"
+        text: "Testing without spending money"
+    expect:
+      status: 202
+      body:
+        message: "message(s) queued"
+      matches:
+        message_uuid: '^[0-9a-f-]{36}$'
+      # Nothing about the message it just queued -- no numbers, no state --
+      # and nothing tying it to anything else this account has sent.
+      absent:
+        - from_number
+        - to_number
+        - message_state
+        - api_id
+
+  - name: a listing wraps under objects, not messages, with paging nested under meta
+    source: https://github.com/plivo/plivo-python/blob/master/tests/resources/fixtures/messageListResponse.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/Account/MACAULDRON000000000/Message/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDpjYXVsZHJvbnBsaXZvYXV0aHRva2VuMDAwMDAwMDAwMA=="
+    expect:
+      status: 200
+      body:
+        "meta.total_count": 2
+        "objects[0].message_uuid": 5b40a428-bfc7-4daf-9d06-726c558bf3b8
+        "objects[0].message_time": "2017-05-22 21:36:14+05:30"
+      absent:
+        - messages
+
+  - name: a genuine 404 is keyed error, unlike the unmapped-path 404 above
+    source: https://github.com/plivo/plivo-python/blob/master/plivo/rest/client.py
+    fixture: empty
+    arm: resource_missing
+    request:
+      method: GET
+      path: /v1/Account/MACAULDRON000000000/Message/00000000-0000-0000-0000-000000000000/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDpjYXVsZHJvbnBsaXZvYXV0aHRva2VuMDAwMDAwMDAwMA=="
+    expect:
+      status: 404
+      # The exact sentence was not found in Plivo's documentation, so only
+      # its presence under the right key is asserted, not its wording.
+      matches:
+        error: ".+"
+      absent:
+        - message
+
+  - name: error_code is null in flight and the string 000 once delivered, never absent
+    source: https://github.com/plivo/plivo-python/blob/master/tests/resources/fixtures/messageListResponse.json
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/Account/MACAULDRON000000000/Message/
+      headers:
+        Authorization: "Basic TUFDQVVMRFJPTjAwMDAwMDAwMDpjYXVsZHJvbnBsaXZvYXV0aHRva2VuMDAwMDAwMDAwMA=="
+    expect:
+      status: 200
+      body:
+        "objects[0].error_code": null
+        "objects[1].error_code": "000"
