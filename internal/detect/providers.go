@@ -5118,6 +5118,28 @@ func providers() []provider {
 			npm:    []string{"expensify"},
 		},
 		{
+			recipe: "zenvia",
+			npm:    []string{"@zenvia/sdk", "zenvia-node"},
+		},
+		{
+			recipe: "drip",
+			npm:    []string{"drip-nodejs"},
+		},
+		{
+			recipe: "duo",
+			npm:    []string{"@duosecurity/duo_api"},
+		},
+		{
+			// @castleio/sdk, and not the npm package called "castle", which
+			// is terminal utilities for shell scripting.
+			recipe: "castle",
+			npm:    []string{"@castleio/sdk"},
+		},
+		{
+			recipe: "nile",
+			npm:    []string{"@niledatabase/server"},
+		},
+		{
 			recipe: "onfleet",
 			npm:    []string{"@onfleet/node-onfleet"},
 		},
