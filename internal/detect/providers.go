@@ -4182,6 +4182,18 @@ func providers() []provider {
 			npm:    []string{"cronitor"},
 		},
 		{
+			// The vendor's own SDK.
+			recipe: "inngest",
+			npm:    []string{"inngest"},
+		},
+		{
+			// The vendor's own SDK meta-package. Note it speaks the gRPC
+			// workflow API, where this Recipe describes the HTTP control
+			// plane -- the same product, a different surface.
+			recipe: "temporal",
+			npm:    []string{"temporalio"},
+		},
+		{
 			// A third-party wrapper; Serper ships no SDK of its own.
 			recipe: "serper",
 			npm:    []string{"serper"},
