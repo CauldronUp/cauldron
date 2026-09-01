@@ -1,0 +1,453 @@
+# Flagsmith Recipe for Cauldron
+#
+# Flagsmith's SDK-facing host answers from AWS Lambda behind an ALB --
+# `Server: awselb/2.0`, `AWS-Lambda-Region` on every response -- and the two
+# ways a request can fail to be understood disagree with each other about
+# nearly everything: status code, body shape, and whether the body is JSON
+# at all despite every response, failing or not, declaring
+# `Content-Type: application/json`.
+#
+# **No `X-Environment-Key` header at all** is a 401 whose body is not JSON,
+# checked against `/api/v1/flags/` and `/api/v1/identities/` on 2026-09-01:
+#
+#   ('No environment key header present.', 'Environment key header missing or empty.')
+#
+# That is a Python tuple's `str()`, single-quoted, parenthesised, leaked
+# straight into an HTTP response body -- valid Python, invalid JSON -- while
+# `Content-Type: application/json` sits on the same response claiming
+# otherwise. `response.json()` throws on this in every language whose HTTP
+# client believes the header, which is all of them, and the exception says
+# nothing about a missing header: it says the body could not be parsed,
+# pointing at a decoder that was never the problem.
+#
+# **A header that is present but wrong is a completely different failure.**
+# The same two paths, given `X-Environment-Key: totallyfakeenvkey123`,
+# answer:
+#
+#   404, Content-Length: 0
+#
+# No body. Not `{}`, not an empty string with quotes around it -- zero bytes,
+# under the same `Content-Type: application/json` the malformed-tuple 401
+# also claimed. `response.json()` throws on this one too, for the opposite
+# reason: there is nothing to parse rather than something unparseable.
+#
+# So missing and wrong are not two spellings of one failure here. They are a
+# different status, a different body shape, and two different ways for a
+# client that trusts the advertised content type to be wrong about what it
+# is holding -- and both of those are genuinely servable in one Recipe,
+# unlike Split's sdk.split.io (whose missing and wrong are provably
+# identical) and unlike Split's api.split.io (whose missing and wrong differ
+# only in one message field Cauldron's static errors table cannot compute
+# from what was sent). Flagsmith's split runs through two independent
+# mechanisms that do not compete for the same evaluated boolean: presence of
+# the header is a `required_headers` check that fires before routing ever
+# happens, and correctness of a *present* header is decided per route by
+# `matches_header`, which is checked only once presence has already been
+# established. Nothing here had to be given up to model both.
+#
+# **The `feature` query parameter changes the shape of the response, not
+# just its size.** Flagsmith's own published OpenAPI description
+# (`api.flagsmith.com/api/v1/swagger.json`) says so in words: "when providing
+# the `feature` query argument, this endpoint will return either a single
+# object or a 404 (if the feature does not exist) rather than a list." So
+# `/api/v1/flags/` is a bare array of every flag in the environment with no
+# `feature` in the query, and the exact same path with `?feature=name`
+# answers a bare *object* -- one flag, unwrapped, indistinguishable from a
+# list of one only by counting the brackets. Code written against the
+# collection and handed the filtered call reads `.length` off an object and
+# gets `undefined`, silently, because there is no array there to have a
+# length.
+#
+# **The identities endpoint is not a list either.** `/api/v1/identities/`
+# answers `{"identifier", "flags": [...], "traits": [...]}` -- one record,
+# addressed by the `identifier` query parameter, that happens to carry two
+# arrays. A client expecting a paginated collection back (because the SDK
+# docs talk about "identities" in the plural) receives a single object with
+# no envelope, no count, and no next page, because there is only ever one:
+# the identity asked for.
+#
+# **A path this Recipe never declared is a third shape again**, and it comes
+# from neither the Lambda application above nor a Django view -- it is the
+# edge infrastructure's own answer, before Flagsmith's code runs at all:
+#
+#   404  [{"id": "b8815d20-534a-4466-92c5-3a2fd0cc74f7", "title": "Not Found", "status": 404}]
+#
+# A JSON array holding one object, with `id`, `title` and `status` and none
+# of `code`, `message` or `error` -- the vocabulary neither of the app-level
+# failures above uses either. That `id` is a fresh UUID on every real
+# request; this Recipe fixes it, because a conformance suite needs a value to
+# assert and Cauldron's fixtures are not a request-id generator.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No `X-Environment-Key` value in this Recipe was ever a real one, and
+#     none was ever obtained: no account exists for this investigation. The
+#     three success cases below (the flag list, one filtered flag, one
+#     identity) are read from Flagsmith's own published OpenAPI schema at
+#     `api.flagsmith.com/api/v1/swagger.json` rather than observed, and carry
+#     no `verified` date for exactly that reason. That schema describes
+#     `api.flagsmith.com`, Flagsmith's Django-based core API; the host this
+#     Recipe actually calls, `edge.api.flagsmith.com`, is a separate
+#     Lambda-based reimplementation of the same SDK-facing paths, published
+#     with no OpenAPI description of its own. The error shapes above were
+#     observed directly against the edge host and carry a `verified` date;
+#     the success shapes are the one thing this investigation could not
+#     reach on either host and are sourced from the core API's own
+#     description of what the same contract promises.
+#   - Only one fixture flag (`chat_widget_enabled`) answers the filtered,
+#     single-object shape of `/api/v1/flags/?feature=...`. Cauldron's
+#     `matches_query` matches one declared value, not "any value of this
+#     parameter," so a request naming a different feature falls through to
+#     this Recipe's list route instead of the 404 the real, feature-aware
+#     lookup gives for a name that does not exist. That 404's own shape was
+#     never observed either, because reaching the check that produces it
+#     needs a working key this investigation never had.
+#   - `feature_state_value` is documented as `oneOf` integer, boolean, string
+#     or null -- whichever type the flag was configured with. Every fixture
+#     here is a boolean flag, and the field is declared as one; a
+#     multivariate string- or number-valued flag is real and not modelled.
+#   - Identify-and-set-traits (`POST /api/v1/identities/`) is not modelled.
+#     Every route here is a read.
+#   - No rate-limit header of any kind was observed on any response from
+#     edge.api.flagsmith.com, successful or not, across every request this
+#     investigation sent it.
+
+recipe: flagsmith
+capability: flags
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.flagsmith.com/clients/rest
+  spec: https://api.flagsmith.com/api/v1/swagger.json
+  spec_hash: 7d105e1168d47070809a93ba3ae0e398883ee77b84ab9a31716d59a7992e8836
+  spec_seen: "2026-09-01"
+
+auth:
+  # Not bearer or header: a single evaluated boolean cannot serve "missing"
+  # and "wrong" as the two different, both-real failures described in the
+  # header comment. required_headers below catches an absent credential
+  # before routing runs at all; matches_header on each route below catches a
+  # present-but-wrong one per path, at whatever status and shape that path's
+  # real failure actually has. Neither needs this scheme turned on.
+  scheme: none
+
+required_headers:
+  X-Environment-Key: env_key_missing
+
+responses:
+  list:
+    # The bare array /api/v1/flags/ answers with no feature filter -- no
+    # envelope, no count, nothing beside the records themselves.
+    style: bare
+  error:
+    # Only the edge-infrastructure "unknown path" failure below is
+    # structured JSON; the two application-level auth failures are declared
+    # with their own style per error, because neither is flat JSON at all.
+    style: list
+    key: "-"
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+    status_field: status
+
+resources:
+  flag_state:
+    # Addressed by the feature's name, nested two levels down: nothing at the
+    # top of this object identifies it at all. field nests, the same way
+    # Contentful's sys.id does.
+    id:
+      style: opaque
+      field: feature.name
+    fields:
+      # The rest of "feature" -- id and type -- travel alongside the name
+      # the identifier already places there.
+      feature_id:
+        type: integer
+        in: feature
+        as: id
+      feature_type:
+        type: string
+        in: feature
+        as: type
+        default: STANDARD
+      enabled:
+        type: boolean
+        required: true
+      # Documented as oneOf integer/boolean/string/null, following the
+      # flag's own configured type. Declared boolean because every fixture
+      # here is a boolean flag; see the header comment.
+      feature_state_value:
+        type: boolean
+      variant:
+        type: string
+      reason:
+        type: string
+
+  identity:
+    # One record per identifier, not a collection -- see the header comment.
+    id:
+      style: opaque
+      field: identifier
+    fields:
+      flags:
+        type: list
+      traits:
+        type: list
+
+routes:
+  # /api/v1/flags/?feature=<name> -- a single object, not a list of one, and
+  # only reachable with the one key this Recipe recognises. See the header
+  # comment on matches_query matching one declared value rather than any.
+  - method: GET
+    path: /api/v1/flags/
+    matches_header:
+      X-Environment-Key: cauldron-fixture-environment-key-000000
+    matches_query:
+      feature: chat_widget_enabled
+    resource: flag_state
+    operation: get
+    id_from: "query:feature"
+
+  # /api/v1/flags/ with no feature filter -- every flag in the environment,
+  # bare array, recognised key only.
+  - method: GET
+    path: /api/v1/flags/
+    matches_header:
+      X-Environment-Key: cauldron-fixture-environment-key-000000
+    resource: flag_state
+    operation: list
+
+  # Any other X-Environment-Key value on this path -- present, since a
+  # missing one never reaches routing at all, but not one this Recipe
+  # recognises. Zero bytes, not an empty JSON value of any kind.
+  - method: GET
+    path: /api/v1/flags/
+    raw:
+      content_type: application/json
+      empty: true
+    status: 404
+
+  - method: GET
+    path: /api/v1/identities/
+    matches_header:
+      X-Environment-Key: cauldron-fixture-environment-key-000000
+    resource: identity
+    operation: get
+    id_from: "query:identifier"
+
+  - method: GET
+    path: /api/v1/identities/
+    raw:
+      content_type: application/json
+      empty: true
+    status: 404
+
+errors:
+  # Not JSON, despite the Content-Type this Recipe still declares below --
+  # that mismatch is the finding. style: text bypasses this Recipe's own
+  # JSON error envelope entirely, which is the one way this format can send
+  # a body that does not parse as the thing its own header claims.
+  env_key_missing:
+    status: 401
+    style: text
+    message: "('No environment key header present.', 'Environment key header missing or empty.')"
+    headers:
+      Content-Type: application/json
+
+  # The edge infrastructure's own 404, for a path no route here declares.
+  # Real Flagsmith gives this whether or not a credential was sent at all,
+  # because the routing layer that produces it runs before the application
+  # that would check one. This Recipe cannot reproduce that ordering: see
+  # the header comment and the conformance case below, which has to present
+  # a recognised key to reach this shape, because Cauldron always checks
+  # required_headers before it decides whether a path is routed anywhere.
+  unknown_route:
+    status: 404
+    # A bare top-level array holding one object, so a client reading
+    # body.title finds undefined and has to index before it can read
+    # anything at all. "-" removes the envelope, which is what makes the
+    # array bare rather than wrapped under a key.
+    style: list
+    key: "-"
+    message_field: title
+    message: Not Found
+    fields:
+      status: 404
+      # A fresh UUID on every real request; fixed here for the same reason
+      # every other request-scoped id in this collection is.
+      id: b8815d20-534a-4466-92c5-3a2fd0cc74f7
+
+fixtures:
+  empty: {}
+
+  environment:
+    flag_state:
+      - id: chat_widget_enabled
+        feature_id: 501
+        feature_type: STANDARD
+        enabled: true
+        feature_state_value: true
+        variant: null
+        reason: null
+      - id: checkout_v2_rollout
+        feature_id: 502
+        feature_type: MULTIVARIATE
+        enabled: true
+        feature_state_value: true
+        variant: treatment_b
+        reason: TARGETING_MATCH
+
+    identity:
+      - id: user-42
+        flags:
+          - feature:
+              id: 501
+              name: chat_widget_enabled
+              type: STANDARD
+            enabled: true
+            feature_state_value: true
+            variant: null
+            reason: null
+        traits:
+          - trait_key: plan
+            trait_value: pro
+
+conformance:
+  - name: no environment key at all is a 401 whose body is not JSON
+    source: https://edge.api.flagsmith.com/api/v1/flags/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/flags/
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      # A Python tuple's str(), single-quoted -- valid Python and invalid
+      # JSON, underneath a header that claims otherwise.
+      body_matches: '^\(''No environment key header present\.'', ''Environment key header missing or empty\.''\)$'
+
+  - name: the same missing-header failure answers identities too
+    source: https://edge.api.flagsmith.com/api/v1/identities/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/identities/
+      query:
+        identifier: user-42
+    expect:
+      status: 401
+      body_matches: "^\\('No environment key header present\\.'"
+
+  - name: a present but wrong key is not the same failure at all
+    source: https://edge.api.flagsmith.com/api/v1/flags/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/flags/
+      headers:
+        X-Environment-Key: totallyfakeenvkey123
+    expect:
+      # A different status from the missing-header case above, not just a
+      # different message at the same one.
+      status: 404
+      headers:
+        Content-Type: application/json
+      # Zero bytes -- not "{}", not "", not any JSON value at all.
+      no_body: true
+
+  - name: and the same is true of identities
+    source: https://edge.api.flagsmith.com/api/v1/identities/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/identities/
+      headers:
+        X-Environment-Key: totallyfakeenvkey123
+      query:
+        identifier: test-user
+    expect:
+      status: 404
+      no_body: true
+
+  - name: the recognised key answers the whole environment as a bare array
+    source: https://api.flagsmith.com/api/v1/swagger.json
+    fixture: environment
+    request:
+      method: GET
+      path: /api/v1/flags/
+      headers:
+        X-Environment-Key: cauldron-fixture-environment-key-000000
+    expect:
+      status: 200
+      body:
+        "[0].feature.name": chat_widget_enabled
+        "[0].enabled": true
+        "[1].feature.type": MULTIVARIATE
+
+  - name: filtering by feature answers one object, not a list of one
+    source: https://api.flagsmith.com/api/v1/swagger.json
+    fixture: environment
+    request:
+      method: GET
+      path: /api/v1/flags/
+      headers:
+        X-Environment-Key: cauldron-fixture-environment-key-000000
+      query:
+        feature: chat_widget_enabled
+    expect:
+      status: 200
+      body:
+        "feature.name": chat_widget_enabled
+        "feature.id": 501
+        enabled: true
+      # Not wrapped in an array -- code that reads [0] off this finds
+      # undefined, and code that reads .length finds undefined too.
+      absent:
+        - "[0]"
+
+  - name: an identity is one record carrying two arrays, not a collection
+    source: https://api.flagsmith.com/api/v1/swagger.json
+    fixture: environment
+    request:
+      method: GET
+      path: /api/v1/identities/
+      headers:
+        X-Environment-Key: cauldron-fixture-environment-key-000000
+      query:
+        identifier: user-42
+    expect:
+      status: 200
+      body:
+        identifier: user-42
+        "flags[0].feature.name": chat_widget_enabled
+        "traits[0].trait_key": plan
+        "traits[0].trait_value": pro
+
+  - name: a path outside every route here is a third shape again
+    # Observed with no header at all, which is the real request: the edge
+    # infrastructure's routing failure does not care whether a credential
+    # was sent. This case has to present one anyway, because this Recipe's
+    # own required_headers check runs before routing does and would
+    # otherwise answer the missing-key shape instead. See the header
+    # comment and the error's own comment above.
+    source: https://edge.api.flagsmith.com/api/v1/bogus/
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/totally-unrouted-path/
+      headers:
+        X-Environment-Key: cauldron-fixture-environment-key-000000
+    expect:
+      status: 404
+      body:
+        "[0].title": Not Found
+        "[0].status": 404
+      matches:
+        "[0].id": "^[0-9a-f-]{36}$"
+      # Neither of the application-level failures' vocabulary appears here.
+      absent:
+        - "[0].code"
+        - "[0].message"
+        - "[0].error"
