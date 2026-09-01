@@ -1,0 +1,639 @@
+# Inngest Recipe for Cauldron
+#
+# Inngest is two APIs wearing one name, on two hosts, with two credentials,
+# and neither host tells you when you have used the wrong one.
+#
+# Sending an event goes to `inn.gs/e/<event-key>` -- the key travels in the
+# path, not a header. Reading anything back -- the event you sent, the
+# function runs it triggered, their status -- goes to
+# `api.inngest.com/v1/*`, authenticated with an entirely different
+# credential, a signing key, in an ordinary Authorization: Bearer header. Put
+# the signing key where the event key goes, or the reverse, and the failure
+# you get back never says "wrong credential type." It says the same thing a
+# genuinely bad key says, checked live against both hosts on the date below:
+#
+#   GET  inn.gs/e/<anything-wrong>      -> 404 "key not found"
+#   POST inn.gs/e/<anything-wrong>      -> 401 "Event key not found"
+#   GET  api.inngest.com/v1/events      -> 401 "Unauthorized"        (no
+#        credential, and a garbage one, answer identically -- checked both
+#        ways, like Temporal Cloud's Recipe in this collection and unlike
+#        Checkly's)
+#
+# Two things about those three lines are worth having pinned rather than
+# summarised:
+#
+#   1. The same key, on the same path, gets a different status, a different
+#      capitalisation and a different Content-Type depending only on the
+#      HTTP method. GET answers 404 with lowercase "key not found" and a
+#      Content-Type of text/plain. POST -- the method sending an event
+#      actually uses -- answers 401 with capitalised "Event key not found"
+#      and a genuinely correct application/json. Both share one
+#      error_code, "event_key_not_found", which is the only thing that says
+#      these are the same complaint asked two different ways.
+#   2. Both of those Content-Type: text/plain responses are lying. The
+#      bytes are valid JSON on every one of them --
+#      {"error":"Unauthorized","status":401} and
+#      {"data":null,"error":"key not found","error_code":
+#      "event_key_not_found"} -- served under a header that tells a client
+#      not to parse them as such. A client that trusts the header over the
+#      bytes, the way EPSS's Recipe in this collection warns a client
+#      trusts a restated status over the one that matters, never sees the
+#      message at all.
+#
+# The event you send is not the event you look up. The API takes an
+# optional `id` for your own deduplication and returns `ids`, an array of
+# its own ULIDs, in the send response; the record you can later fetch at
+# `GET /v1/events/{internalID}` is addressed by that returned ULID
+# (`internal_id` once you have fetched it), never by the `id` you sent. A
+# client that stores its own dedup key and tries to fetch "the event I just
+# sent" by it finds nothing, for the same reason Apify's Recipe in this
+# collection warns that the actor id in a run's path is not the actId in
+# its body: two identifiers, one object, and only one of them is the key
+# anything is filed under.
+#
+# And underneath both surfaces sits the mechanism this pair of Recipes was
+# assigned to test. A function run has a status -- Running, Completed,
+# Failed, Cancelled -- and the description is explicit that `ended_at` and
+# `output` are unset for exactly as long as status is Running and are
+# filled in together once it is not. Nothing here advances that on its own.
+# A fixture pinned at Running answers Running for as long as anything asks
+# it, the same fact Checkly's test-session fixtures and Apify's run
+# fixtures already state about themselves in this collection.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No event key and no signing key was ever requested, guessed or used.
+#     The 401s, the 404s and the two lying Content-Types above are struck
+#     live and carry a `verified:` date. Every 200 below -- the shape of an
+#     event, a run, a successful send -- is read from Inngest's own
+#     published v1 OpenAPI description or its events documentation and
+#     carries none, because reaching either with real data needs a key this
+#     project never created.
+#   - The send-event success body is the one exception to "never invent a
+#     value": its exact bytes, `{"ids":["01H08W4TMBNKMEWFD0TYC532GG"],
+#     "status":200}`, are copied from Inngest's own documentation example
+#     rather than synthesised, and the same ULID is reused below as that
+#     event's internal_id so the two documented facts -- what a send
+#     answers with, and what fetching that id later returns -- agree with
+#     each other rather than merely with themselves.
+#   - Every v1 list response also carries a `metadata: {fetchedAt,
+#     cachedUntil}` object, restamped fresh on every real call. This format
+#     has no mechanism for a response field that changes on every request
+#     without becoming a fixture, and freezing today's clock reading as a
+#     constant would serve a timestamp that is wrong the moment it is read
+#     twice, so `metadata` is left off entirely rather than served stale.
+#   - `received_before` and `received_after` are real query parameters on
+#     `GET /v1/events`, and a Filter in this format matches a field against
+#     one value, not a timestamp against a range, so they are not modelled.
+#   - `GET /v1/events/{internalID}/runs` declares no paging parameters at
+#     all in the description -- its parameter list holds only the branch
+#     environment header every v1 route accepts, checked directly rather
+#     than assumed. Cauldron's own drift check flags an unpaged listing as
+#     "unstated" by default, the same reading it would give a Recipe that
+#     never looked. This is the other case: looked, and there is nothing
+#     there to declare.
+#   - `GET /v1/runs/{runID}/jobs` -- the individual step attempts inside one
+#     run, each with its own `position` and `attempt` -- is a real,
+#     documented route and is not modelled. It would be a second resource
+#     for one thin fact (a retry count) this Recipe already makes with
+#     ApproximateReceiveCount's cousin on the run level, and the run's own
+#     status/output/ended_at triple is the mechanism this pair exists to
+#     show.
+#   - Batch sends -- Inngest's own docs say the endpoint "accepts a single
+#     event payload or an array" -- are real and undocumented in enough
+#     detail to model honestly: nothing in the published documentation
+#     states whether the returned `ids` array is ordered to match the
+#     input array. Rather than assume an ordering guarantee nobody wrote
+#     down, this Recipe models only a single-event send.
+#   - `/v1/signals`, `/v1/cancellations`, `/v1/webhooks` and their
+#     sub-routes are real, documented paths and are not modelled: none of
+#     them bears on the durable-execution mechanism this pair of Recipes
+#     was written to demonstrate.
+#   - Inngest's other calling direction -- invoking a user's own SDK server
+#     to run a function step, signed with the same signing key -- is not
+#     something this Recipe can model at all. Cauldron emulates a
+#     provider's API; that direction has the provider calling an
+#     application's server, which is the application, not the provider.
+
+recipe: inngest
+capability: queue
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: inngest
+  docs: https://www.inngest.com/docs/events
+  spec: https://api-docs.inngest.com/api-specs/v1.json
+  spec_hash: 133b42ae7a0a1dbe383a1c041ac6b17088720a3b47c6422ead9aa2b7fc2a5c0a
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer for api.inngest.com and genuinely a path segment for
+  # inn.gs -- two credentials on two hosts, and a single Recipe-wide scheme
+  # cannot be two things. Expressed as scheme none plus fixed routes below,
+  # the same trade Checkly's and Temporal Cloud's Recipes in this collection
+  # make, each for their own reason.
+  scheme: none
+
+responses:
+  # The properly-labelled JSON error family: inn.gs's POST failure, the only
+  # one of the three error shapes in this Recipe whose Content-Type is not
+  # lying. The other two override style to text per error -- see the header.
+  error:
+    style: flat
+    message_field: error
+    code_field: error_code
+    code_type: string
+    fields:
+      data: null
+  list:
+    style: wrapped
+    key: data
+  resource:
+    style: bare
+
+resources:
+  event:
+    id:
+      style: opaque
+      length: 26
+      field: internal_id
+    fields:
+      accountID:
+        type: string
+      environmentID:
+        type: string
+      # "The origin of the event, eg. \"key\" for an event key."
+      source:
+        type: string
+      sourceID:
+        type: string
+      receivedAt:
+        type: datetime
+      # The caller's own field, for the caller's own deduplication. Not the
+      # identifier this record is filed under -- see the header. Named
+      # dedup_id internally and put back on the wire as "id" with `as`: the
+      # fixture's own identifier already owns the literal key "id" for
+      # Cauldron's purposes, and this is a second, unrelated property the
+      # real API happens to spell the same way.
+      dedup_id:
+        type: string
+        as: id
+        null_when_unset: true
+      name:
+        type: string
+      data:
+        type: map
+      user:
+        type: map
+        null_when_unset: true
+      ts:
+        type: timestamp_ms
+      v:
+        type: string
+        null_when_unset: true
+
+  run:
+    id:
+      style: opaque
+      field: run_id
+    fields:
+      run_started_at:
+        type: datetime
+      # Unset for exactly as long as status is Running, and filled in
+      # together with output once it is not. "A function has ended if the
+      # status is not Running," in the description's own words.
+      ended_at:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      # Running, Completed, Failed or Cancelled.
+      status:
+        type: string
+        default: Running
+      # Whatever the function handler returned. Absent for the same
+      # duration ended_at is, and for the same reason.
+      output:
+        type: map
+        null_when_unset: true
+      function_id:
+        type: string
+      function_version:
+        type: integer
+      environment_id:
+        type: string
+      # Null when the run was not started by an event at all -- a cron, or a
+      # direct invocation.
+      event_id:
+        type: string
+        null_when_unset: true
+      batch_id:
+        type: string
+        null_when_unset: true
+      original_run_id:
+        type: string
+        null_when_unset: true
+      cron:
+        type: string
+        null_when_unset: true
+
+routes:
+  # Sending an event. The one success this Recipe can show without a real
+  # key: a literal path beats the templated one below it, so only this exact
+  # fixture value reaches it -- see the header for why the body is the one
+  # value in this Recipe copied verbatim from Inngest's own documentation
+  # rather than synthesised.
+  - method: POST
+    path: /e/cauldron-inngest-fixture-event-key-000000000000
+    raw:
+      content_type: application/json
+      text: '{"ids":["01H08W4TMBNKMEWFD0TYC532GG"],"status":200}'
+
+  # Any other key, sent the way a send actually happens: POST. Real,
+  # verified, correctly-labelled JSON.
+  - method: POST
+    path: /e/{key}
+    error: event_key_not_found_post
+
+  # The same wrong key, asked for with GET instead -- not how a send is
+  # documented to work, and answered differently in three ways at once: a
+  # different status, different capitalisation, and a Content-Type that
+  # calls valid JSON text/plain. See the header.
+  - method: GET
+    path: /e/{key}
+    error: event_key_not_found_get
+
+  - method: GET
+    path: /v1/events
+    resource: event
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    filters:
+      - param: name
+        field: name
+    pagination:
+      style: cursor
+      # "minimum 1 maximum 100." The provider sends no next-cursor field of
+      # its own -- a caller pages by resubmitting the last internal_id it
+      # read as cursor -- so cursor_field is left unset rather than claiming
+      # one, the same faithful-absence EPSS's Recipe in this collection
+      # already makes about starting_after-shaped providers.
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /v1/events
+    error: authentication_error
+
+  - method: GET
+    path: /v1/events/{id}
+    resource: event
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+
+  - method: GET
+    path: /v1/events/{id}
+    error: authentication_error
+
+  - method: GET
+    path: /v1/events/{event_id}/runs
+    resource: run
+    operation: list
+    scope: [event_id]
+    matches_header:
+      Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+
+  - method: GET
+    path: /v1/events/{event_id}/runs
+    error: authentication_error
+
+  - method: GET
+    path: /v1/runs/{id}
+    resource: run
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+
+  - method: GET
+    path: /v1/runs/{id}
+    error: authentication_error
+
+  # A path that names nothing real on either host. Both api.inngest.com and
+  # inn.gs answer this identically -- checked live on the date below.
+  - method: GET
+    path: /v1/this-is-not-a-real-route
+    error: unknown_route
+
+errors:
+  # api.inngest.com's uniform failure: no credential and a wrong one answer
+  # the identical sentence, under a Content-Type that is lying about the
+  # bytes. See the header. Overriding style to text here, against a
+  # Recipe-wide default of flat, is what lets one Recipe carry both: the
+  # inn.gs POST failure is genuinely the JSON its header claims, and this one
+  # is not.
+  authentication_error:
+    status: 401
+    style: text
+    message: |
+      {"error":"Unauthorized","status":401}
+
+  # Genuinely JSON, genuinely application/json -- the Recipe-wide style
+  # applies unchanged. error_code is the one fact "key not found" and "Event
+  # key not found" share.
+  event_key_not_found_post:
+    status: 401
+    code: event_key_not_found
+    message: "Event key not found"
+
+  # Same key, same error_code, asked for with the wrong verb: a different
+  # status, different capitalisation, and a Content-Type that is lying about
+  # the bytes exactly the way authentication_error's is.
+  event_key_not_found_get:
+    status: 404
+    style: text
+    message: |
+      {"data":null,"error":"key not found","error_code":"event_key_not_found"}
+
+  # Identical on both hosts.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      X-Content-Type-Options: nosniff
+    message: |
+      404 page not found
+
+fixtures:
+  empty: {}
+
+  events:
+    event:
+      # The event the send route above is documented to answer for. Same
+      # internal_id as that response's "ids[0]" -- see the header.
+      - id: 01H08W4TMBNKMEWFD0TYC532GG
+        accountID: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        environmentID: 5a1e9c2b-8f3d-4a67-9e21-6b0c8d4f2a11
+        source: key
+        sourceID: 8c2f1a9e-4b7d-4e3a-9f5c-1a6b8d3e7c02
+        receivedAt: "2026-08-30T12:00:00.000Z"
+        name: user.signup
+        data:
+          userId: "645ea8289ad09eac29230442"
+        ts: 1767096000000
+
+  # The caller's own dedup key, held separately from internal_id -- see the
+  # header. A client that fetches by this value rather than the ULID above
+  # finds nothing, which is the point.
+  event_with_dedup_id:
+    event:
+      - id: 01H08W4RETRYDEDUPID000001
+        dedup_id: signup-dedup-9f3e2a
+        accountID: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        environmentID: 5a1e9c2b-8f3d-4a67-9e21-6b0c8d4f2a11
+        source: key
+        sourceID: 8c2f1a9e-4b7d-4e3a-9f5c-1a6b8d3e7c02
+        receivedAt: "2026-08-31T08:00:00.000Z"
+        name: user.signup
+        data:
+          userId: "9f2a7c3e5b6d1a80"
+        ts: 1767168000000
+
+  # Two runs the same event triggered, still going and already done -- the
+  # pair GET /v1/events/{id}/runs would answer with.
+  runs:
+    run:
+      - id: 01HXYZRUNNINGID0000000001
+        run_id: 01HXYZRUNNINGID0000000001
+        run_started_at: "2026-08-31T09:00:00.000Z"
+        status: Running
+        function_id: acme-app-send-welcome-email
+        function_version: 3
+        environment_id: 5a1e9c2b-8f3d-4a67-9e21-6b0c8d4f2a11
+        event_id: 01H08W4TMBNKMEWFD0TYC532GG
+
+      - id: 01HXYZRUNCOMPLETEID000002
+        run_id: 01HXYZRUNCOMPLETEID000002
+        run_started_at: "2026-08-31T09:00:00.000Z"
+        ended_at: "2026-08-31T09:00:04.128Z"
+        status: Completed
+        output:
+          sent: true
+          messageId: msg_9f3e2a7c
+        function_id: acme-app-log-signup
+        function_version: 1
+        environment_id: 5a1e9c2b-8f3d-4a67-9e21-6b0c8d4f2a11
+        event_id: 01H08W4TMBNKMEWFD0TYC532GG
+
+  # A run that failed rather than completed, so ended_at and status agree
+  # the function is done while output stays unset -- unlike Completed, where
+  # both fill in together.
+  run_failed:
+    run:
+      - id: 01HXYZRUNFAILEDID00000003
+        run_id: 01HXYZRUNFAILEDID00000003
+        run_started_at: "2026-08-31T10:00:00.000Z"
+        ended_at: "2026-08-31T10:00:01.900Z"
+        status: Failed
+        function_id: acme-app-send-welcome-email
+        function_version: 3
+        environment_id: 5a1e9c2b-8f3d-4a67-9e21-6b0c8d4f2a11
+        event_id: 01H08W4TMBNKMEWFD0TYC532GG
+
+conformance:
+  - name: sending to the fixture key answers with the ids Inngest's own docs show
+    source: https://www.inngest.com/docs/events
+    fixture: empty
+    request:
+      method: POST
+      path: /e/cauldron-inngest-fixture-event-key-000000000000
+      json:
+        name: user.signup
+        data:
+          userId: "645ea8289ad09eac29230442"
+    expect:
+      status: 200
+      body:
+        ids:
+          - 01H08W4TMBNKMEWFD0TYC532GG
+        status: 200
+
+  - name: the same key sent to the real host is wrong is 401, capitalised, and honestly JSON
+    source: https://inn.gs/e/junk-test-key
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /e/some-key-that-is-not-the-fixture
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        data: null
+        error: "Event key not found"
+        error_code: event_key_not_found
+
+  - name: the identical key asked for with GET is 404, lowercase, and a Content-Type that is lying
+    source: https://inn.gs/e/junk-test-key
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /e/some-key-that-is-not-the-fixture
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '\{"data":null,"error":"key not found","error_code":"event_key_not_found"\}'
+
+  - name: querying events with no signing key is Unauthorized under a lying Content-Type
+    source: https://api.inngest.com/v1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/events
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '\{"error":"Unauthorized","status":401\}'
+
+  - name: and a signing key that is simply wrong answers the identical sentence
+    source: https://api.inngest.com/v1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/events
+      headers:
+        Authorization: Bearer signkey-junk-0000000000000
+    expect:
+      status: 401
+      body_matches: '\{"error":"Unauthorized","status":401\}'
+
+  - name: a path neither host recognises is the same 404 on both
+    source: https://api.inngest.com/v1/foobar
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-route
+    expect:
+      status: 404
+      headers:
+        X-Content-Type-Options: nosniff
+      body_matches: '404 page not found'
+
+  - name: listing events can be narrowed to one name
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: events
+    request:
+      method: GET
+      path: /v1/events?name=user.signup
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        "data[0].name": user.signup
+      absent:
+        - data[1]
+
+  - name: fetching the event a send answers for finds it by internal_id
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: events
+    request:
+      method: GET
+      path: /v1/events/01H08W4TMBNKMEWFD0TYC532GG
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        internal_id: 01H08W4TMBNKMEWFD0TYC532GG
+        name: user.signup
+        "data.userId": "645ea8289ad09eac29230442"
+
+  - name: the caller's own dedup id is not the key this event is filed under
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: event_with_dedup_id
+    request:
+      method: GET
+      path: /v1/events/01H08W4RETRYDEDUPID000001
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        id: signup-dedup-9f3e2a
+        internal_id: 01H08W4RETRYDEDUPID000001
+
+  - name: one event's runs can disagree about whether they are finished
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: runs
+    request:
+      method: GET
+      path: /v1/events/01H08W4TMBNKMEWFD0TYC532GG/runs
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        "data[0].status": Running
+        "data[1].status": Completed
+        # Present and null, not omitted -- ended_at and output are real
+        # properties of a Function-run, per the description, unset rather
+        # than absent for as long as the run is still going.
+        "data[0].ended_at": null
+        "data[0].output": null
+
+  - name: a completed run's ended_at and output arrive together
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: runs
+    request:
+      method: GET
+      path: /v1/runs/01HXYZRUNCOMPLETEID000002
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        status: Completed
+        ended_at: "2026-08-31T09:00:04.128Z"
+        "output.sent": true
+        "output.messageId": msg_9f3e2a7c
+
+  - name: a failed run also ends, but with no output to show for it
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: run_failed
+    request:
+      method: GET
+      path: /v1/runs/01HXYZRUNFAILEDID00000003
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        status: Failed
+        ended_at: "2026-08-31T10:00:01.900Z"
+        output: null
+
+  - name: a still-running run has ended nothing yet
+    source: https://api-docs.inngest.com/api-specs/v1.json
+    fixture: runs
+    request:
+      method: GET
+      path: /v1/runs/01HXYZRUNNINGID0000000001
+      headers:
+        Authorization: Bearer cauldron-inngest-fixture-signing-key-000000000000
+    expect:
+      status: 200
+      body:
+        status: Running
+        ended_at: null
+        output: null

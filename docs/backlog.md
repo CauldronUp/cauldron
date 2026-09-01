@@ -170,7 +170,7 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Bird | SMS, WhatsApp, conversations |
 | ~~Sinch~~ | Shipped. **Its documented API host has no public address**: `api.sinch.com` resolves through public DNS to three addresses on 10.65.0.0/16 -- private, unroutable -- and every connection times out, while the SMS product actually answers on `us.sms.api.sinch.com`. Where it does answer, a missing token and a wrong one are identical: 401, zero bytes, no `WWW-Authenticate`. The batch model is the finding: a send answers with the batch and **no status field anywhere**, for the batch or any recipient, and the default delivery report is aggregated counts by status code with no phone numbers in it -- so the default answer to "did my messages arrive" is a histogram. The batch's `id` is renamed `batch_id` on that report, the same rename Bandwidth performs from the other direction |
 | ~~Telnyx~~ | Shipped. Per-recipient status, cost after the fact, silent MMS |
-| Infobip | SMS, WhatsApp, verification |
+| ~~Infobip~~ | Shipped, and it finishes a five-way comparison the SMS Recipes have been building. One request to many recipients gives back nothing shared at all from Plivo, one bare id from Bandwidth and Sinch, and N separate requests from Twilio -- **Infobip alone answers one entry per recipient in the first response, each already carrying a structured status object**, and its own status reference documents two recipients in one request coming back in different groups, one pending and one already rejected. Its failures are less generous: a missing credential and a well-formed wrong one are identical, and a GET where a POST belongs answers **404 rather than 405**, naming the path it did not find, so a wrong method is reported as a wrong URL. Recorded and out of scope: its successor endpoint at `/sms/3/messages` uses a completely different error envelope from this one -- one vendor, two generations, no shared field |
 | WhatsApp Business Platform | Messages, templates, delivery states |
 
 ## Documents and signatures
@@ -412,7 +412,7 @@ the header says so.
 | ~~Courier~~ | Shipped. Courier picks the channel at delivery time, so which one a notification went out on is a separate lookup rather than anything in the request or the response; routing that finds no channel is not an error; and SIMULATED is a real status |
 | ~~Novu~~ | Shipped. A subscriber exists implicitly on first trigger, so a typo in an id creates one with nowhere to send and everything reports success; acknowledged means received rather than sent; and Novu's identifier and yours are different fields |
 | ~~Hookdeck~~ | Shipped. "Did my webhook work" has three answers here and they disagree on purpose, because one arriving webhook becomes three objects: a Request is what arrived, an Event is what gets delivered, an Attempt is one try. **A request can arrive, verify, be acknowledged with a 200, and go to nobody** -- `rejection_cause` has nine values and one is `NO_CONNECTION`, with `events_count` at nought, and nothing anywhere failed. **A failed attempt leaves the event SCHEDULED**: `EventStatus` is SCHEDULED, QUEUED, HOLD, SUCCESSFUL, FAILED, CANCELLED while `AttemptStatus` is only FAILED and SUCCESSFUL, so FAILED on an event means the retries are exhausted and an alert on `status === "FAILED"` is silent through every failure until then. Also pinned: `webhook_id` is not the id of a webhook -- its own description is "ID of the associated connection (webhook)", the product having renamed webhooks to connections while the field kept the old word; **32 of the 33 attempt error codes mean the request never reached you** (DNS, TLS, resets, redirects) with `BAD_RESPONSE` the only one meaning your server answered, so those attempts carry `response_status: null` and counting failures by `response_status >= 500` counts none of them; `verified` is a *nullable* boolean, so never-checked and failed-verification are different states that `if (!verified)` merges; and every listing in the API holds its records under `models`, the same key whatever it contains. The error envelope declares its own HTTP status as `"type": "number", "format": "float"`. Detection found a shape this file had not recorded: **the vendor's other product under the vendor's own scope** -- `@hookdeck/outpost-sdk` is Hookdeck's self-hosted Outpost, a different API, which is why an npm scope cannot be trusted the way `@googleapis/` can |
-| Inngest | Assess — events, functions, step state |
+| ~~Inngest~~ | Shipped. **Its failures declare `text/plain` and send JSON** -- a client trusting the content type treats valid JSON as a string, and one calling `.json()` succeeds despite being told not to. Two hosts take two credential systems and neither says when you have confused them: an event key goes in the path at `inn.gs`, a signing key in a Bearer header at `api.inngest.com`, and the same wrong key asked for two ways gives a different status and a different capitalisation. The caller's own deduplication id is never the key the event is filed under, so a client that remembers what it sent cannot find what it stored |
 | Trigger.dev | Assess — runs, tasks, the resumed run |
 
 ## Scheduling and real-time
@@ -431,7 +431,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Customer.io | Assess — the Track and App APIs are separate hosts with separate credentials, which is the sort of thing that only fails in one environment |
+| ~~Customer.io~~ | Shipped. **Its API answers its own marketing site's 404** -- a 3817-byte HTML page, byte-identical across both API hosts and both kinds of mistake, so a typo in an API path returns a web page and a client parsing it as JSON throws on the doctype. Two hosts take two credential schemes, Basic for tracking and Bearer for the app API, and sending the app's token to the tracking host answers exactly what sending nothing answers: missing, wrong and wrong-scheme are three mistakes with one response, separated only by a `WWW-Authenticate` header one host sends and the other does not. One authentication scheme is declared per Recipe with no per-route override, so this declares Basic and says plainly that the app route's enforcement is unfaithful while the body it serves there is byte-correct |
 | ~~Braze~~ | Shipped. "message" is both the success channel and the error channel, a listing entry is a smaller object than the detail, and the export answers with a prefix instead of data |
 | Iterable | Assess — users, campaigns, catalogues |
 | ActiveCampaign | Assess — contacts, deals, automations |
@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**236 more listings across 148 Recipes declare no paging at all**, and the
+**241 more listings across 151 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1168,7 +1168,7 @@ transfers alone, and say so in the header.
 | ~~Plivo~~ | Shipped. **Its failure is one its own SDK cannot parse**: a 401 arrives as `text/html` on a JSON API, and Plivo's published Python client is written to read `{"error": ...}` -- reading that client's source shows parsing throw, the exception swallowed, and a generic sentence substituted, so the vendor's own SDK reports something Plivo never said. A path matching no route answers JSON keyed `message` where documented failures use `error`. The send model completes a four-way comparison across this collection: Twilio has no multi-recipient primitive, Bandwidth mints one shared id, Sinch mints one with opt-in detail, and **Plivo mints N bare ids with nothing tying them together** -- lose one and that message can never be asked about again |
 | ~~Bandwidth~~ | Shipped, messaging only. The same message comes back with entirely different property names depending on which endpoint returned it, and a send is 202 Accepted rather than sent. Number provisioning is genuinely asynchronous and would be worth having, but that API answers in XML |
 | ~~Twilio Verify~~ | Shipped. A wrong code is a 200 with the verdict in a word inside the body, so `if (!res.ok)` lets the wrong person through the second factor. Three different 429s, two of which are terminal and one of which is not. A verification is deleted on approval, so checking twice and never having started are the same 404 |
-| Customer.io | The Track and App APIs are separate hosts with separate credentials, which is the sort of thing that works in one environment and not the other |
+| ~~Customer.io~~ | Shipped, and this row had it right: the Track and App APIs are separate hosts with separate credential schemes. What the Recipe adds is that **nothing tells you when you have confused them** -- sending the App token to the Track host answers exactly what sending nothing answers, and what a wrong secret answers, so three mistakes share one response, separated only by a `WWW-Authenticate` header one host sends and the other does not. And **the API answers its own marketing site's 404**, a 3817-byte HTML page identical across both hosts and both kinds of mistake |
 | ~~Braze~~ | Shipped. The export answers 201 with a prefix and no users; the file lands in cloud storage minutes later, so a test reading users off that response reads nothing forever |
 | ~~Brevo~~ | Shipped, and this row's own correction still stands: the premise about limits was wrong and is kept here so it is not re-derived. What the Recipe found instead is that **Brevo's published description is behind the credential** -- fetching `swagger_definition.yml` without a key answers 401 -- so the document explaining how to authenticate cannot be read without authenticating, and no `upstream.spec` is recorded. It also distinguishes a missing key from a wrong one in prose while giving both the identical `code` of `unauthorized`, so the field a machine switches on cannot tell them apart |
 | Kit | Assess — subscribers, sequences, tags |
@@ -1229,7 +1229,7 @@ transfers alone, and say so in the header.
 | Provider | Why |
 |---|---|
 | ~~Svix~~ | Shipped. Accepted is not delivered, the outcome lives on the attempts, a failing endpoint gets disabled and nothing announces it |
-| Inngest | Assess — events, functions, step state, where a step is durable and a function is not |
+| ~~Inngest~~ | Shipped. Step state is documented rather than served, for the reason this collection keeps meeting: a run's `ended_at` and `output` stay unset for exactly as long as its status is Running and fill in together when it is not, and nothing here advances a fixture between requests. Verified instead: **its failures declare `text/plain` and send JSON**, so a client trusting the content type treats valid JSON as a string. Also pinned: the caller's own deduplication id is never the key the event is filed under |
 
 ### Web data
 
@@ -1488,7 +1488,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Sixty-two Recipes send at least one identifier as a number now, and each
+Sixty-three Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

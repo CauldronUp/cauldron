@@ -1,0 +1,649 @@
+# Temporal Cloud (Cloud Ops API) Recipe for Cauldron
+#
+# The premise this Recipe was assigned to test was that Temporal Cloud has no
+# usable HTTP surface at all -- that its operator API is gRPC-first to the
+# point of being unreachable without a real client library. That premise is
+# wrong, and it is worth saying exactly how.
+#
+# saas-api.tmprl.cloud answers plain HTTP. `GET /health` is unauthenticated
+# JSON. And the "gRPC-first" operator API -- temporal.api.cloud.cloudservice
+# .v1.CloudService, reached at paths shaped like
+# /temporal.api.cloud.cloudservice.v1.CloudService/GetNamespaces -- answers
+# real gRPC status codes over plain HTTP/1.1, no HTTP/2 required: a bogus
+# method name gets back grpc-status 12 (UNIMPLEMENTED) instantly, and a real
+# method with no credential gets back grpc-status 16 (UNAUTHENTICATED)
+# instantly, both as HTTP 200 with the status carried in headers and a
+# zero-byte body. None of that is modelled below, because it carries no JSON
+# at all -- the entire payload is two response headers and nothing else, and
+# there is no field type in this format for "an HTTP response whose body does
+# not exist." It is recorded here because it answers the question the task
+# asked directly: the surface exists, it is reachable with a bare HTTP
+# client, and it is still not representable, for a different reason than "no
+# surface." The reason is "no JSON."
+#
+# What changes that verdict is `saas-api.tmprl.cloud/docs/httpapi.html`,
+# which is a live Scalar-rendered reference for a second, genuinely JSON,
+# REST surface at /cloud/* -- Temporal's own words for it: "an open source,
+# public HTTP API ... offering the same operations as the gRPC API, but ...
+# usable via standard HTTP methods." Its OpenAPI description is served at
+# /spec.json, fetched and fingerprinted below, and this Recipe describes that
+# surface: namespace management and the asynchronous operations every mutating
+# call on it returns instead of a result.
+#
+# That "instead of a result" is the reason this pair exists. Creating,
+# updating or deleting a namespace never answers with the namespace. It
+# answers 200 -- not 201 -- with an AsyncOperation: an id, a state that starts
+# at STATE_PENDING, and nothing else finished. The namespace itself carries an
+# asyncOperationId pointing at the same operation and a resourceVersion this
+# Recipe does not enforce (see the gaps below), and the only way to learn
+# whether the operation succeeded is to ask it again later, at
+# `GET /cloud/operations/{id}`. Cauldron has no clock that advances a fixture
+# between two requests -- Checkly's test-session polling and Apify's run
+# statuses in this collection already say so about themselves -- so what this
+# Recipe adds is not a new instance of that gap. It is the plainest version of
+# it in the whole collection: the provider's own management plane, the one a
+# CI script polls to know whether its own infrastructure is ready, never
+# finishes here, because nothing here is a clock. A fixture pinned at
+# STATE_PENDING answers STATE_PENDING for ever. A fixture pinned at
+# STATE_FULFILLED was always fulfilled. There is no third fixture where a test
+# polls twice and watches it change, because that is a mechanism this format
+# does not have, not a scenario this Recipe forgot to add.
+#
+# Two more things worth having pinned rather than assumed:
+#
+#   1. Missing and wrong are the same sentence here, and that is a genuine
+#      finding rather than a gap. Checkly's Recipe in this collection needed
+#      two different error names because a bad bearer token and an absent one
+#      answer two different messages on the real host. Temporal Cloud does
+#      not: no Authorization header at all and a garbage one both answer
+#      exactly {"code":16, "message":"request not authenticated", "details":
+#      []}, checked both ways against the live host on the date below. A
+#      client that logs the message to tell "forgot to configure a key" from
+#      "the key is wrong" has nothing to read here that says which.
+#   2. A 404 is not one shape, and which one you get depends on how wrong the
+#      path is. A path that at least resembles the API -- anything under
+#      /cloud/ that is not a real route, including the bare prefix itself --
+#      gets the same JSON envelope every real failure uses:
+#      {"code":5, "message":"Not Found", "details":[]}. A path with no
+#      resemblance to anything Temporal registered at all falls through to a
+#      second, plainer 404 -- Go's own net/http default, "404 page not
+#      found" as text/plain with an added X-Content-Type-Options header, and
+#      no relation to the JSON envelope whatsoever. Both were checked live on
+#      the date below. Cauldron's own unknown-route fallback is one mechanism
+#      for every unmatched path, so this Recipe declares the JSON one -- the
+#      shape a realistic integration mistake (a typo in a real sub-path) is
+#      far more likely to hit than a request to a host section that does not
+#      exist at all -- and states the plainer one here rather than forcing a
+#      second shape the mechanism has no way to pick between.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 200 below is therefore read from the live OpenAPI
+#     description at /spec.json, not observed, and says so by carrying no
+#     `verified:` date. The 401s, the two 404 shapes and the 405-that-is-
+#     really-a-501 are all struck live, unauthenticated, and carry one.
+#   - resourceVersion is real: Namespace carries it, and update and delete
+#     both accept one back as an optimistic-lock query parameter, "the
+#     version of the namespace for which this [call] is intended for." What
+#     a stale or a missing one is refused with is not stated anywhere in the
+#     description's prose, and nothing unauthenticated could ever reach it to
+#     find out. Wiring it into Cauldron's own version-lock mechanism would
+#     mean inventing the one sentence this Recipe has no source for, so
+#     resourceVersion is modelled as an ordinary field and nothing enforces
+#     it here -- unlike commercetools' Recipe in this collection, which
+#     really did find that sentence and could.
+#   - Namespace.spec is a large nested object -- mTLS config, API-key auth
+#     config, capacity, high availability, search attributes, replicas, Nexus
+#     connectivity -- and only retentionDays is modelled from it. The rest
+#     would be nested fields with no fixture ever likely to exercise them
+#     usefully, and declaring thirty of them to describe one Recipe's worth
+#     of "yes, this nests too" was judged not worth the noise.
+#   - AsyncOperation.operationInput is a protobuf Any: whatever request
+#     started the operation, wrapped with a type URL. This format has no
+#     field type for an envelope whose shape depends on a type it does not
+#     know at Recipe-authoring time, so it is left off rather than guessed.
+#   - update (POST /cloud/namespaces/{namespace}) and delete both return the
+#     identical {asyncOperation: {...}} shape create does, per the same
+#     description, and are not given their own routes here: they would
+#     duplicate the create case's whole point without adding one.
+#   - Every mutating response also carries the namespace name as a bare
+#     top-level string beside asyncOperation -- {"asyncOperation": {...},
+#     "namespace": "the-name"}. This format's envelope ties one wrapping key
+#     to one shaped value; there is no mechanism for a second bare scalar to
+#     ride beside it under its own key the way Route.Beside lets a second
+#     full collection do, so it is not served here.
+#   - GetRegions, GetAccount, GetUsers, service accounts, API keys, audit log
+#     sinks, connectivity rules, Nexus endpoints, custom roles, billing
+#     reports and user groups are all real paths in the description and none
+#     of them are modelled. This Recipe is about the one mechanism the task
+#     was written to find, not a full port of the control plane.
+
+recipe: temporal
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v0.19.1
+  provider: temporal-cloud-ops
+  docs: https://docs.temporal.io/ops
+  spec: https://saas-api.tmprl.cloud/spec.json
+  spec_hash: 1b9468efde0ace8fdb6cbb28e2c29b7d3c9b792a0b69e996617734ef6ad00765
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer, but expressed as scheme none plus fixed routes below --
+  # the same trade Checkly's Recipe in this collection makes, for a different
+  # reason. Checkly needed it because missing and wrong answer two different
+  # sentences a single scheme cannot produce. Here the reason is /health:
+  # Cauldron's own auth check runs before routing, for every path a Recipe
+  # declares, and this is the one path on this host that takes no credential
+  # at all. A Recipe-wide bearer scheme would gate it along with everything
+  # else and turn the one public route into a 401.
+  scheme: none
+
+responses:
+  # {"code": <int>, "message": "...", "details": []} on every failure this
+  # Recipe declares, unauthenticated or not -- the same rpcStatus schema the
+  # description names for every route's "default" response.
+  error:
+    style: flat
+    code_field: code
+    code_type: number
+    message_field: message
+    fields:
+      # Always empty in every case this Recipe observed or read. The
+      # description types it as an array of google.protobuf.Any, for
+      # embedding structured detail no failure here actually carries.
+      details: []
+  list:
+    style: wrapped
+  resource:
+    style: bare
+
+resources:
+  namespace:
+    collection: namespaces
+    id:
+      style: opaque
+      field: namespace
+    fields:
+      # RESOURCE_STATE_ACTIVATING, _ACTIVE, _UPDATING, _UPDATE_FAILED,
+      # _DELETING, _DELETE_FAILED, _DELETED, _SUSPENDED, _EXPIRED or
+      # _ACTIVATION_FAILED. A client matching only on "ACTIVE" or treating
+      # anything-not-ACTIVATING as done treats a namespace that failed to
+      # provision as one that succeeded.
+      state:
+        type: string
+        default: RESOURCE_STATE_ACTIVE
+      # The operation currently creating, updating or deleting this
+      # namespace, if any. Set while state is one of the transitional ones
+      # and absent once it settles -- the pointer a client follows from the
+      # namespace back to the thing it should actually be polling.
+      asyncOperationId:
+        type: string
+        null_when_unset: true
+      # An optimistic-lock token update and delete both accept back. Real,
+      # and not enforced here -- see the header.
+      resourceVersion:
+        type: string
+      activeRegion:
+        type: string
+      createdTime:
+        type: datetime
+      lastModifiedTime:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      # One field out of NamespaceSpec's much larger shape. See the header.
+      retentionDays:
+        type: integer
+        in: spec
+        as: retentionDays
+      # "The id of the project this namespace belongs to."
+      projectId:
+        type: string
+      tags:
+        type: map
+
+  async_operation:
+    collection: operations
+    id:
+      style: opaque
+    fields:
+      # STATE_PENDING, STATE_IN_PROGRESS, STATE_FULFILLED, STATE_FAILED,
+      # STATE_CANCELLED or STATE_REJECTED. Every create, update and delete on
+      # a namespace starts one of these at STATE_PENDING, and nothing in this
+      # format advances it: a fixture pinned here answers this for ever. See
+      # the header.
+      state:
+        type: string
+        default: STATE_PENDING
+      operationType:
+        type: string
+      # "The recommended duration to check back," e.g. "5s" -- prose the
+      # caller is meant to parse and wait out, not a number of seconds.
+      checkDuration:
+        type: string
+      startedTime:
+        type: datetime
+      finishedTime:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      # Set only once state is STATE_FAILED. Absent on every other state,
+      # including the terminal ones that are not a failure -- so its mere
+      # presence is already most of the answer, before anything reads its
+      # text.
+      failureReason:
+        type: string
+        null_when_unset: true
+
+routes:
+  # Public, unauthenticated, and the one route on this whole host that is.
+  # Included for the contrast: everything past this line needs the fixture
+  # key, and this is the one line in this Recipe that does not.
+  - method: GET
+    path: /health
+    raw:
+      content_type: application/json
+      text: '{"status":"healthy","service":"saas-control-plane-httpserver"}'
+
+  - method: GET
+    path: /cloud/namespaces
+    resource: namespace
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    # "name" is documented too, and is not modelled: it filters namespaces by
+    # the exact field this resource is keyed on, and a Filter target in this
+    # format is drawn from a resource's plain fields rather than its
+    # identifier -- the same namespace/wire-key collision id_key_collision
+    # guards against elsewhere in this format. Filtering on projectId, a
+    # genuinely separate field, is unaffected.
+    filters:
+      - param: projectId
+        field: projectId
+    pagination:
+      style: cursor
+      # "Cannot exceed 1000. Optional, defaults to 100."
+      limit: 100
+      max_limit: 1000
+      limit_param: pageSize
+      cursor_param: pageToken
+    list:
+      key: namespaces
+      cursor_field: nextPageToken
+
+  - method: GET
+    path: /cloud/namespaces
+    error: authentication_error
+
+  - method: GET
+    path: /cloud/namespaces/{id}
+    resource: namespace
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+
+  - method: GET
+    path: /cloud/namespaces/{id}
+    error: authentication_error
+
+  # Never a 201. The thing that comes back is not the namespace -- it is an
+  # operation that has not finished, and answering 201 would claim the
+  # namespace already exists the way a 201 always does elsewhere in this
+  # collection.
+  - method: POST
+    path: /cloud/namespaces
+    resource: async_operation
+    operation: create
+    matches_header:
+      Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    status: 200
+    envelope:
+      style: wrapped
+      key: asyncOperation
+
+  - method: POST
+    path: /cloud/namespaces
+    error: authentication_error
+
+  - method: GET
+    path: /cloud/operations/{id}
+    resource: async_operation
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    envelope:
+      style: wrapped
+      key: asyncOperation
+
+  - method: GET
+    path: /cloud/operations/{id}
+    error: authentication_error
+
+  # A wrong HTTP method on a real path. The real host answers 501, not the
+  # 405 nearly everything else in this collection uses for the same mistake
+  # -- see the header. Declaring an error under Cauldron's own built-in name
+  # for this failure lets it own the status as well as the body.
+  - method: PUT
+    path: /cloud/namespaces
+    error: method_not_allowed
+
+  # A path that resembles the API but names nothing real. Declaring this
+  # under Cauldron's own unknown-route name means every unmatched /cloud/
+  # path this Recipe is asked for answers the same way, which is what the
+  # live host does -- see the header for the other 404 shape this cannot
+  # also be.
+  - method: GET
+    path: /cloud/this-is-not-a-real-resource
+    error: unknown_route
+
+errors:
+  authentication_error:
+    status: 401
+    code: "16"
+    message: "request not authenticated"
+    headers:
+      www-authenticate: "request not authenticated"
+
+  unknown_route:
+    status: 404
+    code: "5"
+    message: "Not Found"
+
+  method_not_allowed:
+    status: 501
+    code: "12"
+    message: "Method Not Allowed"
+
+fixtures:
+  empty: {}
+
+  namespaces:
+    namespace:
+      # Settled and healthy. No asyncOperationId, because nothing is acting
+      # on it.
+      - id: accounting.a2dd6
+        namespace: accounting.a2dd6
+        state: RESOURCE_STATE_ACTIVE
+        resourceVersion: "3"
+        activeRegion: aws-us-west-2
+        projectId: proj_finance
+        createdTime: "2026-03-11T14:02:00Z"
+        lastModifiedTime: "2026-07-02T09:41:18Z"
+        retentionDays: 30
+        tags:
+          team: payments
+
+      # Mid-update. asyncOperationId points at the same operation this
+      # Recipe's async_operation fixture below describes as still pending --
+      # two views of one fact, neither of which will move on its own here.
+      - id: reporting.a2dd6
+        namespace: reporting.a2dd6
+        state: RESOURCE_STATE_UPDATING
+        asyncOperationId: 7f3c9a1e-8b2d-4e91-9c5a-1f6d2b8e4a70
+        resourceVersion: "5"
+        activeRegion: aws-eu-west-1
+        projectId: proj_finance
+        createdTime: "2026-01-20T08:15:00Z"
+        lastModifiedTime: "2026-08-30T16:20:44Z"
+        retentionDays: 7
+        tags: {}
+
+      # Never came up. A client that stops watching once state stops being
+      # "ACTIVATING" and does not check for this one reports a namespace as
+      # provisioned that never was.
+      - id: staging-ml.a2dd6
+        namespace: staging-ml.a2dd6
+        state: RESOURCE_STATE_ACTIVATION_FAILED
+        resourceVersion: "1"
+        activeRegion: aws-us-west-2
+        projectId: proj_ml
+        createdTime: "2026-08-29T11:00:00Z"
+        retentionDays: 3
+        tags: {}
+
+  # The operation the "reporting.a2dd6" namespace above points at.
+  operation_pending:
+    async_operation:
+      - id: 7f3c9a1e-8b2d-4e91-9c5a-1f6d2b8e4a70
+        state: STATE_PENDING
+        operationType: OPERATION_TYPE_UPDATE_NAMESPACE
+        checkDuration: "5s"
+        startedTime: "2026-08-30T16:20:44Z"
+
+  operation_fulfilled:
+    async_operation:
+      - id: 3b6f1c2d-5a8e-4f70-9d3b-2c7e5a9f1b40
+        state: STATE_FULFILLED
+        operationType: OPERATION_TYPE_CREATE_NAMESPACE
+        checkDuration: "5s"
+        startedTime: "2026-08-19T09:00:00Z"
+        finishedTime: "2026-08-19T09:00:41Z"
+
+  # A durable operation that failed asynchronously: the create call this
+  # answers to returned 200 the same way the fulfilled one did, and the only
+  # way to learn it did not work is to have asked again, later, at this
+  # route.
+  operation_failed:
+    async_operation:
+      - id: 9a4e2b7c-1d6f-4a83-8e5c-7b0d3f6a2c91
+        state: STATE_FAILED
+        operationType: OPERATION_TYPE_CREATE_NAMESPACE
+        checkDuration: "5s"
+        startedTime: "2026-08-21T10:00:00Z"
+        finishedTime: "2026-08-21T10:01:12Z"
+        failureReason: "region aws-sa-east-1 is not enabled for this account"
+
+conformance:
+  - name: the health check is public, unauthenticated JSON
+    source: https://saas-api.tmprl.cloud/health
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /health
+    expect:
+      status: 200
+      body:
+        status: healthy
+        service: saas-control-plane-httpserver
+
+  - name: no credential at all is UNAUTHENTICATED
+    source: https://saas-api.tmprl.cloud/cloud/namespaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /cloud/namespaces
+    expect:
+      status: 401
+      headers:
+        www-authenticate: "request not authenticated"
+      body:
+        code: 16
+        message: "request not authenticated"
+        details: []
+
+  - name: and a credential that is simply wrong answers the identical sentence
+    # Unlike Checkly's Recipe in this collection, which needed two different
+    # messages for exactly this pair of cases. Here there is only one.
+    source: https://saas-api.tmprl.cloud/cloud/namespaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /cloud/namespaces
+      headers:
+        Authorization: Bearer not-a-real-key-at-all
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "request not authenticated"
+
+  - name: a path that resembles the API but names nothing real is a JSON 404
+    source: https://saas-api.tmprl.cloud/cloud/this-is-not-a-real-resource
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /cloud/this-is-not-a-real-resource
+    expect:
+      status: 404
+      body:
+        code: 5
+        message: "Not Found"
+
+  - name: the wrong HTTP method on a real path is 501, not 405
+    source: https://saas-api.tmprl.cloud/cloud/namespaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /cloud/namespaces
+    expect:
+      status: 501
+      body:
+        code: 12
+        message: "Method Not Allowed"
+
+  - name: a namespace mid-update points at the operation still acting on it
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: namespaces
+    request:
+      method: GET
+      path: /cloud/namespaces/reporting.a2dd6
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        state: RESOURCE_STATE_UPDATING
+        asyncOperationId: 7f3c9a1e-8b2d-4e91-9c5a-1f6d2b8e4a70
+
+  - name: activation can fail, and nothing about the state's name says so unless you read the whole word
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: namespaces
+    request:
+      method: GET
+      path: /cloud/namespaces/staging-ml.a2dd6
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        state: RESOURCE_STATE_ACTIVATION_FAILED
+        asyncOperationId: null
+
+  - name: listing namespaces wraps under namespaces and pages by pageToken
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: namespaces
+    request:
+      method: GET
+      path: /cloud/namespaces
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "namespaces[0].namespace": accounting.a2dd6
+        "namespaces[1].namespace": reporting.a2dd6
+        "namespaces[2].namespace": staging-ml.a2dd6
+
+  - name: filtering by projectId narrows to that project
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: namespaces
+    request:
+      method: GET
+      path: /cloud/namespaces?projectId=proj_ml
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "namespaces[0].namespace": staging-ml.a2dd6
+      absent:
+        - namespaces[1]
+
+  - name: creating a namespace answers 200, not 201, because the namespace is not what comes back
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: empty
+    request:
+      method: POST
+      path: /cloud/namespaces
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+      json:
+        spec:
+          name: newteam
+    expect:
+      status: 200
+      body:
+        "asyncOperation.state": STATE_PENDING
+      absent:
+        - id
+        - namespace.namespace
+
+  - name: polling a pending operation shows no finish time yet
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: operation_pending
+    request:
+      method: GET
+      path: /cloud/operations/7f3c9a1e-8b2d-4e91-9c5a-1f6d2b8e4a70
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "asyncOperation.state": STATE_PENDING
+        "asyncOperation.finishedTime": null
+        "asyncOperation.failureReason": null
+
+  - name: polling the same shape once fulfilled shows a finish time and no failure reason
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: operation_fulfilled
+    request:
+      method: GET
+      path: /cloud/operations/3b6f1c2d-5a8e-4f70-9d3b-2c7e5a9f1b40
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "asyncOperation.state": STATE_FULFILLED
+        "asyncOperation.finishedTime": "2026-08-19T09:00:41Z"
+        "asyncOperation.failureReason": null
+
+  - name: a durable operation that failed still answered 200 when it was started
+    # The interesting fact is not on this response at all -- it is that the
+    # create call which started this operation returned 200 with
+    # STATE_PENDING, exactly like the one that succeeded above, and gave no
+    # sign at the time that this was the one that would not work.
+    source: https://saas-api.tmprl.cloud/spec.json
+    fixture: operation_failed
+    request:
+      method: GET
+      path: /cloud/operations/9a4e2b7c-1d6f-4a83-8e5c-7b0d3f6a2c91
+      headers:
+        Authorization: Bearer cauldron-temporal-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "asyncOperation.state": STATE_FAILED
+        "asyncOperation.failureReason": "region aws-sa-east-1 is not enabled for this account"
+
+  - name: without the fixture credential, every route past health refuses the same way
+    source: https://saas-api.tmprl.cloud/cloud/operations/anything
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /cloud/operations/anything
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "request not authenticated"

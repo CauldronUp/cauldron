@@ -4183,6 +4183,41 @@ func providers() []provider {
 		},
 		{
 			// The vendor's own Node SDK.
+			recipe: "infobip",
+			npm:    []string{"@infobip-api/sdk"},
+		},
+		{
+			// The vendor's own Node client for the tracking API, which is
+			// one of the two hosts this Recipe describes.
+			recipe: "customerio",
+			npm:    []string{"customerio-node"},
+		},
+		{
+			// The vendor's own SDK.
+			recipe: "inngest",
+			npm:    []string{"inngest"},
+		},
+		{
+			// The vendor's own SDK meta-package. Note it speaks the gRPC
+			// workflow API, where this Recipe describes the HTTP control
+			// plane -- the same product, a different surface.
+			recipe: "temporal",
+			npm:    []string{"temporalio"},
+		},
+		{
+			// A third-party wrapper; Serper ships no SDK of its own.
+			recipe: "serper",
+			npm:    []string{"serper"},
+		},
+		{
+			// A third-party wrapper. Brave publishes no JavaScript client,
+			// and the other results for the name are MCP servers rather
+			// than libraries a project would depend on.
+			recipe: "bravesearch",
+			npm:    []string{"brave-search"},
+		},
+		{
+			// The vendor's own Node SDK.
 			recipe: "scrapingbee",
 			npm:    []string{"scrapingbee"},
 		},

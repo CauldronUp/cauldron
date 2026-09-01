@@ -128,6 +128,7 @@ var words = map[string]int{
 	"Fifty-four": 54, "Fifty-five": 55, "Fifty-six": 56,
 	"Fifty-seven": 57, "Fifty-eight": 58, "Fifty-nine": 59,
 	"Sixty": 60, "Sixty-one": 61, "Sixty-two": 62,
+	"Sixty-three": 63, "Sixty-four": 64, "Sixty-five": 65,
 }
 
 // The backlog states how many routes still page by a parameter nobody named.
