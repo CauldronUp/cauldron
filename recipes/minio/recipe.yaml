@@ -1,0 +1,369 @@
+# MinIO Recipe for Cauldron
+#
+# This models the admin API, not the S3 data-plane surface, and the reason is
+# what play.min.io -- MinIO's own public demo server, now rebranded "AIStor"
+# in its UI -- actually does at the front door. Checked live on 2026-09-01:
+# GET / and GET on any bucket-shaped path (e.g. GET /some-bucket) both answer
+# 200 text/html, the compiled console single-page app, for a request that
+# carries no Authorization header or an ordinary one. The moment the header
+# is shaped like AWS SigV4 (starts "AWS4-HMAC-SHA256"), the identical path
+# instead reaches the real S3 engine and answers real S3 XML -- confirmed by
+# sending GET / with a syntactically valid but fake signature and getting
+# back <Error><Code>InvalidAccessKeyId</Code>...<Resource>/</Resource></Error>
+# where the same request with no header at all gets the console's HTML. That
+# branching is a property of this playground's front door, not of MinIO's
+# documented API, so it is recorded here rather than modelled: a self-hosted
+# MinIO exposes the S3 port directly and has no console SPA competing for the
+# same path.
+#
+# The admin API has no such ambiguity. Every path under /minio/admin/ reaches
+# the real engine every time, regardless of what the Authorization header
+# looks like or whether it is present at all -- verified against
+# /minio/admin/v4/info, /minio/admin/v4/user-info and a deliberately invented
+# admin path. That is why it is the surface this Recipe describes: it is the
+# one that answers, in the brief's own words.
+#
+# Three credential verdicts, not one, and each is verified live:
+#
+#   no Authorization header at all
+#     -> 403 {"Code":"AccessDenied","Message":"Access Denied.",...}
+#   Authorization: junk (present, no recognised scheme prefix at all)
+#     -> 400 <Error><Code>InvalidRequest</Code><Message>The authorization
+#        mechanism you have provided is not supported. Please use
+#        AWS4-HMAC-SHA256.</Message>...</Error>
+#   a syntactically valid AWS4-HMAC-SHA256 header naming an access key that
+#   exists nowhere (AKIAFAKEFAKEFAKEFAKE), with x-amz-date and
+#   x-amz-content-sha256 both present
+#     -> 403 {"Code":"InvalidAccessKeyId","Message":"The Access Key Id you
+#        provided does not exist in our records.",...}
+#
+# where Filebase's Recipe in this same collection collapses all three of the
+# equivalent cases into byte-identical AccessDenied, MinIO tells all three
+# apart -- by status code (403, 400, 403) and by Code (AccessDenied,
+# InvalidRequest, InvalidAccessKeyId), matching real AWS S3's own three-way
+# split rather than Filebase's gateway. A fourth shape exists and is not
+# modelled: "Authorization: Bearer junk" (present, "Bearer "-prefixed, not
+# SigV4) answers a *different* 403 AccessDenied than the no-header case --
+# same Code, byte-identical body in every probe run -- which this Recipe's
+# malformed_error slot cannot also carry alongside the InvalidRequest case
+# above; Cauldron has one slot for "present and shape-refused" and MinIO
+# fills it two different ways depending on whether the header merely lacks a
+# scheme or names a scheme (Bearer, meant for MinIO's own STS/JWT surface)
+# that isn't SigV4. Recorded here, not served.
+#
+# **This is the question the group exists to answer.** GET
+# /minio/admin/v4/user-info?accessKey=minioadmin (minioadmin being the
+# well-known default root username on countless self-hosted MinIO instances
+# -- there is no way to know from outside whether it is a real identity on
+# *this* deployment, which is exactly the point) and the identical request
+# with accessKey=nonexistentuser123 substituted both answered, verified live,
+# byte-for-byte identical 403 AccessDenied bodies. The accessKey query
+# parameter is never examined, because the credential check refuses the
+# request before anything downstream of it -- including whether the named
+# resource exists, or whose it is -- is ever consulted. An anonymous caller
+# who mistypes an identifier and one who names somebody else's get the same
+# answer for the same reason: neither request gets far enough to ask.
+#
+# Routing order is declarable, and admin.min.io's own arrangement is clean
+# enough to use the mechanism rather than approximate it. Checked live, no
+# credential either time: a path this Recipe has no route for
+# (/minio/admin/v4/totally-fake-endpoint-xyz) and a wrong method on a path it
+# does (POST /minio/admin/v4/info) both answer the identical:
+#
+#   501 {"Code":"NotSupported","Message":"This 'admin' API is not supported
+#        by server in 'mode-server-xl'","Resource":"...","RequestId":"",
+#        "HostId":""}
+#
+# with RequestId and HostId both the empty string -- contrast the populated
+# RequestId/HostId on every credential-gated answer above. That absence is
+# the tell: routing is resolved, and found wanting, before the credential is
+# ever looked at. auth.after_routing carries it.
+#
+# A wrinkle worth naming and not chasing: this Recipe addresses the admin API
+# as /minio/admin/v4/..., the version MinIO's server actually expects here.
+# The identical paths under /minio/admin/v3/ mostly answer a third shape --
+# 426 XMinioAdminVersionMismatch, "please upgrade the client to latest
+# releases" -- except that GET /minio/admin/v3/info and
+# /minio/admin/v3/user-info specifically still work and answer the same
+# AccessDenied v4 does. Some v3 routes are aliased for backward compatibility
+# and most are not, and which is which is not modelled: v4 is what a current
+# client sends, and the v3 aliasing is recorded here as a live-observed
+# curiosity rather than a second route table.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No SigV4 verification. The credential is checked by shape, the pattern
+#     every AWS-style Recipe in this collection already uses this for
+#     (dynamodb, sqs, ses, secretsmanager, filebase, wasabi). A well-shaped
+#     signature this Recipe never held a real key for always answers
+#     InvalidAccessKeyId here, which is honestly what happens to every key
+#     nobody has ever configured -- and is also, not coincidentally, what a
+#     genuine InvalidAccessKeyId case looks like on the wire.
+#   - No object or bucket CRUD, and no other admin operation (add-user,
+#     list-users, service-restart, and dozens more) is modelled. Every case
+#     below needed no real account, and this Recipe never held one -- Step 3
+#     of the brief this was written against is explicit that an invented
+#     success body is worse than an absent route.
+#   - The S3 data-plane surface (GET/PUT/DELETE on a bucket or object) is not
+#     modelled at all. It answers real S3 XML on this host, verified live
+#     (see the header above), and shares the same three-verdict credential
+#     shape and the same InvalidAccessKeyId body the admin API does --
+#     confirmed directly: GET /some-bucket with the same fake SigV4 header
+#     answered InvalidAccessKeyId with BucketName echoing the caller's own
+#     path, never the bucket's actual existence, which is the same answer
+#     this Recipe's admin routes give to the same question. It is not
+#     modelled as routes because doing so faithfully needs the console-SPA
+#     dispatch quirk described above, which is play.min.io's front door and
+#     not MinIO's own contract.
+#   - No upstream.spec. MinIO's admin API has no published OpenAPI document;
+#     it is consumed through the `mc admin` CLI and the official SDKs rather
+#     than a raw HTTP reference, and every case below was read off the wire
+#     directly rather than off a page describing it.
+#   - RequestId and HostId are per-request random hex in the real API. The
+#     literal values below are one real captured pair each, kept because a
+#     fixture needs some value and an actually-observed one is more honest
+#     than an invented one; every conformance case asserts only the fields
+#     that do not change (Code, Message, and Resource where it is templated),
+#     never the trace ids themselves.
+
+recipe: minio
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://min.io/docs/minio/linux/reference/minio-mc-admin.html
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape only -- see the header and dynamodb/recipe.yaml,
+  # sqs/recipe.yaml, ses/recipe.yaml, secretsmanager/recipe.yaml,
+  # filebase/recipe.yaml and wasabi/recipe.yaml for the same pattern on the
+  # same grounds.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+  # Verified live and genuinely distinct -- see the header. No header at all
+  # gets AccessDenied; a header present but not shaped like any auth scheme
+  # this Recipe recognises gets InvalidRequest, a different status and a
+  # different Code, not the same message worded differently.
+  absent_error: minio_access_denied
+  malformed_error: minio_invalid_request
+  # Verified both ways with no credential sent at all: an unrouted admin path
+  # and a wrong method on a routed one both answer 501 NotSupported with
+  # RequestId and HostId both empty, meaning routing is resolved and found
+  # wanting before the credential is ever examined. See the header.
+  after_routing: true
+
+responses:
+  error:
+    style: text
+
+routes:
+  # Reached only once a request clears the shape check above -- i.e. for a
+  # syntactically valid SigV4 header naming a key this Recipe was never given
+  # (AKIAFAKEFAKEFAKEFAKE, verified live). No resource and no operation: this
+  # Recipe never held a real admin credential, so there is no observed
+  # success body to serve -- see the fidelity gap on admin operations.
+  - method: GET
+    path: /minio/admin/v4/info
+    error: minio_invalid_access_key_id
+
+  # Declared so the absent-credential case below can reach the auth gate at
+  # all rather than falling to the unrouted-path answer -- see the header's
+  # answer to the group's core question: an existing accessKey and a
+  # nonexistent one asked for here get the identical AccessDenied, verified
+  # both ways, because the query parameter naming either is never reached.
+  - method: GET
+    path: /minio/admin/v4/user-info
+    error: minio_invalid_access_key_id
+
+errors:
+  # Verified live: no Authorization header at all, against
+  # /minio/admin/v4/info. RequestId and HostId are one real captured pair --
+  # see the header's fidelity gap. Every case below asserts Code and Message
+  # only, never these two fields, because they change on every real request.
+  minio_access_denied:
+    status: 403
+    code: AccessDenied
+    headers:
+      Content-Type: application/json
+    message: "{\"Code\":\"AccessDenied\",\"Message\":\"Access Denied.\",\"Resource\":\"/minio/admin/v4/info\",\"Region\":\"us-east-1\",\"RequestId\":\"18D12FAA38AF201F\",\"HostId\":\"dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8\"}"
+
+  # Verified live with -H "Authorization: junk" -- no scheme prefix MinIO
+  # recognises at all. XML, not JSON, unlike the AccessDenied case above:
+  # this host answers the two verdicts in two different envelopes as well as
+  # two different statuses.
+  minio_invalid_request:
+    status: 400
+    code: InvalidRequest
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>InvalidRequest</Code><Message>The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.</Message><Resource>/minio/admin/v4/info</Resource><Region>us-east-1</Region><RequestId>18D12FAE9F74DA95</RequestId><HostId>dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8</HostId></Error>
+
+  # Verified live: a well-shaped signature naming AKIAFAKEFAKEFAKEFAKE, with
+  # x-amz-date and x-amz-content-sha256 both present -- without those two
+  # headers the live server answers a fourth thing entirely ("AWS
+  # authentication requires a valid Date or x-amz-date header", 400), not
+  # modelled because it is about a missing companion header rather than
+  # about the credential itself.
+  minio_invalid_access_key_id:
+    status: 403
+    code: InvalidAccessKeyId
+    headers:
+      Content-Type: application/json
+    message: "{\"Code\":\"InvalidAccessKeyId\",\"Message\":\"The Access Key Id you provided does not exist in our records.\",\"Resource\":\"/minio/admin/v4/info\",\"Region\":\"us-east-1\",\"RequestId\":\"18D12FB5AA8D4560\",\"HostId\":\"dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8\"}"
+
+  # What an unrouted admin path answers, verified live with no credential
+  # sent at all. {detail} is the request path, which the live server really
+  # does echo under Resource -- see the header. RequestId and HostId are
+  # empty here for real, not a placeholder: this is what "routing never
+  # reached the credential" looks like on the wire.
+  unknown_route:
+    status: 501
+    code: NotSupported
+    headers:
+      Content-Type: application/json
+    message: "{\"Code\":\"NotSupported\",\"Message\":\"This 'admin' API is not supported by server in 'mode-server-xl'\",\"Resource\":\"{detail}\",\"Region\":\"us-east-1\",\"RequestId\":\"\",\"HostId\":\"\"}"
+
+  # The identical shape a wrong method gets, verified live with
+  # POST /minio/admin/v4/info and no credential. Resource is fixed to the one
+  # path this was verified against -- unlike unknown_route's {detail}, the
+  # live body here names only the path, not the method, so there is nothing
+  # request-specific to template accurately for a second path this Recipe
+  # did not also probe with a wrong method.
+  method_not_allowed:
+    status: 501
+    code: NotSupported
+    headers:
+      Content-Type: application/json
+    message: "{\"Code\":\"NotSupported\",\"Message\":\"This 'admin' API is not supported by server in 'mode-server-xl'\",\"Resource\":\"/minio/admin/v4/info\",\"Region\":\"us-east-1\",\"RequestId\":\"\",\"HostId\":\"\"}"
+
+fixtures:
+  empty: {}
+
+# Every case below carries verified: "2026-09-01". Nothing in this Recipe was
+# read from documentation -- MinIO's admin API has none published as a wire
+# reference (see the fidelity gap) -- so there is no documented-only half of
+# the split to report; the whole file was struck live against play.min.io.
+conformance:
+  - name: no credential at all is 403 AccessDenied, in JSON
+    source: https://play.min.io/minio/admin/v4/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/info
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body_matches: '"Code":"AccessDenied","Message":"Access Denied\.'
+
+  - name: a header with no recognised scheme is a different status and a different Code
+    # 400 InvalidRequest, not 403 AccessDenied -- the opposite of Filebase's
+    # Recipe in this collection, which answers this exact pair with
+    # byte-identical bodies. See the header.
+    source: https://play.min.io/minio/admin/v4/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/info
+      headers:
+        Authorization: junk
+    expect:
+      status: 400
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>InvalidRequest</Code><Message>The authorization mechanism you have provided is not supported\. Please use AWS4-HMAC-SHA256\.</Message>'
+
+  - name: a well-shaped signature naming no real key is a third, distinct answer
+    source: https://play.min.io/minio/admin/v4/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/info
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+        x-amz-date: "20260901T114300Z"
+        x-amz-content-sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body_matches: '"Code":"InvalidAccessKeyId","Message":"The Access Key Id you provided does not exist in our records\.'
+
+  - name: an accessKey that could be real and one that cannot both get the identical refusal
+    # minioadmin is the well-known default root username on countless
+    # self-hosted MinIO instances -- there is no way to know from outside
+    # whether it names a real identity on this deployment, which is exactly
+    # what this case demonstrates: the query parameter is never examined.
+    source: https://play.min.io/minio/admin/v4/user-info?accessKey=minioadmin
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/user-info?accessKey=minioadmin
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body_matches: '"Code":"AccessDenied","Message":"Access Denied\.'
+
+  - name: and a name that is certainly nobody's gets byte-identical treatment
+    source: https://play.min.io/minio/admin/v4/user-info?accessKey=nonexistentuser123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/user-info?accessKey=nonexistentuser123
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body_matches: '"Code":"AccessDenied","Message":"Access Denied\.'
+
+  - name: an admin path this Recipe has no route for never reaches the credential check
+    # Verified live with no Authorization header at all. RequestId and HostId
+    # both come back the empty string -- contrast every credential-gated case
+    # above, where both are populated. after_routing is why: routing is
+    # resolved, and found wanting, before the credential is ever looked at.
+    source: https://play.min.io/minio/admin/v4/totally-fake-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /minio/admin/v4/totally-fake-endpoint-xyz
+    expect:
+      status: 501
+      headers:
+        Content-Type: application/json
+      body:
+        Code: NotSupported
+        Resource: /minio/admin/v4/totally-fake-endpoint-xyz
+        RequestId: ""
+        HostId: ""
+
+  - name: and neither does a wrong method on a path that does have a route
+    # Verified live with POST and no credential. The identical shape the
+    # unrouted path gets, which is the point: this host resolves routing --
+    # path and method together -- entirely before it ever asks who is
+    # calling.
+    source: https://play.min.io/minio/admin/v4/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /minio/admin/v4/info
+    expect:
+      status: 501
+      headers:
+        Content-Type: application/json
+      body:
+        Code: NotSupported
+        Resource: /minio/admin/v4/info
+        RequestId: ""
+        HostId: ""
