@@ -1,0 +1,860 @@
+# Wise Recipe for Cauldron
+#
+# Wise answers an unauthenticated GET to /v1/rates with
+#
+#   {"error":"missing_token","error_description":"Missing token"}
+#
+# which is OAuth's own error shape rather than a Recipe convention borrowed
+# for it: two fields, "error" and "error_description", no "message", no
+# "status", no code the way Stripe or Paystack would send one. A bearer token
+# that is merely wrong answers the same two fields with different words --
+# "invalid_token" / "Invalid token" -- and Wise's own archived documentation
+# shows a third variant again, "unauthorized" / "Full authentication is
+# required to access this resource", for a case neither probe here reached.
+# Three codes, one envelope, and the envelope is what a client actually
+# checks.
+#
+# A malformed path answers differently again, and without a token:
+#
+#   {"status":"404","message":"Resource not found","error":"Not Found"}
+#
+# "status" here is a THIRD kind of status value in this collection. EPSS
+# states its status twice, once as the integer 200 and once as the word "OK".
+# Paystack's is a boolean. Wise's is the numeral "404" -- quoted, so
+# body.status === 404 is false and body.status == 404 is true only in a
+# language willing to coerce, and a comparison written for either of the
+# other two providers is wrong here in a third, new way.
+#
+# That 404 is reachable only without a credential, which is the most
+# consequential thing this research found and the one this Recipe cannot
+# reproduce. Four probes settle it:
+#
+#   no token,   known path (/v1/rates)              -> 401 missing_token
+#   no token,   unknown path                         -> 404 Resource not found
+#   bad token,  known path                           -> 401 invalid_token
+#   bad token,  unknown path                         -> 401 invalid_token
+#
+# A present-but-wrong credential is rejected before the path is even looked
+# at, on every path tried. The complete absence of one is not: it is treated
+# as an anonymous request that reaches the router, and only then does the
+# router say the path does not exist. Cauldron's own handler checks
+# authorised() once, unconditionally, before it ever consults the route
+# table -- so this Recipe's authentication_error fires for an unknown path
+# exactly as it fires for a known one, and the live asymmetry above has no
+# way to be stated as behaviour. It is stated here in prose instead. The
+# unknown_route case below is real -- its body is the one Wise actually
+# sends -- and reaching it through this emulator requires a bearer token
+# that the live 404 did not.
+#
+# The same collapse happens to missing_token and invalid_token. Cauldron
+# raises one error, named authentication_error, for every failed credential
+# check regardless of whether a header was sent at all. This Recipe declares
+# the missing-token body as that one shape, because it is the more commonly
+# hit of the two live here, and the invalid-token wording above is recorded
+# in prose because there is no second branch to hang it on.
+#
+# Two things worth modelling exactly once past authentication:
+#
+#   1. GET /v1/quotes, with no profile and no token, answers a complete,
+#      real, computed quote -- rate, fee, delivery estimate, all of it --
+#      for anyone. Every other resource this research reached demands a
+#      bearer token, including /v1/rates, which is nothing but a number.
+#      Getting a temporary quote does not. Cauldron's auth scheme is
+#      Recipe-wide, with no way to exempt one route, so this Recipe requires
+#      the token on /v1/quotes as well -- the opposite of what
+#      api.transferwise.com does, and stated here because there is nowhere
+#      else in the format to state it.
+#   2. A transfer's status moves through incoming_payment_waiting,
+#      processing, funds_converted and outgoing_payment_sent with no further
+#      request from the integrator at any step -- Wise's own archived
+#      documentation says so in as many words: "Since we don't have push
+#      notifications yet, you can poll this endpoint to track your transfer
+#      status." Cauldron has no clock of its own and no mechanism that
+#      changes a stored record between two requests that did not ask it to.
+#      A fixture can hold a transfer in any one of these states, seeded and
+#      constant, and the state names below are exactly Wise's own -- but the
+#      transition itself, the fact that the second GET can answer differently
+#      from the first with nothing having been sent in between, is the one
+#      piece of Wise's behaviour this format has no vocabulary for at all.
+#
+# Two timestamps in the same flow use two different formats, and neither
+# Recipe field type fits both. quote.createdTime is real RFC 3339 --
+# "2018-08-27T14:35:44.553Z" -- and is declared as datetime. transfer.created
+# is "2018-08-28 07:43:55": a space instead of "T", no zone, no
+# milliseconds -- Java's LocalDateTime.toString() by the shape of it, and
+# none of Cauldron's five time types produce that. Declaring it datetime
+# would have Cauldron auto-stamp a real create in the wrong shape, so it is
+# declared a plain string instead and its value comes from the fixture
+# verbatim, which is honest about the field and gives up the auto-stamping
+# every other timestamp in this Recipe gets for free.
+#
+# The fund-a-transfer call is a third resource in miniature, not the transfer
+# it operates on: POST /v3/profiles/{id}/transfers/{id}/payments answers
+# {"type":"BALANCE","status":"COMPLETED","errorCode":null}, and that
+# "status" is COMPLETED or REJECTED -- a different, upper-cased vocabulary
+# from the transfer's own incoming_payment_waiting/processing/cancelled,
+# under the identical field name, two API versions apart in the same
+# integration. It is modelled here as a raw body for exactly that reason: it
+# is not the transfer record, and forcing it into the transfer resource would
+# claim the two vocabularies are one.
+#
+# The multi-error validation shape is real and only partly reproducible.
+# Leaving every quote parameter out answers a list of four distinct
+# problems in one response; Cauldron's list-style error table arms exactly
+# one named failure at a time, so only a single, real entry from that list
+# -- a bad rateType -- is modelled and demonstrated below. The four-at-once
+# shape is recorded here rather than forced into a case that could not prove
+# it.
+#
+# No OpenAPI or Swagger description was found for this API. api-docs.wise.com
+# and api-docs.transferwise.com both redirect to the narrative docs at
+# docs.wise.com; the transferwise/api-roadmap repository that once published
+# Swagger fragments for quotes, transfers and profiles has been deleted. This
+# Recipe cites docs.wise.com for current behaviour and the archived
+# transferwise/api-docs repository -- Wise's own, no longer maintained -- for
+# response shapes the current docs describe without an example. No
+# upstream.spec is declared as a result.
+#
+# No rate-limit header of any kind was seen on any probe, authenticated or
+# not, against either api.transferwise.com or api.wise.com.
+#
+# Keys below are fixtures, not secrets, and every id and amount is invented
+# except where copied from Wise's own published examples.
+
+recipe: wise
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.wise.com/api-reference
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-wise-api-token
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_description
+    code_field: error
+    type_field: "-"
+
+resources:
+  # The temporary, anonymous quote (GET /v1/quotes, no profile) is served as
+  # a raw body below rather than as this resource: it carries no id at all,
+  # which is itself part of what makes it worth recording, and forcing an
+  # identifier onto it to fit the resource shape would misdescribe the one
+  # thing that makes it different from every other resource here. This
+  # resource is the authenticated, profile-scoped quote instead -- the one a
+  # real transfer is built from.
+  quote:
+    id:
+      style: numeric
+      type: number
+    fields:
+      source:
+        type: string
+      target:
+        type: string
+      sourceAmount:
+        type: number
+      targetAmount:
+        type: number
+      # BALANCE_PAYOUT (funded from a Wise balance), BALANCE_CONVERSION
+      # (between two balances) or REGULAR (funded by bank transfer).
+      type:
+        type: string
+        default: REGULAR
+      rate:
+        type: number
+      # Real RFC 3339, unlike transfer.created below -- see the header.
+      createdTime:
+        type: datetime
+      createdByUserId:
+        type: integer
+      profile:
+        type: integer
+      rateType:
+        type: string
+        default: FIXED
+      deliveryEstimate:
+        type: datetime
+      fee:
+        type: number
+      # Nested exactly as Wise sends it. The anonymous quote below carries a
+      # fifth sub-field here, priceSetId, that this authenticated shape does
+      # not -- one more small disagreement between the two quote shapes this
+      # single path serves depending on who is asking.
+      feeDetailsTransferwise:
+        type: number
+        in: feeDetails
+        as: transferwise
+      feeDetailsPayIn:
+        type: number
+        in: feeDetails
+        as: payIn
+      feeDetailsDiscount:
+        type: number
+        in: feeDetails
+        as: discount
+      feeDetailsPartner:
+        type: number
+        in: feeDetails
+        as: partner
+      allowedProfileTypes:
+        type: list
+        default: ["PERSONAL", "BUSINESS"]
+      guaranteedTargetAmount:
+        type: boolean
+        default: false
+      ofSourceAmount:
+        type: boolean
+        default: true
+
+  # A recipient account. "profile" is the wire name -- not profileId -- and
+  # is worth stating because it is the one name a caller would guess wrong.
+  account:
+    id:
+      style: numeric
+      type: number
+    fields:
+      profile:
+        type: integer
+      # Null for a recipient owned by the sender; present for a recipient
+      # created for somebody else's business. Every example Wise publishes
+      # carries this key and it is null in all of them.
+      business:
+        type: integer
+        null_when_unset: true
+      accountHolderName:
+        type: string
+      currency:
+        type: string
+      country:
+        type: string
+      # sort_code, iban, aba and so on -- which sub-fields of details matter
+      # depends on this.
+      type:
+        type: string
+      # Free-form on purpose. Wise's own examples show upward of forty
+      # sub-keys here -- one currency's worth of bank-detail fields for
+      # every currency Wise supports, not just the one this record uses --
+      # and every field this record does not need comes back null rather
+      # than omitted. address, email, legalType, accountNumber, sortCode,
+      # abartn, accountType, bankgiroNumber, ifscCode, bsbCode,
+      # institutionNumber, transitNumber, phoneNumber, bankCode,
+      # russiaRegion, routingNumber, branchCode, cpf, cardNumber, idType,
+      # idNumber, idCountryIso3, idValidFrom, idValidTo, clabe, swiftCode,
+      # dateOfBirth, clearingNumber, bankName, branchName, businessNumber,
+      # province, city, rut, token, cnpj, payinReference, pspReference,
+      # orderId, idDocumentType, idDocumentNumber, targetProfile, taxId,
+      # iban, bic, IBAN, BIC and interacAccount are all real keys on Wise's
+      # own published example for a single GBP sort-code recipient, and all
+      # but two of them are null on it. A client testing "in" for a key this
+      # record does not use finds it anyway.
+      details:
+        type: map
+      user:
+        type: integer
+      active:
+        type: boolean
+        default: true
+      ownedByCustomer:
+        type: boolean
+
+  # A payout order against a quote. status is the field the whole header
+  # comment above is about -- see it for what this Recipe cannot do with it.
+  transfer:
+    id:
+      style: numeric
+      type: number
+    fields:
+      user:
+        type: integer
+      targetAccount:
+        type: integer
+      # "Not used", in Wise's own words, on every example it publishes.
+      sourceAccount:
+        type: integer
+        null_when_unset: true
+      quote:
+        type: integer
+      # incoming_payment_waiting, incoming_payment_initiated, processing,
+      # funds_converted, outgoing_payment_sent, bounced_back, cancelled,
+      # funds_refunded, charged_back, unknown. The happy path is the first
+      # four in order; bounced_back, cancelled and funds_refunded are the
+      # unhappy path after outgoing_payment_sent; charged_back is Wise being
+      # unable to debit the payer at all; unknown is Wise's own name for not
+      # having enough information to say which of the rest applies.
+      status:
+        type: string
+        default: incoming_payment_waiting
+      # Deprecated in Wise's own docs in favour of details.reference, and
+      # still sent on every example.
+      reference:
+        type: string
+      rate:
+        type: number
+      # Not RFC 3339 -- see the header comment. A plain string on purpose:
+      # declaring this datetime would have Cauldron stamp a created transfer
+      # with a real timestamp in the wrong shape.
+      created:
+        type: string
+      business:
+        type: integer
+        null_when_unset: true
+      # "Not used", in Wise's own words.
+      transferRequest:
+        type: integer
+        null_when_unset: true
+      detailsReference:
+        type: string
+        in: details
+        as: reference
+      hasActiveIssues:
+        type: boolean
+        default: false
+      sourceCurrency:
+        type: string
+      sourceValue:
+        type: number
+      targetCurrency:
+        type: string
+      targetValue:
+        type: number
+      customerTransactionId:
+        type: string
+
+routes:
+  # The anonymous, unauthenticated-in-reality quote. No id, no profile, no
+  # createdByUserId -- the smaller shape a caller with no token gets, served
+  # here as recorded bytes because it addresses nothing and stores nothing:
+  # every field on it came from query parameters this Recipe does not
+  # generalise, and forcing it into the quote resource above would put an id
+  # on a response that never carried one.
+  #
+  # Reaching this route through Cauldron still needs the bearer token this
+  # Recipe declares Recipe-wide; the live call that produced this exact body
+  # needed none. See the header.
+  - method: GET
+    path: /v1/quotes
+    raw:
+      content_type: application/json
+      text: '{"source":"GBP","target":"EUR","sourceAmount":100.00,"targetAmount":115.68,"type":"REGULAR","rate":1.16673,"createdTime":"2026-09-01T03:32:08.667Z","rateType":"FIXED","deliveryEstimate":"2026-09-01T03:32:08Z","fee":0.85,"feeDetails":{"transferwise":0.85,"payIn":0.0,"discount":0,"priceSetId":5297,"partner":0.0},"allowedProfileTypes":["PERSONAL","BUSINESS"],"guaranteedTargetAmount":false,"ofSourceAmount":true}'
+
+  - method: POST
+    path: /v1/profiles/{profileId}/quotes
+    resource: quote
+    operation: create
+
+  - method: GET
+    path: /v1/profiles/{profileId}/quotes/{id}
+    resource: quote
+    operation: get
+
+  - method: POST
+    path: /v1/accounts
+    resource: account
+    operation: create
+
+  - method: GET
+    path: /v1/accounts/{id}
+    resource: account
+    operation: get
+
+  - method: GET
+    path: /v1/accounts
+    resource: account
+    operation: list
+    filters:
+      - param: currency
+        field: currency
+      - param: profile
+        field: profile
+
+  - method: DELETE
+    path: /v1/accounts/{id}
+    resource: account
+    operation: delete
+
+  - method: POST
+    path: /v1/transfers
+    resource: transfer
+    operation: create
+
+  # "Since we don't have push notifications yet, you can poll this endpoint
+  # to track your transfer status" -- Wise's own words, and the reason this
+  # route exists in this Recipe at all: it is the one a real integration
+  # calls over and over waiting for status to have changed underneath it,
+  # which this emulator will never do on its own. See the header.
+  - method: GET
+    path: /v1/transfers/{id}
+    resource: transfer
+    operation: get
+
+  - method: GET
+    path: /v1/transfers
+    resource: transfer
+    operation: list
+    filters:
+      - param: status
+        field: status
+
+  - method: PUT
+    path: /v1/transfers/{id}/cancel
+    resource: transfer
+    operation: update
+    fields:
+      status: cancelled
+
+  # Not the transfer resource. A different, minuscule shape with its own
+  # upper-cased status vocabulary, on a v3 path, for a transfer that was
+  # created on v1 -- see the header for why this is raw rather than
+  # returns-limited transfer fields.
+  - method: POST
+    path: /v3/profiles/{profileId}/transfers/{id}/payments
+    raw:
+      content_type: application/json
+      text: '{"type":"BALANCE","status":"COMPLETED","errorCode":null}'
+
+errors:
+  # The shape every failed credential check in this Recipe answers with,
+  # because Cauldron raises exactly one named error for any authorisation
+  # failure regardless of whether a header was sent at all. This is the
+  # missing-token wording; the invalid-token wording is different prose in
+  # the same two fields and is recorded in the header rather than modelled,
+  # since there is no second branch here to carry it.
+  authentication_error:
+    status: 401
+    code: missing_token
+    message: "Missing token"
+
+  # What an unrecognised path answers -- but only once past the credential
+  # check this emulator makes unconditionally. See the header: the live 404
+  # this reproduces was reachable with no token at all, and this one is not.
+  unknown_route:
+    status: 404
+    code: "Not Found"
+    message: "Resource not found"
+    message_field: message
+    fields:
+      status: "404"
+
+  # One entry from a real four-entry list. Leaving every quote parameter out
+  # answers all four of NotNull(source), NotNull(rateType), NotNull(target)
+  # and OnlySourceOrTargetAmount at once; this is the rateType one alone,
+  # word for word, because Cauldron's list-style error table arms a single
+  # named failure and cannot answer with more than one entry at a time.
+  quote_invalid_rate_type:
+    status: 400
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    code: typeMismatch
+    message: "Failed to convert property value of type java.lang.String to required type com.transferwise.quote.api.RateType for property rateType; Failed to convert from type [java.lang.String] to type [@io.swagger.v3.oas.annotations.media.Schema @jakarta.validation.constraints.NotNull com.transferwise.quote.api.RateType] for value [BOGUS]"
+    fields:
+      path: rateType
+      arguments: []
+
+  # Deleting a recipient that is already inactive. Wise's own docs state
+  # this in prose without an example body; the status and the fact of it are
+  # documented, the wording is this Recipe's own placeholder.
+  account_already_inactive:
+    status: 403
+    code: recipient_already_inactive
+    message: "This recipient account is already inactive and cannot be deleted again."
+
+fixtures:
+  empty: {}
+
+  small-business:
+    quote:
+      # 106031 is Wise's own number, not invented: it is the quote id that
+      # appears in the path of the System Error example in Wise's error
+      # reference (/v1/quotes/106031/account-requirements). Reused here
+      # rather than inventing a fresh one.
+      - id: "106031"
+        source: EUR
+        target: GBP
+        sourceAmount: 663.84
+        targetAmount: 600.00
+        type: BALANCE_PAYOUT
+        rate: 0.9073
+        createdTime: "2018-08-27T14:35:44.553Z"
+        createdByUserId: 12345
+        profile: 30000000
+        rateType: FIXED
+        deliveryEstimate: "2018-08-27T14:35:44.496Z"
+        fee: 2.34
+        feeDetailsTransferwise: 2.34
+        feeDetailsPayIn: 0.0
+        feeDetailsDiscount: 0.0
+        feeDetailsPartner: 0.0
+        allowedProfileTypes: ["PERSONAL", "BUSINESS"]
+        guaranteedTargetAmount: false
+        ofSourceAmount: true
+
+    account:
+      # Wise's own published pair: two GBP recipients, same sort code,
+      # different account numbers, one owned by the sender and one not --
+      # the ownedByCustomer distinction Wise's docs draw is only visible
+      # with both of these seeded together.
+      - id: "13967081"
+        profile: 30000000
+        business: null
+        accountHolderName: "Ann Johnson"
+        currency: GBP
+        country: GB
+        type: sort_code
+        details:
+          address:
+            country: null
+            countryCode: null
+            firstLine: null
+            postCode: null
+            city: null
+            state: null
+          email: null
+          legalType: PRIVATE
+          accountNumber: "28821822"
+          sortCode: "231470"
+          abartn: null
+          accountType: null
+          bankgiroNumber: null
+          ifscCode: null
+          bsbCode: null
+          institutionNumber: null
+          transitNumber: null
+          phoneNumber: null
+          bankCode: null
+          russiaRegion: null
+          routingNumber: null
+          branchCode: null
+          cpf: null
+          cardNumber: null
+          idType: null
+          idNumber: null
+          idCountryIso3: null
+          idValidFrom: null
+          idValidTo: null
+          clabe: null
+          swiftCode: null
+          dateOfBirth: null
+          clearingNumber: null
+          bankName: null
+          branchName: null
+          businessNumber: null
+          province: null
+          rut: null
+          token: null
+          cnpj: null
+          payinReference: null
+          pspReference: null
+          orderId: null
+          idDocumentType: null
+          idDocumentNumber: null
+          targetProfile: null
+          taxId: null
+          iban: null
+          bic: null
+          IBAN: null
+          BIC: null
+          interacAccount: null
+        user: 4342275
+        active: true
+        ownedByCustomer: true
+      - id: "31273090"
+        profile: 30000000
+        business: null
+        accountHolderName: "George Johnson"
+        currency: GBP
+        country: GB
+        type: sort_code
+        details:
+          legalType: PRIVATE
+          accountNumber: "29912211"
+          sortCode: "231470"
+          iban: null
+          swiftCode: null
+        user: 4342275
+        active: true
+        ownedByCustomer: false
+
+    transfer:
+      # Frozen at four different points along the state machine the header
+      # describes. Nothing in this Recipe ever moves one of these from the
+      # row it starts on.
+      - id: "468956"
+        user: 4342275
+        targetAccount: 13967081
+        sourceAccount: null
+        quote: 106031
+        status: incoming_payment_waiting
+        reference: "to my friend"
+        rate: 0.9065
+        created: "2018-08-28 07:43:55"
+        business: null
+        transferRequest: null
+        detailsReference: "to my friend"
+        hasActiveIssues: false
+        sourceCurrency: EUR
+        sourceValue: 661.89
+        targetCurrency: GBP
+        targetValue: 600
+        customerTransactionId: "bd244a95-dcf8-4c31-aac8-bf5e2f3e54c0"
+      - id: "16521632"
+        user: 4342275
+        targetAccount: 31273090
+        sourceAccount: null
+        quote: 657171
+        status: cancelled
+        reference: "reference text"
+        rate: 0.89
+        created: "2017-11-24 10:47:49"
+        business: null
+        transferRequest: null
+        detailsReference: "vambo 3"
+        hasActiveIssues: false
+        sourceCurrency: EUR
+        sourceValue: 0
+        targetCurrency: GBP
+        targetValue: 150
+        customerTransactionId: "54a6bc09-cef9-49a8-9041-f1f0c654cd88"
+      - id: "15574445"
+        user: 294205
+        targetAccount: 13967081
+        sourceAccount: null
+        quote: 113379
+        status: funds_refunded
+        reference: "good times"
+        rate: 1.1179
+        created: "2018-12-16 15:25:51"
+        business: null
+        transferRequest: null
+        detailsReference: "good times"
+        hasActiveIssues: false
+        sourceCurrency: EUR
+        sourceValue: 1000
+        targetCurrency: GBP
+        targetValue: 895.32
+        customerTransactionId: "6D9188CF-FA59-44C3-87A2-4506CE9C1EA3"
+
+# Cases marked verified were run unauthenticated against api.transferwise.com
+# on 2026-08-31, exactly as shown. No key of any kind was requested, guessed
+# or used to produce any of them -- the two 400/401 cases below that need a
+# request to succeed arm a Recipe-declared fault or send this Recipe's own
+# fixture bearer token, and say so. Cases with no verified field describe
+# response shapes read in Wise's current or archived documentation and never
+# called.
+conformance:
+  - name: a missing bearer token is an OAuth-shaped error, not a Recipe-shaped one
+    source: https://api.transferwise.com/v1/rates
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/rates
+    expect:
+      status: 401
+      body:
+        error: missing_token
+        error_description: "Missing token"
+      absent:
+        - message
+        - status
+        - code
+
+  - name: an unknown path is a 404 the real API reaches with no token, and this Recipe cannot
+    # Live, this exact body came from a request with no Authorization header
+    # at all. Reaching it here needs this Recipe's own fixture bearer token,
+    # because Cauldron checks the credential before it ever looks at the
+    # path -- see the header for the full asymmetry.
+    source: https://api.transferwise.com/v1/totally-not-a-real-path
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/totally-not-a-real-path
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 404
+      body:
+        status: "404"
+        message: "Resource not found"
+        error: "Not Found"
+
+  - name: a temporary quote needs no profile, and here it still needs the token this Recipe declares
+    source: https://api.transferwise.com/v1/quotes?source=GBP&target=EUR&sourceAmount=100&rateType=FIXED
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/quotes
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        source: GBP
+        target: EUR
+        targetAmount: 115.68
+        rate: 1.16673
+        rateType: FIXED
+        fee: 0.85
+        feeDetails.transferwise: 0.85
+        feeDetails.priceSetId: 5297
+        guaranteedTargetAmount: false
+        ofSourceAmount: true
+      matches:
+        # Wise sent this whole-currency-unit amount as "100.00", not "100" --
+        # a literal this exact rather than a bare body match would blur.
+        sourceAmount: '^100\.0+$'
+      absent:
+        # The anonymous shape carries none of these. A caller with a profile
+        # gets all three; this one gets none.
+        - id
+        - createdByUserId
+        - profile
+
+  - name: a single real validation entry, out of the four the live endpoint sends at once
+    source: https://api.transferwise.com/v1/quotes?source=GBP&target=EUR&sourceAmount=100&rateType=BOGUS
+    verified: "2026-08-31"
+    arm: quote_invalid_rate_type
+    request:
+      method: GET
+      path: /v1/quotes
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 400
+      body:
+        errors[0].code: typeMismatch
+        errors[0].path: rateType
+
+  - name: a recipient's unused bank-detail fields come back null, not omitted
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_recipients.md
+    fixture: small-business
+    request:
+      method: GET
+      path: /v1/accounts/13967081
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        accountHolderName: "Ann Johnson"
+        currency: GBP
+        type: sort_code
+        details.sortCode: "231470"
+        details.accountNumber: "28821822"
+        details.iban: null
+        details.swiftCode: null
+        details.legalType: PRIVATE
+
+  - name: the recipient list is a bare array, and profile is the wire name
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_recipients.md
+    fixture: small-business
+    request:
+      method: GET
+      path: /v1/accounts
+      query:
+        currency: GBP
+        profile: "30000000"
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        "[0].accountHolderName": "Ann Johnson"
+        "[0].profile": 30000000
+        "[0].ownedByCustomer": true
+        "[1].accountHolderName": "George Johnson"
+        "[1].ownedByCustomer": false
+      absent:
+        - data
+        - content
+
+  - name: a transfer's status is one of ten documented words, frozen wherever the fixture put it
+    # Wise's own words: "Since we don't have push notifications yet, you can
+    # poll this endpoint to track your transfer status." Nothing here will
+    # move it: the second call to this path answers exactly what the first
+    # one did. See the header for what that costs this Recipe.
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_transfers.md
+    fixture: small-business
+    request:
+      method: GET
+      path: /v1/transfers/468956
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        status: incoming_payment_waiting
+        sourceCurrency: EUR
+        targetCurrency: GBP
+        # Space-separated, no zone -- not the quote's RFC 3339. See the
+        # header comment on the created field.
+        created: "2018-08-28 07:43:55"
+
+  - name: the transfer list narrows by status, and the parameter really is called status
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_transfers.md
+    fixture: small-business
+    request:
+      method: GET
+      path: /v1/transfers
+      query:
+        status: funds_refunded
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        "[0].id": 15574445
+        "[0].status": funds_refunded
+      absent:
+        - "[1]"
+
+  - name: cancelling answers the record with status flipped, and nothing else about it changed
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_transfers.md
+    fixture: small-business
+    request:
+      method: PUT
+      path: /v1/transfers/16521632/cancel
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+    expect:
+      status: 200
+      body:
+        status: cancelled
+        id: 16521632
+        targetAccount: 31273090
+
+  - name: funding a transfer answers a different resource with a different, upper-cased status word
+    # COMPLETED/REJECTED here, incoming_payment_waiting/processing/cancelled
+    # on the transfer itself -- the same field name, two vocabularies, one
+    # v3 path, one v1. See the header.
+    source: https://github.com/transferwise/api-docs/blob/master/source/includes/reference/_transfers.md
+    fixture: small-business
+    request:
+      method: POST
+      path: /v3/profiles/30000000/transfers/468956/payments
+      headers:
+        Authorization: "Bearer cauldron-wise-api-token"
+      json:
+        type: BALANCE
+    expect:
+      status: 200
+      body:
+        type: BALANCE
+        status: COMPLETED
+        errorCode: null
+      absent:
+        - id
+        - sourceCurrency
