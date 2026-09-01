@@ -201,11 +201,30 @@ type Auth struct {
 	// wrong method 405s with nothing sent at all. Temporal routes first;
 	// Mezmo's two hosts do opposite things to each other.
 	//
-	// Two arrangements this still cannot express, both recorded rather than
-	// approximated: Census splits on the HTTP method, reaching the gate on a
-	// GET and not on a DELETE, and Rootly splits on whether the route exists
-	// -- credential first for every path it has, router first for every path
-	// it does not, which is not something a caller can know in advance.
+	// This is a boolean and the providers here have produced five distinct
+	// arrangements, so three of them are recorded in their own Recipes rather
+	// than approximated:
+	//
+	//   Census   splits on the HTTP method. A GET reaches the gate and
+	//            answers 401 in plain text; a DELETE on the same path finds
+	//            no route for that verb and answers 404 in JSON.
+	//   Rootly   splits on whether the route exists -- credential first for
+	//            every path it has, router first for every path it does not,
+	//            which is not something a caller can know in advance.
+	//   NocoDB   splits on whether the route names an identifier. A route
+	//            with an id resolves the id first and 404s with the id echoed
+	//            back, credential or no credential; a route without one
+	//            checks the credential first.
+	//   Baserow  is a third thing again: URL pattern first, then the
+	//            credential, then the specific id and the method. A wrong
+	//            method on a real path answers 401 rather than 405.
+	//
+	// The last three would each need the credential's state to survive a
+	// route match without gating it, which is a larger change than a
+	// boolean and is not obviously worth making for three providers. What
+	// is worth doing is what those Recipes do: say so in the file, so the
+	// next reader knows the emulator is approximating rather than that the
+	// provider is simple.
 	AfterRouting bool `yaml:"after_routing"`
 }
 
