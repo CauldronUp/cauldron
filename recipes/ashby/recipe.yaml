@@ -1,0 +1,557 @@
+# Ashby Recipe for Cauldron
+#
+# Ashby answers the person-or-application question the same way Greenhouse
+# does -- Candidate is the durable person, Application is the person's
+# attempt at one job -- but it is not the same shape underneath. A
+# Candidate holds applicationIds, an array of every Application UID that
+# person has open or closed across every job, so the correlation runs
+# candidate-to-applications rather than the other way round: there is no
+# field on an Application that says "this is the same human as that other
+# Application" except by looking up the Candidate both of them are listed
+# under. Lever's Opportunity (see lever/recipe.yaml) makes the same fact
+# discoverable from the opposite end -- every Opportunity carries its own
+# person's UID directly, so two Opportunities are the same human the moment
+# their contact fields match, with no second lookup required. Ashby is
+# further from Lever than Greenhouse is: Greenhouse's Candidate already
+# carries an applications array inline, on the object itself, where
+# Ashby's carries only the ids and a second call is what has one.
+#
+# The Application object status is Active, Hired, Archived or Lead -- and
+# Lead is Greenhouse's is_prospect and Lever's postingless Opportunity
+# stated as a status rather than as a separate boolean: a person Ashby is
+# considering for a job nobody applied to. appliedViaJobPostingId, nullable
+# and documented as "the id of the first job posting the candidate applied
+# through," is the field that tells the two apart on the wire -- present
+# for an applicant, absent for a Lead -- the same fact Lever spends a
+# separate posting field on and Greenhouse spends prospect and job_id on
+# together.
+#
+# Every read in this API is a POST. That is not a Recipe simplification;
+# it is what Ashby's own documentation says building the request looks
+# like -- curl ... --request POST ... /application.list -- for what plenty
+# of other providers in this collection would spell as a GET. Checked live
+# against api.ashbyhq.com, with no account and no key ever created, POST
+# and GET answer identically for every request this Recipe tried, which is
+# the reason there is nothing more specific to say about GET than that:
+#
+#   POST /candidate.list                       no header        -> 401 text/plain "Unauthorized"
+#   GET  /candidate.list                       no header        -> 401 text/plain "Unauthorized", byte-identical
+#   POST /candidate.list   Authorization: Basic <junk key>:      -> 401 text/plain "Unauthorized", byte-identical
+#   POST /candidate.list   Authorization: Bearer junktoken12345  -> 401 text/plain "Unauthorized", byte-identical
+#   POST /candidate.list   Authorization: totally-not-a-bearer   -> 401 text/plain "Unauthorized", byte-identical
+#   PATCH /candidate.list                      no header         -> 401 text/plain "Unauthorized", byte-identical
+#   POST /this-is-not-a-real-endpoint-xyz      no header         -> 401 text/plain "Unauthorized", byte-identical
+#   POST /this-is-not-a-real-endpoint-xyz      Authorization: Basic <junk key>: -> 401 text/plain "Unauthorized", byte-identical
+#
+# Every one of those eight requests -- three methods, two paths (one real,
+# one invented), five credential shapes -- answered the same twelve bytes.
+# The credential is checked before the router is ever consulted, for every
+# method and every path without exception, which is the same ordering
+# Pipedream's and FireHydrant's Recipes already describe and the one
+# Cauldron's own runtime already has built in: authorised(r) is checked
+# once, unconditionally, before routing. Nothing about this Recipe's
+# ordering had to be reshaped or worked around to fit. It also means the
+# POST-only claim above cannot be tested any further than this: whether a
+# real, valid credential attached to a GET behaves differently from one
+# attached to a POST is a question this Recipe cannot answer, because
+# nothing gets far enough past the credential check to ask it. Stated
+# rather than guessed at.
+#
+# Ashby's own authentication documentation gets its own API wrong. Quoted
+# directly: "If your API key is missing, the API will respond with a 401
+# status code. When the provided key is wrong or deactivated, the API will
+# respond with a 403 status code." Every wrong-key request struck above --
+# three different credential shapes, two different endpoints
+# (candidate.list and apiKey.info) -- answered 401, never 403. The
+# documented two-tier split does not exist on the wire this Recipe could
+# reach; there is one tier, and it is the one the docs describe for a
+# missing key.
+#
+# The failure is not JSON, either, which is worth stating on its own: it is
+# the bare word Unauthorized, Content-Type text/plain, on an API whose own
+# documented success shape is {"success": true, "results": [...]} and whose
+# public, unauthenticated job-board endpoint (GET
+# /posting-api/job-board/{name}, checked live and genuinely public, though
+# not otherwise modelled here -- see the gaps below) answers
+# Content-Type: application/json for a 200. A client written against this
+# API and calling .json() on a failed response throws, on the one response
+# shape most likely to be reached first, while it is testing that its key
+# works at all.
+#
+# One more asymmetry, observed rather than explained: x-ratelimit-limit,
+# x-ratelimit-remaining and x-ratelimit-reset were present on every request
+# that carried a well-formed Basic Authorization header (even a wrong one)
+# and absent on every request carrying no header at all or a bearer token.
+# Not modelled -- Cauldron's fault system can arm a rate-limit response but
+# has no mechanism for stamping headers onto a failure conditioned on the
+# shape of the credential that failed -- but recorded, because it is one
+# more way the single collapsed 401 above is not quite as uniform as its
+# own body suggests.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - auth.absent_error, auth.malformed_error and auth.rejected_error are
+#     all left unset. Every credential shape this Recipe struck collapsed
+#     to the identical sentence -- see above -- so there is nothing for the
+#     three-way split to distinguish here, unlike lever/recipe.yaml, whose
+#     three verdicts each get a different one.
+#   - No account was ever created and no API key was ever requested,
+#     guessed or used. Only the auth-collapse and routing-order cases below
+#     were actually called against api.ashbyhq.com; every resource-shaped
+#     case is read from developers.ashbyhq.com's published reference and
+#     carries no verified date. Field names are cross-checked across three
+#     separate documentation pages and agree; no specific example value
+#     shown on any of those pages (a name, an id, a timestamp) is repeated
+#     here, and the fixture below uses placeholder people instead.
+#   - primaryEmailAddress and primaryPhoneNumber are documented as nested
+#     objects ({value, type, isPrimary}); this Recipe declares them as
+#     free-form (type: map) rather than as fixed sub-fields, so their exact
+#     inner shape is not itself asserted by any case.
+#   - source, customFields, hiringTeam, socialLinks, resumeFileHandle and
+#     creditedToUser are documented and not modelled.
+#   - syncToken serves two purposes in Ashby's own documentation at once --
+#     an incremental-sync marker ("retrieve only candidates updated since
+#     your last sync") and the ordinary next-page token in the same
+#     response -- and this Recipe models only the second, because the first
+#     is a claim about data that changed between two calls, not about the
+#     shape of one response.
+#   - create, update and archive routes are not modelled. Every route below
+#     is a list or a get.
+#   - This Recipe carries no upstream.spec. developers.ashbyhq.com serves
+#     its reference through a documentation platform rather than a bare
+#     machine-readable file at a stable, unauthenticated URL this project's
+#     research reached, so there is nothing to point a spec-drift check at.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: ashby
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: ashby
+  docs: https://developers.ashbyhq.com/reference
+
+auth:
+  # Ashby's own words: "You put your API key as the basic auth username and
+  # leave the password blank." Verified live only to the extent that every
+  # credential shape this Recipe tried -- present or absent, Basic or
+  # Bearer, well-formed or not -- fails identically; see the header for why
+  # no absent/malformed/rejected split is declared.
+  scheme: basic
+  keys:
+    - cauldron_ashby_fixture_key
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: syncToken
+    has_more_field: moreDataAvailable
+  resource:
+    style: wrapped
+    key: results
+  success:
+    # Stamped on every successful body, list or single object alike, per
+    # every worked example Ashby's own reference shows for this API.
+    fields:
+      success: true
+  error:
+    # {"success": false, "errors": [{"message": "..."}]} -- documented for
+    # an ordinary refusal once past the credential check. Not observed:
+    # nothing struck by this Recipe's research got past that check. See
+    # errors.authentication_error below for the one failure that is
+    # observed, and is not this shape at all.
+    style: list
+    key: errors
+    message_field: message
+
+resources:
+  # The durable person. See the header for how applicationIds, rather than
+  # a field on Application itself, is what ties two job attempts back to
+  # one human.
+  candidate:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      primaryEmailAddress:
+        type: map
+      primaryPhoneNumber:
+        type: map
+      # Every Application UID this person holds, open or closed, across
+      # every job. The mechanism itself -- see the header.
+      applicationIds:
+        type: list
+      tags:
+        type: list
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+        null_when_unset: true
+
+  # One person's attempt at one job. Active, Hired, Archived or Lead --
+  # Lead being a person under consideration for a job nobody applied to,
+  # Ashby's own version of Greenhouse's prospect and Lever's postingless
+  # Opportunity. See the header.
+  application:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      candidateId:
+        type: string
+        required: true
+        in: candidate
+        as: id
+      candidateName:
+        type: string
+        in: candidate
+        as: name
+      jobId:
+        type: string
+        in: job
+        as: id
+      jobTitle:
+        type: string
+        in: job
+        as: title
+      status:
+        type: string
+        default: Active
+      currentInterviewStageTitle:
+        type: string
+        in: currentInterviewStage
+        as: title
+      # A fixed category documented beside the workspace's own configured
+      # stage title, the same split Lever's stage/pipeline pair makes (see
+      # lever/recipe.yaml) -- not modelled beyond typing it as a string,
+      # because no case here confirms the vocabulary Ashby actually sends.
+      currentInterviewStageType:
+        type: string
+        in: currentInterviewStage
+        as: type
+      # The id of the first job posting this person applied through.
+      # Present for an applicant, absent for a Lead -- see the header.
+      appliedViaJobPostingId:
+        type: string
+      archivedAt:
+        type: datetime
+        stamped: false
+      archiveReason:
+        type: string
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  - method: POST
+    path: /candidate.list
+    resource: candidate
+    operation: list
+    pagination:
+      # Ashby's list endpoints take their paging in the POST body rather
+      # than the query string; see census/recipe.yaml and rootly/recipe.yaml
+      # for the same shape reached by different APIs.
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: syncToken
+      in: body
+
+  - method: POST
+    path: /candidate.info
+    resource: candidate
+    operation: get
+    id_from: body:id
+
+  - method: POST
+    path: /application.list
+    resource: application
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      limit_param: limit
+      cursor_param: syncToken
+      in: body
+
+  - method: POST
+    path: /application.info
+    resource: application
+    operation: get
+    id_from: body:id
+
+errors:
+  # The one failure this Recipe's research actually reached, live, on every
+  # credential shape it tried -- see the header. Plain text, not the
+  # {"success": false, "errors": [...]} shape every other failure here
+  # would take, which is the finding: a client calling .json() on this
+  # throws.
+  authentication_error:
+    status: 401
+    style: text
+    message: Unauthorized
+
+  resource_missing:
+    status: 404
+    message: Not found.
+
+fixtures:
+  empty: {}
+
+  small-org:
+    candidate:
+      # One person, two applications -- see the header for why the wire
+      # only says so through this record's own applicationIds, not through
+      # anything on the applications themselves.
+      - id: 8f14e45f-ceea-467e-bd76-15fa0a789e01
+        name: Katherine Johnson
+        primaryEmailAddress:
+          value: k.johnson@example.com
+          type: Personal
+          isPrimary: true
+        applicationIds:
+          - 1b4e28ba-2fa1-11d2-883f-0016d3cc1001
+          - 2c5f39cb-3fb2-22e3-994f-0016d3cc1002
+        tags: []
+        createdAt: "2026-06-01T14:00:00.000Z"
+        updatedAt: "2026-07-02T11:00:00.000Z"
+
+      - id: 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f11
+        name: Dorothy Vaughan
+        primaryEmailAddress:
+          value: d.vaughan@example.com
+          type: Personal
+          isPrimary: true
+        applicationIds:
+          - 3d6a4adc-4fc3-33f4-aa5f-0016d3cc1003
+        tags:
+          - sourced
+        createdAt: "2026-07-15T10:00:00.000Z"
+        updatedAt: "2026-08-01T16:00:00.000Z"
+
+    application:
+      # Johnson, job one: applied through a posting, active in interviewing.
+      - id: 1b4e28ba-2fa1-11d2-883f-0016d3cc1001
+        candidateId: 8f14e45f-ceea-467e-bd76-15fa0a789e01
+        candidateName: Katherine Johnson
+        jobId: 4b2c9e10-0000-4000-8000-000000000010
+        jobTitle: Research Engineer
+        status: Active
+        currentInterviewStageTitle: Technical Screen
+        currentInterviewStageType: Screen
+        appliedViaJobPostingId: 5c3d0f21-0000-4000-8000-000000000021
+        createdAt: "2026-06-01T14:00:00.000Z"
+        updatedAt: "2026-06-15T09:00:00.000Z"
+
+      # Johnson, job two: archived. Same candidateId, opposite outcome --
+      # "the candidate's status" is not a thing that exists here any more
+      # than it is on Greenhouse or Lever.
+      - id: 2c5f39cb-3fb2-22e3-994f-0016d3cc1002
+        candidateId: 8f14e45f-ceea-467e-bd76-15fa0a789e01
+        candidateName: Katherine Johnson
+        jobId: 6d4e1032-0000-4000-8000-000000000032
+        jobTitle: Data Platform Lead
+        status: Archived
+        currentInterviewStageTitle: Applied
+        currentInterviewStageType: Applied
+        appliedViaJobPostingId: 7e5f2143-0000-4000-8000-000000000043
+        archivedAt: "2026-07-02T11:00:00.000Z"
+        archiveReason: Not enough experience
+        createdAt: "2026-06-20T08:00:00.000Z"
+        updatedAt: "2026-07-02T11:00:00.000Z"
+
+      # Vaughan: a Lead, not an applicant. No job posting behind this one --
+      # Ashby's own version of the prospect/sourced state.
+      - id: 3d6a4adc-4fc3-33f4-aa5f-0016d3cc1003
+        candidateId: 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f11
+        candidateName: Dorothy Vaughan
+        status: Lead
+        createdAt: "2026-07-15T10:00:00.000Z"
+        updatedAt: "2026-08-01T16:00:00.000Z"
+
+# Every case below carries source. A verified date means this Recipe called
+# api.ashbyhq.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from
+# developers.ashbyhq.com's published reference. See the header.
+conformance:
+  - name: no credential at all is refused, in plain text
+    source: https://api.ashbyhq.com/candidate.list
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /candidate.list
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: "^Unauthorized$"
+
+  - name: a well-formed but wrong key answers exactly the same, not a 403
+    # Ashby's own documentation says a wrong or deactivated key gets 403;
+    # this was struck live, on two different endpoints and three different
+    # credential shapes, and every one answered 401 -- see the header.
+    source: https://developers.ashbyhq.com/docs/authentication
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /candidate.list
+      headers:
+        Authorization: Basic YTFiMmMzZDRlNWY2YTdiOGM5ZDBlMWYyYTNiNGM1ZDY6
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: a bearer token fails exactly the same way a basic one does
+    source: https://api.ashbyhq.com/candidate.list
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /candidate.list
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: GET answers exactly like POST, because auth is checked first
+    # Both struck live with no credential and answered byte-identical
+    # bodies -- the credential is refused before the router asks whether
+    # candidate.list even takes a GET. See the header for why this Recipe
+    # cannot say more about GET than this.
+    source: https://api.ashbyhq.com/candidate.list
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /candidate.list
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: a path that does not exist is refused for its credentials, not its route
+    source: https://api.ashbyhq.com/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /this-is-not-a-real-endpoint-xyz
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: one candidate holds two applications with different outcomes
+    source: https://developers.ashbyhq.com/reference/applicationlist
+    fixture: small-org
+    request:
+      method: POST
+      path: /application.list
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json: {}
+    expect:
+      status: 200
+      body:
+        success: true
+        "results[0].candidate.id": 8f14e45f-ceea-467e-bd76-15fa0a789e01
+        "results[0].status": Active
+        # Same candidate, different job, opposite outcome.
+        "results[1].candidate.id": 8f14e45f-ceea-467e-bd76-15fa0a789e01
+        "results[1].status": Archived
+
+  - name: the candidate record lists both application ids, not one status
+    source: https://developers.ashbyhq.com/reference/candidatelist
+    fixture: small-org
+    request:
+      method: POST
+      path: /candidate.info
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json:
+        id: 8f14e45f-ceea-467e-bd76-15fa0a789e01
+    expect:
+      status: 200
+      body:
+        "results.name": Katherine Johnson
+        "results.applicationIds[0]": 1b4e28ba-2fa1-11d2-883f-0016d3cc1001
+        "results.applicationIds[1]": 2c5f39cb-3fb2-22e3-994f-0016d3cc1002
+      absent:
+        - results.status
+
+  - name: a lead carries no job posting behind it
+    source: https://developers.ashbyhq.com/reference/applicationlist
+    fixture: small-org
+    request:
+      method: POST
+      path: /application.info
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json:
+        id: 3d6a4adc-4fc3-33f4-aa5f-0016d3cc1003
+    expect:
+      status: 200
+      body:
+        "results.status": Lead
+        "results.candidate.id": 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f11
+      absent:
+        - results.appliedViaJobPostingId
+        - results.job.id
+        - results.job.title
+
+  - name: an archived application still carries its reason
+    source: https://developers.ashbyhq.com/reference/applicationlist
+    fixture: small-org
+    request:
+      method: POST
+      path: /application.info
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json:
+        id: 2c5f39cb-3fb2-22e3-994f-0016d3cc1002
+    expect:
+      status: 200
+      body:
+        "results.archivedAt": "2026-07-02T11:00:00.000Z"
+        "results.archiveReason": Not enough experience
+        "results.job.title": Data Platform Lead
+
+  - name: a list carries a sync token and says whether more remain
+    source: https://developers.ashbyhq.com/reference/candidatelist
+    fixture: small-org
+    request:
+      method: POST
+      path: /candidate.list
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json:
+        limit: 1
+    expect:
+      status: 200
+      body:
+        moreDataAvailable: true
+      matches:
+        syncToken: ".+"
+      absent:
+        - "results[1]"
+
+  - name: an ordinary refusal past the credential check is a list of errors, not plain text
+    source: https://developers.ashbyhq.com/reference/errors
+    fixture: small-org
+    request:
+      method: POST
+      path: /candidate.info
+      headers:
+        Authorization: Basic Y2F1bGRyb25fYXNoYnlfZml4dHVyZV9rZXk6
+      json:
+        id: does-not-exist
+    expect:
+      status: 404
+      body:
+        "errors[0].message": Not found.
+      absent:
+        - message
