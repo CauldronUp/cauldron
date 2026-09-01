@@ -4106,6 +4106,16 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// The vendor's own TypeScript library.
+			recipe: "groq",
+			npm:    []string{"groq-sdk"},
+		},
+		{
+			// The vendor's own TypeScript library.
+			recipe: "perplexity",
+			npm:    []string{"@perplexity-ai/perplexity_ai"},
+		},
+		{
 			// A real client of this API. Note that tink on npm is a package
 			// manager sharing the name and nothing else, which is why Tink
 			// itself is in the backlog rather than here.
