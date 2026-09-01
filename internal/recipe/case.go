@@ -320,6 +320,23 @@ type Case struct {
 	//
 	// The fault is armed for exactly one request and cleared afterwards, so a
 	// case cannot leak a failure into the next one.
+	//
+	// What an armed case proves is that the error's SHAPE is served. It does
+	// not prove the route reaches that error on its own, because arming
+	// installs the failure ahead of routing and the credential check both --
+	// so an armed case passes whatever the request was, and verify reports it
+	// green either way.
+	//
+	// That matters because it is easy to reach for. Writing the Melio Recipe,
+	// an armed case was used to "demonstrate" that body validation runs before
+	// the credential check; verify passed it, and a live `cauldron serve`
+	// showed the route answering 401 instead. The claim was true of Melio and
+	// untrue of the Recipe, and nothing in the suite could tell the
+	// difference.
+	//
+	// So: arm a shape nobody can otherwise reach. Do not arm an ordering. An
+	// ordering is a claim about what the router and the credential check do,
+	// and arming is the mechanism that skips both.
 	Arm     string      `yaml:"arm"`
 	Request Request     `yaml:"request"`
 	Expect  Expectation `yaml:"expect"`
