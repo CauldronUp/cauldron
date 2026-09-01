@@ -25,6 +25,7 @@ Two rules apply to everything here:
 | AWS S3 | Buckets, objects, presigned URLs, permissions, multipart upload |
 | ~~AWS SQS~~ | Shipped. Visibility timeout, redelivery, dead-letter queues |
 | AWS SNS | Topics, subscriptions, delivery failures |
+| ~~Justworks~~ | **Assessed and refused: there is nothing to model that is not Cloudflare.** Every path on every Justworks subdomain -- `www`, `api`, `help` -- sits behind an active managed bot challenge (`Cf-Mitigated: challenge`, the "Just a moment..." page) that stops any non-browser client before it reaches Justworks' own servers. Not a connectivity problem: `status.justworks.com` resolves and answers normally from the same place. There are no public developer docs, no OpenAPI document, no repositories under the company's GitHub organisation, and no third-party client on any registry. A Recipe here would describe a bot wall, and this project does not work around those -- see `SECURITY` on why not. What would reopen this is Justworks publishing an API, not somebody trying harder |
 | ~~Substack~~ | **Assessed and refused: there is no API to model.** Probed live with no account. `substack.com/api/v1/*` is real and answers, and it is the web client's own internals -- four incompatible failure envelopes across five endpoints (`403` plain text, a `401` JSON body with an HTML `<a>` tag inside the message meant for React to render, a full single-page-application shell for both a real path and an invented one, and a `404` with an empty body and no `Content-Type` at all), authenticated by session cookie, with no key any integration could hold. The one thing Substack calls a Developer API is approval-gated behind a seven-to-ten-day wait, publishes no technical reference of any kind -- no paths, no auth header name, no example JSON, only a legal document naming categories of data -- and returns a public subscriber **count** on a creator profile, never a subscriber record. The question its group was written to ask, whether a subscriber is a person or a subscription, has no vendor surface to answer it against |
 | ~~AWS SES~~ | Shipped. Accepted-not-delivered, the invisible suppression list |
 | ~~AWS DynamoDB~~ | Shipped. Typed attributes, omitted Items, table states |
@@ -1075,7 +1076,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**274 more listings across 174 Recipes declare no paging at all**, and the
+**284 more listings across 181 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1358,7 +1359,7 @@ what normalisation does not fix.
 |---|---|
 | ~~Bunny.net~~ | Shipped as `recipes/bunny`. The purge question was overtaken by a stranger one: **`POST /videolibrary` with a zero-byte body and no credential answers 500**, with Bunny's own typos in the message, verified twice -- and attaching any body at all, still with no credential, reverts to an ordinary 401. So the unauthenticated request that fails hardest is the one that sends least. Also pinned: one vendor, two hosts, two entirely different backends and two incompatible error envelopes, each collapsing absent, malformed and wrong credentials into one message of its own -- so the split is by host rather than by mistake. Both check routing before credentials |
 | ~~Transloadit~~ | Shipped, and the trap is sharper than the row guessed. It is not that partial results are readable -- it is that **the byte counts say finished while the status says executing**. Transloadit's own two published examples of one assembly show `bytes_received` equal to `bytes_expected`, 1687 of 1687, on a response still marked `ASSEMBLY_EXECUTING`; what actually moves between them is `execution_duration` and `results`. A client watching the bytes concludes it is done at the moment the work begins. Found while probing, and worth more than the row's own question: `GET /assemblies/{id}` answers **with no credential at all**, which Transloadit's documentation confirms is the design -- "This request can be issued by anyone who knows the assembly_ssl_url". The URL is the credential, so anything that logs one has published it |
-| Elastic Cloud | A deployment is created before it is reachable, and the endpoint appears in a later read than the one that created it |
+| ~~Elastic Cloud~~ | Shipped, and the row's premise could not be reached -- no account exists and Elastic publishes no worked example of a create anywhere, so the create-returns question is answered in prose against Koyeb's and Northflank's rather than served. What the probing found instead is better: **attaching any credential hides the routing.** With no Authorization header, an unrouted path and a wrong method resolve first and answer properly -- `root.resource_not_found` and `root.method_not_allowed`, the latter with a real `Allow` header. Attach any credential at all, even garbage, and both collapse into a different, undocumented shape with no `errors` array and the method-versus-path distinction gone. Reproduced three times each way, so the more you look like a customer the less the API tells you about your own mistake |
 | ~~Rootly~~ | Shipped. It is the first JSON:API provider here, and the outer envelope fits the way Lemon Squeezy's already does. What has no precedent is **a second complete JSON:API document nested as an attribute's value** -- `incident.attributes.severity` carries its own `data`/`id`/`type`/`attributes`, rather than a reference in `relationships` with the body in `included`, which is what the specification is for. Expressing it took every nesting primitive the format has, chained three deep. Its routing order is also **conditional**: the credential is checked first for every path Rootly has, and the router answers first for paths it does not, so the ordering depends on whether the route exists -- which a caller cannot know in advance, and which one gate before routing cannot reproduce |
 
 ## Listings that narrow themselves
@@ -1462,6 +1463,36 @@ than a client for its API.
 | Milvus | The official clients speak **gRPC** to a Milvus cluster's data plane. `@zilliz/milvus2-sdk-node` and `milvus-sdk-go` both do, and this Recipe describes Zilliz Cloud's control-plane REST API -- listing and describing clusters, which is how you find out what host to point a gRPC client at in the first place. Mapping either would offer an emulator of the thing that hands out addresses to code that already has one |
 | Baserow | `baserow` on npm is a **security holding package**, version 0.0.1-security: a reserved name with no code in it, the same miss the Fireworks row records. Nothing under any scope, and nothing on Packagist either -- which is consistent with Baserow being self-hosted as often as not, where the caller is a script rather than a dependency |
 | Retool | Nothing under any spelling tried, on either registry. Consistent with this Recipe's own finding: the public API is administrative -- users, groups, permissions, folders -- and the code that calls it is somebody's onboarding script rather than a library anybody publishes |
+| Payoneer | Nothing on either registry, which follows from what this Recipe found: developer.payoneer.com answers a bot challenge and its reference mirror renders client-side. The code that calls this API is written from a GitHub sample rather than installed |
+| Melio | Nothing, and only a partner-issued token authenticates anything -- so there is no population of callers large enough to publish a client for |
+| Treasury Prime | Nothing. Banking-as-a-service integrations are written against a specific bank programme rather than as a general-purpose library |
+| Tipalti | `tipalti` on npm is a **URL helper** -- it composes iframe links and never calls the API this Recipe describes. The right shape of miss for a product whose front end is a hosted iframe |
+| Anrok | Nothing under any spelling. Anrok publishes a real fetchable OpenAPI document and nothing generated from it, the pairing the Kit and Scout APM rows already record |
+| Vertex | Nothing, and there would be nowhere to point it: this Recipe's own finding is that **every hostname in Vertex's own spec is NXDOMAIN** |
+| TriNet | Nothing, and no public documentation exists either -- `apidocs.trinet.com`, the address TriNet's own site links to, does not resolve |
+| Remote.com | Nothing under `remote`, `remotecom` or any scoped spelling. The word is too common to have been claimed for this |
+| Kaleyra | Nothing. Kaleyra was acquired and its documentation moved to a ReadMe portal; no client followed |
+| Textline | Nothing, which fits a product whose API is an afterthought to a web application -- this Recipe found it has no delivery-status vocabulary at all |
+| Constant Contact | `constantcontact` on npm wraps **v2**. This Recipe describes v3, which is a different API with a different credential flow -- the Worldpay miss again, where a package resolves and targets a retired version |
+| Omnisend | Nothing under any spelling, on either registry |
+| Sardine | Nothing, which is consistent with the Recipe's own finding: **Sardine's field-level API reference is sales-gated**, so there is no public population of integrators to write a client for |
+| MinIO | `minio` on npm is the **S3 client**. This Recipe models the admin API at `/minio/admin/*`, deliberately -- see its header on why the S3 surface could not be probed on the demo host. Two protocols, one vendor, and the package speaks the other one |
+| Tigris | `@tigrisdata/core` is the client for Tigris's **former** product, a serverless document database. This Recipe describes the S3-compatible object storage the company pivoted to, whose client is an AWS SDK pointed elsewhere -- the same reason Backblaze, Wasabi and Filebase are all unreachable |
+| Elastic Cloud | `@elastic/elasticsearch` is the **search** client: it queries an index. This Recipe describes the control plane that creates the deployment the index lives in, which is the ClickHouse and Milvus situation for the third time |
+| Optimizely | `@optimizely/optimizely-sdk` evaluates experiments **on the client**, which is this Recipe's own central finding: there is no decide endpoint, assignment is computed locally from a datafile. The SDK never calls the account API this Recipe models |
+| VWO | `vwo-node-sdk` is the same shape of miss for the same reason -- it buckets locally with MurmurHash3 and never calls the management API |
+| Flexport | `flexport` on npm is version 1.0.0 with an empty description and no repository. Not enough to call it a client of anything |
+| Bringg | Nothing, and this Recipe explains why nobody could write one: every real operation lives at a path of per-merchant UUIDs that are undiscoverable without an account |
+| Radar | `radar-sdk-js` is the **browser** SDK and holds a publishable key. This Recipe models the server API, whose secret-key routes that SDK is specifically not allowed to reach -- the AppSignal and FullStory miss, in geolocation |
+| TalkJS | `talkjs` on npm is the **embed** SDK: it renders a chat UI in a page. This Recipe models the REST API a server calls to provision the conversations that UI shows |
+| CometChat | `@cometchat/chat-sdk-javascript` is likewise the client-side chat SDK. The REST API this Recipe describes is called by a customer's backend, and nothing on either registry represents that |
+| Whereby | `@whereby.com/browser-sdk` embeds a video room in a page. This Recipe models the API that creates the room -- and its own finding is that the room URL is unsigned because the room itself expires, which is a server-side concern the embed never sees |
+| Clio | A homograph, and a complete one: `clio` on npm is the **Clio programming language** |
+| Aha! | Another: `aha` on npm is an ANSI-to-HTML adapter |
+| Missive | And a third: `missive` on npm is a binary encoding library. Three unrelated homographs in one batch |
+| JustCall | Nothing under any spelling. Its own OpenAPI contradicts itself about whether a list returns an array, which is not a document anyone would generate a client from |
+| CloudTalk | Nothing, which fits a vendor whose two hosts disagree with each other about credential granularity and routing order |
+| Adapty | Nothing on npm. Its published SDKs are for iOS, Android and React Native -- the platforms where a paywall lives -- and the server API this Recipe models is called from a backend that installs none of them |
 | Zapier | `zapier-platform-core` is the SDK for **building** an integration that Zapier runs, not for calling Zapier. Same shape as the Pipedream row: a project holding it is a thing Zapier invokes rather than a thing that invokes Zapier, so the emulator would intercept nothing |
 | n8n | Installing `n8n` means **running n8n**, not calling it, and `n8n-workflow` is its own base code. The public API this Recipe describes is called by the operator of an n8n instance, from outside it, and nothing on either registry represents that |
 | Worldpay | `worldpay` on npm was last published in **2014**, at version 0.0.4, against the old worldpay.com endpoints. This Recipe describes Worldpay Access (`access.worldpay.com`) with its versioned vendor content types, which did not exist then. A package that resolves and targets a retired API is worse than none: it would map a modern integration to an emulator of something else |
@@ -1525,7 +1556,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Seventy-five Recipes send at least one identifier as a number now, and each
+Seventy-seven Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

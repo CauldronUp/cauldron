@@ -1,0 +1,511 @@
+# Tipalti Recipe for Cauldron
+#
+# Tipalti is accounts payable, not tax, and the tax question this batch of
+# three Recipes was written to answer -- is a calculation stored, and what
+# does undoing it do -- does not apply here. Said plainly rather than
+# stretched: there is no calculate-vs-file distinction anywhere on this
+# surface, because nothing on it calculates anything. What Tipalti shares
+# with its two tax-engine siblings in this batch is a different shape of the
+# same question -- a thing that is provisional until it is not -- and the
+# provisional thing here is a payee, not a transaction.
+#
+# GET /api/v1/payees/{id} answers, among other fields, two that do the whole
+# job: `isPayable` ("Indicates if the payee is currently payable. If false,
+# check the unpayableReasons for details") and `unpayableReasons` ("The
+# reasons why the payee can't be paid"). Both are documented read-only:
+# PayeeCreateInputBase accepts refCode, preferredPayerEntityId, entityType
+# and contactInformation and nothing else; PayeeUpdateInputModel accepts
+# entityType, status, statusReason, isAccountClosed, contactInformation and
+# customFieldValues. Neither input schema has a place for isPayable or
+# unpayableReasons anywhere in it -- a caller cannot set a payee payable by
+# asserting it, the same way a caller cannot set a Stripe Connect account's
+# payouts_enabled. It is computed, and Tipalti's own worked example for
+# Create Payee shows what it is computed FROM: the response to creating a
+# brand new payee already carries "isPayable": false and
+# "paymentMethod": {"paymentMethodType": "NO_PAYMENT_METHOD", ...} --
+# provisional from the first response, before this Recipe's own header even
+# gets to the word.
+#
+# status is the field that IS caller-settable (ePayeeStatus: ACTIVE,
+# BLOCKED, SUSPENDED, BLOCKED_BY_TIPALTI) and it is a second axis, not the
+# same one: a payee can be status ACTIVE and isPayable false at the same
+# time, because ACTIVE says nothing about the standing of the account and
+# everything about whether somebody at the payer's company blocked it by
+# hand. This Recipe's own PATCH case below changes status and leaves
+# isPayable exactly where it was, because Cauldron's generic update
+# operation has no per-field write list of its own -- it would accept
+# whatever a request sent that named a declared field, which is not the
+# same guarantee PayeeUpdateInputModel's own schema makes. Rather than build
+# a case that would need Cauldron to enforce a restriction it structurally
+# cannot, this header states the restriction as read from the schema and the
+# conformance case only ever writes the field the schema actually allows.
+#
+# One more onboarding step is documented and not routed: POST
+# /api/v1/payees/{id}/invitation, "creates a payee invitation to Supplier
+# Hub," answers {"payeeId", "sentTime", "status": "SENT"} -- Tipalti's own
+# self-onboarding flow, where the payee is invited to supply their own
+# payment method and tax details rather than the payer typing them in. It is
+# the mechanism, in Tipalti's own words, by which a payee stops being
+# provisional; it is not modelled as a route because it needs the id path
+# parameter partitioned a second way this Recipe's other routes are not, and
+# the wiring cost was not worth it for a route this batch's brief did not
+# ask this Recipe to model transaction-shaped mutations for. It is recorded
+# here, sourced, because the mechanism is the finding even where the route
+# is not built.
+#
+# ---
+#
+# Every failure below was struck live against api-p.tipalti.com,
+# unauthenticated, on 2026-09-01, and it is the plainest auth story in this
+# batch of three: absent and wrong collapse to one answer, and that answer
+# is nothing at all.
+#
+#   GET /api/v1/payees              no credential   -> 401, Content-Length: 0
+#   GET /api/v1/payees              Bearer junk      -> 401, byte-identical
+#   GET /api/v1/nosuchroute         no credential   -> 401, byte-identical
+#   PATCH /api/v1/payees            no credential   -> 401, byte-identical
+#   GET /                           no credential   -> 404, Content-Length: 0
+#
+# No body, no Content-Type, no WWW-Authenticate -- every one of the first
+# four requests answers the identical fifteen response bytes regardless of
+# path, method or credential, which is Cauldron's own default shape for a
+# Recipe that names neither absent_error, malformed_error nor rejected_error:
+# nothing here had to be reshaped to fit. Airbyte and FireHydrant's Recipes
+# in this collection make the identical point in words; this one makes it in
+# the absence of any. Auth here is also checked before routing, unconditionally,
+# for every path and every method -- the same ordering FireHydrant's Recipe
+# declares, and the reverse of Anrok's, this batch's other new provider,
+# which resolves the route and the method before ever looking at a
+# credential at all.
+#
+# The fifth line is the one exception, and it says something the other four
+# do not: root answers 404, not 401, which means the credential check that
+# refuses every /api/v1/* path unconditionally is not applied to the bare
+# root at all -- it is scoped to the versioned API prefix, and a path
+# outside that prefix reaches a plain routing miss instead. Cauldron's own
+# auth check has no such scoping; it runs once, for the whole Recipe, before
+# the router is ever asked anything. Reaching the 404 shape here needs a
+# valid credential this Recipe was never issued, the same accommodation
+# rootly/recipe.yaml makes for its own unrouted-path case -- so it is
+# recorded with the credential this Recipe does hold rather than the one
+# the live probe actually used (none), and it carries no verified date for
+# exactly that reason.
+#
+# The 400 error envelope is documented and never triggered: ApiErrors is
+# {"errors": [{"code", "message", "docUrl", "parameter"}], "traceId"}, with
+# a worked example carrying code "GNRL-123456". Every 401 this Recipe
+# actually struck live carried no body at all -- and tellingly, that is
+# also what Tipalti's own OpenAPI description says the 401 is: "description:
+# Unauthorized" with no schema underneath it at all, the one place this
+# Recipe's live probing and Tipalti's own published description agree down
+# to the absence of a body.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No tax question applies here. See above.
+#   - The Supplier Hub invitation route is documented and not modelled. See
+#     above.
+#   - payment-method updates (PATCH .../payment-method), payer entities,
+#     invoices, invoice batches, payment batches, payment terms, GL
+#     accounts and tax codes are all real, documented tags on this API and
+#     none of them are modelled. This Recipe is about the one question this
+#     batch was asked to answer for it -- what makes a payee payable -- not
+#     a full port of Tipalti.
+#   - unpayableReasons below carries Tipalti's own documented placeholder,
+#     "String value", rather than a real reason string. Tipalti's reference
+#     names a page of real reasons and this Recipe was not able to read it
+#     without a credential; serving an invented plausible-sounding one would
+#     be a worse gap than serving the placeholder honestly.
+#   - customFieldValues is real, documented, and not modelled -- it is an
+#     open-ended per-account schema this Recipe has no worked example for.
+#   - 403 and 429 are documented with a status and no body schema at all,
+#     the same shape as 401, and neither was triggered live. Declared here
+#     with the same empty body the 401 actually answered, on the strength of
+#     that agreement, rather than left unstated.
+#
+# The bearer token below is a fixture and belongs to no account.
+
+recipe: tipalti
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://documentation.tipalti.com/docs/getting-started
+  spec: https://dash.readme.com/api/v1/api-registry/z8pm3amsomq9lm
+  spec_hash: 4b443a3b2166a34f5f1af990f6a33121e5f8c3e314c656b6fb5a24e9985f6ea0
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: items
+    count_field: totalCount
+    cursor_field: pageInfo.nextPageCursor
+    has_more_field: pageInfo.hasNextPage
+  error:
+    # Genuinely empty on every failure this Recipe struck live -- see the
+    # header. style: text with no message writes zero bytes, which is the
+    # closest this format comes to the Content-Length: 0 the real API sent;
+    # it still stamps a Content-Type: text/plain header the live response
+    # never carried at all, which is the one gap this style cannot close.
+    style: text
+
+resources:
+  payee:
+    id:
+      style: opaque
+      field: id
+    fields:
+      refCode:
+        type: string
+      preferredPayerEntityId:
+        type: string
+        null_when_unset: true
+      # ACTIVE, BLOCKED, SUSPENDED, BLOCKED_BY_TIPALTI -- the account's own
+      # standing, caller-settable, and a different axis from isPayable. See
+      # the header.
+      status:
+        type: string
+        default: ACTIVE
+      statusChangeDateTimeUTC:
+        type: datetime
+      statusReason:
+        type: string
+        null_when_unset: true
+      # INDIVIDUAL or COMPANY.
+      entityType:
+        type: string
+        default: INDIVIDUAL
+      isAccountClosed:
+        type: boolean
+        default: false
+      # Read-only on both PayeeCreateInputBase and PayeeUpdateInputModel --
+      # neither schema has a place for this field. Computed, not asserted.
+      # See the header.
+      isPayable:
+        type: boolean
+        default: false
+      # "The reasons why the payee can't be paid." Also absent from both
+      # input schemas. See the header for why the value below is Tipalti's
+      # own documented placeholder rather than a real reason.
+      unpayableReasons:
+        type: list
+        null_when_unset: true
+      lastChangeDateTimeUTC:
+        type: datetime
+      apAccountId:
+        type: string
+        null_when_unset: true
+      paymentTermId:
+        type: string
+        null_when_unset: true
+      email:
+        type: string
+        in: contactInformation
+        null_when_unset: true
+      firstName:
+        type: string
+        in: contactInformation
+        null_when_unset: true
+      lastName:
+        type: string
+        in: contactInformation
+        null_when_unset: true
+      companyName:
+        type: string
+        in: contactInformation
+        null_when_unset: true
+      # NO_PAYMENT_METHOD is the value a freshly created payee carries, per
+      # Tipalti's own Create Payee example -- provisional from the first
+      # response. PAYPAL, WIRE_TRANSFER, ACH, CHECK, E_CHECK,
+      # HOLD_MY_PAYMENTS, CUSTOM, INTERCASH, CARD and STABLECOIN are the
+      # documented alternatives once a payee has chosen one.
+      paymentMethodType:
+        type: string
+        in: paymentMethod
+        default: NO_PAYMENT_METHOD
+      currency:
+        type: string
+        in: paymentMethod
+        null_when_unset: true
+
+routes:
+  - method: POST
+    path: /api/v1/payees
+    resource: payee
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /api/v1/payees
+    resource: payee
+    operation: list
+    pagination:
+      style: cursor
+      limit_param: page-size
+      cursor_param: page-cursor
+
+  - method: GET
+    path: /api/v1/payees/{id}
+    resource: payee
+    operation: get
+
+  - method: PATCH
+    path: /api/v1/payees/{id}
+    resource: payee
+    operation: update
+
+errors:
+  # What every unauthenticated request this Recipe struck live actually
+  # got, on every path and every method under /api/v1 -- absent and wrong
+  # alike. See the header.
+  authentication_error:
+    status: 401
+    message: ""
+
+  # Struck live at the bare root, outside the /api/v1 prefix the credential
+  # check applies to -- see the header for why this Recipe can only reach it
+  # with a credential rather than the way the live probe reached it.
+  unknown_route:
+    status: 404
+    style: text
+    message: ""
+
+  # Documented with a status and no body, same as 401 -- see the header.
+  forbidden:
+    status: 403
+    message: ""
+
+  rate_limit:
+    status: 429
+    message: ""
+
+fixtures:
+  empty: {}
+
+  ap-account:
+    payee:
+      # Tipalti's own Create Payee / Get Payee worked example, reused
+      # verbatim: the same id, refCode and contact appear on both documented
+      # responses. Provisional -- isPayable false, no payment method chosen
+      # -- exactly as the create example answers it before anything else
+      # happens to this payee.
+      - id: "3468489550001234567890000"
+        refCode: RefCode1234
+        status: ACTIVE
+        statusChangeDateTimeUTC: "1970-01-01T00:00:00.000Z"
+        entityType: INDIVIDUAL
+        isAccountClosed: false
+        isPayable: false
+        unpayableReasons:
+          - String value
+        lastChangeDateTimeUTC: "1970-01-01T00:00:00.000Z"
+        apAccountId: "1234489550001234567891111"
+        paymentTermId: "1234489550001234567891111"
+        email: String value
+        firstName: James
+        lastName: Smith
+        companyName: Tipalti
+        paymentMethodType: NO_PAYMENT_METHOD
+      # A second payee, graduated out of the provisional state -- built
+      # entirely from documented enum vocabulary (ePayeeStatus,
+      # ePaymentMethodType) rather than a second worked example, because
+      # Tipalti's own docs show only the one payee above. isPayable, once
+      # true, has no worked example anywhere in the published description
+      # either; unpayableReasons is left unset, which this Recipe renders
+      # null per the schema's own "nullable: true" rather than a fabricated
+      # empty list.
+      - id: "3468489550001234567890001"
+        refCode: RefCode5678
+        status: ACTIVE
+        statusChangeDateTimeUTC: "1970-01-01T00:00:00.000Z"
+        entityType: INDIVIDUAL
+        isAccountClosed: false
+        isPayable: true
+        lastChangeDateTimeUTC: "1970-01-01T00:00:00.000Z"
+        apAccountId: "1234489550001234567891111"
+        paymentTermId: "1234489550001234567891111"
+        firstName: James
+        lastName: Smith
+        companyName: Tipalti
+        paymentMethodType: ACH
+
+conformance:
+  - name: no credential answers nothing at all
+    source: https://api-p.tipalti.com/api/v1/payees
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/payees
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+
+  - name: a wrong one answers the byte-identical nothing
+    source: https://api-p.tipalti.com/api/v1/payees
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/payees
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+
+  - name: an unrouted path under the API prefix is refused the same way
+    source: https://api-p.tipalti.com/api/v1/nosuchroute
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/nosuchroute
+    expect:
+      status: 401
+
+  - name: and so is a wrong method, with no credential sent at all
+    source: https://api-p.tipalti.com/api/v1/payees
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/v1/payees
+    expect:
+      status: 401
+
+  - name: the bare root sits outside the credential check entirely
+    # Struck live with no credential and answered 404, empty, the same way
+    # the API prefix's own 401 is empty -- but reaching that shape here
+    # needs a credential this Recipe does hold, because Cauldron's own
+    # check is not scoped to a path prefix. See the header.
+    source: https://api-p.tipalti.com/
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+    expect:
+      status: 404
+
+  - name: a newly created payee is provisional from its first response
+    source: https://documentation.tipalti.com/reference/create-payee
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/payees
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+      json:
+        refCode: RefCode1234
+        entityType: INDIVIDUAL
+    expect:
+      status: 201
+      body:
+        refCode: RefCode1234
+        entityType: INDIVIDUAL
+        isPayable: false
+        "paymentMethod.paymentMethodType": NO_PAYMENT_METHOD
+
+  - name: isPayable and unpayableReasons are computed, not asserted
+    source: https://documentation.tipalti.com/reference/get-payee-by-id
+    fixture: ap-account
+    request:
+      method: GET
+      path: /api/v1/payees/3468489550001234567890000
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        id: "3468489550001234567890000"
+        status: ACTIVE
+        isPayable: false
+        "unpayableReasons[0]": String value
+        "paymentMethod.paymentMethodType": NO_PAYMENT_METHOD
+
+  - name: status is the axis a caller can move
+    # PayeeUpdateInputModel accepts status; it does not accept isPayable or
+    # unpayableReasons, which this Recipe states from the schema in the
+    # header rather than demonstrating as a rejection Cauldron has no
+    # mechanism to enforce. This case only ever writes the field the real
+    # schema allows.
+    source: https://documentation.tipalti.com/reference/update-payee
+    fixture: ap-account
+    request:
+      method: PATCH
+      path: /api/v1/payees/3468489550001234567890000
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+      json:
+        status: BLOCKED
+        statusReason: Failed compliance review
+    expect:
+      status: 200
+      body:
+        id: "3468489550001234567890000"
+        status: BLOCKED
+        statusReason: Failed compliance review
+
+  - name: a full page carries no cursor at all
+    source: https://documentation.tipalti.com/reference/get-list-of-payees
+    fixture: ap-account
+    request:
+      method: GET
+      path: /api/v1/payees?page-size=10
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        totalCount: 2
+        "items[0].id": "3468489550001234567890000"
+      absent:
+        - "pageInfo.nextPageCursor"
+
+  - name: a truncated one carries a cursor under Tipalti's own nested field names
+    source: https://documentation.tipalti.com/reference/get-list-of-payees
+    fixture: ap-account
+    request:
+      method: GET
+      path: /api/v1/payees?page-size=1
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "pageInfo.hasNextPage": true
+      matches:
+        "pageInfo.nextPageCursor": "."
+
+  - name: the two payees this Recipe seeds disagree about payability
+    source: https://documentation.tipalti.com/reference/get-payee-by-id
+    fixture: ap-account
+    request:
+      method: GET
+      path: /api/v1/payees/3468489550001234567890001
+      headers:
+        Authorization: Bearer cauldron.tipalti.fixture.jwt.0000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        isPayable: true
+        "paymentMethod.paymentMethodType": ACH
+        # Present and null, per the schema's own "nullable: true" -- see
+        # the fixture comment. Not absent: this Recipe declares the field
+        # null_when_unset, the same choice avalara/recipe.yaml makes for
+        # its own optional strings, so a payee with nothing wrong still
+        # carries the key.
+        unpayableReasons: null

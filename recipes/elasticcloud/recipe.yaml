@@ -1,0 +1,428 @@
+# Elastic Cloud Recipe for Cauldron
+#
+# This is the control in a group of three written to answer one question --
+# does an experimentation platform expose the assignment, the rule that
+# produced it, or only the result? Elastic Cloud has no visitors and no
+# variations to ask that about: it is a deployment-management API for
+# Elasticsearch/Kibana clusters, not an experimentation platform, and the
+# question this Recipe was sent to answer plainly does not apply to it. What
+# it does have, and what belongs beside recipes/koyeb/recipe.yaml and
+# recipes/northflank/recipe.yaml in this collection's create-returns-what
+# thread, is its own create call -- and its own answer to "what is the
+# smallest thing you can address."
+#
+# **The smallest addressable unit a caller creates is a deployment, and a
+# deployment is a bundle, not an atom.** POST /api/v1/deployments answers
+# (per Elastic's own published description, CreateDeploymentResponse; every
+# 2xx claim in this paragraph is read from that description and not called --
+# see the fidelity gaps) {id, name, created, resources: [...]}. Each entry in
+# `resources` is a DeploymentResource -- required: id, kind, ref_id, region --
+# one per Elasticsearch cluster, Kibana instance, APM server or Enterprise
+# Search instance the deployment just provisioned, each independently
+# addressable afterward at GET /api/v1/deployments/{deployment_id}/{kind}/
+# {ref_id}. So "create a deployment" is really "create N resources that share
+# a deployment id," and the create response is a manifest of those N things,
+# not a single record.
+#
+# **The create response is also the only time a caller is ever told the
+# password.** DeploymentResource carries `credentials` (username + password)
+# and `secret_token`, and the description's own words for both are identical:
+# "Only provided on initial create and absent otherwise." Neither Koyeb's
+# Recipe nor Northflank's Recipe in this collection has a create response
+# that hands back a secret at all -- their create-returns-what problem is
+# about which status field to trust, not about a value that will never be
+# retransmitted again by any endpoint this API has. Elastic's own
+# `request_id` idempotency parameter on the create call underlines the same
+# point from the other side: "if two create requests share the same
+# request_id token... the second request will return the info of that
+# deployment... but with blanks for auth-related fields" -- so replaying a
+# create is safe precisely because the credentials are the one part of the
+# response that is not repeatable.
+#
+# **And unlike Koyeb's Service or Northflank's build record, the create
+# response carries no health signal at all.** DeploymentCreateResponse has no
+# `healthy` field and no per-resource status. DeploymentGetResponse -- the
+# second call, GET /api/v1/deployments/{deployment_id} -- requires one:
+# `healthy`, "Whether the deployment is overall healthy or not (one or more
+# of the resource info subsections will have healthy: false)". Koyeb's create
+# at least defaults service.status to STARTING; Northflank's carries
+# `concluded` from the first response onward. Elastic's create carries
+# nothing to poll with an opinion at all -- a caller has to already know to
+# call GET before there is anything on the wire suggesting it should.
+#
+# The mechanism this Recipe actually probed for, live, with no account and no
+# API key, is the auth and routing surface -- and it produced the sharpest
+# finding in the file.
+#
+# **A credential that is merely wrong is a different failure from no
+# credential at all, and the WWW-Authenticate header changes with what was
+# sent, not just the body.** Checked against api.elastic-cloud.com on the
+# date below:
+#
+#   no Authorization header at all         -> 401, WWW-Authenticate:
+#                                              Bearer realm="found-adminconsole"
+#                                              "The resource requires
+#                                              authentication, which was not
+#                                              supplied with the request"
+#   Authorization: ApiKey junkjunkjunk...   -> 401, WWW-Authenticate: ApiKey
+#                                              "The supplied authentication is
+#                                              invalid"
+#   Authorization: ApiKey (nothing after)   -> the same 401, same header
+#   Authorization: junkjunkjunk... (no      -> 401, WWW-Authenticate:
+#     recognised scheme at all)                Basic charset=UTF-8
+#                                              "The supplied authentication is
+#                                              invalid"
+#
+# Three shapes of "present and wrong" collapse onto one message -- this
+# Recipe cannot tell malformed from rejected here, and says so once rather
+# than three times -- but WWW-Authenticate keeps echoing whatever scheme word
+# the request actually used, recognised or not, which absent never does. This
+# Recipe models the two message tiers it can prove (absent, and
+# present-and-wrong) and records the ApiKey and no-scheme header variants as
+# a fidelity gap below rather than inventing a rule for which scheme word
+# gets echoed when.
+#
+# **Routing resolves before authentication, unconditionally -- until any
+# credential at all is attached, at which point the SAME not-found requests
+# stop being distinguishable from each other.** With no Authorization header:
+# an unrouted path answers 404 {"errors":[{"code":"root.resource_not_found",
+# ...}]}, and a real path with the wrong method answers a real 405 with an
+# Allow header, {"errors":[{"code":"root.method_not_allowed",...}]} --
+# neither needs a credential to be seen, so routing runs first. Attach
+# "Authorization: ApiKey junkjunkjunk..." -- still not a credential this
+# Recipe or the live host holds -- to the identical two requests, and BOTH
+# answer 404 {"ok":false,"message":"The requested resource could not be
+# found."}: a different envelope entirely (no "errors" array, no code, a
+# literal "ok" boolean nothing else in this Recipe uses), and the 405's own
+# Allow header and method-mismatch distinction are simply gone. Reproduced
+# three times each way; not a fluke. Routing-vs-auth order does not change
+# with the HTTP method here -- GET, PATCH and DELETE all behave alike -- but
+# it does change with whether anything claiming to be a credential is on the
+# request at all, which is a distinction none of the five orderings
+# `internal/recipe/auth.go` already names quite captures: this is not
+# Sendcloud's "splits on whether any credential was presented," because
+# Sendcloud's split changes which *auth* answer you get, and this one changes
+# which *routing-failure* answer you get while auth is never consulted
+# either way. Read plainly, the likeliest shape behind it is two services:
+# an edge layer that knows the real route table and answers 401/404/405 with
+# its own vocabulary when nothing looks like a credential, and an
+# application layer -- reached only once something is attached to
+# Authorization -- whose own router cannot tell "no such path" from "that
+# path, wrong method" and says so identically either way.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 2xx claim in the header above is read from Elastic's own
+#     published OpenAPI description (fetched directly from
+#     www.elastic.co/docs/api/doc/cloud.json, title "Elastic Cloud API",
+#     version "1"), never called, and carries no `verified:` date -- and for
+#     that reason this Recipe declares no successful route at all. Every
+#     document field it names has a schema entry to cite; not one has a
+#     worked example in the description to draw a fixture from, and this
+#     collection's rule is that a schema without a worked example is
+#     reported, not turned into an invented id.
+#   - Only the exact credential shapes this Recipe actually sent are routed
+#     to their real sentence. A wrong credential that is neither
+#     "ApiKey junkjunkjunk12345", "ApiKey" alone, nor a bare no-scheme value
+#     falls to whichever declared route it happens to byte-match, which for
+#     most values is nothing this Recipe declares -- the same exact-bytes
+#     limitation Koyeb's Recipe in this collection states for the same
+#     reason: Cauldron's matches_header compares bytes, not shape.
+#   - The credentialed not-found shape is demonstrated only for the two
+#     literal requests this Recipe actually sent (one unrouted path, one
+#     wrong-method request on /api/v1/deployments). It is not a claim that
+#     every possible path or method behaves identically once a credential is
+#     attached, only that these two, tried three times each, did.
+#   - Regions, deployment templates, traffic filters, extensions, the
+#     billing API and every per-resource-kind sub-route
+#     (.../elasticsearch/{ref_id}, .../kibana/{ref_id}, and the rest) are
+#     real, documented, and not modelled -- this Recipe is the auth/routing
+#     surface plus the one create-returns-what finding the group it belongs
+#     to was sent to establish.
+#   - X-Request-ID is real, present on every response this Recipe saw, and
+#     not modelled: it is a fresh value every time, the same reason
+#     Flagsmith's Recipe in this collection fixes its own request id instead
+#     of leaving one unaddressed.
+
+recipe: elasticcloud
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.elastic.co/docs/api/doc/cloud/
+  spec: https://www.elastic.co/docs/api/doc/cloud.json
+  spec_hash: f6c3873180bf6815e9c640f1f2c40bb3a2fe756f14895d889cd209fc7993bb79
+  spec_seen: "2026-09-01"
+
+# scheme: none, with every route hand-declaring what it matches on. The
+# ordinary bearer-verdict engine cannot express this host: it would check one
+# credential state before the router is ever consulted, and this host's own
+# ordering depends on whether a credential is attached at all, changing which
+# *routing* failure comes back rather than which *auth* failure does. Koyeb's
+# and Census's Recipes in this collection make the identical trade for the
+# identical structural reason.
+auth:
+  scheme: none
+
+responses:
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+routes:
+  # GET /api/v1/deployments -- the one route struck every credential shape
+  # this Recipe tried. More specific matches_header routes outrank the plain
+  # fallback below regardless of write order, the same rule Koyeb's and
+  # Turso's Recipes in this collection rely on.
+  - method: GET
+    path: /api/v1/deployments
+    matches_header:
+      Authorization: ApiKey junkjunkjunk12345
+    error: invalid_apikey
+
+  - method: GET
+    path: /api/v1/deployments
+    matches_header:
+      # The scheme word alone, nothing after it. Present, not absent --
+      # somebody sent that -- and refused the same way a wrong key is.
+      Authorization: ApiKey
+    error: invalid_apikey
+
+  - method: GET
+    path: /api/v1/deployments
+    matches_header:
+      # No recognised scheme word at all. Same message as the two routes
+      # above; a different WWW-Authenticate value on the live host that this
+      # Recipe does not attempt to reproduce -- see the header.
+      Authorization: junkjunkjunk12345
+    error: invalid_basic_echo
+
+  # No Authorization header at all -- the true fallback.
+  - method: GET
+    path: /api/v1/deployments
+    error: absent_credential
+
+  # POST is gated the identical way -- the credential is examined before the
+  # method matters, exactly as it is for GET.
+  - method: POST
+    path: /api/v1/deployments
+    error: absent_credential
+
+  # A path this Recipe declares nowhere else. No credential attached: the
+  # edge layer's own routing-failure shape, needing nothing to be seen.
+  - method: GET
+    path: /api/v1/this-is-not-a-real-endpoint
+    error: unrouted_no_credential
+
+  # The identical path, a credential attached that is not one this Recipe or
+  # the live host holds. A different 404 entirely -- see the header.
+  - method: GET
+    path: /api/v1/this-is-not-a-real-endpoint
+    matches_header:
+      Authorization: ApiKey junkjunkjunk12345
+    error: not_found_with_credential
+
+  # A real path, the wrong method, no credential attached: a genuine 405
+  # naming both supported methods.
+  - method: PATCH
+    path: /api/v1/deployments
+    error: method_mismatch_no_credential
+
+  # The same wrong-method request with a credential attached collapses to
+  # the SAME shape the unrouted path above answers with a credential
+  # attached -- not a 405, no Allow header, no method-mismatch vocabulary at
+  # all. See the header.
+  - method: PATCH
+    path: /api/v1/deployments
+    matches_header:
+      Authorization: ApiKey junkjunkjunk12345
+    error: not_found_with_credential
+
+  # A second method, to show the wrong-method collapse is not PATCH-specific.
+  - method: DELETE
+    path: /api/v1/deployments
+    error: method_mismatch_no_credential
+
+errors:
+  absent_credential:
+    status: 401
+    code: root.unauthenticated
+    message: "The resource requires authentication, which was not supplied with the request"
+    headers:
+      WWW-Authenticate: 'Bearer realm="found-adminconsole"'
+
+  invalid_apikey:
+    status: 401
+    code: root.unauthenticated
+    message: "The supplied authentication is invalid"
+    headers:
+      WWW-Authenticate: ApiKey
+
+  # Same message as invalid_apikey above -- see the header for why this
+  # Recipe does not reproduce the WWW-Authenticate value the live host sends
+  # for this specific shape.
+  invalid_basic_echo:
+    status: 401
+    code: root.unauthenticated
+    message: "The supplied authentication is invalid"
+    headers:
+      WWW-Authenticate: "Basic charset=UTF-8"
+
+  unrouted_no_credential:
+    status: 404
+    code: root.resource_not_found
+    message: "The requested resource could not be found"
+
+  method_mismatch_no_credential:
+    status: 405
+    code: root.method_not_allowed
+    message: "HTTP method not allowed, supported methods: [HttpMethod(POST), HttpMethod(GET)]"
+    headers:
+      Allow: "POST, GET"
+
+  # {"ok": false, "message": "..."} -- no "errors" array, no code, a field
+  # spelled "ok" that appears nowhere else in this Recipe. What both
+  # not-found requests answer once any credential is attached. See the
+  # header.
+  not_found_with_credential:
+    status: 404
+    style: flat
+    message_field: message
+    code_field: "-"
+    message: "The requested resource could not be found."
+    fields:
+      ok: false
+
+fixtures:
+  # Nothing to seed. Every route here answers a failure -- see the header --
+  # so there is no record for a case to ask about, and an empty fixture is
+  # the honest shape rather than a placeholder standing in for one.
+  empty: {}
+
+conformance:
+  - name: no credential at all names the route, not the token
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/deployments
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Bearer realm="found-adminconsole"'
+      body:
+        "errors[0].code": root.unauthenticated
+        "errors[0].message": "The resource requires authentication, which was not supplied with the request"
+
+  - name: a wrong key is a different failure, and echoes the scheme back
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/deployments
+      headers:
+        Authorization: ApiKey junkjunkjunk12345
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: ApiKey
+      body:
+        "errors[0].message": "The supplied authentication is invalid"
+
+  - name: the scheme word alone with nothing after it is wrong, not absent
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/deployments
+      headers:
+        Authorization: ApiKey
+    expect:
+      status: 401
+      body:
+        "errors[0].message": "The supplied authentication is invalid"
+
+  - name: POST is gated the identical way GET is
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /api/v1/deployments
+    expect:
+      status: 401
+      body:
+        "errors[0].code": root.unauthenticated
+
+  - name: an unrouted path needs no credential to be refused
+    source: https://api.elastic-cloud.com/api/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        "errors[0].code": root.resource_not_found
+        "errors[0].message": "The requested resource could not be found"
+
+  - name: the same unrouted path with a credential attached is a different 404 entirely
+    source: https://api.elastic-cloud.com/api/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/this-is-not-a-real-endpoint
+      headers:
+        Authorization: ApiKey junkjunkjunk12345
+    expect:
+      status: 404
+      body:
+        ok: false
+        message: "The requested resource could not be found."
+      absent:
+        - errors
+
+  - name: a real path with the wrong method is a genuine 405 with an Allow header
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /api/v1/deployments
+    expect:
+      status: 405
+      headers:
+        Allow: "POST, GET"
+      body:
+        "errors[0].code": root.method_not_allowed
+        "errors[0].message": "HTTP method not allowed, supported methods: [HttpMethod(POST), HttpMethod(GET)]"
+
+  - name: and a second method confirms the wrong-method 405 is not PATCH-specific
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: DELETE
+      path: /api/v1/deployments
+    expect:
+      status: 405
+      body:
+        "errors[0].code": root.method_not_allowed
+
+  - name: the same wrong-method request with a credential attached loses the method-mismatch vocabulary entirely
+    source: https://api.elastic-cloud.com/api/v1/deployments
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /api/v1/deployments
+      headers:
+        Authorization: ApiKey junkjunkjunk12345
+    expect:
+      status: 404
+      body:
+        ok: false
+        message: "The requested resource could not be found."
+      absent:
+        - errors

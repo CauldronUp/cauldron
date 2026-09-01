@@ -1,0 +1,321 @@
+# Nile Recipe for Cauldron
+#
+# Nile sells "Postgres re-engineered for multi-tenant apps," and the tenant
+# id genuinely does travel three ways depending on which layer is asked.
+# Nile's own documentation for the Postgres connection itself says the
+# session-scoping statement in as many words: "set nile.tenant_id =
+# '018ade1a-7830-7981-b23f-f3a7f7b8f09f';" -- a session context variable, not
+# a header and not a path segment, and "Setting a session context to a
+# specific tenant is equivalent to pointing the connection to a specific
+# tenant DB" (thenile.dev/docs/tenant-virtualization/tenant-isolation, cited,
+# not observed -- this Recipe never opened a Postgres connection to anything,
+# see the fidelity gap). One layer up, the control-plane REST API --
+# global.thenile.dev, whose OpenAPI document this Recipe fetched directly at
+# https://global.thenile.dev/openapi.yaml on 2026-09-01 -- carries a
+# workspace slug and a database name as path segments and a tenantId only as
+# an occasional *query* parameter, on the credentials endpoints, to filter a
+# listing rather than to address one tenant. Neither of those is what this
+# Recipe models. What it models is the third: the per-database Auth REST API,
+# documented at thenile.dev/docs/auth/api-reference/tenants/get-a-tenant,
+# whose base URL (us-west-2.api.thenile.dev, confirmed live) and whose path
+#
+#   GET /v2/databases/{database}/tenants/{tenantId}
+#
+# puts the tenant id in the URL path, one segment below a database name that
+# is itself path-scoped -- so addressing "a tenant" on this surface always
+# means naming two identifiers in the path at once, a database and a tenant
+# inside it, and getting either wrong is the same question the brief asks.
+#
+# **This is the question the group exists to answer, and the answer here is
+# that the two are indistinguishable, verified live.** GET on that exact path
+# with a database name and a tenant id this Recipe invented for the purpose
+# of being wrong (nonexistent_db_probe_xyz / nonexistent_tenant_probe_xyz)
+# answers 401, with an entirely empty body -- no Content-Type, zero bytes.
+# The credential is refused before the database or the tenant named in the
+# path is ever looked up, so a caller who mistyped an id and one who named a
+# real tenant belonging to somebody else's workspace get the same answer for
+# the same reason neither MinIO's admin API nor Tigris's bucket path in this
+# same batch reveal it either: nothing downstream of the credential check is
+# ever reached. Nile's own reference page for this endpoint documents 404
+# among its response codes alongside 200, 400 and 401 -- which is worth
+# recording precisely because it implies an authenticated caller naming a
+# real database but a tenant that database does not have gets its own,
+# distinguishable answer past the gate this Recipe never got through. No
+# route below claims that body: this Recipe held no session, and Step 3 of
+# the brief it was written against is explicit that an invented one is worse
+# than an absent route. See the fidelity gap.
+#
+# Absent and wrong do not distinguish here either, which is a second finding
+# in the same call. -H "Cookie: nile-auth.session-token=junk" (the live
+# cookie name per this endpoint's own documented security scheme) and
+# -H "Authorization: Bearer junk" both answered the identical empty 401 that
+# no credential at all does -- three different ways of failing to authenticate,
+# one answer, verified live all three ways. That collapses AbsentError,
+# MalformedError and RejectedError into the single generic message every
+# Recipe gets by declaring none of them, which is the honest description of
+# what was found: there is no second sentence to serve.
+#
+# Routing order is declarable, and Nile's own arrangement is unambiguous.
+# Checked live, no credential any of the three times:
+#
+#   GET  /v2/databases (the collection path with no database segment at all)
+#     -> 404, Next.js's own compiled "Not Found" page, text/html
+#   POST /v2/databases/{database}/tenants/{tenantId}
+#   PATCH /v2/databases/{database}/tenants/{tenantId}
+#     -> 405 Method Not Allowed, empty body
+#   OPTIONS /v2/databases/{database}/tenants/{tenantId}
+#     -> 204 No Content, Allow: DELETE, GET, HEAD, OPTIONS, PUT
+#
+# all three answered before any credential was examined -- the 404 because no
+# route matches at all, the 405 because GET/HEAD/PUT/DELETE/OPTIONS are this
+# path's whole method set and POST/PATCH are not in it, and the 204 because
+# this host answers a CORS preflight without ever consulting auth. auth.
+# after_routing is what a Recipe would reach for here, and this file uses
+# hand-declared routes with scheme: none instead -- see the auth block for
+# why: the OPTIONS bypass has no equivalent in the three-verdict mechanism,
+# and after_routing has no way to make one route skip the credential check
+# while its neighbours still enforce it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No session was ever created and no user ever signed in. Every 200 this
+#     endpoint could answer -- a real tenant record, {id, name} per its
+#     documented schema -- is unobserved and not modelled; Step 3 of the
+#     brief this was written against forbids inventing one.
+#   - The Postgres wire protocol itself -- SET nile.tenant_id, row-level
+#     security, the "virtual tenant DB" the SDK's withContext exposes -- is
+#     not modelled at all. Cauldron emulates HTTP, and Nile's tenant
+#     isolation at the SQL layer is cited above from documentation, not
+#     reproduced.
+#   - The control-plane API (global.thenile.dev: workspaces, databases,
+#     compute, billing) is a separate surface with its own JWT bearer scheme
+#     and its own {code, message, statusCode} error shape, fetched and read
+#     but not modelled here, because it is not where a tenant id lives -- see
+#     the header's opening paragraph for why three candidate surfaces reduce
+#     to one Recipe.
+#   - The root path of this same host, GET /, answers a third 404 shape again
+#     -- {"code":404,"message":"HTTP 404 Not Found"}, JSON, from what appears
+#     to be an edge layer shared with global.thenile.dev's own bare root
+#     (both hosts answered byte-identical bodies for it) -- rather than
+#     either the API's own empty 401 or the Next.js app's HTML 404. Not
+#     modelled: it is a platform-wide edge behaviour rather than anything
+#     specific to the tenants endpoint this Recipe describes.
+#   - Next.js's own "Not Found" page embeds a per-build id and hashed asset
+#     filenames (buildId, webpack-13c339391f075bd9.js) that are not stable
+#     across a redeploy of Nile's own service. errors.unknown_route below
+#     serves only the fixed, boilerplate fragment of that page -- "Not
+#     Found" / "Could not find requested resource" -- rather than the exact
+#     bytes captured, and the conformance case asserts a substring rather
+#     than equality, because asserting the hashes would make this Recipe
+#     falsely fail the next time Nile ships.
+#   - No upstream.spec. global.thenile.dev/openapi.yaml is real and was
+#     fetched directly (cited above), but it describes the control-plane
+#     surface this Recipe does not model, not the per-database Auth API in
+#     routes below -- pointing spec at it would be a claim about the wrong
+#     document.
+
+recipe: nile
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://thenile.dev/docs/auth/api-reference/tenants/get-a-tenant
+
+auth:
+  # none, on purpose. Absent, malformed and rejected all collapse to one
+  # empty 401 here -- verified three separate ways, see the header -- so
+  # there is no verdict for the built-in mechanism to distinguish. What does
+  # need distinguishing is per-route: OPTIONS bypasses the credential check
+  # entirely (204, live, no auth consulted) while GET/PUT/DELETE/HEAD on the
+  # identical path do not, and Cauldron checks one credential scheme for a
+  # whole Recipe before or after routing, never skipping it for one method
+  # and not another. Every route below is unconditional instead, the same
+  # shape census/recipe.yaml and backblaze/recipe.yaml in this collection use
+  # for the same reason.
+  scheme: none
+
+responses:
+  error:
+    style: text
+
+routes:
+  # No resource and no operation: this Recipe never held a session, so there
+  # is no observed 200 to serve past the credential check -- see the header
+  # and the fidelity gap. Every request this Recipe sends here is refused,
+  # which is the honest answer for a Recipe with no real credential. raw
+  # rather than a named error, because the live body is truly zero bytes --
+  # no envelope, not even "{}" -- and raw.empty is the one mechanism in this
+  # format that can serve that rather than falling back to a generic
+  # sentence; see errors.method_not_allowed below for the case where that
+  # fallback could not be avoided.
+  - method: GET
+    path: /v2/databases/{database}/tenants/{tenantId}
+    raw:
+      empty: true
+    status: 401
+
+  - method: PUT
+    path: /v2/databases/{database}/tenants/{tenantId}
+    raw:
+      empty: true
+    status: 401
+
+  - method: DELETE
+    path: /v2/databases/{database}/tenants/{tenantId}
+    raw:
+      empty: true
+    status: 401
+
+  - method: HEAD
+    path: /v2/databases/{database}/tenants/{tenantId}
+    raw:
+      empty: true
+    status: 401
+
+  # Verified live: 204, empty, with the real Allow header this host computed
+  # for this exact path -- DELETE, GET, HEAD, OPTIONS, PUT, which is also
+  # what confirms PATCH and POST are not part of this path's method set.
+  # Reached with no credential of any kind and no auth error in response, so
+  # this route carries no error and needs none.
+  - method: OPTIONS
+    path: /v2/databases/{database}/tenants/{tenantId}
+    raw:
+      empty: true
+    status: 204
+    headers:
+      Allow: "DELETE, GET, HEAD, OPTIONS, PUT"
+
+errors:
+  # The stable fragment of Next.js's own compiled not-found page -- see the
+  # fidelity gap for why the full body (a per-build id and hashed asset
+  # filenames) is not reproduced here. Verified live for status and
+  # Content-Type; the conformance case asserts this substring, not the exact
+  # page.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: <h2>Not Found</h2><p>Could not find requested resource</p>
+
+  # Verified live against POST and PATCH on the tenant path: 405, and truly
+  # zero bytes -- no Content-Type, nothing. Unlike the four routes above,
+  # this failure is raised by Cauldron's own router (internal/runtime/
+  # handler.go) rather than by a route this Recipe declares, and it is
+  # always called with a non-empty fallback sentence ("This method is not
+  # supported on this path.") that a Recipe's own message can only replace
+  # with something non-empty -- internal/runtime/errors.go lets a declared
+  # message win only when it is itself non-empty, the same gap Backblaze's
+  # Recipe in this collection documents for its own blank bad_auth_token
+  # sentence. So the body Cauldron actually serves here is that fallback
+  # sentence, not the live zero bytes, and the conformance case below
+  # asserts status only -- not body, not no_body -- rather than assert a
+  # body shape neither this Recipe nor the live host actually agree on.
+  # Cauldron also computes its own Allow header for a declared 405 whenever
+  # the status is exactly 405; the live response carried none, a second,
+  # smaller version of the same kind of gap.
+  method_not_allowed:
+    status: 405
+
+fixtures:
+  empty: {}
+
+# Every case below carries verified: "2026-09-01". This Recipe never held a
+# session and models no authenticated response, so there is no
+# documented-only half of the split to report for the routes it declares --
+# every one of them was struck live, with request shapes chosen specifically
+# to need no real account: an absent credential, a garbage one, and the
+# method/path combinations that establish routing order.
+conformance:
+  - name: no credential at all is 401 with a genuinely empty body
+    # No Content-Type, zero bytes -- not {"error": "..."}, not even "{}".
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    expect:
+      status: 401
+      no_body: true
+
+  - name: a garbage session cookie answers identically to no credential at all
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+      headers:
+        Cookie: nile-auth.session-token=junk
+    expect:
+      status: 401
+      no_body: true
+
+  - name: and so does a garbage bearer token, a third way of being wrong
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+      headers:
+        Authorization: Bearer junk
+    expect:
+      status: 401
+      no_body: true
+
+  - name: naming a database with no tenant segment at all does not reach the credential check
+    # A different failure entirely: Next.js's own not-found page, HTML, not
+    # this API's 401 -- because /v2/databases alone matches no route this
+    # application registers, and an unmatched route never reaches auth.
+    source: https://us-west-2.api.thenile.dev/v2/databases
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/databases
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: "Could not find requested resource"
+
+  - name: a method this path does not support also answers before the credential is checked
+    # The live body is zero bytes; see errors.method_not_allowed for why this
+    # Recipe cannot also serve that and asserts status only.
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    expect:
+      status: 405
+
+  - name: a second method confirms it is the method, not a one-off
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    expect:
+      status: 405
+
+  - name: a preflight bypasses the credential check entirely
+    # 204, and the Allow header this host actually computed for this path --
+    # DELETE, GET, HEAD, OPTIONS, PUT -- which is also how PATCH and POST
+    # above are known not to belong to this path's method set.
+    source: https://us-west-2.api.thenile.dev/v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: OPTIONS
+      path: /v2/databases/nonexistent_db_probe_xyz/tenants/nonexistent_tenant_probe_xyz
+    expect:
+      status: 204
+      headers:
+        Allow: "DELETE, GET, HEAD, OPTIONS, PUT"
+      no_body: true

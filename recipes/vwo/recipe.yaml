@@ -1,0 +1,418 @@
+# VWO Recipe for Cauldron
+#
+# The question this Recipe's group was sent to answer: does the API expose a
+# visitor's assignment, the rule that produced it, or only the result -- and
+# can a caller reproduce an assignment without calling. VWO's answer is the
+# same shape Optimizely's Recipe in this collection reaches by a different
+# route: the SDK computes the assignment itself, in memory, and VWO's own
+# open-source SDK source says exactly how.
+#
+# **Bucketing is MurmurHash3, seeded with 1, over a key built from a salt and
+# the bucketing id -- and the word "salt" is VWO's own, not a description
+# imposed on it.** `lib/packages/decision-maker/index.ts` in
+# wingify/vwo-fme-node-sdk (https://github.com/wingify/vwo-fme-node-sdk/blob/master/lib/packages/decision-maker/index.ts):
+#
+#   import murmurhash from 'murmurhash';
+#   const SEED_VALUE = 1;
+#   generateHashValue(hashKey) { return Hasher.v3(hashKey, SEED_VALUE); }
+#   generateBucketValue(hashValue, maxValue, multiplier = 1) {
+#     const ratio = hashValue / Math.pow(2, 32);
+#     return Math.floor((maxValue * ratio + 1) * multiplier);
+#   }
+#
+# and `lib/services/CampaignDecisionService.ts`
+# (https://github.com/wingify/vwo-fme-node-sdk/blob/master/lib/services/CampaignDecisionService.ts)
+# builds the key and the traffic test directly:
+#
+#   const bucketKey = salt ? `${salt}_${bucketingId}` : `${campaign.getId()}_${bucketingId}`;
+#   const valueAssignedToUser = new DecisionMaker().getBucketValueForUser(bucketKey);
+#   const isUserPart = valueAssignedToUser !== 0 && valueAssignedToUser <= trafficAllocation;
+#
+# `getBucketValueForUser` scales to 100 (the campaign-inclusion test above,
+# a percentage of traffic); a second call, `calculateBucketValue`, scales to
+# 10,000 for choosing which variation within an included campaign. Both are
+# ordinary arithmetic over a public hash function and a salt VWO's own
+# `campaign.getSalt()` exposes on the campaign object. So exactly like
+# Optimizely: a caller holding the campaign's settings (salt, traffic
+# allocation, variation ranges) and a visitor's bucketing id can recompute
+# the assignment with no request to VWO at all, using an algorithm this
+# Recipe read directly out of VWO's own shipped, Apache-licensed source
+# rather than inferring from behaviour.
+#
+# **There is no REST decide endpoint on VWO's account-management host.**
+# app.vwo.com/api/v2 is a management API -- accounts, campaigns, goals -- not
+# an evaluation API, and this Recipe's own probing (below) never found a
+# route that takes a visitor id and returns a variation. VWO's SDK reference
+# lists a `GatewayServiceUtil` used only for pre-segmentation lookups from
+# environments that cannot bundle the SDK itself (edge functions and the
+# like) -- the same shape of self-hosted, customer-deployed proxy Optimizely
+# Agent is for the same reason, and, like Agent, not a multi-tenant service
+# this investigation could reach without deploying and configuring one
+# itself. Recorded here and not modelled as a route for that reason.
+#
+# **An ended campaign has nothing to return for a visitor who was in it,
+# because nothing about a campaign's lifecycle status lives on the object
+# the SDK evaluates against.** `CampaignModel.ts` in the same SDK
+# (https://github.com/wingify/vwo-fme-node-sdk/blob/master/lib/models/campaign/CampaignModel.ts)
+# carries no `status` field of any kind -- no RUNNING, no PAUSED, no
+# COMPLETED. Read plainly, that means a stopped campaign's absence from
+# evaluation is not a state the SDK checks on a record it still holds; it is
+# the record not being in the settings payload at all. A visitor who was
+# bucketed into a campaign that has since ended, on their next call, is
+# evaluated against whatever settings currently exist -- which do not
+# include it -- with nothing in this SDK's own data model to consult about
+# what they saw before. Nothing here claims VWO deletes history entirely --
+# only that the object this SDK's decision logic reads carries no lifecycle
+# field to ask.
+#
+# The account-management surface this Recipe actually calls has its own
+# findings, all struck live against app.vwo.com with no account and no
+# token, 2026-09-01.
+#
+# **Absent and wrong are different failures, and VWO tells them apart on
+# every route that is reachable at all:**
+#
+#   GET /api/v2/accounts                    no header  -> 401 {"_errors":
+#     [{"code":401,"message":"A valid API token or bearer token is
+#     required"}]}
+#   GET /api/v2/accounts                    Bearer junk -> 401 {"_errors":
+#     [{"code":401,"message":"Unauthorized"}]}
+#   GET /api/v2/accounts/{id}/campaigns     (the identical two messages)
+#
+# Both bodies are JSON, and both are served under Content-Type: text/html --
+# a mismatch this collection has already found on other providers (Flagsmith
+# is the sharpest example), here on every failing response this Recipe saw,
+# passing or gated.
+#
+# **Routing resolves before authentication, and it does not depend on
+# whether anything claiming to be a credential is attached at all -- which
+# is the opposite of this group's own Elastic Cloud Recipe.** A path this
+# Recipe declares nowhere, and a real path given the wrong method, both
+# answer the identical 404 with zero bytes in the body -- Content-Length: 0,
+# not `{}`, not an empty string -- whether no header is sent or a wrong one
+# is. Struck three ways each: no credential, a well-formed wrong bearer
+# token, and (for the unrouted path) nothing changed the shape once. VWO's
+# router also does not distinguish "no such path" from "that path, wrong
+# method" the way Elastic Cloud's or Koyeb's do -- there is one 404 shape for
+# both kinds of routing miss, not two, and no Allow header appears on
+# either.
+#
+# **A version segment other than the one currently served is not a routing
+# failure at all -- it is a 200.** /api/v1/* and /api/v3/* (checked against
+# several paths under each, credentialed and not) both answer
+# `{"API_ERROR":"INCORRECT_API_VERSION","API_ERROR_DESCRIPTION":"The current
+# version of Api doesn't exist."}` at HTTP 200 -- a body announcing failure
+# under a status line announcing success, on every path tried under either
+# version, regardless of credential. A client that checks the status code
+# before reading the body -- which is most of them -- reports this as a
+# successful, empty-looking response rather than the routing miss it is,
+# and never looks at API_ERROR at all.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API token was ever requested,
+#     guessed or used. Every route in this Recipe is a credential,
+#     parameter, or version failure, struck live and carrying a `verified:`
+#     date; no success response for any resource (account, campaign, goal)
+#     is modelled, because no worked example of one exists anywhere this
+#     investigation could read without an account.
+#   - No upstream.spec is recorded. This investigation could not locate a
+#     single fetchable OpenAPI or Swagger description for
+#     app.vwo.com/api/v2 -- the same gap this Recipe's own Optimizely
+#     sibling and Census's and FireHydrant's Recipes elsewhere in this
+#     collection state for the same reason.
+#   - Only the exact credential bytes this Recipe actually sent are routed
+#     to their real sentence -- a well-formed "Bearer <junk>" token. A
+#     credential with no "Bearer " prefix at all was never struck against
+#     this host, so malformed_error is left unset rather than guessed at,
+#     per this collection's own rule for an unobserved verdict.
+#   - Only /api/v1 and /api/v3 were struck for the wrong-version finding.
+#     Every other version segment is assumed, not verified, to answer the
+#     identical 200 -- a reasonable inference from three different paths
+#     under two different wrong versions answering identically, not a claim
+#     about every possible segment.
+#   - accounts, campaigns and goals are real top-level resources on this
+#     host and are not modelled beyond the one auth-gate case each proves.
+#     This Recipe is the auth/routing/version surface plus the
+#     decide/bucketing finding the group it belongs to was sent to
+#     establish, not a full account-management client.
+
+recipe: vwo
+capability: flags
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.vwo.com/
+
+# scheme: none, with every route hand-declaring what it matches on. Every
+# route in this Recipe is a fixed failure -- an auth gate, a routing miss, or
+# the wrong-version 200 -- and none of them carries a resource or an
+# operation for the ordinary verdict engine to gate in front of. Elastic
+# Cloud's and Optimizely's Recipes in this group, and Koyeb's and Census's
+# elsewhere in this collection, make the identical trade for the identical
+# reason.
+auth:
+  scheme: none
+
+responses:
+  error:
+    style: list
+    key: _errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+routes:
+  # /api/v2/accounts -- the plain top-level collection. More specific
+  # matches_header routes outrank the plain fallback below regardless of
+  # write order, the rule Koyeb's and Optimizely's Recipes also rely on.
+  - method: GET
+    path: /api/v2/accounts
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: unauthorized_wrong
+
+  - method: GET
+    path: /api/v2/accounts
+    error: unauthorized_absent
+
+  # A nested, id-bearing route, to show the same gate is not
+  # /api/v2/accounts-specific.
+  - method: GET
+    path: /api/v2/accounts/{id}/campaigns
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: unauthorized_wrong
+
+  - method: GET
+    path: /api/v2/accounts/{id}/campaigns
+    error: unauthorized_absent
+
+  # A path this Recipe declares nowhere else. No matches_header at all: the
+  # live host answers identically whether or not a credential is attached,
+  # so one route serves both -- see the conformance cases below and the
+  # header.
+  - method: GET
+    path: /api/v2/this-is-not-a-real-endpoint
+    status: 404
+    raw:
+      content_type: "text/html; charset=UTF-8"
+      empty: true
+
+  # A real path, the wrong method. The identical zero-byte 404 the unrouted
+  # path answers, never a 405 -- also credential-invariant.
+  - method: PATCH
+    path: /api/v2/accounts
+    status: 404
+    raw:
+      content_type: "text/html; charset=UTF-8"
+      empty: true
+
+  # A second method, to show the collapse is not PATCH-specific.
+  - method: DELETE
+    path: /api/v2/accounts
+    status: 404
+    raw:
+      content_type: "text/html; charset=UTF-8"
+      empty: true
+
+  # A version this API does not currently serve. 200, not 404 -- see the
+  # header. Credential-invariant, like the routing-miss cases above.
+  - method: GET
+    path: /api/v1/accounts
+    error: incorrect_api_version
+
+  # A version that never existed at all, to show the 200 is not
+  # v1-specific.
+  - method: GET
+    path: /api/v3/accounts
+    error: incorrect_api_version
+
+  # A path that is also unrouted, one version further back, to show the
+  # version gate fires before any path-specific routing within a wrong
+  # version is even attempted.
+  - method: GET
+    path: /api/v1/totally-bogus-path
+    error: incorrect_api_version
+
+errors:
+  unauthorized_absent:
+    status: 401
+    code: "401"
+    message: A valid API token or bearer token is required
+
+  unauthorized_wrong:
+    status: 401
+    code: "401"
+    message: Unauthorized
+
+  # A 200 carrying a failure. status here is genuinely 200 -- the finding
+  # itself -- and this Recipe's usual list envelope is overridden with the
+  # provider's own flat, unenveloped pair of fields.
+  incorrect_api_version:
+    status: 200
+    style: flat
+    message_field: API_ERROR_DESCRIPTION
+    code_field: API_ERROR
+    message: "The current version of Api doesn't exist."
+    code: INCORRECT_API_VERSION
+
+fixtures:
+  # Nothing to seed. Every route here answers a failure -- see the header --
+  # so there is no record for a case to ask about, and an empty fixture is
+  # the honest shape rather than a placeholder standing in for one.
+  empty: {}
+
+conformance:
+  - name: no credential names the token as the problem
+    source: https://app.vwo.com/api/v2/accounts
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/accounts
+    expect:
+      status: 401
+      body:
+        "_errors[0].code": 401
+        "_errors[0].message": A valid API token or bearer token is required
+
+  - name: a wrong credential is a different message entirely
+    source: https://app.vwo.com/api/v2/accounts
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/accounts
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        "_errors[0].message": Unauthorized
+
+  - name: a nested route addressed by account id is gated the identical way
+    source: https://app.vwo.com/api/v2/accounts/123456/campaigns
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/accounts/123456/campaigns
+    expect:
+      status: 401
+      body:
+        "_errors[0].message": A valid API token or bearer token is required
+
+  - name: and the same nested route tells a wrong credential apart too
+    source: https://app.vwo.com/api/v2/accounts/123456/campaigns
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/accounts/123456/campaigns
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        "_errors[0].message": Unauthorized
+
+  - name: an unrouted path needs no credential to be refused, with an empty body
+    source: https://app.vwo.com/api/v2/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=UTF-8"
+      no_body: true
+
+  - name: and a credential attached changes nothing about that
+    source: https://app.vwo.com/api/v2/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v2/this-is-not-a-real-endpoint
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 404
+      no_body: true
+
+  - name: a real path with the wrong method is the identical empty 404, never a 405
+    source: https://app.vwo.com/api/v2/accounts
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /api/v2/accounts
+    expect:
+      status: 404
+      no_body: true
+
+  - name: and a credential attached to the wrong method changes nothing either
+    source: https://app.vwo.com/api/v2/accounts
+    verified: "2026-09-01"
+    request:
+      method: PATCH
+      path: /api/v2/accounts
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 404
+      no_body: true
+
+  - name: a second method confirms the collapse is not PATCH-specific
+    source: https://app.vwo.com/api/v2/accounts
+    verified: "2026-09-01"
+    request:
+      method: DELETE
+      path: /api/v2/accounts
+    expect:
+      status: 404
+      no_body: true
+
+  - name: a version this API does not serve is a 200 wearing a failure
+    source: https://app.vwo.com/api/v1/accounts
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/accounts
+    expect:
+      status: 200
+      body:
+        API_ERROR: INCORRECT_API_VERSION
+        API_ERROR_DESCRIPTION: "The current version of Api doesn't exist."
+
+  - name: and a credential attached changes nothing about that either
+    source: https://app.vwo.com/api/v1/accounts
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/accounts
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 200
+      body:
+        API_ERROR: INCORRECT_API_VERSION
+
+  - name: a version that never existed at all answers identically
+    source: https://app.vwo.com/api/v3/accounts
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v3/accounts
+    expect:
+      status: 200
+      body:
+        API_ERROR: INCORRECT_API_VERSION
+
+  - name: the version gate fires before any path-specific routing is attempted
+    source: https://app.vwo.com/api/v1/totally-bogus-path
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /api/v1/totally-bogus-path
+    expect:
+      status: 200
+      body:
+        API_ERROR: INCORRECT_API_VERSION

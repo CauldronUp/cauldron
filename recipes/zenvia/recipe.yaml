@@ -1,0 +1,375 @@
+# Zenvia Recipe for Cauldron
+#
+# Zenvia is Brazilian and multi-channel -- SMS, WhatsApp, RCS, Facebook,
+# Instagram, Telegram, email and voice all live behind one gateway at
+# api.zenvia.com -- and the question this Recipe was written to settle is
+# whether "multi-channel" means one shape wearing different clothes or a
+# different shape per channel. It is one shape. Zenvia's own OpenAPI source
+# (zenvia/zenvia-openapi-spec on GitHub, the TypeScript definitions that
+# generate their published reference) has ten separate path files under
+# spec/paths/channels/ -- channels@sms@messages.ts, channels@whatsapp@
+# messages.ts, channels@rcs@messages.ts and so on, one literal path per
+# channel rather than a {channel} template -- and every one of them answers
+# with the same base Message Object: id, externalId, from, to, direction,
+# channel, contents, timestamp (spec/components/schemas/message/base.ts).
+# SMS and RCS add nothing to that envelope beyond typing which content kinds
+# their own "contents" array accepts; WhatsApp adds two optional fields of
+# its own (idRef, contentRef, for threading a reply to a specific prior
+# message) but keeps the same eight-field base underneath. Two live channels
+# are modelled below -- sms and whatsapp -- specifically to make that
+# comparison a conformance case rather than a claim: the same fields, same
+# names, same absence of anything channel-specific, on two different paths.
+#
+# THE FINDING THIS RECIPE EXISTS TO MAKE: there is no way to ask what
+# happened to a message after a send, at all, anywhere in this API, for
+# either a single message or a batch.
+#
+# Zenvia's own OpenAPI source declares ten paths under spec/paths/channels/
+# and one more at spec/paths/batches/message-batches.ts. Every single one of
+# them is POST-only. Not one GET-by-id route exists for a message, and none
+# exists for a batch either -- confirmed by reading the full path listing in
+# the spec repository, not inferred from a 404. A send answers with an id
+# (spec/components/schemas/message/base.ts: "An ID for the message. It can
+# be used for future message consulting or callback notifications." -- the
+# docstring itself only promises two uses, and neither of them is a GET),
+# and there is no route in this provider's own published surface that takes
+# that id back. The nearest thing to a status is not pull-based either.
+# Zenvia's own event schema (spec/components/schemas/events/message-status.ts)
+# is delivered exclusively as a webhook callback -- POST to a URL a
+# Subscription configured in advance -- with a status vocabulary that really
+# is rich (the discriminator on "code": SENT, DELIVERED, READ, CLICKED,
+# VERIFIED, REJECTED, NOT_DELIVERED, DELETED, ACCEPTED, HANG_UP, TERMINATED,
+# RECORDED -- channel-dependent; READ and CLICKED are WhatsApp's, HANG_UP/
+# TERMINATED/RECORDED are voice's), but a client that cannot receive inbound
+# HTTP has no way to learn any of it. The one pull-based endpoint that comes
+# close, GET /v2/reports/message/entries
+# (spec/paths/reports/reports@message@entries.ts), is not a per-message
+# lookup either: it takes a date range and a channel filter and answers
+# aggregate COUNTS -- directionInTotal, directionOutTotal, total
+# (spec/components/schemas/reports/message/entry/base.ts) -- bucketed by
+# channel and type, with no message id anywhere in the response and no way
+# to ask about one specific send. Twilio, Bandwidth, Sinch, Plivo and
+# Infobip -- the five-way SMS comparison this Recipe extends -- each give a
+# client SOMETHING to ask about afterwards, whether that is the message
+# itself, a batch, or an array of bare ids. Zenvia gives nothing pull-based
+# at all. The smallest thing you can ask about after a send is not a
+# message and not a batch. It is nothing; the only channel back is a
+# webhook the caller had to have configured before the send ever happened.
+#
+# The batch endpoint sharpens this further rather than softening it.
+# POST /v2/message-batches takes multipart/form-data -- a "batch" JSON part
+# describing the channel, the message template and a columnMapper, plus a
+# "contacts" part that is a binary CSV file of recipients
+# (spec/paths/batches/message-batches.ts) -- and Cauldron has no mechanism
+# for a binary file upload as part of a request; Onfido's Recipe in this
+# collection states the identical limitation for the same reason, so this
+# route is not declared below. What is worth recording is what the response
+# looks like, because Zenvia's own committed contract test proves it rather
+# than a hand-read schema: test/contract/cases/batches/create.json, part of
+# zenvia-openapi-spec's own CI suite, sends a batch and gets back --
+# verbatim -- {name, channel, standardAnswer, columnMapper, message}. That
+# is the caller's OWN CONFIGURATION, echoed. The Batch Object schema
+# (spec/components/schemas/batches/base.ts) declares an "id" property,
+# readOnly, with a documented example ("ad48e792-7d6e-464f-a478-df3239475016"),
+# so the real response may well carry one -- but the one real recorded
+# response in Zenvia's own test suite does not assert it, and no count, no
+# per-recipient breakdown and no status of any kind travels with it either.
+# Even taking the schema at its most generous, a batch send answers with,
+# at most, an id and an echo of what was submitted. Nothing about outcome.
+#
+# Missing and wrong credentials do not differ here, and neither does the
+# ordering most of this collection has had to pick a side on. Checked live,
+# 2026-09-01, against api.zenvia.com: no X-API-TOKEN header at all, a
+# well-formed but wrong one, a GET to a path this Recipe has never heard of
+# with no header, and a wrong method on a route this Recipe does declare
+# with no header -- all four land on the byte-identical response, 37 bytes,
+# {"message":"Authentication required"}. The credential is checked before
+# routing is even attempted (the opposite of Kaleyra's Recipe, probed the
+# same day and written beside this one, which routes first) and it does not
+# distinguish absent from wrong (the opposite of Textline's Recipe, also
+# written beside this one, whose two sentences are the reason this
+# collection needed auth.absent_error and auth.rejected_error in the first
+# place). auth.after_routing is deliberately left at its default, false.
+#
+# The 401 itself is worth one more sentence. It carries no "code" field,
+# where Zenvia's OWN documented Error Object schema
+# (spec/components/schemas/error/base.ts) requires one ("code" and "message"
+# are both in its "required" list, with a documented example
+# "VALIDATION_ERROR"). The header www-authenticate: Key realm="kong" names
+# the mechanism: this is Kong's own generic gateway-level 401, answered
+# before the request ever reaches whatever emits Zenvia's documented
+# application-level error shape. A client that read the Error Object schema
+# and wrote code expecting a `code` field on every failure finds nothing on
+# the one failure it is most likely to hit first.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - POST /v2/message-batches is not modelled at all -- see above.
+#   - externalId, channel and timestamp are declared on the message resource
+#     (they are real, documented, readOnly-or-settable properties of the
+#     base Message Object) but no route below returns them. No single
+#     worked example in Zenvia's own materials -- not the SMS resource
+#     example, not the WhatsApp contract test -- shows all eight base
+#     fields together in one JSON body; the WhatsApp contract test's own
+#     asserted response is only {id, direction, from, to, contents}, and
+#     that is what this Recipe's routes return too, rather than guessing at
+#     the other three.
+#   - No delivery-status route is modelled, for the reason the header above
+#     exists to state: there is not one to model. The message-status event
+#     vocabulary is recorded in prose because the mechanism that would
+#     deliver it -- an inbound webhook this Recipe would have to receive --
+#     is not something a Recipe conformance case can express.
+#   - No validation-error (400) case is declared. Zenvia's own Error Object
+#     schema gives a shape and an example value in isolation
+#     ("VALIDATION_ERROR" / "Validation error") but no single worked
+#     response combining code, message and details was found anywhere in
+#     the spec repository or its contract tests, so none is asserted here.
+#   - No rate_limit error is declared. No 429 was seen on any of the four
+#     live probes, and no worked example of one exists in the spec
+#     repository's contract tests.
+#   - No upstream.spec is recorded. zenvia-openapi-spec is TypeScript source
+#     compiled at build time into a ReDoc bundle (spec/components,
+#     spec/paths, one file per operation); no single fetchable OpenAPI JSON
+#     or YAML document was found published at a stable URL to fingerprint,
+#     the same gap Fireworks' Recipe states for the same reason.
+#
+# The token below is a fixture and belongs to no account.
+
+recipe: zenvia
+capability: sms
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://zenvia.github.io/zenvia-openapi-spec/
+
+auth:
+  # A raw header value, not a bearer or basic scheme -- Zenvia's own code
+  # samples send it as-is, no prefix. Kong's own gate in front of the
+  # application answers identically whether the header is absent or wrong
+  # (see the header above), so neither absent_error nor rejected_error is
+  # set: one message covers both, honestly, because the provider does not
+  # tell them apart either.
+  scheme: header
+  header: X-API-TOKEN
+  keys:
+    - cauldron0000000000zenviaapitoken00
+
+responses:
+  resource:
+    style: bare
+  # The gateway's own 401 (see the header above) is flat and carries only
+  # "message" -- no code, despite Zenvia's documented Error Object schema
+  # requiring one (code and message are both in its "required" list). No
+  # code_field is declared: every failure this Recipe can actually reach is
+  # the gateway's own 401, which never carries one, and declaring a field
+  # name no case ever asserts would be a claim about the application-level
+  # shape rather than evidence of it.
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  # The base Message Object every channel route below answers with. Every
+  # one of Zenvia's ten channel paths -- see the header -- uses this same
+  # eight-field envelope; only the fields a specific channel adds (WhatsApp's
+  # idRef/contentRef) differ, and neither is echoed by any case here.
+  message:
+    collection: messages
+    id:
+      style: opaque
+      length: 32
+    fields:
+      # Settable by the caller, echoed back per the schema -- but see the
+      # header's fidelity gap: no worked example confirms it is actually
+      # present on a create response, so no route below returns it.
+      externalId:
+        type: string
+        in: "-"
+      from:
+        type: string
+      to:
+        type: string
+      # IN or OUT. Documented, readOnly -- and never shown in either worked
+      # create example this Recipe found, so declared and not returned; see
+      # the header.
+      direction:
+        type: string
+        default: OUT
+      # readOnly, and the same gap as externalId/timestamp: documented, not
+      # observed on a create response.
+      channel:
+        type: string
+        in: "-"
+      contents:
+        type: list
+      # readOnly. Same gap as channel/externalId.
+      timestamp:
+        type: datetime
+        in: "-"
+      # WhatsApp only. Threads a reply to a specific earlier message and its
+      # nth content item. Declared for completeness; no route below sends
+      # or returns it, because the SMS and RCS routes this Recipe models
+      # have no use for it and the one WhatsApp worked example (the
+      # contract test cited in the header) never sets it either.
+      idRef:
+        type: string
+        in: "-"
+      contentRef:
+        type: integer
+        in: "-"
+
+routes:
+  - method: POST
+    path: /v2/channels/sms/messages
+    resource: message
+    operation: create
+    returns:
+      - id
+      - from
+      - to
+      - direction
+      - contents
+
+  - method: POST
+    path: /v2/channels/whatsapp/messages
+    resource: message
+    operation: create
+    returns:
+      - id
+      - from
+      - to
+      - direction
+      - contents
+
+errors:
+  # Kong's own gate, in front of the application -- see the header for why
+  # this carries no code and why it is what both an absent and a wrong
+  # credential answer alike.
+  authentication_error:
+    status: 401
+    message: "Authentication required"
+
+fixtures:
+  empty: {}
+
+# Four cases are observed live against api.zenvia.com, 2026-09-01, with no
+# account of any kind. The two send cases are read from Zenvia's own
+# published materials -- one from the OpenAPI source's own resource example,
+# one from its committed contract test -- and carry no verified date,
+# because reaching a genuine 200 needs a real token this Recipe does not
+# have.
+conformance:
+  - name: no credential at all is refused
+    source: https://api.zenvia.com/v2/channels/sms/messages
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/channels/sms/messages
+    expect:
+      status: 401
+      body:
+        message: "Authentication required"
+
+  - name: and a well-formed wrong one answers the byte-identical body
+    source: https://api.zenvia.com/v2/channels/sms/messages
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/channels/sms/messages
+      headers:
+        X-API-TOKEN: junktoken00000000000000000000
+    expect:
+      status: 401
+      body:
+        message: "Authentication required"
+
+  - name: a path this Recipe has never heard of is refused before routing is even attempted
+    # No credential sent at all -- the same 401 as the two cases above,
+    # which is what establishes the ordering: the credential is checked
+    # before the router looks at the path. The opposite of Kaleyra's Recipe,
+    # written the same day.
+    source: https://api.zenvia.com/v2/this-route-does-not-exist
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/this-route-does-not-exist
+    expect:
+      status: 401
+      body:
+        message: "Authentication required"
+
+  - name: and so is a wrong method on a route this Recipe does declare, with no credential sent
+    source: https://api.zenvia.com/v2/channels/sms/messages
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/channels/sms/messages
+    expect:
+      status: 401
+      body:
+        message: "Authentication required"
+
+  - name: an SMS send answers the base envelope, and nothing about status
+    source: https://raw.githubusercontent.com/zenvia/zenvia-openapi-spec/master/spec/resources/examples/from-to/sms.ts
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/channels/sms/messages
+      headers:
+        X-API-TOKEN: cauldron0000000000zenviaapitoken00
+      json:
+        externalId: my-campaign-name
+        from: sms-account
+        to: "55108888888888"
+        contents:
+          - type: text
+            text: "Hi Zenvia!"
+    expect:
+      status: 200
+      body:
+        from: sms-account
+        to: "55108888888888"
+        direction: OUT
+        "contents[0].type": text
+        "contents[0].text": "Hi Zenvia!"
+      # No status, ever, on a send response -- see the header. This is the
+      # whole finding stated as an assertion rather than a paragraph.
+      absent:
+        - status
+        - delivered
+        - batchId
+
+  - name: WhatsApp answers the identical envelope on a different path
+    # id, direction, from, to, contents -- the same five fields the SMS case
+    # above returns, on a completely different channel. Zenvia's own
+    # committed contract test for this exact request.
+    source: https://raw.githubusercontent.com/zenvia/zenvia-openapi-spec/master/test/contract/cases/channels/whatsapp/send-text.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/channels/whatsapp/messages
+      headers:
+        X-API-TOKEN: cauldron0000000000zenviaapitoken00
+      json:
+        from: "SENDER ID"
+        to: "RECIPIENT ID"
+        contents:
+          - type: text
+            text: "some text"
+    expect:
+      status: 200
+      body:
+        from: "SENDER ID"
+        to: "RECIPIENT ID"
+        direction: OUT
+        "contents[0].type": text
+        "contents[0].text": "some text"
+      absent:
+        - status
+        - delivered
+        - batchId

@@ -1,0 +1,444 @@
+# Clio Recipe for Cauldron
+#
+# Clio Manage is a Rails app wearing a REST API, and both halves of that
+# sentence matter to what follows. Checked live against api/v4 on
+# app.clio.com with no account and no credential of any kind.
+#
+# A missing credential and a wrong one are not the same failure, and they are
+# not even the same shape of failure. No Authorization header at all answers
+#
+#   401 {"error":{"type":"UnauthorizedError","message":"User is not authorized"}}
+#
+# Content-Type application/json; charset=utf-8, no WWW-Authenticate header.
+# "Authorization: Bearer junktoken12345" -- a credential nobody holds --
+# answers a completely different envelope:
+#
+#   401 {"error":"invalid_token","error_description":"The access token
+#        provided is expired, revoked, malformed or invalid for other
+#        reasons."}
+#
+# Content-Type application/json with no charset parameter at all, plus a
+# WWW-Authenticate challenge the first response never sends:
+# Bearer realm="Protected by OAuth 2.0", error="invalid_token", ... . Same
+# status, two unrelated envelopes: error is an object with a type and a
+# message in the first, and error is a bare string acting as a code in the
+# second, with the sentence one field over in error_description. A client
+# that learned to read error.message from the first shape finds a string
+# where it expected an object on the second, which is the exact class of
+# bug this collection exists to catch. "Bearer " with nothing after it
+# answers byte-identical to the garbage-token case -- so Clio's malformed and
+# rejected verdicts collapse into the one sentence, and only "nothing sent at
+# all" gets the other. Both entries are named below and both are real.
+#
+# Where this gets interesting is *when* each shape applies, and it is not the
+# route. It is whether a credential was presented at all, checked
+# systematically across four request shapes:
+#
+#   path exists, no credential          -> 401 UnauthorizedError (nested)
+#   path exists, junk credential        -> 401 invalid_token (flat)
+#   path does not exist, no credential  -> 404, Rails' own default error page
+#                                          (text/html, 25265 bytes, "Sorry, we
+#                                          couldn't find the page you're
+#                                          looking for.")
+#   path does not exist, junk credential -> 401 invalid_token (flat) -- the
+#                                           *identical* body a real path with
+#                                           a bad credential gets
+#
+# and "path does not exist" here includes a real resource's collection asked
+# for with a method it does not support (PATCH /matters, OPTIONS /matters):
+# with no credential, every one of those is the plain 404 HTML page, not a
+# 405 of any kind -- there is no 405 anywhere on this host, joining Turso and
+# Aha! elsewhere in this collection. GET /matters/{anything, even a bogus
+# numeric id} and DELETE /matters/{id} both still reach the credential check
+# and answer 401, because Rails' router does recognise that verb and path as
+# belonging to MattersController even though the specific record does not
+# exist -- routing is what is being consulted, not the record.
+#
+# The shape this makes is a genuine sixth ordering next to the five
+# internal/recipe/auth.go already names: not Rootly's "credential first for
+# every path it has, router first for every path it does not" (a route
+# either exists or it does not, independent of the request), and not
+# Census's HTTP-method split. Here the same unrecognised path answers two
+# different ways depending only on whether *anything* was sent as a
+# credential, which is Sendcloud's shape from that file -- "splits on
+# whether any credential was presented at all -- not on the path, not on the
+# method, and not on whether the credential was any good" -- reached
+# independently, on a different host, by what looks like the same kind of
+# system: a Rack-level OAuth gate that only ever inspects requests carrying
+# an Authorization header, sitting in front of a Rails app whose own router
+# answers everything else, including the paths that do not exist. auth.py
+# cannot express this and it would be dishonest to force it: after_routing
+# false (the default, and what is declared below) makes every credential-less
+# request answer 401 immediately regardless of path, which is right for the
+# first two rows above and wrong for the third; after_routing true would make
+# every credential-bearing request to an unrouted path 404, which would
+# silently invent a shape this host was never observed sending and contradict
+# the fourth row, which really was observed. Neither setting reaches a split
+# keyed on credential presence rather than route existence, so this Recipe
+# leaves the default in place -- it reproduces the first, second and fourth
+# rows exactly, verified live -- and states plainly that the third row (no
+# credential, no route) cannot be produced by any conformance case here: an
+# absent credential always 401s in this emulator before routing is ever
+# consulted, so there is no request this Recipe can send that reaches
+# Cauldron's own 404 without a credential that Clio itself would not have
+# required to reach it.
+#
+# A request with no `fields` parameter is not a small omission. Clio's own
+# words, from the Fields page of the developer handbook: "If the parameter
+# isn't included, the response will return a minimal set of default fields
+# for the record(s) being requested. For most endpoints, the id and etag
+# fields are the only default fields returned." A GET with no fields= on a
+# Matter -- description, status, client, everything an integration actually
+# wants -- comes back as two properties. `?fields=id,etag,type` is the
+# documented example for a *different* resource (activities) and is not more
+# generous: the same two-field floor applies everywhere fields is documented
+# to matter. This is stated rather than a Cauldron limitation danced around:
+# there is no per-request field-projection mechanism in this format at all.
+# route.returns fixes one list of fields for a route for ever; Clio's fields
+# parameter lets the *caller* choose a different list on every request, which
+# nothing here can express. So this Recipe models the one shape that is
+# always true regardless of what a caller asks for -- the sparse default --
+# and states plainly that asking for more (`?fields=description,status`)
+# gets the identical two-field answer from this emulator, which is not what
+# the live API would do.
+#
+# Custom fields answer the question this whole group exists to ask, and
+# Clio's answer is neither of the other two providers': a nested collection
+# whose entries are themselves self-describing. GET /matters/{id}.json
+# carries custom_field_values as an array on the record (Matter's own
+# OpenAPI schema: "custom_field_values": {"type": "array", "items": {"$ref":
+# "CustomFieldValue"}}), and each entry embeds both the value and a full
+# copy of the field's own definition: {id, etag, field_name, field_type,
+# value, custom_field: {id, name, field_type, parent_type, ...}}. A client
+# reading one entry never has to look anything up to know what it is
+# looking at. But the canonical list -- every field an account has defined,
+# whether or not any record currently carries a value for it -- lives
+# separately: GET /custom_fields.json and GET /custom_field_sets.json are
+# real, documented, schema-listing endpoints, matching Aha!'s
+# custom_field_definitions and unlike Adapty, which has no such endpoint at
+# all (see adapty/recipe.yaml). custom_field.id is an int64 minted by POST
+# /custom_fields.json, per account, in the same way Jira's customfield_NNNNN
+# numbering already in this collection is: nothing in Clio's own materials
+# says two accounts share a numbering space, and the filter parameter
+# built on it, `custom_field_values[<id>]` (its key is literally "the
+# custom_field.id"), only works because a caller already knows which
+# account they are asking. CustomFieldValue.id is a *string*, unlike
+# CustomField.id's int64 -- two identifiers on two ends of the same join,
+# in two different JSON types, in the same OpenAPI document.
+#
+# Pagination pages by a token, not a number: page_token in the query,
+# resuming a cursor rather than skipping a count (there is also a documented
+# offset mode, capped at "10,000 total records (50 pages total)", not
+# modelled here because the cursor mode is what every list route defaults
+# to). The pointer itself is unusual for a cursor: meta.paging.next is not
+# an opaque token, it is a complete URL --
+# "https://app.clio.com/api/v4/contacts?fields=...&page_token=..." -- ready
+# to fetch directly, the same shape this format already has a name for
+# (cursor_url: absolute) because Merge and seven other providers here send
+# the same trap the other way: a client that stores the token half of a URL
+# and reassembles its own request breaks the day the base path changes
+# under it. meta.paging.previous is documented beside it and is not
+# reproduced: this format's prev_link only applies to offset and page
+# pagination, because a cursor names a position handed out by the server
+# and cannot be walked backwards by arithmetic, so a genuinely bidirectional
+# cursor -- which this is -- has no field to carry its other half.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account exists and none was created. Every case below carrying a
+#     `verified` date is an unauthenticated request (absent, wrong, or empty
+#     credential; an unrecognised path or method); every case describing a
+#     200 response is read from Clio's own published OpenAPI description and
+#     carries no verified date, and every one of them uses an empty fixture
+#     rather than an invented matter, contact, or custom field record.
+#   - The `fields` query parameter itself is not modelled, for the reason
+#     given above: this format has no per-request field-projection
+#     mechanism, so every route below always answers with its declared
+#     `returns` list regardless of what a caller asks for.
+#   - custom_field_values is declared as a list field and never populated,
+#     because populating it would mean inventing a matter with a custom
+#     field on it, which nobody asked this Recipe to invent and which this
+#     brief specifically forbids.
+#   - Creates, updates, deletes, billing, documents, and every resource
+#     other than Matter and CustomField are not modelled.
+#   - No spec_hash is recorded. The OpenAPI document at the URL below is
+#     large (3.2 MB) and changes with every Clio release; a fingerprint
+#     taken today is not a claim about tomorrow, and this Recipe does not
+#     have the tooling in this session to recompute one on demand.
+#
+# Four regional hosts exist (US, EU, CA, AU) and answer identically per
+# Clio's own servers list; only the US host, app.clio.com, was probed.
+
+recipe: clio
+capability: crm
+version: 0.1.0
+
+upstream:
+  api: v4
+  provider: clio
+  docs: https://docs.developers.clio.com/api-docs/
+  spec: https://docs.developers.clio.com/openapi.json
+  spec_hash: d5af1b4c15af0c027097f9d44eab085dfebc21c202d8de924fa5d946739dc5bf
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-clio-fixture-key-0000000000000000
+  # Nothing sent at all gets Clio's own nested shape. Anything that was sent
+  # and is not accepted -- garbage, or "Bearer " with nothing after it --
+  # gets the other one. Both verdicts point at the same entry deliberately:
+  # checked live three ways (a 27-character garbage token, an empty bearer
+  # value, and the same garbage token against a path this Recipe never
+  # declares) and all three answered byte-identical bodies. Clio does not
+  # tell a malformed credential from a merely wrong one.
+  absent_error: unauthorized_error
+  malformed_error: invalid_token
+  rejected_error: invalid_token
+
+responses:
+  # cursor_field and cursor_url are not declared here even though the header
+  # describes meta.paging.next precisely: every fixture below is empty (see
+  # the header for why), so no conformance case could ever assert a cursor
+  # value against a real page boundary, and a declaration nothing checks is
+  # exactly the shape this format's own validator refuses.
+  list:
+    style: wrapped
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # The shape "nothing was sent" gets. invalid_token below overrides every
+    # field for the shape "something was sent and it was wrong". type_field
+    # is disabled here (this format has no per-error override for it) and
+    # unauthorized_error below repurposes code_field, which is overridable,
+    # to emit a property literally named "type" -- the wire output is the
+    # same either way; only which knob produced it differs.
+    style: nested
+    key: error
+    message_field: message
+    type_field: "-"
+    code_field: "-"
+
+resources:
+  matter:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      etag:
+        type: string
+      display_number:
+        type: string
+      description:
+        type: string
+      status:
+        type: string
+      # An array of self-describing entries -- see the header. Never
+      # populated: doing so would mean inventing a matter's custom field
+      # data, which this Recipe does not do.
+      custom_field_values:
+        type: list
+      custom_field_set_associations:
+        type: list
+
+  custom_field:
+    collection: data
+    id:
+      style: numeric
+      type: number
+    fields:
+      etag:
+        type: string
+      name:
+        type: string
+      # Contact or Matter. Clio's own enum, per the OpenAPI document.
+      parent_type:
+        type: string
+      # checkbox, contact, currency, date, time, email, matter, numeric,
+      # picklist, text_area, text_line, url -- Clio's own enum. Note this is
+      # the vocabulary the *definition* uses; the value side (see Matter's
+      # custom_field_values above) nests a copy of this same field rather
+      # than repeating just the type name, so the two never actually
+      # disagree the way Aha!'s two vocabularies do (see aha/recipe.yaml).
+      field_type:
+        type: string
+      displayed:
+        type: boolean
+      deleted:
+        type: boolean
+      required:
+        type: boolean
+      display_order:
+        type: integer
+
+routes:
+  # The sparse default this whole route exists to pin: no fields= parameter,
+  # so the response carries only id and etag on every record. See the header
+  # for why nothing richer is modelled and why an empty fixture is the
+  # honest choice here.
+  - method: GET
+    path: /matters.json
+    resource: matter
+    operation: list
+    returns:
+      - id
+      - etag
+    pagination:
+      style: cursor
+      limit: 200
+      cursor_param: page_token
+
+  # The schema-listing endpoint itself. Same sparse default applies per
+  # Clio's own words ("For most endpoints, the id and etag fields are the
+  # only default fields returned"), and an empty fixture proves the
+  # envelope without inventing a single field an account might have.
+  - method: GET
+    path: /custom_fields.json
+    resource: custom_field
+    operation: list
+    returns:
+      - id
+      - etag
+    pagination:
+      style: cursor
+      limit: 200
+      cursor_param: page_token
+
+errors:
+  # Struck live with no Authorization header at all, three separate times.
+  unauthorized_error:
+    status: 401
+    # code_field is repurposed to emit a property named "type" -- see the
+    # comment on responses.error above.
+    code_field: type
+    code: UnauthorizedError
+    message: User is not authorized
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # Struck live three ways: a 27-character garbage bearer token, "Bearer "
+  # with nothing after it, and the garbage token again against a path this
+  # Recipe never declares. All three answered this body byte for byte,
+  # including the WWW-Authenticate challenge the absent-credential response
+  # never carries.
+  invalid_token:
+    status: 401
+    # error is a bare string acting as the code, and the sentence sits one
+    # field over in error_description -- a different envelope from
+    # unauthorized_error above, not the same one with different words.
+    style: flat
+    code_field: error
+    message_field: error_description
+    code: invalid_token
+    message: The access token provided is expired, revoked, malformed or invalid for other reasons.
+    headers:
+      www-authenticate: 'Bearer realm="Protected by OAuth 2.0", error="invalid_token", error_description="The access token provided is expired, revoked, malformed or invalid for other reasons."'
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all answers a nested UnauthorizedError, with a charset on its Content-Type
+    source: https://app.clio.com/api/v4/matters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /matters.json
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+      body:
+        error.type: UnauthorizedError
+        error.message: User is not authorized
+
+  - name: a garbage bearer token answers a completely different envelope -- error is a string here, not an object
+    source: https://app.clio.com/api/v4/matters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /matters.json
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        error: invalid_token
+        error_description: The access token provided is expired, revoked, malformed or invalid for other reasons.
+      absent:
+        - error.type
+        - error.message
+
+  - name: 'an empty bearer value, "Bearer " with nothing after it, is not absent -- it gets the wrong-credential shape, not the missing one'
+    source: https://app.clio.com/api/v4/matters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /matters.json
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+
+  - name: a path this Recipe never declares still answers the wrong-credential shape once a credential is presented -- see the header for the row this cannot demonstrate at all
+    source: https://app.clio.com/api/v4/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /no-such-route-xyz
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+
+  - name: a real resource asked for with a method it does not support still reaches the credential check, not a 405 -- there is no 405 anywhere on this host
+    source: https://app.clio.com/api/v4/matters
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /matters.json
+    expect:
+      status: 401
+      body:
+        error.type: UnauthorizedError
+
+  - name: with no fields parameter, a listing carries only id and etag on every record -- Clio's own words, not this Recipe's guess
+    source: https://docs.developers.clio.com/api-docs/clio-manage/fields/
+    fixture: empty
+    request:
+      method: GET
+      path: /matters.json
+      headers:
+        Authorization: Bearer cauldron-clio-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        data: []
+
+  - name: the custom field schema endpoint is real and lists definitions separately from any record's values
+    source: https://docs.developers.clio.com/api-reference/customfields/
+    fixture: empty
+    request:
+      method: GET
+      path: /custom_fields.json
+      headers:
+        Authorization: Bearer cauldron-clio-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        data: []

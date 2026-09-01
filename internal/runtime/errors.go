@@ -179,6 +179,17 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		}
 	}
 
+	// Zero bytes, when a Recipe says its provider sends zero bytes. Written
+	// here rather than through any style, because every style below composes
+	// a body and the point is that there is not one -- and no Content-Type
+	// either unless the Recipe declared one, since a provider answering
+	// nothing usually does not announce a type for it.
+	if defined, ok := s.recipe.Errors[resolved]; ok && defined.Empty && !borrowed {
+		w.WriteHeader(status)
+
+		return status
+	}
+
 	style := spec.Style
 
 	// Trello answers with plain text, so a client calling .json() on the

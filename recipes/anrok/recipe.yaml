@@ -1,0 +1,691 @@
+# Anrok Recipe for Cauldron
+#
+# Anrok is the newest and smallest provider in this group, and it is the one
+# whose own published API most plainly answers the question this group of
+# three Recipes exists to ask. Its OpenAPI description states the whole
+# lifecycle in one paragraph, quoted verbatim:
+#
+#   "1. When an invoice is created: the billing system should call the
+#   createEphemeral endpoint to calculate the sales tax amount. 1. When an
+#   invoice is updated: same as above. 1. When an invoice is finalized and
+#   ready to send to the customer: the billing system should call the
+#   createOrUpdate endpoint so that the transaction is recorded in Anrok."
+#
+# Two endpoints, not one endpoint with a flag -- unlike Avalara, in this same
+# collection, where SalesOrder and SalesInvoice are the same call
+# (POST /transactions/create) with one word changed. POST
+# /v1/seller/transactions/createEphemeral's own description: "calculate sales
+# tax without saving the transaction in Anrok. Ephemeral transactions are not
+# used by Anrok to file sales tax returns or monitor sales thresholds." POST
+# /v1/seller/transactions/createOrUpdate's: "calculate sales tax and save it
+# as a transaction in Anrok. Saved transactions are used by Anrok to file
+# sales tax returns and monitor sales thresholds." Both endpoints take the
+# same request shape and, per Anrok's own worked examples, return the
+# identical tax figures for the identical input (taxAmountToCollect 722 on
+# both, same jurisSummaries) -- the only difference in the response is that
+# createOrUpdate's carries a top-level "version": 1 and createEphemeral's
+# carries no id and no version at all. That absence is the whole signal:
+# there is no boolean anywhere on this record that says "this was saved."
+# Not having a version is what not being saved looks like.
+#
+# Committing has its own separate, equally explicit answer. POST
+# .../id:{transactionId}/void: "Mark a previously-created transaction as
+# void. It will no longer be included in returns or sales totals." -- a
+# status change, and its own response is the empty object
+# {"description": "OK", ... "example": {}} that every mutation on this API
+# with nothing to say answers with. POST .../createNegation: "Creates a new
+# transaction that is the exact inverse of the given transaction. The sale
+# prices and tax amounts will add up to zero." -- a new record, and its
+# request body is the tell: the caller supplies both originalTransactionId
+# and a newTransactionId of their own choosing, because Anrok will not mint
+# one for a record it did not decide to create. Two undo mechanisms, on the
+# same resource, doing two different things -- and this Recipe's Vertex
+# sibling in this collection converges on an almost identical pair (DELETE
+# flags a transaction rather than removing it; reversal "creates a second
+# transaction with negated taxability amounts") independently, on a
+# completely unrelated codebase three decades older.
+#
+# GET .../id:{transactionId}/get is the one route that reads either state
+# back, and its own description says exactly where the difference shows up:
+# "Retrieves the latest version of a single transaction by its ID. The
+# response includes a `version` field identifying the latest version. Voided
+# transactions do not include the body field." The schema backs the prose
+# precisely: NormalTransactionResponse is {type: "normal", ...common
+# properties, body: {...}}; VoidedTransactionResponse is {type: "void", ...
+# the identical common properties} with no body key at all. Voiding a
+# transaction does not clear its calculation -- it removes the ability to
+# read it back. This Recipe cannot nest a "body" key one level deeper without
+# spending a nesting budget better spent elsewhere (see the fidelity gaps),
+# so it states the same finding field by field: a voided fixture simply does
+# not set taxAmountToCollect, preTaxAmount, lineItems or jurisSummaries, and
+# the conformance case below asserts every one of them absent.
+#
+# Neither void nor createNegation is declared as a route. Both were read from
+# Anrok's own published description, both are true, and neither is something
+# this Recipe can turn into a live transition without either fabricating a
+# stateful mutation this format has no primitive for, or building one on top
+# of the ordinary create/update operations that would misdescribe what
+# actually changed on the wire. Avalara's Recipe in this collection makes the
+# identical call for its own commit step -- "Committing is not modelled as a
+# transition... A committed transaction and an uncommitted one are two
+# fixtures rather than one record that moved" -- and this Recipe follows it:
+# a normal fixture and an already-voided fixture stand in for a record that
+# moved, and the mechanism itself is established in this header, sourced
+# to the description, rather than stretched into a route that would only
+# approximate it.
+#
+# ---
+#
+# Every failure below was struck live against api.anrok.com, unauthenticated,
+# on 2026-09-01, and the auth check turns out to be the deepest nested one in
+# this whole collection -- not two tiers, not three, but a sequence that keeps
+# validating one layer further every time a probe gets past the last one:
+#
+#   no Authorization header at all
+#     -> 400 `Missing "Authorization" header.`
+#   Authorization: junktoken12345                    (no scheme at all)
+#     -> 400 `Invalid "Authorization" header: Expecting first token to be
+#        "Bearer", got "junktoken12345".`
+#   Authorization: Bearer                             (scheme, nothing after)
+#     -> 400 `Invalid "Authorization" header: Expecting 1 token after
+#        "Bearer", got 0.`
+#   Authorization: Bearer junktoken12345              (a token, wrong shape)
+#     -> 400 `Invalid "Authorization" header: Invalid token: Expecting 2 "/"
+#        characters ("****/****/secret.****") but got 0.`
+#   Authorization: Bearer faketenant/fakekeyid/secret.0000...  (right shape,
+#                                                       wrong seller prefix)
+#     -> 400 `Invalid "Authorization" header: Invalid token: First part
+#        (seller ID) is not well-formed: "faketenant": Must start with "s".`
+#
+# Five requests, five different sentences, and every one of them is still
+# refusing the request before anything about a real seller ID or secret was
+# ever checked -- an unauthenticated prober can walk four layers deep into
+# this validator (scheme, presence, delimiter count, seller-ID prefix)
+# without ever reaching a fifth layer that says "well-formed, and simply not
+# an account this holds." A genuinely well-formed decoy key -- the right
+# prefix, the right shape, sixteen bytes of secret -- was never held, so that
+# fifth verdict is not claimed anywhere below. Cauldron has three verdict
+# slots -- Absent, Malformed, Rejected -- not five, and this Recipe fills all
+# three with the sharpest of the five sentences: the missing-header case is
+# Absent, the empty-after-"Bearer" case is Malformed (the case Step 2a of
+# this batch's brief names by name -- "somebody sent that"), and the
+# slash-count failure -- the sentence any ordinary "Bearer junktoken12345"
+# probe actually reaches -- is Rejected, because from the outside it has the
+# right shape (a bearer scheme, a non-empty value) and is refused only once
+# Anrok looks inside it. The no-scheme-at-all sentence and the
+# seller-ID-prefix sentence are both real, both live, and both quoted above
+# rather than wired: Cauldron's per-verdict error names apply to the whole
+# Recipe's declared scheme, not per header value, so a fourth and fifth tier
+# would need a mechanism this format does not have for a scheme already in
+# use -- the matches_header override Turso's Recipe in this collection uses
+# for its own second tier is available only under auth.scheme: none, which
+# would mean rebuilding all three verdicts above by hand for every route
+# rather than gaining a fourth.
+#
+# One more finding sits inside those five requests rather than beside them:
+# `Authorization: Bearer faketenant/fakekeyid/secret.0000000000000000000000000000`
+# is what this Recipe sent to reach the fifth line, and Anrok's own
+# `x-codeSamples` for createNegation happens to quote the real shape back:
+# `apiToken='sxxx/saxxx/secret.xxx'` -- three segments, the first starting
+# with "s", joined by two slashes, the last prefixed "secret.". That confirms
+# the shape this Recipe's own probing had already inferred from the error
+# text alone, in Anrok's own words rather than this Recipe's guess. That same
+# code sample calls the endpoint `/v1/seller/transactions/createRefund`,
+# which is not a path this API has -- the operation was renamed to
+# createNegation and the sample was not, a documentation drift this Recipe
+# noticed and does not repeat.
+#
+# Routing and method resolve before any of the five layers above are ever
+# reached, checked live with no credential sent at all:
+#
+#   POST /v1/seller/nosuchendpoint         -> 400 "No API endpoint matches
+#                                              the given URL."
+#   GET  /v1/seller/nosuchendpoint         -> 400, byte-identical
+#   GET  /v1/seller/transactions/list      -> 400 `Expecting HTTP method
+#                                              "POST", got "GET".`
+#   DELETE /v1/seller/transactions/list    -> 400 `Expecting HTTP method
+#                                              "POST", got "DELETE".`
+#
+# auth.after_routing carries this: a route match is checked, then the
+# method, then the credential -- the same ordering Fireworks' Recipe in this
+# collection declares, on a different provider, arrived at independently.
+# Every real route on this API is POST, which makes GET the wrong-method
+# probe for all of them, and this Recipe's own wrong-method case sends
+# exactly what was sent live. Cauldron's method_not_allowed can only carry
+# one fixed sentence per Recipe and {detail} substitutes "GET
+# /v1/seller/transactions/list", not the bare word Anrok's own phrasing
+# wants -- so the message below is fixed to the GET case this Recipe
+# actually asserts, the same accommodation Rootly's Recipe makes for its own
+# unrouted-path message. The DELETE probe answered the analogous sentence
+# with DELETE in place of GET, live, and is recorded here rather than
+# asserted as a second case that the same fixed string cannot also carry.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - void and createNegation are not routes. See above.
+#   - The nested "body" key a NormalTransactionResponse wraps its calculation
+#     in is flattened here to the resource's own top level; a voided
+#     fixture proves the same finding by simply not setting those fields,
+#     rather than this Recipe nesting one level deeper to hold a key whose
+#     presence or absence it would then have to fake toggling.
+#   - customers, certificates, certificate requests, products, product tax
+#     categories, product mappings, tax ID validation, address resolution
+#     and filings are all real, documented tags on this API and none of them
+#     are modelled. This Recipe is about the two questions this batch was
+#     asked to answer -- is a calculation stored, and what does undoing one
+#     do -- not a full port of Anrok.
+#   - Cauldron cannot compute real sales tax. taxAmountToCollect,
+#     preTaxAmount, lineItems and jurisSummaries below are the literal
+#     numbers from Anrok's own published request/response examples for
+#     createEphemeral and createOrUpdate (the same input, both endpoints,
+#     byte-identical figures) -- not arithmetic this Recipe performs.
+#   - The 400 body shape for a request that reaches a route but fails
+#     validation (documented as a bare JSON string, e.g.
+#     `"Request body: \"lineItems\": Required."`) is real and not modelled:
+#     every 400 this Recipe actually struck live came from the credential or
+#     routing layer, both plain text, and reaching the JSON-string body
+#     layer needs a credential this Recipe was never issued.
+#   - Anrok's own limit/cursor/filter parameters for listing all travel in
+#     the POST body; Cauldron's pagination mechanism reads limit_param and
+#     cursor_param from the query string only, for every Recipe in this
+#     collection, so no case here can truncate a page the way a real caller
+#     would. The response envelope's own field names (transactions,
+#     nextCursor, hasMore) are declared and asserted precisely; the request
+#     transport that would fill a second page is not.
+#   - The 429 body ("You've exceeded your API limit of 10 per second", with
+#     a Retry-After header) is Anrok's own documented wording and was never
+#     triggered -- this Recipe does not retry a rate-limited host, per this
+#     batch's own instructions.
+#
+# Keys below are fixtures and belong to no seller account.
+
+recipe: anrok
+capability: tax
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://apidocs.anrok.com/
+  spec: https://apidocs.anrok.com/openapi.yaml
+  spec_hash: d00b7185ff251cd912e78e07b8018b2e8e20377d8060dec242ae0deea7d8c876
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - stest00000001/sakey00000001/secret.cauldronfixture0000000000
+  # Absent: no header at all. Malformed: the layer Step 2a names by name --
+  # "Bearer " with nothing after it, which somebody sent. Rejected: the
+  # right shape (a scheme, a non-empty value) refused once Anrok looks
+  # inside it -- the sentence an ordinary "Bearer junktoken12345" probe
+  # actually reaches. See the header for the two further layers this
+  # Recipe could reach but has no fourth or fifth slot to name.
+  absent_error: missing_auth_header
+  malformed_error: empty_bearer_token
+  rejected_error: invalid_token_shape
+  # Route, then method, then credential -- verified live with no credential
+  # sent at all for both an unrouted path and a wrong method. See the header.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: transactions
+    cursor_field: nextCursor
+    has_more_field: hasMore
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  # Recorded: reachable by id, carries a version that increments, and is
+  # what createOrUpdate answers with. See the header for why "body" is
+  # flattened rather than nested, and why void and createNegation are not
+  # routes that mutate this resource live.
+  transaction:
+    id:
+      # Caller-chosen, not minted -- "stripe:in_1JSW342eZvKYlo2C" is Anrok's
+      # own worked example, a billing system's own invoice id carried
+      # through verbatim.
+      style: opaque
+      field: id
+    fields:
+      version:
+        type: integer
+        default: 1
+      # "normal" or "void" -- this Recipe's own stand-in for the type
+      # discriminator NormalTransactionResponse and VoidedTransactionResponse
+      # carry in the real schema. Not itself part of Anrok's wire vocabulary
+      # under this name; declared so two fixture entries can carry two
+      # different shapes without a second resource.
+      type:
+        type: string
+        default: normal
+      anrokCreatedTime:
+        type: datetime
+      anrokModifiedTime:
+        type: datetime
+      currencyCode:
+        type: string
+        default: usd
+      # No default and not null_when_unset, deliberately: a field left unset
+      # in a fixture is genuinely absent from the response rather than null
+      # or zero, and the voided fixture below relies on exactly that to
+      # prove "no body field" without this Recipe needing to nest one.
+      taxAmountToCollect:
+        type: number
+      # A decimal string, not a number -- Anrok's own worked example sends
+      # "68577.3304" in quotes. A client that parses it as a float and
+      # formats it back can lose the trailing digit; a client that reads it
+      # as a number type first throws.
+      preTaxAmount:
+        type: string
+      lineItems:
+        type: list
+      jurisSummaries:
+        type: list
+      taxComplianceMessage:
+        type: string
+        null_when_unset: true
+
+  # Not reachable by id, carries no version, and is what createEphemeral
+  # answers with. Same calculation fields as transaction, same figures for
+  # the same input per Anrok's own worked examples -- the absence of an id
+  # and a version is the entire difference, which is the finding.
+  ephemeral_calculation:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      taxAmountToCollect:
+        type: number
+        default: 722
+      preTaxAmount:
+        type: string
+        default: "68577.3304"
+      lineItems:
+        type: list
+        default:
+          - id: item-1
+            taxAmountToCollect: 722
+            preTaxAmount: "15000"
+            jurises:
+              - name: Colorado
+                taxes: null
+                notTaxedReason:
+                  type: productNotTaxed
+              - name: Denver (local)
+                taxes:
+                  - taxName: Tax
+                    taxableAmount: "15000"
+                    taxAmount: "721.5"
+                    taxRate: "0.0481"
+                notTaxedReason: null
+          - id: item-2
+            taxAmountToCollect: 0
+            preTaxAmount: "29577.3304"
+            jurises:
+              - name: Colorado
+                taxes: null
+                notTaxedReason:
+                  type: productNotTaxed
+              - name: Denver (local)
+                taxes:
+                  - taxName: Tax
+                    taxableAmount: "29577.3304"
+                    taxAmount: "1422.6696"
+                    taxRate: "0.0481"
+                notTaxedReason: null
+          - id: item-3
+            taxAmountToCollect: 0
+            preTaxAmount: "24000"
+            jurises:
+              - name: Colorado
+                taxes: null
+                notTaxedReason:
+                  type: productNotTaxed
+      jurisSummaries:
+        type: list
+        default:
+          - name: Colorado
+            notTaxedReasons:
+              - type: productNotTaxed
+          - name: Denver (local)
+            notTaxedReasons: null
+      taxComplianceMessage:
+        type: string
+        null_when_unset: true
+
+routes:
+  # No fixture data behind this on purpose -- see the resource's own
+  # defaults, which are the one worked example Anrok's own description
+  # gives for this exact request. Every call answers the same figures,
+  # because this Recipe does not calculate tax; see the header.
+  - method: POST
+    path: /v1/seller/transactions/createEphemeral
+    resource: ephemeral_calculation
+    operation: create
+    status: 200
+
+  - method: POST
+    path: /v1/seller/transactions/createOrUpdate
+    resource: transaction
+    operation: create
+    status: 200
+
+  # Anrok's own path names this segment {transactionId}; Cauldron's own
+  # get/update/delete convention needs the templated token spelled {id}
+  # regardless of the provider's own name for it, so the literal "id:" text
+  # before the brace is Anrok's, and the token spelling after it is
+  # Cauldron's.
+  - method: POST
+    path: /v1/seller/transactions/id:{id}/get
+    resource: transaction
+    operation: get
+
+  # limit_param and cursor_param describe query-string names, and Anrok's
+  # real limit/cursor/filter all travel in the POST body instead -- see the
+  # fidelity gaps. Declared anyway so the response envelope's own field
+  # names (nextCursor, hasMore) are documented precisely, which is the part
+  # this Recipe can serve faithfully regardless of how a page was asked for.
+  - method: POST
+    path: /v1/seller/transactions/list
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit: 10
+      max_limit: 20
+      limit_param: limit
+      cursor_param: cursor
+
+errors:
+  # Absent verdict. Live, byte for byte.
+  missing_auth_header:
+    status: 400
+    message: 'Missing "Authorization" header.'
+
+  # Malformed verdict -- the case Step 2a names by name. Live.
+  empty_bearer_token:
+    status: 400
+    message: 'Invalid "Authorization" header: Expecting 1 token after "Bearer", got 0.'
+
+  # Rejected verdict -- what an ordinary "Bearer <junk>" probe reaches. Live.
+  invalid_token_shape:
+    status: 400
+    message: 'Invalid "Authorization" header: Invalid token: Expecting 2 "/" characters ("****/****/secret.****") but got 0.'
+
+  # after_routing's own pair. Both live, with no credential sent at all.
+  unknown_route:
+    status: 400
+    message: No API endpoint matches the given URL.
+
+  # Fixed to the GET case this Recipe asserts -- see the header for why
+  # {detail} cannot carry Anrok's bare-method wording and for the DELETE
+  # probe this same fixed sentence cannot also represent.
+  method_not_allowed:
+    status: 400
+    message: 'Expecting HTTP method "POST", got "GET".'
+
+  # Documented, never triggered -- this Recipe does not retry a rate limit.
+  rate_limit:
+    status: 429
+    style: text
+    message: You've exceeded your API limit of 10 per second
+
+fixtures:
+  empty: {}
+
+  seller-account:
+    transaction:
+      # Recorded and readable. Every calculation figure here is the literal
+      # worked example Anrok's own createOrUpdate description ships --
+      # createEphemeral's example, quoted above, answers the identical
+      # numbers for the identical input.
+      - id: "stripe:in_1JSW342eZvKYlo2C"
+        version: 1
+        type: normal
+        anrokCreatedTime: "2025-01-01T00:00:00Z"
+        anrokModifiedTime: "2025-01-02T18:00:00Z"
+        currencyCode: usd
+        taxAmountToCollect: 722
+        preTaxAmount: "68577.3304"
+        lineItems:
+          - id: item-1
+            taxAmountToCollect: 722
+            preTaxAmount: "15000"
+            jurises:
+              - name: Colorado
+                taxes: null
+                notTaxedReason:
+                  type: productNotTaxed
+              - name: Denver (local)
+                taxes:
+                  - taxName: Tax
+                    taxableAmount: "15000"
+                    taxAmount: "721.5"
+                    taxRate: "0.0481"
+                notTaxedReason: null
+        jurisSummaries:
+          - name: Colorado
+            notTaxedReasons:
+              - type: productNotTaxed
+          - name: Denver (local)
+            notTaxedReasons: null
+      # Voided. Same identity fields, one version later, and every
+      # calculation field below is simply not set -- see the header. This
+      # is a fixture standing in for a record that moved, the same
+      # technique avalara/recipe.yaml uses for its own commit switch.
+      - id: "stripe:in_1JSW342eZvKYlo2C_refund"
+        version: 2
+        type: void
+        anrokCreatedTime: "2025-01-01T00:00:00Z"
+        anrokModifiedTime: "2025-01-03T00:00:00Z"
+        currencyCode: usd
+
+conformance:
+  - name: no credential at all names the header that is missing
+    source: https://api.anrok.com/v1/seller/transactions/list
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/seller/transactions/list
+      json: {}
+    expect:
+      status: 400
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: 'Missing "Authorization" header\.'
+
+  - name: "\"Bearer \" with nothing after it is malformed, not absent -- somebody sent that"
+    source: https://api.anrok.com/v1/seller/transactions/list
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/seller/transactions/list
+      headers:
+        Authorization: "Bearer "
+      json: {}
+    expect:
+      status: 400
+      body_matches: 'Expecting 1 token after "Bearer", got 0\.'
+
+  - name: an ordinary junk bearer token is the shape check, three layers deep
+    # The request every other Recipe in this collection sends as its
+    # canonical junk-credential probe. Here it fails a check that has
+    # already ruled out absent and no-scheme -- see the header.
+    source: https://api.anrok.com/v1/seller/transactions/list
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/seller/transactions/list
+      headers:
+        Authorization: Bearer junktoken12345
+      json: {}
+    expect:
+      status: 400
+      body_matches: 'Expecting 2 "/" characters \("\*\*\*\*/\*\*\*\*/secret\.\*\*\*\*"\) but got 0\.'
+
+  - name: an unrouted path answers before any of the five layers above are reached
+    source: https://api.anrok.com/v1/seller/nosuchendpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/seller/nosuchendpoint
+      json: {}
+    expect:
+      status: 400
+      body_matches: No API endpoint matches the given URL\.
+
+  - name: and so does the wrong method, also with no credential sent
+    source: https://api.anrok.com/v1/seller/transactions/list
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/seller/transactions/list
+    expect:
+      status: 400
+      body_matches: 'Expecting HTTP method "POST", got "GET"\.'
+
+  - name: recorded and ephemeral answer the identical figures for the identical input
+    # createOrUpdate's own published example. createEphemeral's, quoted in
+    # the header, answers taxAmountToCollect 722 for the same lineItems --
+    # byte-identical. What differs is not the math. Cauldron cannot compute
+    # real sales tax (see the header), so this case seeds the documented
+    # output figures directly in the request body -- the same technique
+    # taxjar/recipe.yaml's own header explains for the identical reason --
+    # rather than asserting them against the already-seeded fixture record,
+    # so that a fresh id can be created without colliding with it.
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/createOrUpdate
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json:
+        id: "stripe:in_1JSW342eZvKYlo2C_2"
+        currencyCode: usd
+        accountingTime: "2022-01-02T03:30:00Z"
+        accountingTimeZone: UTC
+        taxAmountToCollect: 722
+        preTaxAmount: "68577.3304"
+    expect:
+      status: 200
+      body:
+        version: 1
+        taxAmountToCollect: 722
+        preTaxAmount: "68577.3304"
+
+  - name: the ephemeral response carries no id and no version at all
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/createEphemeral
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json:
+        currencyCode: usd
+        accountingTime: "2022-01-02T03:30:00Z"
+        accountingTimeZone: UTC
+    expect:
+      status: 200
+      body:
+        taxAmountToCollect: 722
+      absent:
+        - id
+        - version
+
+  - name: a recorded transaction is fetched by the id the caller chose
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/id:stripe:in_1JSW342eZvKYlo2C/get
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json: {}
+    expect:
+      status: 200
+      body:
+        id: "stripe:in_1JSW342eZvKYlo2C"
+        version: 1
+        type: normal
+        taxAmountToCollect: 722
+
+  - name: a voided transaction answers the identity fields and nothing about the calculation
+    # "Voided transactions do not include the body field" -- flattened here
+    # to per-field absence rather than one nested key. See the header.
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/id:stripe:in_1JSW342eZvKYlo2C_refund/get
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json: {}
+    expect:
+      status: 200
+      body:
+        id: "stripe:in_1JSW342eZvKYlo2C_refund"
+        version: 2
+        type: void
+      absent:
+        - taxAmountToCollect
+        - preTaxAmount
+        - lineItems
+        - jurisSummaries
+
+  - name: a listing wraps its array under transactions, with a cursor field named nextCursor
+    # Anrok's own limit/cursor/filter parameters travel in the POST body on
+    # the real API; Cauldron's pagination reads limit/cursor from the query
+    # string only (see the fidelity gaps), so this case exercises the
+    # default page rather than a truncated one -- two records, under the
+    # default limit of 10, so hasMore is false and nextCursor is omitted
+    # rather than sent empty, which is itself worth pinning.
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/list
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json: {}
+    expect:
+      status: 200
+      body:
+        "transactions[0].id": "stripe:in_1JSW342eZvKYlo2C"
+        hasMore: false
+      absent:
+        - nextCursor
+
+  - name: and carries a value under that name once a page is truncated
+    # Cauldron's pagination only reads a limit from the query string, which
+    # is not the transport Anrok's own limit parameter uses -- see the
+    # fidelity gaps -- so this case sends the truncation the only way this
+    # emulator can accept it rather than the way a real caller would, and
+    # carries no verified date for exactly that reason.
+    source: https://apidocs.anrok.com/openapi.yaml
+    fixture: seller-account
+    request:
+      method: POST
+      path: /v1/seller/transactions/list?limit=1
+      headers:
+        Authorization: Bearer stest00000001/sakey00000001/secret.cauldronfixture0000000000
+      json: {}
+    expect:
+      status: 200
+      body:
+        "transactions[0].id": "stripe:in_1JSW342eZvKYlo2C"
+        hasMore: true
+      matches:
+        nextCursor: "."

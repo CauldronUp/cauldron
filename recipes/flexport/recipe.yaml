@@ -1,0 +1,542 @@
+# Flexport Recipe for Cauldron
+#
+# Flexport is freight, and freight is slow in a way none of this
+# collection's package trackers or last-mile dispatchers are: a shipment
+# here is a container on a boat, and the timeline is measured in weeks, not
+# minutes. The commitment point this group keeps asking about -- the moment
+# an operation stops being cheap to undo -- is not a single API call for
+# Flexport at all. It is whichever port the vessel has already sailed from.
+#
+# **Estimated and actual are separate, independently nullable fields, at
+# two different levels of the same shipment, and that is the freight
+# version of the async-completion question this collection keeps finding
+# two answers to.** Flexport's own published OpenAPI description (fetched
+# 2026-09-01, openapi: 3.1.0, info.title "Flexport API", info.version
+# "2023-07-01", embedded in the Redocly reference at apidocs.flexport.com
+# rather than served as a fetchable file -- see the fidelity gaps) declares
+# estimated_departure_date, actual_departure_date, estimated_arrival_date
+# and actual_arrival_date on Shipment itself, describing the main voyage's
+# first and last port -- "Estimated departure date from the first port of
+# the main voyage" beside "Actual departure date from the first port of the
+# main voyage," worded as two separate sentences about two separate
+# questions, not one field with a flag. ShipmentContainer -- the container
+# itself, addressed by its own container_number, the thing actually loaded
+# onto the vessel -- carries four such pairs of its own: departure,
+# arrival, pickup and delivery, all eight typed ["string","null"] in the
+# schema independently of each other. Nothing here is a Temporal-style
+# operation standing in for the record, and nothing is a Turso-style
+# create response truncated to a projection -- estimated and actual are
+# both real fields on the real record, all the way down, and a client
+# asking "has this container actually arrived" reads actual_arrival_date
+# and gets null until it has, rather than reading a status word that only
+# says "in transit" the whole time.
+#
+# **The container has no status field at all -- progress is only the
+# pattern of which actual_* dates are still null.** Every status this
+# Recipe found lives one level up, on Shipment: a fixed thirteen-word
+# progression (ShipmentStatus, e.g. "in_transit_to_arrival_port") tracking
+# the whole multi-leg journey. ShipmentContainer -- "a container on a
+# boat," the unit this group asked about specifically -- has eight date
+# fields and nothing else that says how far along it is. Two ways to ask
+# "where is this shipment" on the same API, and only the coarser one
+# answers with a word; the finer one, the actual container, answers only
+# with which of eight timestamps have happened yet.
+#
+# **The record itself carries three identifiers for the credential, not
+# the shipment -- the auth failure distinguishes absent from wrong, and
+# draws the "wrong" line at the same place Together AI's sibling API in
+# this collection draws it.** Checked live, 2026-09-01, against
+# api.flexport.com:
+#
+#   no Authorization header at all       -> {"error":{"code":"no_token",
+#                                             "message":"No Token
+#                                             Specified"}}
+#   Authorization: junktoken12345        -> the identical no_token body
+#   Authorization: Bearer  (empty)       -> the identical no_token body
+#   Authorization: Bearer junktoken12345 -> {"error":{"code":"bad_token",
+#                                             "message":"Bad Token"}}
+#
+# A header with no "Bearer " prefix, and a "Bearer " prefix with nothing
+# after it, both answer the sentence reserved for no header at all -- the
+# same classification Together's Recipe in this collection documents for
+# the identical shape of request, on a different provider. Only a
+# well-formed, prefixed, wrong value earns the second sentence. Checked
+# live for a malformed record id under a real route too -- GET
+# /shipments/nonexistent-id-xyz with no credential answers no_token before
+# anything about the id is examined, the same ordering Rootly's and
+# FireHydrant's Recipes in this collection both already establish for
+# their own providers.
+#
+# **The envelope repeats itself, once as an object and once as an array,
+# and repeats the request's own URL back besides.** Every response this
+# Recipe struck -- success or failure -- is wrapped in
+# {"_object":"/api/response","self":"<the request's own URL>","version":...,
+# "data":...}. A failure carries both error, a single object
+# ({"status","code","message"}), and errors, a one-element array holding
+# the identical code and message a second time -- checked live, both
+# present on every 401 this Recipe struck. Neither this format's nested nor
+# list error style can be declared twice for one envelope at once, so this
+# Recipe serves error, the shape client code reaches for first, and states
+# the duplication here instead of serving it -- see the fidelity gaps. self
+# is real too and is not served either: ErrorResponse has no URL-echo
+# mechanism the way this format's list envelope does, so a case asserting
+# it against this Recipe's own emulator would be asserting a field the
+# emulator was never told how to write, not describing Flexport.
+#
+# **Routing resolves before the credential for the methods this API
+# actually uses, and a method it never declared anywhere lands on a wholly
+# unrelated failure.** Checked live, 2026-09-01: GET, POST and PATCH against
+# api.flexport.com all reach the JSON no_token/bad_token check above, on
+# real paths and invented ones alike, with one asymmetry -- an invented GET
+# path 302-redirects to the marketing site (Content-Type: text/html, a
+# _flexport_session cookie set) rather than answering JSON, so the
+# credential is never even consulted for a route that does not exist, while
+# a real path with a real method that merely lacks a credential answers the
+# ordinary 401. PUT, DELETE and OPTIONS are a third thing again, and they
+# are not modelled at all: every one of them, on every path this Recipe
+# tried -- real, invented, four segments deep -- answered 422
+# "The change you wanted was rejected," a Rails CSRF-protection HTML page,
+# whether or not a credential was attached. No route in Flexport's own
+# published description uses PUT, DELETE or OPTIONS anywhere -- every
+# operation is GET, POST or PATCH -- so this looks like exactly what it
+# sounds like: three verbs the API layer never registered, falling through
+# to whatever the surrounding Rails application answers a stranger verb
+# with. Cauldron's own auth check is one ordering for a whole Recipe, and
+# neither the 302 nor the 422 shape fits the credential-verdict mechanism
+# this Recipe otherwise relies on, so both are recorded here, live-checked,
+# rather than approximated by a route.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No stable, independently fetchable spec URL. Flexport's OpenAPI
+#     description is bundled at build time into a Redocly reference page
+#     (apidocs.flexport.com) at an internal, per-deploy path
+#     (/tmp/redocly/bundles/...) rather than served at a URL a second
+#     fetch could return to and fingerprint, so upstream.spec is left
+#     unset rather than pointed at something that will not resolve again.
+#     info.version, "2023-07-01", is recorded as upstream.api instead,
+#     because it is the one version label Flexport's own description gives.
+#   - Of roughly forty documented Shipment fields and thirty
+#     ShipmentContainer fields, this Recipe declares about a dozen each.
+#     Shippers, consignees, buyers, dangerous-goods review, customs, VAT
+#     numbers, pricing, the ocean/air/rail/truck per-mode detail objects and
+#     the shipping-order cutoff times are all real and none of them are
+#     declared.
+#   - "next" and "prev" both travel in every paginated envelope this Recipe
+#     read, full URLs rather than opaque cursors -- the same shape Merge's
+#     Recipe in this collection already warns about. Neither is modelled.
+#     Flexport's own published list example shows both populated on a page
+#     holding a single record, which is illustrative rather than something
+#     this Recipe's own one-record fixtures could ever honestly reproduce:
+#     asserting the cited "next" value against this Recipe's own emulator
+#     would be asserting a page this fixture does not have, not describing
+#     the provider. cursor_field is left unset rather than pointed at a
+#     value this Recipe cannot make true.
+#   - create, update and delete are not modelled. Every route below is a
+#     GET. PATCH /shipments/{id} is real and documented and this Recipe
+#     never held a credential that could exercise it to see what it
+#     actually returns.
+#   - booking, container_legs and items are nested reference objects on the
+#     records this Recipe declares and are typed as opaque maps rather than
+#     resources of their own, the same trade Onfleet's Recipe in this
+#     collection makes for its own container field.
+#   - No account exists and no bearer token was ever requested, guessed or
+#     used. Every 401, the 302 and the 422 all carry a verified date; the
+#     two 200s -- the worked shipment and shipment_container examples --
+#     are Flexport's own published response examples, quoted exactly, and
+#     carry none, because no key exists here that could have called them.
+
+recipe: flexport
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: "2023-07-01"
+  docs: https://apidocs.flexport.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-flexport-fixture-token-0000000000000000000000
+  # A header with no "Bearer " prefix at all, and "Bearer " with nothing
+  # after it, both get the sentence reserved for no header at all -- see
+  # the header, and Together's Recipe in this collection for the same
+  # classification on a different provider. rejected_error is left unset:
+  # authentication_error below, the default, already carries Flexport's
+  # second sentence for a well-formed, wrong value.
+  absent_error: missing_token
+  malformed_error: missing_token
+
+responses:
+  list:
+    style: wrapped
+    # No top-level key: each resource's own dotted collection path below
+    # supplies it -- both nest one level under "data" a second time.
+    # "next" and "prev" live beside that second "data", not inside it, and
+    # neither is declared -- see the fidelity gaps for why.
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # error, not errors -- see the header for the duplicate array this
+    # format cannot also declare on the same envelope.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+
+resources:
+  # The whole multi-leg journey -- freight, in the ordinary sense of the
+  # word. Compare shipment_container below, the physical unit actually
+  # loaded onto a vessel, which carries dates and no status word at all.
+  shipment:
+    collection: data.data
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+        null_when_unset: true
+      transportation_mode:
+        # ocean, air, barge, truck, rail, and others -- Flexport's own
+        # published enum.
+        type: string
+      # The one status word on this whole API surface. Thirteen fixed
+      # stages, e.g. "in_transit_to_arrival_port" -- see the header for
+      # what the container-level resource below has instead of this.
+      status:
+        type: string
+      freight_type:
+        type: string
+        null_when_unset: true
+      incoterm:
+        type: string
+        null_when_unset: true
+      created_date:
+        type: datetime
+        null_when_unset: true
+      updated_at:
+        type: datetime
+        null_when_unset: true
+      # The main voyage's first and last port -- see the header. Both
+      # pairs are independently nullable in the published schema; nothing
+      # here collapses them into one status word.
+      estimated_departure_date:
+        type: datetime
+        null_when_unset: true
+      actual_departure_date:
+        type: datetime
+        null_when_unset: true
+      estimated_arrival_date:
+        type: datetime
+        null_when_unset: true
+      actual_arrival_date:
+        type: datetime
+        null_when_unset: true
+      # A nested reference object -- {"ref_type","link","id"} -- not
+      # modelled as a resource of its own. See the fidelity gaps.
+      booking:
+        type: map
+        null_when_unset: true
+    constants:
+      _object: /shipments
+
+  # The physical container -- what this group's question is actually
+  # about. See the header at length: no status field anywhere on this
+  # record, only the pattern of which of these eight dates are still null.
+  shipment_container:
+    collection: data.data
+    id:
+      style: numeric
+      type: number
+    fields:
+      container_type:
+        # dry, flat_rack, headload, open, reefer, lcl, tank, ventilated,
+        # bulk, special -- Flexport's own published enum.
+        type: string
+      container_number:
+        type: string
+      container_size:
+        type: string
+        null_when_unset: true
+      reference_code:
+        type: string
+        null_when_unset: true
+      seal_number:
+        type: string
+        null_when_unset: true
+      estimated_departure_date:
+        type: datetime
+        null_when_unset: true
+      actual_departure_date:
+        type: datetime
+        null_when_unset: true
+      estimated_arrival_date:
+        type: datetime
+        null_when_unset: true
+      actual_arrival_date:
+        type: datetime
+        null_when_unset: true
+      estimated_pickup_date:
+        type: datetime
+        null_when_unset: true
+      actual_pickup_date:
+        type: datetime
+        null_when_unset: true
+      estimated_delivery_date:
+        type: datetime
+        null_when_unset: true
+      actual_delivery_date:
+        type: datetime
+        null_when_unset: true
+      # Documented as format: date -- a bare "2019-02-06", no time
+      # component -- and this format has no dedicated date type distinct
+      # from datetime, so it is typed as a plain string rather than as a
+      # datetime that would imply a time nobody sends.
+      cargo_ready_date:
+        type: string
+        null_when_unset: true
+      shipment:
+        type: map
+        null_when_unset: true
+    constants:
+      _object: /ocean/shipment_container
+
+routes:
+  - method: GET
+    path: /shipments
+    resource: shipment
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      max_limit: 100
+      limit_param: per
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /shipments/{id}
+    resource: shipment
+    operation: get
+
+  - method: GET
+    path: /ocean/shipment_containers
+    resource: shipment_container
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      max_limit: 100
+      limit_param: per
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /ocean/shipment_containers/{id}
+    resource: shipment_container
+    operation: get
+
+errors:
+  # No header at all, a header with no "Bearer " prefix, and "Bearer " with
+  # nothing after it -- three requests this Recipe struck live, one
+  # sentence. See the header.
+  missing_token:
+    status: 401
+    code: no_token
+    message: "No Token Specified"
+
+  # A well-formed, prefixed, wrong bearer token -- the only shape that
+  # earns this second sentence. This Recipe's default, so rejected_error
+  # does not need to repeat it.
+  authentication_error:
+    status: 401
+    code: bad_token
+    message: "Bad Token"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    shipment:
+      # Flexport's own worked example for GET /shipments and
+      # GET /shipments/{id}, quoted from the response the OpenAPI
+      # description embeds for both routes.
+      - id: 2983
+        name: ABC Shipment
+        transportation_mode: ocean
+        status: in_transit_to_arrival_port
+        freight_type: door_to_door
+        incoterm: FOB
+        created_date: "2019-02-06T19:28:25.741Z"
+        updated_at: "2019-02-06T19:28:25.119Z"
+        estimated_departure_date: "2019-02-06T19:28:25+00:00"
+        actual_departure_date: "2019-02-06T19:28:25+00:00"
+        estimated_arrival_date: "2019-02-06T19:28:25+00:00"
+        actual_arrival_date: "2019-02-06T19:28:25+00:00"
+        booking:
+          _object: api/refs/object
+          ref_type: /booking
+          link: https://api.flexport.com/bookings/12345
+          id: 12345
+
+    shipment_container:
+      # Flexport's own worked example for GET /ocean/shipment_containers
+      # and GET /ocean/shipment_containers/{id}. Every date pair is set to
+      # the identical illustrative timestamp in Flexport's own published
+      # example -- the schema types each of the eight independently
+      # nullable, and the header states plainly that this one fixture does
+      # not exercise a case where an estimated date and its actual
+      # counterpart disagree, because no worked example doing so was
+      # found and none is invented here.
+      - id: 283910
+        container_type: dry
+        container_number: BWSE3982156
+        container_size: fourty_ft
+        reference_code: 19HON037-UK
+        seal_number: UE_WQ2934875
+        estimated_departure_date: "2019-02-06T19:28:25.000+00:00"
+        actual_departure_date: "2019-02-06T19:28:25.000+00:00"
+        estimated_arrival_date: "2019-02-06T19:28:25.000+00:00"
+        actual_arrival_date: "2019-02-06T19:28:25.000+00:00"
+        estimated_pickup_date: "2019-02-06T19:28:25.000+00:00"
+        actual_pickup_date: "2019-02-06T19:28:25.000+00:00"
+        estimated_delivery_date: "2019-02-06T19:28:25.000+00:00"
+        actual_delivery_date: "2019-02-06T19:28:25.000+00:00"
+        cargo_ready_date: "2019-02-06"
+        shipment:
+          _object: api/refs/object
+          ref_type: /shipment
+          link: https://api.flexport.com/shipments/123
+          id: 123
+
+conformance:
+  - name: no credential at all is No Token Specified
+    source: https://api.flexport.com/shipments
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+    expect:
+      status: 401
+      body:
+        error.code: no_token
+        error.message: "No Token Specified"
+
+  - name: a header with no Bearer prefix gets the identical sentence
+    source: https://api.flexport.com/shipments
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        error.code: no_token
+
+  - name: Bearer with nothing after it is the same absent sentence too
+    source: https://api.flexport.com/shipments
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error.code: no_token
+
+  - name: only a well-formed, prefixed, wrong token earns the second sentence
+    source: https://api.flexport.com/shipments
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error.code: bad_token
+        error.message: "Bad Token"
+
+  - name: a malformed id under a real route is still refused for its credentials first
+    source: https://api.flexport.com/shipments/nonexistent-id-xyz
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments/nonexistent-id-xyz
+    expect:
+      status: 401
+      body:
+        error.code: no_token
+
+  - name: a shipment carries estimated and actual as four separate fields
+    source: https://apidocs.flexport.com/
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments/2983
+      headers:
+        Authorization: Bearer cauldron-flexport-fixture-token-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        data.id: 2983
+        data._object: /shipments
+        data.status: in_transit_to_arrival_port
+        data.estimated_departure_date: "2019-02-06T19:28:25+00:00"
+        data.actual_departure_date: "2019-02-06T19:28:25+00:00"
+        data.estimated_arrival_date: "2019-02-06T19:28:25+00:00"
+        data.actual_arrival_date: "2019-02-06T19:28:25+00:00"
+
+  - name: the container carries eight date fields and no status word at all
+    source: https://apidocs.flexport.com/
+    fixture: small-account
+    request:
+      method: GET
+      path: /ocean/shipment_containers/283910
+      headers:
+        Authorization: Bearer cauldron-flexport-fixture-token-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        data.id: 283910
+        data.container_number: BWSE3982156
+        data.estimated_departure_date: "2019-02-06T19:28:25.000+00:00"
+        data.actual_departure_date: "2019-02-06T19:28:25.000+00:00"
+        data.estimated_pickup_date: "2019-02-06T19:28:25.000+00:00"
+        data.actual_pickup_date: "2019-02-06T19:28:25.000+00:00"
+        data.estimated_delivery_date: "2019-02-06T19:28:25.000+00:00"
+        data.actual_delivery_date: "2019-02-06T19:28:25.000+00:00"
+      absent:
+        - data.status
+        - data.state
+
+  - name: a listing nests its array under data twice
+    source: https://apidocs.flexport.com/
+    fixture: small-account
+    request:
+      method: GET
+      path: /shipments
+      headers:
+        Authorization: Bearer cauldron-flexport-fixture-token-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.data[0].id": 2983
+        "data.data[0].name": ABC Shipment
+      absent:
+        - "data[0]"
+        - shipments

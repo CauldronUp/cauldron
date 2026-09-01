@@ -73,4 +73,19 @@ type Error struct {
 	// union, so a single set of constants would make every error claim to be
 	// the same one.
 	Fields map[string]any `yaml:"fields"`
+	// Empty serves a status line and no body at all.
+	//
+	// An error with no message falls back to generic wording, which is right
+	// almost always -- a Recipe that forgot to write one should not silently
+	// serve nothing. But six Recipes here have had to record that their
+	// provider genuinely answers zero bytes, and could not reproduce it:
+	// Raygun's 404, PropelAuth's 401, Backblaze's and Nile's and Tigris's
+	// auto-generated 405s, and Snipcart's credential failures, which carry no
+	// Content-Type either.
+	//
+	// Silence is a real answer and a hostile one. A client calling .json() on
+	// nothing throws, exactly as it does on prose, and the Recipes that meet
+	// it should be able to say so rather than serve a helpful sentence the
+	// provider never sent.
+	Empty bool `yaml:"empty"`
 }

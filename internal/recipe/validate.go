@@ -275,6 +275,21 @@ func (r *Recipe) Validate() error {
 	}
 
 	// A refusal has to name a failure the Recipe declares, or the route would
+	// An error cannot both say nothing and say something.
+	for name, e := range r.Errors {
+		if !e.Empty {
+			continue
+		}
+
+		if e.Message != "" {
+			add("errors.%s declares empty and a message, and an empty body has no room for one", name)
+		}
+
+		if len(e.Fields) > 0 {
+			add("errors.%s declares empty and fields, and an empty body has no room for them", name)
+		}
+	}
+
 	// A greedy parameter -- {name...} -- swallows the rest of the path, so it
 	// can only be the last thing in one. Declared earlier it would eat the
 	// segments that were supposed to follow it and the route would match

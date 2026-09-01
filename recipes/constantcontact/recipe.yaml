@@ -1,0 +1,709 @@
+# Constant Contact Recipe for Cauldron
+#
+# First of a group of three email-marketing platforms continuing a question
+# recipes/buttondown/recipe.yaml opened and recipes/kit/recipe.yaml carried
+# forward: is a contact a person or a subscription, and can an integration
+# ever move one back to subscribed without their asking? Buttondown's answer
+# was a lifecycle field on one persistent record; Kit's was a one-way door --
+# a dedicated unsubscribe endpoint with no documented route back. Constant
+# Contact's answer is a third shape: consent lives on a sub-object with its
+# own two-sided history (opt_in_* beside opt_out_*), a plain create refuses a
+# duplicate outright, and a *second*, differently-named create endpoint
+# reverses that refusal and can silently set a contact back to explicit
+# consent -- which is exactly the compliance failure mode this group's
+# question exists to catch.
+#
+# ## The consent field, in the vendor's own enum
+#
+# permission_to_send lives on the email_address sub-object, not on the
+# contact itself -- checked in the published OpenAPI document
+# (EmailAddress schema, developer.constantcontact.com/api_reference, openapi
+# 3.0.1, info.title "AppConnect V3", version 3.0.189):
+#
+#   implicit | explicit | pending_confirmation | unsubscribed | temp_hold
+#   | not_set
+#
+# Two more fields ride beside it and both are read-only, system-stamped: a
+# contact's `opt_in_source` ("Account" or "Contact") and `opt_in_date`
+# populate once, the first time consent is granted; `opt_out_source` and
+# `opt_out_date` populate only "if contact has been unsubscribed/opt-out",
+# per the schema's own words, and a free-text `opt_out_reason` rides beside
+# them. That is a genuine consent-history shell -- four timestamped,
+# sourced fields sitting on the same sub-object as the status they explain
+# -- not a separate resource, and not merely a bare enum either. The
+# contact-level `create_source` / `update_source` pair (Account | Contact)
+# does the equivalent bookkeeping for the record as a whole, and the spec is
+# explicit about why: "Your integration must accurately identify
+# create_source for compliance reasons."
+#
+# ## What creating an existing contact does: two endpoints, two answers
+#
+# POST /v3/contacts refuses a collision. Its own description requires a
+# *unique* email_address, and its documented response set includes 409
+# "Conflict. The resource you are creating or updating conflicts with an
+# existing resource." -- no worked example body exists anywhere in the
+# published spec for that 409 (checked: neither the operation nor the shared
+# `Standard409ErrorResponse` component carries a `content:` schema at all),
+# so the case below asserts the status this Recipe actually read and nothing
+# about its shape.
+#
+# POST /v3/contacts/sign_up_form is a second, separate create route with the
+# opposite policy, and its own description says so without being asked:
+# "Use this method to create a new contact **or update an existing
+# contact**... The information you specify determines if a new contact is
+# either created... or if an existing contact is updated (the email address
+# ... already exists)." Its own success-path prose finishes the thought:
+# "The method automatically modifies the contact's permission_to_send and
+# opt_in_source properties... If Confirmed Opt-in is disabled, this method
+# automatically sets the permission_to_send property as explicit and the
+# opt_in_source property as Contact for new contacts. **Updated contacts
+# have their permission_to_send property set as explicit.**" That last
+# sentence is unconditional: it does not say "unless the contact was
+# unsubscribed." A caller who already knows an address and calls this one
+# route moves any existing record -- unsubscribed or not -- to explicit
+# consent, with no separate confirmation step and no field in the request
+# that says the contact asked for this. It is the same shape of risk
+# Buttondown's Recipe found in `collision_behavior: "add"` ("resubscribes
+# them as regular"), except Constant Contact splits the two policies across
+# two different HTTP endpoints instead of one request-body switch, and its
+# own compliance warnings sit on the *email address itself* ("It is a
+# violation of anti-spam and telemarketing laws... to use the Opt-in
+# features of the API to opt a contact back in without his or her own
+# action and consent") rather than on this specific transition. This
+# Recipe does not model sign_up_form as a route -- Cauldron's update
+# operation merges whatever a request sends and has no primitive for "flip
+# a field to a fixed value depending on an account-wide setting this Recipe
+# cannot see," the identical gap Kit's Recipe already states for its own
+# unsubscribe endpoint -- but the finding is the point of writing this
+# Recipe at all, so it is quoted here in full rather than left as a title.
+#
+# ## Two hosts, two unauthenticated answers (as required: what each answers
+# ## alone)
+#
+# api.cc.email (the resource API) and authz.constantcontact.com (the OAuth2
+# token issuer) are different hosts entirely, and probing each with nothing
+# at all gets two different kinds of silence:
+#
+#   GET  https://api.cc.email/v3/contacts                    -> 401 JSON
+#   GET  https://authz.constantcontact.com/oauth2/default/v1/token
+#                                                              -> 405 JSON
+#     (Okta's own body: {"errorCode":"E0000022","errorSummary":"The
+#     endpoint does not support the provided HTTP method",...} -- GET is
+#     simply the wrong verb for a token endpoint, and Okta says so in its
+#     own words, not Constant Contact's; authz.constantcontact.com is an
+#     Okta authorization server front-ended at
+#     identity.constantcontact.com, confirmed by the redirect
+#     GET .../v1/authorize sends: `location: https://identity.constantcontact.com
+#     /oauth2/aus1lm3ry9mF7x2Ja0h8/v1/authorize`.)
+#   POST https://authz.constantcontact.com/oauth2/default/v1/token (empty body)
+#                                                              -> 429, empty
+#     body, `retry-after: 1`. Struck once, not retried, per this project's
+#     own rule about rate limits: the 429 itself is the finding, and no
+#     second request was sent to confirm it.
+#   GET  https://authz.constantcontact.com/oauth2/default/v1/this-is-not-a-real-endpoint
+#                                                              -> 404, zero
+#     bytes, no Content-Type at all -- contrast api.cc.email's unrouted 404
+#     below, which is a real JSON array with a real message in it. Same
+#     provider, two hosts, two unrelated 404s.
+#
+# Only api.cc.email is modelled as routes below; the token host is prose
+# because this Recipe never obtained a client id to authenticate a fuller
+# probe against it, and a single rate-limited empty POST is not enough to
+# build a route on.
+#
+# ## Credential verdicts: all four collapse to one sentence
+#
+# Struck live today against GET /v3/contacts: no Authorization header at
+# all, `Authorization: Basic <junk>`, `Authorization: Bearer ` (present,
+# empty), and `Authorization: Bearer junktoken12345` all answered the
+# identical byte sequence --
+#
+#   401 {"error_key":"unauthorized","error_message":"Unauthorized"}
+#   WWW-Authenticate: Bearer realm=api.cc.email
+#
+# -- and the same four were repeated against POST /v3/contacts with the
+# same result. Cauldron's credential check can tell absent from malformed
+# from rejected; this wire cannot, so auth.absent_error, .malformed_error
+# and .rejected_error are all left unset below, which is the honest claim
+# that api.cc.email keeps none of the three verdicts apart -- the same
+# choice Buttondown's Recipe in this collection makes for the identical
+# reason, and the opposite of FireHydrant's two-sentence split.
+#
+# ## Routing beats auth, and there is no 405 anywhere on this host
+#
+# auth.after_routing: true, checked in every direction the mechanism
+# supports:
+#
+#   GET    /v3/this-is-not-a-real-endpoint     no cred   -> 404 (JSON array)
+#   GET    /v3/this-is-not-a-real-endpoint     junk cred -> 404 (identical)
+#   PATCH  /v3/contacts                        no cred   -> 404 (identical)
+#   PUT    /v3/contacts                        no cred   -> 404 (identical)
+#   DELETE /v3/contacts                        no cred   -> 404 (identical)
+#   PATCH  /v3/contacts/{contact_id}           no cred   -> 404 (identical)
+#   GET    /v3/contacts/{contact_id}           no cred   -> 401 (a route
+#     this host DOES have for GET, so the auth gate fires; only a genuinely
+#     unmatched method+path combination falls through to the router's own
+#     404 first)
+#
+# Every one of the six 404s above is the byte-identical body -- a Recipe
+# cannot tell "this path was never registered" from "this path exists for
+# a different method" by looking at the response, because AWS API Gateway
+# (the infrastructure this host is built on: `x-amzn-RequestId`,
+# `x-amzn-ErrorType`, `x-amz-apigw-id` on every response, CloudFront in
+# front) answers a missing method+path combination the same way it answers
+# a missing path -- there is no 405 anywhere on this host, joining Turso in
+# this collection. `errors.method_not_allowed` is declared below with the
+# identical 404 shape and status (not 405), which -- per
+# internal/runtime/handler.go's own comment on this exact mechanism --
+# suppresses the computed `Allow` header Cauldron would otherwise add,
+# because a synthetic header on a response this host never sends would be
+# more informative than the real thing.
+#
+# One more shape worth recording though it is not modelled as a route:
+# `OPTIONS /v3/contacts` with no credential at all answers `200 {}` --
+# API Gateway's CORS preflight responder runs ahead of both the router and
+# the authorizer, and Cauldron's route model has no primitive for a method
+# that exists purely to answer CORS with an empty body regardless of what
+# is asked.
+#
+# ## Content-Type tells the truth
+#
+# Every response this Recipe observed -- 401, 404, and the CORS 200 --
+# declared `application/json` and delivered exactly that, unlike Drip and
+# the pre-2026 generation of Omnisend elsewhere in this batch. There is no
+# HTML error page anywhere on api.cc.email.
+#
+# ## Known fidelity gaps, stated rather than hidden
+#
+#   - sign_up_form is described at length above and not modelled as a
+#     route, for the reasons given there.
+#   - The 409 collision case below asserts only the status Constant
+#     Contact's own spec documents for it. No worked body exists anywhere
+#     in the published document for a 400, 401, 403, 409, 415, 500 or 503
+#     response on any Contacts operation -- every one of those status
+#     codes appears only as a bare `description:` string with no
+#     `content:` schema attached at all. AuthorizationErrorSchema
+#     ({error_key, error_message}) and APIErrorSchema (an array of the
+#     same pair) both exist as named components in the same document and
+#     happen to match this Recipe's own live-observed 401 and 404 bodies
+#     exactly -- but neither schema is `$ref`'d from any operation
+#     anywhere in the file. They are orphaned definitions, not documented
+#     claims about any specific response; what this Recipe declares for
+#     401 and 404 comes from the live probe above, not from the spec.
+#   - sms_channel and its nested sms_channel_consents array (its own
+#     documented consent history, separate again from email's opt_in/
+#     opt_out pair) are real, published fields on ContactResource and are
+#     not modelled -- this Recipe is about the email consent question, and
+#     SMS consent on this provider is a large enough structure to deserve
+#     its own pass rather than a partial one.
+#   - custom_fields, phone_numbers, street_addresses, taggings and notes
+#     are real array sub-resources on a contact and are not modelled.
+#   - The list envelope's cursor sits at `_links.next.href`, and the shared
+#     `Link` component's own example -- `/v3/activities/04fe9a97-...` --
+#     shows it as a path rather than an absolute URL. That component is
+#     generic across every paginated resource in this document, not a
+#     Contacts-specific worked example, and no live listing was ever
+#     fetched (this Recipe holds no credential) to confirm it firsthand --
+#     so, per this project's own rule against declaring a field no case
+#     exercises, cursoring is left undeclared here rather than guessed,
+#     the same choice Buttondown's Recipe in this collection makes for its
+#     own next/previous fields.
+#   - GET /v3/contacts documents `status`, `email`, `lists`, `segment_id`,
+#     `tags`, `updated_after`/`updated_before`, `created_after`/
+#     `created_before`, `optout_after`/`optout_before` and `include` as
+#     filters. None are modelled; this Recipe serves one fixture and does
+#     not attempt the filter surface.
+#
+# Every case below not carrying a `verified:` date was read from
+# developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+# (fetched directly, not through the JavaScript-rendered Swagger page,
+# which serves no content to a plain HTTP client), not observed against a
+# real account -- this Recipe was written with no credential and no
+# account exists to create one against. The key below is a fixture and
+# authenticates nothing.
+
+recipe: constantcontact
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.constantcontact.com/api_reference/index.html
+  spec: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+  spec_hash: 471664ffca6a5ccd3ec548919634b1a50b4336147b2b986a7461ae2847cb2a70
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-constantcontact-fixture-key-000000000000
+  # All four verdicts this wire can produce -- absent, wrong scheme, present
+  # but empty, present and simply wrong -- land on the identical sentence.
+  # See the header: absent_error/malformed_error/rejected_error are
+  # deliberately left unset so the generic message covers all of them,
+  # which is the honest claim that api.cc.email does not keep the
+  # distinction Cauldron's own check is able to make.
+  #
+  # Routing beats auth on this host for every combination this Recipe could
+  # probe -- see the header for all six live combinations.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    count_field: contacts_count
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_message
+    code_field: error_key
+    type_field: "-"
+
+resources:
+  contact:
+    collection: contacts
+    id:
+      style: uuid
+      # Constant Contact's own name for it, everywhere in the schema and on
+      # the wire -- never "id".
+      field: contact_id
+    fields:
+      first_name:
+        type: string
+      last_name:
+        type: string
+      job_title:
+        type: string
+      company_name:
+        type: string
+      # Who added the record -- "Account" or "Contact". The spec's own
+      # words: "Your integration must accurately identify create_source for
+      # compliance reasons."
+      create_source:
+        type: string
+        default: Account
+      update_source:
+        type: string
+        default: Account
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      # Populated only for a deleted contact -- see the schema's own note
+      # that a deleted record still carries opt_out_source/opt_out_date on
+      # its email_address. Not modelled further than the field itself; no
+      # account exists to delete a contact and observe what deleted_at
+      # actually contains.
+      deleted_at:
+        type: datetime
+        null_when_unset: true
+      # The nested EmailAddress sub-object, flattened onto the wire under
+      # "email_address" via `in:` -- see resource.go's own mechanism for
+      # exactly this shape, and the header for why permission_to_send lives
+      # here and not on the contact itself.
+      email:
+        type: string
+        in: email_address
+        as: address
+      permission_to_send:
+        type: string
+        in: email_address
+        default: implicit
+      opt_in_source:
+        type: string
+        in: email_address
+        null_when_unset: true
+      opt_in_date:
+        type: datetime
+        in: email_address
+        null_when_unset: true
+      opt_out_source:
+        type: string
+        in: email_address
+        null_when_unset: true
+      opt_out_date:
+        type: datetime
+        in: email_address
+        null_when_unset: true
+      opt_out_reason:
+        type: string
+        in: email_address
+        null_when_unset: true
+      list_memberships:
+        type: list
+
+routes:
+  - method: GET
+    path: /v3/contacts
+    resource: contact
+    operation: list
+    pagination:
+      style: cursor
+      cursor_param: "-"
+      limit_param: "-"
+
+  - method: GET
+    path: /v3/contacts/{id}
+    resource: contact
+    operation: get
+
+  - method: POST
+    path: /v3/contacts
+    resource: contact
+    operation: create
+    status: 201
+
+  - method: PUT
+    path: /v3/contacts/{id}
+    resource: contact
+    operation: update
+
+  - method: DELETE
+    path: /v3/contacts/{id}
+    resource: contact
+    operation: delete
+    status: 204
+    empty_body: true
+
+errors:
+  # The reserved fallback every unset verdict lands on -- see the header.
+  authentication_error:
+    status: 401
+    code: unauthorized
+    message: Unauthorized
+    headers:
+      WWW-Authenticate: "Bearer realm=api.cc.email"
+
+  # A route this host has never had, and -- see the header -- a route it
+  # has for a different method: byte-identical either way. The array is the
+  # whole body; there is no wrapping key at all.
+  unknown_route:
+    status: 404
+    style: list
+    key: "-"
+    message_field: error_message
+    code_field: error_key
+    message: The requested resource was not found.
+    code: not_found
+
+  # Given the identical status and shape as unknown_route on purpose -- see
+  # the header for why, and for what declaring a non-405 status here
+  # suppresses (the computed Allow header Cauldron would otherwise add).
+  method_not_allowed:
+    status: 404
+    style: list
+    key: "-"
+    message_field: error_message
+    code_field: error_key
+    message: The requested resource was not found.
+    code: not_found
+
+  # Armed rather than triggered organically -- see the header and the
+  # conformance case below: no worked body exists anywhere in the published
+  # spec for this status on this operation, so nothing about the body is
+  # declared here either, only the status this Recipe actually read.
+  contact_collision:
+    status: 409
+    message_field: "-"
+    code_field: "-"
+
+fixtures:
+  empty: {}
+
+  # Built from the spec's own worked examples for POST/PUT /v3/contacts --
+  # "Debora Lang" appears, with this exact id and email, across the create,
+  # update and PATCH examples in the published document. The second record
+  # combines the EmailAddress schema's own per-field `example:` values for
+  # the opt-out quartet (opt_out_source, opt_out_date, opt_out_reason) into
+  # one record, because no single worked JSON response in the document
+  # shows all four opt-out fields populated together on one object -- see
+  # the header. Every value on it was read somewhere; none was invented.
+  small-account:
+    contact:
+      - id: 1618ae62-4752-11e9-9c8a-fa163e6b01c1
+        first_name: Debora
+        last_name: Lang
+        job_title: Musician
+        company_name: Acme Corp.
+        create_source: Account
+        update_source: Account
+        created_at: "2016-01-23T13:48:44.108Z"
+        updated_at: "2016-01-23T13:48:44.108Z"
+        email: dlang@example.com
+        permission_to_send: implicit
+        opt_in_source: Contact
+        opt_in_date: "2016-01-23T13:48:44.108Z"
+        list_memberships:
+          - 07936f78-662a-11eb-af0a-fa163e56c9b0
+
+      - id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        first_name: John
+        last_name: Doe
+        create_source: Contact
+        update_source: Account
+        created_at: "2016-01-23T13:48:44.108Z"
+        updated_at: "2016-01-23T13:48:44.108Z"
+        email: jdoe@example.com
+        permission_to_send: unsubscribed
+        opt_in_source: Contact
+        opt_in_date: "2016-01-23T13:48:44.108Z"
+        opt_out_source: Contact
+        opt_out_date: "2016-01-23T13:48:44.108Z"
+        opt_out_reason: I am no longer interested in this service.
+        list_memberships: []
+
+conformance:
+  - name: no Authorization header at all is refused
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: "Bearer realm=api.cc.email"
+      body:
+        error_key: unauthorized
+        error_message: Unauthorized
+
+  - name: the wrong scheme entirely gets the identical sentence
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts
+      headers:
+        Authorization: "Basic amdvo2p1bms="
+    expect:
+      status: 401
+      body:
+        error_key: unauthorized
+        error_message: Unauthorized
+
+  - name: a present but empty Bearer value gets the identical sentence too
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error_key: unauthorized
+        error_message: Unauthorized
+
+  - name: a well-formed but simply wrong token gets the identical sentence again
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts
+      headers:
+        Authorization: "Bearer junktoken12345"
+    expect:
+      status: 401
+      body:
+        error_key: unauthorized
+        error_message: Unauthorized
+
+  - name: a create with no credential is refused the same way as a read
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3/contacts
+      json: {}
+    expect:
+      status: 401
+      body:
+        error_key: unauthorized
+
+  - name: a route this host has for GET reaches the auth gate even for an id nobody minted
+    # Establishes that routing beats auth for a genuinely unmatched
+    # method+path, but a matched route (GET on an item path this host does
+    # register) reaches the credential check before it ever asks whether
+    # the id exists.
+    source: https://api.cc.email/v3/contacts/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 401
+      body:
+        error_key: unauthorized
+
+  - name: an unrouted path 404s with no credential sent at all
+    source: https://api.cc.email/v3/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        "[0].error_key": not_found
+        "[0].error_message": The requested resource was not found.
+
+  - name: the same unrouted path answers identically with a junk credential attached
+    source: https://api.cc.email/v3/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/this-is-not-a-real-endpoint
+      headers:
+        Authorization: "Bearer junktoken12345"
+    expect:
+      status: 404
+      body:
+        "[0].error_key": not_found
+
+  - name: a wrong method on a real collection path is a 404, not a 405
+    # See the header: PATCH, PUT and DELETE against /v3/contacts all
+    # answered this identical body live; PATCH stands in for all three.
+    source: https://api.cc.email/v3/contacts
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: PATCH
+      path: /v3/contacts
+      json: {}
+    expect:
+      status: 404
+      absent_headers:
+        - Allow
+      body:
+        "[0].error_key": not_found
+
+  - name: a wrong method on a real item path is the identical 404
+    source: https://api.cc.email/v3/contacts/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: PATCH
+      path: /v3/contacts/00000000-0000-0000-0000-000000000000
+      json: {}
+    expect:
+      status: 404
+      body:
+        "[0].error_key": not_found
+
+  - name: a listing wraps its array under contacts, beside a total count
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+    expect:
+      status: 200
+      body:
+        contacts_count: 2
+        "contacts[0].contact_id": 1618ae62-4752-11e9-9c8a-fa163e6b01c1
+        "contacts[0].email_address.address": dlang@example.com
+
+  - name: a contact's consent lives on the email_address sub-object, not the contact itself
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /v3/contacts/3fa85f64-5717-4562-b3fc-2c963f66afa6
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+    expect:
+      status: 200
+      body:
+        contact_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        "email_address.permission_to_send": unsubscribed
+        "email_address.opt_out_source": Contact
+        "email_address.opt_out_date": "2016-01-23T13:48:44.108Z"
+        "email_address.opt_out_reason": I am no longer interested in this service.
+
+  - name: creating a contact starts it at implicit permission by default
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    request:
+      method: POST
+      path: /v3/contacts
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+      json:
+        email_address:
+          address: carol@example.com
+        create_source: Account
+    expect:
+      status: 201
+      body:
+        "email_address.address": carol@example.com
+        "email_address.permission_to_send": implicit
+
+  - name: creating a contact for an email address that already exists is a conflict, not a merge
+    # See the header: the plain create endpoint's own documented response
+    # set names 409 for this and no worked body exists anywhere in the
+    # published spec for it, so this is armed rather than triggered by an
+    # actual collision -- Cauldron's generic create operation has no
+    # primitive for "refuse a second create because a non-id field
+    # matches," the same gap Buttondown's Recipe in this collection states
+    # for its own collision_behavior and solves the same way. Status only
+    # -- nothing about the body is asserted.
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    arm: contact_collision
+    request:
+      method: POST
+      path: /v3/contacts
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+      json:
+        email_address:
+          address: dlang@example.com
+        create_source: Account
+    expect:
+      status: 409
+
+  - name: updating a contact does not change its contact_id
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    request:
+      method: PUT
+      path: /v3/contacts/1618ae62-4752-11e9-9c8a-fa163e6b01c1
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+      json:
+        email_address:
+          address: dlang@example.com
+        first_name: Debora
+        last_name: Lang
+        update_source: Contact
+    expect:
+      status: 200
+      body:
+        contact_id: 1618ae62-4752-11e9-9c8a-fa163e6b01c1
+        update_source: Contact
+
+  - name: deleting a contact answers no body at all
+    source: https://developer.constantcontact.com/api_reference/bundledWithSamples.yaml
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /v3/contacts/1618ae62-4752-11e9-9c8a-fa163e6b01c1
+      headers:
+        Authorization: "Bearer cauldron-constantcontact-fixture-key-000000000000"
+    expect:
+      status: 204
+      no_body: true

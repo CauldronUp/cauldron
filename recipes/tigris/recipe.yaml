@@ -1,0 +1,311 @@
+# Tigris Recipe for Cauldron
+#
+# Tigris is S3-compatible object storage built on Fly.io's infrastructure,
+# fronted by its own gateway ("Server: Tigris OS" on every response this
+# Recipe struck) rather than a stock S3-compatible library. The header
+# statement to make first, because it took four requests to establish: Tigris
+# adds its own error vocabulary to the S3 surface rather than passing every
+# failure straight through, and where it does not add one, it echoes AWS's
+# own wording precisely enough to distinguish the two verdicts Filebase's
+# Recipe in this collection cannot:
+#
+#   GET /some-nonexistent-bucket-probe-abc123 (no Authorization header)
+#     -> 403 AccessDenied, BucketName echoing the caller's own path
+#   GET /some-nonexistent-bucket-probe-abc123 -H "Authorization: junk"
+#     -> byte-identical 403 AccessDenied
+#   GET /some-nonexistent-bucket-probe-abc123, a syntactically valid
+#   AWS4-HMAC-SHA256 header naming an access key that exists nowhere
+#   (AKIAFAKEFAKEFAKEFAKE, with x-amz-date and x-amz-content-sha256 both
+#   present)
+#     -> 403 InvalidAccessKeyId, a different Code and a different sentence,
+#        BucketName echoing the identical path
+#
+# all three verified live. Tigris tells absent and malformed apart from a
+# well-shaped-but-nonexistent credential exactly as real AWS S3 does, the
+# same three-way split MinIO's Recipe in this same batch establishes for a
+# different provider by a different route.
+#
+# **This is the question the group exists to answer, and BucketName is the
+# whole of the answer.** Every one of the three cases above echoes back
+# `some-nonexistent-bucket-probe-abc123` -- the exact path this Recipe sent,
+# whatever it was -- under BucketName, whether the credential was absent,
+# garbage, or a well-formed signature for a key nobody owns. The credential
+# check happens before any lookup of whether that name is bound to a real
+# bucket, so BucketName is not a confirmation that the name exists; it is an
+# echo of what the caller typed, and a bucket that exists and belongs to
+# someone else would produce the identical body this Recipe actually
+# received for a bucket that has never existed at all. There is no request
+# this Recipe could send, with no real credential, that reaches far enough
+# to tell the two apart -- which is itself the finding: the credential gate
+# is also the tenancy gate, and failing the first means the second is never
+# consulted.
+#
+# Routing order is declarable, checked live on this exact bucket path with
+# no credential sent any of the three times:
+#
+#   GET   /some-nonexistent-bucket-probe-abc123 -> 403 AccessDenied
+#   PATCH /some-nonexistent-bucket-probe-abc123 -> byte-identical 403
+#                                                   AccessDenied -- a real,
+#                                                   auth-gated method on this
+#                                                   path
+#   POST  /some-nonexistent-bucket-probe-abc123 -> 405 Method Not Allowed,
+#                                                   empty body, none of this
+#                                                   host's usual X-Amz-
+#                                                   headers -- not routed to
+#                                                   anything, and refused
+#                                                   before auth is consulted
+#
+# auth.after_routing carries the POST half directly: a method with no route
+# at all on this path is refused before the credential is examined, while
+# GET and PATCH both reach the same credential gate the three verdict cases
+# above do.
+#
+# The bucket-less service root, GET /, is not one surface but at least four,
+# each verified live and each a different combination of status and Code
+# depending on exactly what the Authorization header looks like:
+#
+#   no header at all       -> 307, Location: https://tigrisdata.com (not an
+#                              S3 error of any kind -- a plain redirect to
+#                              Tigris's own marketing site)
+#   "Authorization: junk"  -> 403 AccessDenied (Resource "/", no BucketName
+#                              -- there is no bucket in this path to echo)
+#   "Authorization: Bearer junk" -> 501 NotImplemented, "A header you
+#                              provided implies functionality that is not
+#                              implemented" -- the identical sentence
+#                              Filebase's Recipe in this collection records
+#                              for every wrong method it tried, here
+#                              triggered by a header shape instead
+#   a well-shaped signature naming AKIAFAKEFAKEFAKEFAKE -> 403
+#                              InvalidAccessKeyId (Resource "/", no
+#                              BucketName)
+#
+# and DELETE / (no credential) reaches the credential gate too, answering
+# AccessDenied with BucketName echoing the hostname itself rather than a
+# bucket name, since there is no bucket segment in this path either. None of
+# that is modelled as routes. It is real, and it directly contradicts the
+# clean two-method story the bucket path tells above -- the service root has
+# at least four verdicts for GET alone, one of which (the redirect) is not
+# an API failure at all -- and Cauldron's auth block describes one
+# provider-wide credential shape, not one that also depends on which literal
+# path was asked. Reproducing GET / faithfully alongside the bucket path
+# would need the same route-level matches_header technique
+# backblaze/recipe.yaml uses for its own two-protocol account, and this
+# Recipe chose not to spend that complexity on a second surface when the
+# bucket path already answers the brief's question cleanly, with its own
+# genuine routing-order evidence besides. Recorded here in full rather than
+# silently dropped.
+#
+# A fifth method, OPTIONS, bypasses the credential check on every path this
+# Recipe tried -- verified on both the service root and the bucket path
+# above: 200, CORS headers, empty body, no Authorization consulted at all.
+# It is not modelled either, and for a structural reason rather than a
+# laziness one: Cauldron's after_routing mechanism defers the credential
+# check until a route matches, but every route still passes through it once
+# matched -- there is no per-route exemption. A Recipe cannot declare one
+# route that skips the gate while its neighbours on the same path enforce
+# it, so OPTIONS is recorded here as prose rather than forced into a route
+# whose declared body Cauldron would silently overrule with an auth refusal
+# the live host never sends for that method.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No SigV4 verification, the acknowledged gap every AWS-style Recipe in
+#     this collection shares (dynamodb, sqs, ses, secretsmanager, filebase,
+#     backblaze, wasabi, and minio/recipe.yaml in this same batch).
+#   - No object or bucket CRUD. This Recipe never held a real Tigris account
+#     and never created or wrote to anything -- Step 3 of the brief it was
+#     written against is explicit that an invented success body is worse
+#     than an absent route.
+#   - The service root's own four-way split for GET, its own DELETE
+#     behaviour, and the universal OPTIONS bypass are all recorded above and
+#     not modelled as routes -- see the header's explanation of why,
+#     immediately above the fidelity gaps.
+#   - No upstream.spec. Tigris's own documentation describes its S3
+#     compatibility in prose and by comparison with the AWS S3 API
+#     reference, not as a single machine-readable description of its own.
+
+recipe: tigris
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.tigrisdata.com/docs/api/s3/
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape only -- see the header.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+  # Verified live, both on the one bucket path this Recipe declares: no
+  # header at all and a header present with no recognised scheme both answer
+  # byte-identical AccessDenied bodies. Unlike MinIO's Recipe in this same
+  # batch, which tells these two verdicts apart on its own admin surface,
+  # Tigris collapses them on the bucket path the way Filebase's Recipe does
+  # for all three of its verdicts -- Tigris tells only rejected apart from
+  # the other two, not all three from each other.
+  absent_error: tigris_access_denied
+  malformed_error: tigris_access_denied
+  # Verified live with no credential sent at all: a real, registered method
+  # (PATCH) on this bucket path reaches the same gate GET does, and a method
+  # with no route on the same path (POST) answers 405 before the credential
+  # is examined at all. See the header.
+  after_routing: true
+
+responses:
+  error:
+    style: text
+
+routes:
+  # Reached only once a request clears the shape check above -- i.e. for a
+  # syntactically valid SigV4 header naming a key this Recipe was never
+  # given (AKIAFAKEFAKEFAKEFAKE, verified live). No resource and no
+  # operation: this Recipe never held a real credential, so there is no
+  # observed success body to serve. The path is this Recipe's own probe
+  # value rather than a {bucket} placeholder, because the live BucketName
+  # field echoes whatever the caller sent and a fixed error message cannot
+  # reproduce that dynamically -- see the header's central finding, which
+  # this fixed value is standing in for rather than hiding.
+  - method: GET
+    path: /some-nonexistent-bucket-probe-abc123
+    error: tigris_invalid_access_key_id
+
+  # A second, real method on the identical path -- declared so
+  # allowedMethods sees both GET and PATCH as valid here and POST, declared
+  # nowhere, correctly falls to a computed 405 rather than a 404. Verified
+  # live for the absent-credential case only (the conformance case below);
+  # the accepted-credential branch below was never probed for PATCH
+  # specifically and carries no case, though GET's identical body on the
+  # same path is some evidence it would not differ.
+  - method: PATCH
+    path: /some-nonexistent-bucket-probe-abc123
+    error: tigris_invalid_access_key_id
+
+errors:
+  # Verified live two ways on the bucket path -- no Authorization header at
+  # all, and -H "Authorization: junk" -- both byte-identical. BucketName is
+  # this Recipe's own probe value; see the header for why a fixed message
+  # cannot echo an arbitrary caller-supplied one.
+  tigris_access_denied:
+    status: 403
+    code: AccessDenied
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>AccessDenied</Code><Message>Access Denied.</Message><Resource>/some-nonexistent-bucket-probe-abc123</Resource><RequestId>1788263320834754769</RequestId><BucketName>some-nonexistent-bucket-probe-abc123</BucketName></Error>
+
+  # Verified live: a well-shaped signature naming AKIAFAKEFAKEFAKEFAKE, with
+  # x-amz-date and x-amz-content-sha256 both present, against the identical
+  # bucket path the AccessDenied case above used. Different Code, different
+  # sentence, same BucketName -- see the header's central finding.
+  tigris_invalid_access_key_id:
+    status: 403
+    code: InvalidAccessKeyId
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>InvalidAccessKeyId</Code><Message>The access key ID you provided does not exist in our records.</Message><Resource>/some-nonexistent-bucket-probe-abc123</Resource><RequestId>1788263321037860042</RequestId><BucketName>some-nonexistent-bucket-probe-abc123</BucketName></Error>
+
+  # Verified live against POST on the bucket path, no credential sent, and
+  # answered before auth was ever consulted -- see auth.after_routing and
+  # the header. The live body is truly empty (no Content-Type, no X-Amz-
+  # headers of any kind, nothing this host's other responses ever omit);
+  # internal/runtime/errors.go lets a Recipe's own message override the
+  # generic fallback only when that message is itself non-empty, so this
+  # Recipe cannot also serve zero bytes here -- the same gap Backblaze's
+  # Recipe in this collection documents for its own blank bad_auth_token
+  # sentence, and nile/recipe.yaml in this same batch documents again for a
+  # different endpoint. The conformance case below asserts status only.
+  # Cauldron also computes its own Allow header for a declared 405 whenever
+  # the status is exactly 405; the live response carried none, a second,
+  # smaller version of the same kind of gap.
+  method_not_allowed:
+    status: 405
+
+fixtures:
+  empty: {}
+
+# Every case below carries verified: "2026-09-01". Nothing in this Recipe was
+# read from documentation -- the whole file was struck live against
+# fly.storage.tigris.dev.
+conformance:
+  - name: no credential at all is 403 AccessDenied, and it echoes the bucket name back
+    source: https://fly.storage.tigris.dev/some-nonexistent-bucket-probe-abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /some-nonexistent-bucket-probe-abc123
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>AccessDenied</Code><Message>Access Denied\.</Message><Resource>/some-nonexistent-bucket-probe-abc123</Resource>.*<BucketName>some-nonexistent-bucket-probe-abc123</BucketName>'
+
+  - name: a header present with no recognised scheme answers byte-identically
+    # Unlike the service root (see the header), where the same shape of
+    # header gets 403 AccessDenied with no BucketName at all -- this bucket
+    # path's answer to absent and to malformed is the same body either way.
+    source: https://fly.storage.tigris.dev/some-nonexistent-bucket-probe-abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /some-nonexistent-bucket-probe-abc123
+      headers:
+        Authorization: junk
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>AccessDenied</Code><Message>Access Denied\.</Message><Resource>/some-nonexistent-bucket-probe-abc123</Resource>.*<BucketName>some-nonexistent-bucket-probe-abc123</BucketName>'
+
+  - name: a well-shaped signature naming no real key gets a different Code but the identical BucketName
+    # This is the group's central question, answered directly: the only
+    # thing that changes between this case and the two above is which
+    # credential verdict was reached. BucketName -- the signal that would
+    # tell an existing-but-foreign bucket from one that has never existed --
+    # is identical in all three, because none of the three requests ever
+    # got past the credential check to ask.
+    source: https://fly.storage.tigris.dev/some-nonexistent-bucket-probe-abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /some-nonexistent-bucket-probe-abc123
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+        x-amz-date: "20260901T114300Z"
+        x-amz-content-sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>InvalidAccessKeyId</Code><Message>The access key ID you provided does not exist in our records\.</Message><Resource>/some-nonexistent-bucket-probe-abc123</Resource>.*<BucketName>some-nonexistent-bucket-probe-abc123</BucketName>'
+
+  - name: a second real method on the same path reaches the identical credential gate
+    source: https://fly.storage.tigris.dev/some-nonexistent-bucket-probe-abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /some-nonexistent-bucket-probe-abc123
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>AccessDenied</Code><Message>Access Denied\.</Message>'
+
+  - name: a method with no route at all on that same path is refused before the credential is checked
+    # The live body is zero bytes; see errors.method_not_allowed for why
+    # this Recipe cannot also serve that and asserts status only.
+    source: https://fly.storage.tigris.dev/some-nonexistent-bucket-probe-abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /some-nonexistent-bucket-probe-abc123
+    expect:
+      status: 405
