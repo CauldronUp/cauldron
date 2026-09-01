@@ -5122,6 +5122,42 @@ func providers() []provider {
 			npm:    []string{"@onfleet/node-onfleet"},
 		},
 		{
+			// The server client, and deliberately not @fullstory/browser.
+			// That one is the instrumentation SDK: it reports to FullStory
+			// from a page, which is the surface this Recipe does not model --
+			// the same wrong-half miss the AppSignal and Airbrake rows record.
+			recipe: "fullstory",
+			npm:    []string{"@fullstory/server-api-client"},
+		},
+		{
+			recipe: "akeyless",
+			npm:    []string{"akeyless"},
+		},
+		{
+			// jfrog-client-js, and not the npm package literally called
+			// "artifactory" -- that one is version 1.0.0 with no description
+			// and no repository, which is not enough to call it a client of
+			// anything.
+			recipe: "artifactory",
+			npm:    []string{"jfrog-client-js"},
+		},
+		{
+			recipe: "commercelayer",
+			npm:    []string{"@commercelayer/sdk"},
+		},
+		{
+			recipe: "swell",
+			npm:    []string{"swell-node"},
+		},
+		{
+			recipe: "pdfmonkey",
+			npm:    []string{"pdfmonkey"},
+		},
+		{
+			recipe: "api2pdf",
+			npm:    []string{"api2pdf"},
+		},
+		{
 			// Generated from the same description this Recipe fingerprints,
 			// and published within the last week -- unlike most of the Go
 			// clients here, which are years old.
