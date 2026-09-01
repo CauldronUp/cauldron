@@ -2370,15 +2370,15 @@ v3 needs a key for everything; v2 needs none and returns 410 saying it is gone.
 Its two v3 failures come from different layers and disagree, and the more nearly
 correct the credential, the less the error resembles the documented one.
 
-Four are Mistral's and four are xAI's, both offered as OpenAI-compatible
-surfaces and both marking where that stops. Mistral's errors are flat `detail`
+Four are Mistral's. Four are xAI's. Mistral and xAI each offer an
+OpenAI-compatible surface, and each marks where that stops. Mistral's errors are flat `detail`
 rather than OpenAI's nested `error{}`, its ids are `cmpl-` not `chatcmpl-`, and
 `AssistantMessage` has no `refusal` field at all. xAI distinguishes a missing
 credential (401) from a wrong one (400) where Mistral answers identically to
 both -- and on one xAI route body validation runs *before* authentication,
 which is the opposite order from its own `/v1/models`.
 
-Two are Render's and one is Upstash's, the live-checked halves of two Recipes
+Two are Render's. One is Upstash's. Those are the live-checked halves of two Recipes
 otherwise drafted from their descriptions. Render does not distinguish a missing
 credential from a wrong one; Upstash answers three different shapes depending on
 how you fail to authenticate, only one of which matches its documented scheme.
