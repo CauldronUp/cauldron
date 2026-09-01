@@ -240,20 +240,20 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 				// only thing that can be wrong with it is a path that also
 				// carries an identifier, which would mean the request does
 				// carry one after all.
-				if strings.Contains(route.Path, "{id}") {
+				if addressesByID(route.Path) {
 					add("%s: id_from auth says the request carries no identifier, and the path carries one", where)
 				}
 			case !ok || name == "":
 				add("%s: id_from %q must look like query:channel, body:channel or auth", where, route.IDFrom)
 			case source != "query" && source != "body":
 				add("%s: id_from source %q must be query, body or auth", where, source)
-			case strings.Contains(route.Path, "{id}"):
+			case addressesByID(route.Path):
 				add("%s: id_from and an {id} path parameter cannot both apply", where)
 			}
 		}
 
 		if route.Operation != "list" && route.Operation != "create" &&
-			route.IDFrom == "" && !strings.Contains(route.Path, "{id}") {
+			route.IDFrom == "" && !addressesByID(route.Path) {
 			add("%s: a %s needs an {id} in the path or an id_from", where, route.Operation)
 		}
 
@@ -409,4 +409,15 @@ func (r *Recipe) validateRoutes(add func(string, ...any)) {
 				where, route.Resource, fetchRoute(r, route.Resource))
 		}
 	}
+}
+
+// addressesByID reports whether a path carries an id parameter.
+//
+// Two spellings, one meaning: {id} takes a single path segment and {id...}
+// takes the rest of the path, slashes and all, for the providers whose
+// identifiers contain one. A DOI is "10.1145/3510003". Matching only the
+// first spelling told the Semantic Scholar Recipe that its paper lookup had
+// no identifier in it, which is the opposite of what had just been fixed.
+func addressesByID(path string) bool {
+	return strings.Contains(path, "{id}") || strings.Contains(path, "{id...}")
 }

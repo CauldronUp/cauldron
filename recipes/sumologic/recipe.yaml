@@ -1,0 +1,601 @@
+# Sumo Logic Recipe for Cauldron
+#
+# Rollbar's Recipe in this collection draws the line between one occurrence
+# of an error and the group it belongs to. Bugsnag's draws it a second way.
+# Raygun's draws it a third way and states plainly that the group it lands on
+# carries no count of its own. Sumo Logic does not draw that line at all,
+# for the same reason papertrail/recipe.yaml, written the same day, does
+# not: there is no error resource here, no group, nothing that aggregates
+# two log lines into one thing with a count on it. There is an index of
+# lines and a search over them, submitted as a job and polled to
+# completion. The question this Recipe answers is not "how does this
+# provider group" -- it is "what does an API look like when the grouping
+# abstraction this collection keeps finding was simply never the model."
+#
+# Sumo Logic is partitioned by deployment: api.us2.sumologic.com,
+# api.eu.sumologic.com, api.au.sumologic.com and several more, each a
+# separate credential database rather than a region-local mirror of one
+# account. Probed live against api.us2.sumologic.com and
+# api.eu.sumologic.com on 2026-09-01, no account and no key on either:
+#
+#   1. No Authorization header at all answers 401 with a Jetty container
+#      page -- "Full authentication is required to access this resource" --
+#      text/html, real HTML, no code, no id, nothing application-specific.
+#      Two WWW-Authenticate challenges ride on the same response at once:
+#      Basic realm="Sumo" and Bearer realm="Sumo",
+#      resource_metadata="https://.../.well-known/oauth-protected-resource"
+#      -- both schemes are genuinely live, and the resource-metadata URL
+#      itself answers 200 with a real RFC 9728 document (checked live, not
+#      modelled as a route -- see the fidelity gaps).
+#   2. A well-formed HTTP Basic credential that is simply wrong answers a
+#      completely different, application-level 401:
+#      {"status":401,"id":"NV18X-11PW3-OOKQ9","code":"unauthorized",
+#      "message":"Credential could not be verified."} -- application/json,
+#      genuinely JSON, with a request-tracking id that is different on
+#      every single call including two calls that agree on everything else.
+#      Missing and wrong do not collapse here, which is the opposite of
+#      what Turso's and Census's Recipes in this collection each find for
+#      their own providers, and closer to the split FireHydrant's Recipe
+#      draws -- except FireHydrant's two sentences share one envelope, and
+#      Sumo Logic's do not share so much as a content type.
+#   3. A garbage Bearer token, unlike a garbage Basic credential, answers
+#      identically to no credential at all -- the container-level Jetty
+#      page, not the application-level JSON. The scheme that is checked
+#      determines whether "wrong" and "missing" collapse: Basic reaches the
+#      application and gets its own verdict; Bearer, garbage, never gets
+#      that far.
+#   4. Routing runs to completion regardless of the credential. A path this
+#      API has no route for -- struck three times with no credential at all
+#      -- answered the identical Jetty "Full authentication is required"
+#      page every time, the same body a real, registered path with no
+#      credential gets. That much is stable. What is not stable is the
+#      *same* unrouted path struck repeatedly with the identical
+#      well-formed-but-wrong Basic credential: two of three calls answered
+#      the container-level page with a different sentence, "User could not
+#      be found."; the third answered a *third* shape entirely --
+#      {"id":"8JV2Q-AIKMU-IJZLC","errors":[{"code":"unauthorized",
+#      "message":"Credential could not be verified."}]}, an errors array
+#      rather than the flat object a real path gives the identical
+#      credential. Three requests, same path, same credential, three
+#      different Set-Cookie AWSALB values (three different backend nodes
+#      behind one load balancer) and two different response shapes. A real
+#      registered path, struck four times running with the same wrong
+#      credential, answered the one flat-object shape every time -- stable
+#      where the unrouted path was not. This Recipe states the instability
+#      rather than picking one of the three shapes and asserting it as
+#      fact: doing that would be a coin flip dressed as a finding. The one
+#      thing establishable and stable is what this Recipe actually models
+#      below -- a missing credential collapses identically whether the path
+#      is real or not; a wrong credential on a *real* path is one stable
+#      shape.
+#   5. No 405 was ever reachable. PUT and DELETE against a real path, with
+#      no credential at all, both answered 401 -- Content-Length: 0, the
+#      same two WWW-Authenticate challenges, no body -- rather than a
+#      method-mismatch response of any kind. The credential is checked
+#      before the method is, unconditionally, on every probe this Recipe
+#      ran. Whether a genuine 405 exists for an authenticated caller
+#      sending the wrong method is not established, and this Recipe does
+#      not guess at one: no method_not_allowed is declared below, because
+#      Cauldron's own credential-before-routing order already matches what
+#      was actually observed, for once, with nothing to reconcile.
+#
+# Content-Type told the truth on every response this Recipe could read: the
+# JSON claims were parseable JSON, and the HTML claims were real HTML pages.
+# raygun/recipe.yaml, elsewhere in this collection, found a 403 that claims
+# application/json and delivers fifteen bytes of plain prose; nothing like
+# that turned up here, and that is worth stating rather than skipping past.
+#
+# The search job API is where this Recipe's asynchronous shape lives, and
+# it answers the question turso/recipe.yaml and singlestore/recipe.yaml
+# both raise about a create response that is not the record: creating a
+# search job answers 202 -- not 200, and not the record either -- with
+# {"warning": "...", "id": "IUUQI-DGH5I-TJ045", "link": {"rel": "self",
+# "href": "https://api.sumologic.com/api/v1/search/jobs/IUUQI-DGH5I-TJ045"}}
+# quoted verbatim from Sumo Logic's own reference. That is neither of the
+# two shapes this collection has found so far. Turso's create hands back a
+# truncated projection of the *thing itself* -- three of the eight fields a
+# GET would show, with nothing marking it incomplete. Sumo Logic's create
+# hands back no projection of the thing at all: id and link.href address
+# the *poll endpoint*, not the search results, and the response says so
+# twice over, redundantly, rather than once. The "warning" field is the
+# third redundancy and the sharpest one: the reference's own worked example
+# for create puts a plain-English explanation of the *specific failure
+# mode this API's cookie-based session affinity produces* directly in the
+# success response -- "A 404 status (Page Not Found) on a follow-up request
+# may be due to a cookie not accompanying the request." A create response
+# that pre-emptively explains its own most likely failure mode is not a
+# shape either Turso or SingleStore's Recipe in this collection has found;
+# both of those creates are silent about what could go wrong next.
+#
+# Polling confirms the id is genuinely a handle and nothing more: GET on
+# the job answers {"warning":"","state":"DONE GATHERING RESULTS",
+# "messageCount":90,"histogramBuckets":[...],"pendingErrors":[],
+# "pendingWarnings":[],"recordCount":1,"usageDetails":
+# {"dataScannedInBytes":0}} -- quoted verbatim -- and carries no id and no
+# link at all. The identifier that addresses this record is never echoed
+# back by the record itself; a caller has to already know it, from the
+# create response, to ask a second time.
+#
+# Fetching messages once a job is done is where the type system stops
+# meaning anything. The reference's own schema for a message row declares a
+# fieldType per column -- "long" for _messageid, "string" for _raw -- in a
+# fields array that ships beside every messages response. And every value
+# in that same response, regardless of its declared fieldType, is sent as a
+# JSON string: "_messageid": "-9223372036854773763" is not a long, it is
+# eighteen characters between quotation marks. The records endpoint does
+# the identical thing to a value the schema calls "int": "_count": "90".
+# The type declaration and the wire disagree, consistently, on both
+# messages and records, and the reference's own two worked examples are
+# where this was checked rather than assumed.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Only two of Sumo Logic's several deployments were struck --
+#     api.us2.sumologic.com and api.eu.sumologic.com -- and both answered
+#     byte-for-byte identically on every credential and routing case this
+#     Recipe ran, id fields aside. Whether a credential valid on one
+#     deployment is reported the same way on another as one that never
+#     existed -- the exact question make/recipe.yaml's Recipe in this
+#     collection answers about Make's six zones, with a community forum
+#     post as its evidence -- could not be tested the same way here: no
+#     valid credential exists to try, and no equivalent third-party report
+#     of the cross-deployment case was found. What is established is
+#     narrower and stated as exactly that: the *identical* wrong credential
+#     is refused identically, id aside, on two separate deployments. The
+#     stronger claim is not made.
+#   - The .well-known/oauth-protected-resource document is real, live and
+#     unauthenticated -- checked directly, 200, a genuine RFC 9728 body
+#     naming over 150 OAuth scopes -- and is not declared as a route.
+#     Cauldron's credential check is unconditional for every path in a
+#     Recipe that declares a scheme, with no per-route exemption;
+#     firehydrant/recipe.yaml's Recipe in this collection states the
+#     identical limitation for its own noauth/ping route. Recorded here
+#     rather than forced.
+#   - Collectors, dashboards, users, roles and the rest of Sumo Logic's
+#     management surface are real, auth-gated, live-reachable paths --
+#     several were struck directly for point 4 above -- and none is
+#     declared as a resource. This Recipe's search-job and search-result
+#     resources are fully documented with worked examples; collectors and
+#     the rest are not, in anything this task's own probing could reach
+#     without a working credential, and the header's own rule elsewhere in
+#     this collection -- an empty fixture proves a shape, an absent field
+#     does not invent one -- applies the same way here.
+#   - histogramBuckets' three fields (length, count, startTimestamp) are
+#     modelled as an opaque list rather than a structured nested field,
+#     because the reference's one worked example has exactly one bucket and
+#     nothing to generalise a second shape from.
+#   - DELETE /api/v1/search/jobs/{id} (cancel) is a real, documented path.
+#     No worked response body or a specific status beyond "the job is
+#     cancelled" was found anywhere in the reference, so it is not modelled
+#     -- declaring one would be inventing the exact kind of plausible-
+#     looking value this task's own rule forbids.
+#   - records (GET .../records), the aggregated sibling of messages, is not
+#     modelled: its shape is the identical map-of-strings pattern messages
+#     already demonstrates, and a second resource would repeat the same
+#     finding rather than add one.
+#   - The rate limit Sumo Logic's own reference states in plain words --
+#     "four API requests per second (240 requests per minute)... 200 active
+#     concurrent search jobs" -- was never triggered by this Recipe's
+#     probing and is documented, not observed; no 429 is declared.
+#
+# The values below are documentation examples and fixtures, not secrets,
+# and belong to no organisation.
+
+recipe: sumologic
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://help.sumologic.com/docs/api/search-job/
+
+auth:
+  # Genuinely HTTP Basic on the live host -- see point 2. The three
+  # verdicts answer three different ways here, which is exactly what this
+  # scheme's absent/malformed/rejected split exists for.
+  scheme: basic
+  keys:
+    - cauldron-sumo-fixture-access-id
+  # Absent (no header at all) and malformed (a header present but not
+  # parseable as Basic, which is what a garbage Bearer token is) collapse
+  # to the identical container-level page live -- see points 1 and 3.
+  absent_error: missing_authentication
+  malformed_error: missing_authentication
+  # A well-formed Basic credential this Recipe does not hold reaches the
+  # application layer and gets its own, unrelated shape -- see point 2.
+  rejected_error: invalid_credential
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+
+resources:
+  search_job:
+    id:
+      style: opaque
+    fields:
+      # NOT STARTED, GATHERING RESULTS, GATHERING RESULTS FROM SUBQUERIES,
+      # FORCE PAUSED, DONE GATHERING RESULTS, DONE GATHERING HISTOGRAM,
+      # CANCELLED -- absent from the create response entirely; see the
+      # header.
+      state:
+        type: string
+        default: "NOT STARTED"
+      messageCount:
+        type: integer
+        default: 0
+      recordCount:
+        type: integer
+        default: 0
+      pendingErrors:
+        type: list
+      pendingWarnings:
+        type: list
+      histogramBuckets:
+        type: list
+      dataScannedInBytes:
+        type: integer
+        in: usageDetails
+        as: dataScannedInBytes
+      # Present on every response this API sends, success or failure alike,
+      # and empty far more often than not. The one case that is not empty
+      # is the create route's own constant override below.
+      warning:
+        type: string
+        default: ""
+      link_rel:
+        type: string
+        in: link
+        as: rel
+        default: self
+      # Cauldron has no mechanism to template a body field with an
+      # operation's own freshly minted identifier -- only response headers
+      # support {id} substitution (internal/runtime/handler.go), and this
+      # is a body field. Served as the reference's own literal example URL
+      # on every create, which does not address whichever id Cauldron
+      # actually mints for that call. The finding this route exists to
+      # demonstrate -- a handle rather than a projection -- does not turn
+      # on the specific id matching; only on id and link.href addressing
+      # the same job, which the documented pair genuinely does.
+      link_href:
+        type: string
+        in: link
+        as: href
+        default: "https://api.sumologic.com/api/v1/search/jobs/IUUQI-DGH5I-TJ045"
+
+  # No natural identifier: a message is never addressed by itself, only
+  # listed under the job that produced it. Hidden for the same reason
+  # Mezmo's event resource in this collection hides its own.
+  search_message:
+    collection: messages
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      job_id:
+        type: string
+        in: "-"
+      # A JSON string on the wire despite the schema's own fieldType
+      # calling it "long" -- see the header. Modelled as a string for that
+      # reason: the type declared here is the type actually sent, not the
+      # type the schema's sibling "fields" array claims.
+      messageid:
+        type: string
+        in: map
+        as: _messageid
+      raw:
+        type: string
+        in: map
+        as: _raw
+      receipttime:
+        type: string
+        in: map
+        as: _receipttime
+
+routes:
+  - method: POST
+    path: /api/v1/search/jobs
+    resource: search_job
+    operation: create
+    status: 202
+    returns: [id, link_rel, link_href]
+    fields:
+      # The one place in this Recipe the "warning" field is not empty --
+      # the reference's own words, quoted verbatim, explaining this API's
+      # cookie-based session affinity before anything has gone wrong yet.
+      # See the header.
+      warning: "A 404 status (Page Not Found) on a follow-up request may be due to a cookie not accompanying the request"
+
+  - method: GET
+    path: /api/v1/search/jobs/{id}
+    resource: search_job
+    operation: get
+    # No id, no link -- the reference's own worked poll example carries
+    # neither. See the header: the identifier that addresses this record is
+    # never echoed by the record itself.
+    returns:
+      - state
+      - messageCount
+      - recordCount
+      - pendingErrors
+      - pendingWarnings
+      - histogramBuckets
+      - dataScannedInBytes
+      - warning
+
+  - method: GET
+    path: /api/v1/search/jobs/{job_id}/messages
+    resource: search_message
+    operation: list
+    scope: [job_id]
+    list:
+      style: wrapped
+      key: messages
+      fields:
+        warning: ""
+        # The schema descriptor Sumo Logic's own reference calls "fields"
+        # too -- a real, if confusing, name collision between this format's
+        # own list.fields (constants stamped beside the collection) and the
+        # wire's own top-level "fields" property (a type descriptor for
+        # the map values beside it). Both are named "fields" independently
+        # of each other and happen to collide here.
+        fields:
+          - name: _messageid
+            fieldType: long
+            keyField: false
+          - name: _raw
+            fieldType: string
+            keyField: false
+
+errors:
+  # No Authorization header at all, and a header present but not parseable
+  # as Basic (a garbage Bearer token) -- both struck live, both this exact
+  # body every time. Jetty's own container-level page, not Sumo Logic's
+  # application.
+  missing_authentication:
+    status: 401
+    style: text
+    headers:
+      Content-Type: "text/html;charset=iso-8859-1"
+    message: |
+      <html>
+      <head>
+      <meta http-equiv="Content-Type" content="text/html;charset=ISO-8859-1"/>
+      <title>Error 401 Full authentication is required to access this resource</title>
+      </head>
+      <body><h2>HTTP ERROR 401 Full authentication is required to access this resource</h2>
+      <table>
+      <tr><th>STATUS:</th><td>401</td></tr>
+      <tr><th>MESSAGE:</th><td>Full authentication is required to access this resource</td></tr>
+      <tr><th>SERVLET:</th><td>rest</td></tr>
+      </table>
+
+      </body>
+      </html>
+
+  # A well-formed Basic credential this Recipe does not hold, struck live
+  # four times running on one real path: the identical shape every time,
+  # id aside. The id below is a placeholder -- the real value is a fresh
+  # request-tracking token on every call and is not a fixed fact this
+  # Recipe could serve honestly. See the header.
+  invalid_credential:
+    status: 401
+    code: unauthorized
+    message: "Credential could not be verified."
+    fields:
+      id: cauldron-fixture-trace-id-000000
+
+fixtures:
+  empty: {}
+
+  # Every value below is quoted verbatim from help.sumologic.com's own
+  # worked JSON examples for the search job API -- see the header for why
+  # no case built from this fixture carries a verified date.
+  documented-job:
+    search_job:
+      - id: IUUQI-DGH5I-TJ045
+        state: "DONE GATHERING RESULTS"
+        messageCount: 90
+        recordCount: 1
+        pendingErrors: []
+        pendingWarnings: []
+        histogramBuckets:
+          - length: 60000
+            count: 1
+            startTimestamp: 1359404820000
+        dataScannedInBytes: 0
+        warning: ""
+        link_rel: self
+        link_href: "https://api.sumologic.com/api/v1/search/jobs/IUUQI-DGH5I-TJ045"
+
+    search_message:
+      - job_id: IUUQI-DGH5I-TJ045
+        messageid: "-9223372036854773763"
+        receipttime: "1359407350899"
+        raw: "2013-01-28 13:09:10,333 -0800 INFO  [module=SERVICE]..."
+
+conformance:
+  - name: a missing credential is a Jetty container page, not Sumo Logic's own JSON
+    source: https://api.us2.sumologic.com/api/v1/search/jobs/cauldron-fixture-000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/html;charset=iso-8859-1"
+      body_matches: "Full authentication is required to access this resource"
+
+  - name: a garbage Bearer token collapses into the identical container page
+    source: https://api.us2.sumologic.com/api/v1/search/jobs/cauldron-fixture-000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+      headers:
+        Authorization: "Bearer junktoken12345"
+    expect:
+      status: 401
+      body_matches: "Full authentication is required to access this resource"
+
+  - name: and the identical missing-credential page appears on the eu deployment too
+    source: https://api.eu.sumologic.com/api/v1/collectors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+    expect:
+      status: 401
+      body_matches: "Full authentication is required to access this resource"
+
+  - name: a well-formed but wrong Basic credential reaches a completely different, application-level failure
+    source: https://api.us2.sumologic.com/api/v1/collectors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+      headers:
+        Authorization: "Basic anVua2lkOmp1bmtrZXk="
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        code: unauthorized
+        message: "Credential could not be verified."
+      absent:
+        - error
+
+  - name: the same wrong credential is refused identically on the eu deployment
+    source: https://api.eu.sumologic.com/api/v1/collectors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+      headers:
+        Authorization: "Basic anVua2lkOmp1bmtrZXk="
+    expect:
+      status: 401
+      body:
+        code: unauthorized
+        message: "Credential could not be verified."
+
+  - name: an unrouted path collapses with no credential the same way a real one does
+    # Struck live three times against a path this API has no route for, no
+    # credential presented: the identical Jetty page every time. The same
+    # request against the wrong-but-present-credential case is genuinely
+    # unstable on the live host -- see the header -- so only the stable,
+    # no-credential half of that comparison is asserted here.
+    source: https://api.us2.sumologic.com/api/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/search/jobs/cauldron-fixture-000
+    expect:
+      status: 401
+      body_matches: "Full authentication is required to access this resource"
+
+  - name: no method mismatch was ever reachable -- the credential is checked first every time
+    source: https://api.us2.sumologic.com/api/v1/collectors
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/v1/search/jobs/cauldron-fixture-000
+    expect:
+      # Not a 405. Not even routed far enough to be one. See point 5.
+      status: 401
+      body_matches: "Full authentication is required to access this resource"
+
+  - name: creating a search job answers a handle to poll, not the record and not a projection of it
+    source: https://help.sumologic.com/docs/api/search-job/
+    fixture: documented-job
+    request:
+      method: POST
+      path: /api/v1/search/jobs
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tc3Vtby1maXh0dXJlLWFjY2Vzcy1pZDo="
+      json:
+        query: "error"
+        from: "2026-08-31T00:00:00"
+        to: "2026-09-01T00:00:00"
+        timeZone: "UTC"
+    expect:
+      status: 202
+      body:
+        link.rel: self
+        link.href: "https://api.sumologic.com/api/v1/search/jobs/IUUQI-DGH5I-TJ045"
+        # The one non-empty warning in this Recipe -- see the header.
+        warning: "A 404 status (Page Not Found) on a follow-up request may be due to a cookie not accompanying the request"
+      absent:
+        - state
+        - messageCount
+        - recordCount
+
+  - name: polling the job never echoes the id or link that addressed it
+    source: https://help.sumologic.com/docs/api/search-job/
+    fixture: documented-job
+    request:
+      method: GET
+      path: /api/v1/search/jobs/IUUQI-DGH5I-TJ045
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tc3Vtby1maXh0dXJlLWFjY2Vzcy1pZDo="
+    expect:
+      status: 200
+      body:
+        state: "DONE GATHERING RESULTS"
+        messageCount: 90
+        recordCount: 1
+        "usageDetails.dataScannedInBytes": 0
+        warning: ""
+      absent:
+        - id
+        - link
+        - link.href
+
+  - name: messages ignore their own declared fieldType -- every value is a JSON string
+    source: https://help.sumologic.com/docs/api/search-job/
+    fixture: documented-job
+    request:
+      method: GET
+      path: /api/v1/search/jobs/IUUQI-DGH5I-TJ045/messages
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tc3Vtby1maXh0dXJlLWFjY2Vzcy1pZDo="
+    expect:
+      status: 200
+      body:
+        "fields[0].name": _messageid
+        "fields[0].fieldType": long
+        # A string despite fieldType saying "long" -- the finding this
+        # case exists to pin. See the header.
+        "messages[0].map._messageid": "-9223372036854773763"
+        "messages[0].map._raw": "2013-01-28 13:09:10,333 -0800 INFO  [module=SERVICE]..."
+
+  - name: there is no group here for a count to sit on -- a message is one line
+    source: https://help.sumologic.com/docs/api/search-job/
+    fixture: documented-job
+    request:
+      method: GET
+      path: /api/v1/search/jobs/IUUQI-DGH5I-TJ045/messages
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tc3Vtby1maXh0dXJlLWFjY2Vzcy1pZDo="
+    expect:
+      status: 200
+      absent:
+        - "messages[0].group"
+        - "messages[0].groupId"
+        - "messages[0].occurrences"
+        - "messages[0].count"

@@ -64,6 +64,90 @@
 #     described rather than reproduced, which is worth saying twice.
 #   - Application keys, capabilities enforcement, lifecycle rules, server-side
 #     encryption, object lock, legal hold and replication are not modelled.
+#   - The S3-compatible gateway's object and bucket CRUD is not modelled at
+#     all -- no PUT, no GET on a key, no bucket create, nothing past the
+#     credential check. This Recipe never held a real key for that surface,
+#     so there is no observed success body to serve, and inventing one is
+#     precisely what the brief this Recipe was written against forbids. What
+#     is modelled is the anonymous and malformed-credential surface below,
+#     verified live, and nothing past it.
+#
+# Two protocols, one vendor, two error formats
+#
+# Everything above is b2's *native* API -- b2api/v3, JSON, api.backblazeb2.com
+# and the two other hosts b2_authorize_account hands back. It sells itself as
+# S3-compatible too, and runs a second, entirely different surface for that
+# claim: s3.us-west-004.backblazeb2.com, an S3-compatible gateway in front of
+# the same buckets, checked live on 2026-09-01. It is not S3 wearing a native
+# skin or the reverse -- it is two unrelated protocols in front of one
+# storage account, and a caller who authenticates against one holds a
+# credential the other has never heard of.
+#
+# The native surface answers every failure as JSON: {"code", "message",
+# "status"}. The S3 gateway answers every failure it recognises as XML:
+# <Error><Code>...</Code><Message>...</Message></Error>, Content-Type:
+# application/xml -- and it disagrees with the native surface about the one
+# question this whole collection keeps asking, which is missing versus wrong:
+#
+#   native, GET b2_authorize_account, no Authorization header at all
+#     -> 401 {"code":"bad_auth_token","message":"","status":401}
+#   native, same call, -H "Authorization: junk"
+#     -> byte-identical 401 bad_auth_token
+#
+#   S3 gateway, GET /, no Authorization header at all
+#     -> 403 <Error><Code>AccessDenied</Code><Message>Unauthenticated
+#        requests are not allowed for this api</Message></Error>
+#   S3 gateway, GET /, -H "Authorization: junk"
+#     -> 400 <Error><Code>AuthorizationHeaderMalformed</Code><Message>
+#        Authorization header must have type and credentials parts
+#        </Message></Error>
+#   S3 gateway, GET /, a syntactically valid AWS4-HMAC-SHA256 header naming
+#   an access key that exists nowhere (AKIAFAKEFAKEFAKEFAKE)
+#     -> 403 <Error><Code>InvalidAccessKeyId</Code><Message>Malformed Access
+#        Key Id</Message></Error>
+#
+# The native surface collapses missing and wrong into one identical answer.
+# The S3 gateway tells all three apart, by status code as well as by Code --
+# 403, then 400, then 403 again with a different Code both times. A caller
+# who learned "missing and wrong are the same thing" from testing against
+# b2_authorize_account learns the opposite lesson testing against the S3
+# gateway of the same account.
+#
+# Both are modelled, and getting both auth-checked in one Recipe took a
+# second mechanism, because Cauldron checks exactly one credential scheme for
+# a whole Recipe, before routing is even attempted (internal/runtime/auth.go:
+# credential). auth.pattern -- the shape-only SigV4 check the AWS Recipes in
+# this collection already use -- can only be that one scheme, and the native
+# surface's fixed test token is not SigV4-shaped, so wiring pattern-based
+# auth Recipe-wide would auto-reject every native call before it ever reached
+# a route. The Recipe below is scheme: none instead, with every route gated
+# by its own matches_header -- the mechanism census/recipe.yaml uses to make
+# GET's auth gate depend on the method, applied here to make a route's gate
+# depend on which of two protocols it belongs to. Each native route pairs
+# with a fallback carrying the same path and method and no matches_header, so
+# anything other than the exact fixture token falls through to bad_auth_token
+# -- collapsing missing and wrong exactly as the live pair above does. The S3
+# route has three: the two exact probe values verified above, and an
+# unconditional fallback carrying AccessDenied, which is what a genuinely
+# absent header and any signature this Recipe does not name both get. A real
+# SigV4 signature, correctly computed, is not any of the three literal values
+# declared -- it would fall to the same AccessDenied fallback a bare absence
+# does, which is the honest answer: no route past this credential check was
+# ever exercised with a real key, and none claims a body it never observed.
+#
+# Not modelled: the S3 gateway's own auth-before-routing order depends on the
+# HTTP method, which census/recipe.yaml's does too but not the same way.
+# Checked live, no credential either time: GET / answers the AccessDenied
+# above; POST /, PUT / and HEAD / all answer 405 -- but as
+# {"code":"method_not_allowed","message":"method not allowed: POST","status":
+# 405}, JSON, not the XML every other failure on this host sends, and with no
+# Allow header naming what would have worked. The S3-compatible gateway's own
+# routing layer is not S3-compatible about how it reports a wrong method,
+# which is a second, independent way this vendor's compatibility claim runs
+# out -- recorded here as live-checked prose rather than served, because
+# Cauldron's own credential check runs before method resolution unconditionally,
+# for every method alike, and an anonymous POST here never reaches whatever
+# decided that JSON was the answer.
 #
 # Keys below are fixtures, not secrets.
 
@@ -76,10 +160,13 @@ upstream:
   docs: https://www.backblaze.com/apidocs/introduction-to-the-b2-native-api
 
 auth:
-  scheme: header
-  header: Authorization
-  keys:
-    - cauldron_b2_authorization_token
+  # none at the Recipe level on purpose -- see the header's "Two protocols,
+  # one vendor, two error formats". Cauldron checks one credential scheme
+  # before routing is attempted, for the whole Recipe, and this account has
+  # two schemes that share nothing. Every route below carries its own
+  # matches_header instead, the same mechanism census/recipe.yaml uses to
+  # make a route's gate conditional rather than global.
+  scheme: none
 
 responses:
   list:
@@ -223,17 +310,34 @@ resources:
 
 routes:
   # No identifier: there is one answer and it is about the credentials that
-  # asked.
+  # asked. matches_header stands in for the Recipe-wide auth check that used
+  # to gate this -- see the header and the auth block above -- against the
+  # same fixture token the account previously named in auth.keys.
   - method: GET
     path: /b2api/v3/b2_authorize_account
     resource: authorization
     operation: get
     id_from: auth
+    matches_header:
+      Authorization: cauldron_b2_authorization_token
+
+  # Anything else presented on this path and method -- absent, or present and
+  # wrong -- falls through to here, exactly as the live pair in the header
+  # shows: missing and wrong both answer bad_auth_token, byte for byte.
+  - method: GET
+    path: /b2api/v3/b2_authorize_account
+    error: bad_auth_token
 
   - method: GET
     path: /b2api/v3/b2_list_buckets
     resource: bucket
     operation: list
+    matches_header:
+      Authorization: cauldron_b2_authorization_token
+
+  - method: GET
+    path: /b2api/v3/b2_list_buckets
+    error: bad_auth_token
 
   # Everything: current versions, superseded ones, and the tombstones that
   # mark a name hidden. b2_list_file_names is the one that shows less.
@@ -241,6 +345,12 @@ routes:
     path: /b2api/v3/b2_list_file_versions
     resource: file
     operation: list
+    matches_header:
+      Authorization: cauldron_b2_authorization_token
+
+  - method: GET
+    path: /b2api/v3/b2_list_file_versions
+    error: bad_auth_token
 
   # A POST that deletes, and the body carries both the name and the id
   # because either one alone is ambiguous: the name has many versions and
@@ -252,6 +362,40 @@ routes:
     returns:
       - id
       - fileName
+    matches_header:
+      Authorization: cauldron_b2_authorization_token
+
+  - method: POST
+    path: /b2api/v3/b2_delete_file_version
+    error: bad_auth_token
+
+  # The S3-compatible gateway -- see "Two protocols, one vendor, two error
+  # formats" in the header. Three routes on the one path this Recipe reaches
+  # on that surface, disambiguated by the exact credential value the way the
+  # native routes above are, and picked apart in matches_header's own
+  # priority order: the two specific values first, the unconditional
+  # fallback last. No resource and no operation on any of the three, because
+  # this Recipe never held a real key for this surface and never observed a
+  # success body -- see the fidelity gap on object/bucket CRUD in the header.
+  - method: GET
+    path: /
+    matches_header:
+      Authorization: junk
+    error: s3_authorization_header_malformed
+
+  - method: GET
+    path: /
+    matches_header:
+      Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+    error: s3_invalid_access_key_id
+
+  # Absence, and anything else -- including a real SigV4 signature, which is
+  # neither of the two literal values above. See the header: this is the
+  # honest fallback for a credential this Recipe has never verified either
+  # way, and it is what a genuinely empty Authorization header gets too.
+  - method: GET
+    path: /
+    error: s3_access_denied
 
 errors:
   # Twenty-four hours, at most. A process that authorised at boot and has
@@ -261,6 +405,13 @@ errors:
     code: expired_auth_token
     message: "Authorization token has expired"
 
+  # Verified live 2026-09-01, both for a missing Authorization header and for
+  # -H "Authorization: junk": {"code":"bad_auth_token","message":"","status":
+  # 401}. The real message is the empty string; Cauldron only lets a Recipe's
+  # message override the default when it is non-empty (internal/runtime/
+  # errors.go), so the sentence below is a placeholder rather than the real
+  # (blank) one, and no conformance case here asserts it -- only status and
+  # code, which were both checked.
   bad_auth_token:
     status: 401
     code: bad_auth_token
@@ -289,6 +440,49 @@ errors:
     status: 429
     code: too_many_requests
     message: "Too many requests"
+
+  # The S3 gateway's own three, all verified live 2026-09-01 -- see "Two
+  # protocols, one vendor, two error formats" in the header. text style so
+  # the body is served as the real XML document rather than wrapped in the
+  # JSON envelope the native surface above uses.
+  s3_access_denied:
+    status: 403
+    code: AccessDenied
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <Error>
+          <Code>AccessDenied</Code>
+          <Message>Unauthenticated requests are not allowed for this api</Message>
+      </Error>
+
+  s3_authorization_header_malformed:
+    status: 400
+    code: AuthorizationHeaderMalformed
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <Error>
+          <Code>AuthorizationHeaderMalformed</Code>
+          <Message>Authorization header must have type and credentials parts</Message>
+      </Error>
+
+  s3_invalid_access_key_id:
+    status: 403
+    code: InvalidAccessKeyId
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <Error>
+          <Code>InvalidAccessKeyId</Code>
+          <Message>Malformed Access Key Id</Message>
+      </Error>
 
 fixtures:
   empty: {}
@@ -388,8 +582,13 @@ fixtures:
         bucketId: 4a48fe8875c6214145260818
         accountId: b2a41c8f0e19
 
-# Every case below is derived from Backblaze's published API documentation.
-# None has been run against a real account. The verify report says so.
+# The b2 native file/bucket/version cases below are derived from Backblaze's
+# published API documentation and carry no verified date -- none has been run
+# against a real account, since doing so needs a real b2 key this Recipe was
+# never given. The auth-surface cases at the end, both native and the S3
+# gateway's, are the exception: those needed no account at all, only an
+# anonymous or a deliberately wrong request, and every one of them carries
+# verified: "2026-09-01". The verify report shows the split.
 conformance:
   - name: three versions of one name, and only the top one is the file
     # Delete the first and the second becomes what anybody downloading this
@@ -652,3 +851,82 @@ conformance:
       absent:
         - error
         - errors
+
+  - name: native -- no Authorization header at all is bad_auth_token
+    source: https://api.backblazeb2.com/b2api/v3/b2_authorize_account
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+    expect:
+      status: 401
+      body:
+        code: bad_auth_token
+        status: 401
+
+  - name: native -- a present, garbage Authorization header answers identically to a missing one
+    # Checked live with -H "Authorization: junk": the same 401 bad_auth_token,
+    # byte for byte. The native surface does not distinguish missing from
+    # wrong -- contrast the S3 gateway cases below, on the same account.
+    source: https://api.backblazeb2.com/b2api/v3/b2_authorize_account
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /b2api/v3/b2_authorize_account
+      headers:
+        Authorization: junk
+    expect:
+      status: 401
+      body:
+        code: bad_auth_token
+        status: 401
+
+  - name: S3 gateway -- no Authorization header at all is 403 AccessDenied, in XML
+    source: https://s3.us-west-004.backblazeb2.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>AccessDenied</Code>\s*<Message>Unauthenticated requests are not allowed for this api</Message>'
+
+  - name: S3 gateway -- a present, garbage Authorization header is a different status and a different Code
+    # 400, not 403; AuthorizationHeaderMalformed, not AccessDenied -- the
+    # opposite of the native pair above, which collapses this exact
+    # distinction into one identical answer on the same account.
+    source: https://s3.us-west-004.backblazeb2.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: junk
+    expect:
+      status: 400
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>AuthorizationHeaderMalformed</Code>\s*<Message>Authorization header must have type and credentials parts</Message>'
+
+  - name: S3 gateway -- a well-shaped signature naming no real key is a third, distinct answer
+    source: https://s3.us-west-004.backblazeb2.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+        x-amz-date: "20260901T072231Z"
+        x-amz-content-sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Code>InvalidAccessKeyId</Code>\s*<Message>Malformed Access Key Id</Message>'

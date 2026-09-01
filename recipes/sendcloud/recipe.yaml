@@ -1,0 +1,592 @@
+# Sendcloud Recipe for Cauldron
+#
+# The question this Recipe was written to answer -- at which exact call does
+# a label get bought -- has an answer that is easy to miss because it is not
+# a call at all. It is a boolean.
+#
+# POST /parcels creates a parcel. Sendcloud's own schema for that request
+# names the field that decides whether it also buys a label from the
+# carrier: request_label, "Should the parcel request a label. This property
+# used to be called requestLabel. We kept it backwards compatible by still
+# accepting the previous name." (sendcloud.dev/api/v2/parcels/create-a-
+# parcel-or-parcels). Default it to true, which is what every quickstart
+# example does, and a request that reads as "create a record" spends real
+# money against a real carrier account in the same breath. There is no
+# separate "buy" step to forget to call -- there is a field to forget to set
+# to false, in the one call that looks the least like a purchase.
+#
+# request_label never appears on the resource it produced. The create
+# response -- reproduced in fixtures below exactly as Sendcloud's own
+# documentation shows it -- has no request_label key anywhere in it. The
+# field that decided whether a carrier was charged leaves no trace on the
+# record it charged for.
+#
+# **"Announced" is a state, not a call, and it has a name: "No label."**
+# Create with request_label: false and, per Sendcloud's own archived
+# quickstart, "The parcel object is created in the Sendcloud system, but the
+# parcel is not immediately announced with the carrier" -- the parcel's
+# status reads literally "No label" (sendcloud.dev/docs/archive/shipping/
+# create-a-parcel). Buying the label later is not a dedicated "announce"
+# endpoint either: it is the *same* boolean, sent again, this time to
+# **PUT /parcels** -- the update endpoint -- with the parcel's id inside the
+# request body rather than in the URL: {"parcel": {"id": 1,
+# "request_label": true}} (sendcloud.dev/api/v2/parcels/update-a-parcel).
+# The response status flips to {"id": 0, "message": "Ready to send"}. So
+# there are two calls that can spend the money -- create and update -- and
+# neither one is named for what it does when it does it. This second path is
+# documented here and not routed: this format's update operation addresses a
+# record by an id in the URL, and Sendcloud addresses this one by an id
+# buried in the body of a PUT to the bare collection, which the operation
+# model has no way to express without claiming an id-in-path shape the wire
+# does not have.
+#
+# **A cancel is not a refund and is not reversible, and it says so in units
+# of insurance rather than money.** POST /parcels/{id}/cancel
+# (sendcloud.dev/api/v2/parcels/cancel-a-parcel) answers 200
+# {"status": "cancelled", "message": "Parcel has been cancelled"} or 202
+# "Parcel cancelation has been queued" for one still in flight. What makes it
+# irreversible is not stated as a rule, it is stated as a consequence: "If
+# you proceed to ship a parcel that was initially cancelled, the parcel's
+# insurance coverage will become void." A cancelled parcel can still be
+# handed to the carrier -- Sendcloud does not block that -- it just will not
+# be insured if you do. Cancellation itself can fail: 400 for a parcel
+# already cancelled (status 2000) or already delivered (status 11), or for
+# one cancelled more than 42 days after being announced ("After period of 42
+# days of the parcel being announced we cannot cancel it"); 404 for a parcel
+# that does not exist; 410 for one whose original announcement never
+# succeeded (status 1002). None of the four failure bodies is quoted in
+# Sendcloud's documentation beyond the prose above, so none is modelled as a
+# route here -- see the fidelity gaps.
+#
+# **This whole host is the same kind of thing Sendcloud is retiring.** The
+# assigned host, panel.sendcloud.sc/api/v2, is not merely "legacy" -- its own
+# create-parcel page opens with "This endpoint is now in maintenance mode
+# and is closed to new users. If your Sendcloud account was created before
+# April 13th 2026, you can continue to use this endpoint as normal. New
+# users should start with API v3." A brand-new integration cannot reach the
+# call this Recipe's central finding is about at all; only grandfathered
+# accounts can. v3 replaces it with an explicitly named pair of calls --
+# "Create and announce a shipment synchronously" and "...asynchronously" --
+# which is Sendcloud drawing, in its successor API, exactly the line this
+# Recipe is arguing v2 draws by accident.
+#
+# Missing and wrong credentials are not answered by the same software, let
+# alone the same sentence. Checked live, 2026-09-01, against
+# panel.sendcloud.sc/api/v2/parcels:
+#
+#   no Authorization header at all
+#     -> 401 {"error":{"code":401,"request":"api/v2/parcels","message":
+#        "Authentication credentials were not provided."}}
+#        Content-Type: application/json; charset=utf-8
+#        server: uvicorn
+#        www-authenticate: Bearer            <- on a Basic-auth API
+#        allow: GET, POST, PUT, HEAD, OPTIONS
+#
+#   any Basic credential at all, right shape and wrong, or wrong shape
+#   entirely (checked with a real key's own username paired with a bad
+#   password, with two different bogus username/password pairs, and with an
+#   Authorization header that will not even base64-decode)
+#     -> 401 {"error":{"code":401,"status":"Unauthorized","message":
+#        "oauth2: \"invalid_client\" \"Client authentication failed (e.g.,
+#        unknown client, no client authentication included, or unsupported
+#        authentication method).\": Access credentials are invalid"}}
+#        Content-Type: application/json                  <- no charset
+#        ory-error-id: (empty)
+#        x-envoy-upstream-service-time: <n>
+#        (no www-authenticate, no allow, no "server: uvicorn")
+#
+# Different Content-Type, different header set, and a message that names
+# Ory Hydra's own OAuth2 vocabulary -- "invalid_client" is a client-
+# credentials grant failure, not a Basic-auth one. This is not two error
+# branches in one application; it is two different pieces of software
+# answering the same path. An absent Authorization header reaches
+# Sendcloud's own FastAPI/uvicorn app, which checks for the header and says
+# so in its own words. Anything that looks like an attempt at a credential
+# -- right, wrong, or malformed past recognition -- never reaches that app
+# at all: it is intercepted by an Ory-Hydra-backed OAuth2 gateway sitting in
+# front of it, which is why the challenge header on the *other* failure says
+# "Bearer" on an API that authenticates with Basic -- that header belongs to
+# the gateway's own default challenge, stamped on a path it never actually
+# gated.
+#
+# **That same split governs routing order, and it is gated on whether a
+# credential was presented at all -- not on the path, and not on the
+# method.** Checked live, every combination, 2026-09-01:
+#
+#   GET  /parcels                    no credential -> 401 (the app's own)
+#   PATCH /parcels                   no credential -> 401 (the app's own,
+#                                     identical body -- PATCH is not even a
+#                                     method /parcels supports)
+#   GET  /nosuchroute12345           no credential -> 404 {"detail":
+#                                     "Not Found"} (Starlette's own, not
+#                                     Sendcloud's envelope at all)
+#   POST /nosuchroute12345           no credential -> 404, identical body
+#   GET  /nosuchroute12345           any credential -> 401 (the gateway's)
+#
+# Read top to bottom: a request with no Authorization header reaches the
+# app, and the app resolves its own route before checking anything --
+# a real path answers for its credential, a fake one 404s, and neither
+# answer changes between GET and POST. A request carrying anything in the
+# Authorization header, right or wrong, never reaches that decision at all,
+# because the gateway in front of the app answers first, for every path,
+# real or invented -- which is why the fourth case above 401s rather than
+# 404ing despite naming a path nothing has ever routed.
+#
+# This is a sixth answer to the auth-vs-routing ordering question this
+# collection keeps finding new ways to split, and it is not one
+# auth.after_routing can express: that flag is one setting for the whole
+# Recipe, checking the credential either always before the router or always
+# after it, and Sendcloud's real behaviour depends on a fact -- was any
+# credential sent -- that only exists at the moment of the request, not at
+# Recipe-authoring time. This Recipe sets after_routing: true, which
+# reproduces every case above involving no credential, including the one
+# the brief specifically asked after: an unrouted path answers 404 with no
+# credential sent, unchanged by method. What it cannot also reproduce is the
+# fifth line -- a credential of any kind, on a path that does not exist,
+# still short-circuiting to the gateway's 401 before the router ever runs.
+# Declaring after_routing: false would recover that line and lose the
+# first four instead. Neither setting is Sendcloud; this paragraph is.
+#
+# One more consequence of after_routing: true, stated rather than modelled:
+# live, a wrong METHOD on a real path (PATCH /parcels, above) answers 401,
+# because the gateway/app split is about the credential and never reaches a
+# method check at all when one is missing. This Recipe's router, once it
+# defers auth to after routing, resolves method-not-allowed before auth on
+# any request that does carry a recognised route pattern but the wrong verb
+# -- so a credentialed PATCH here would 405 rather than 401. No live probe
+# ever carried a credential on a wrong method, so this is not contradicted
+# by anything observed, but it is not confirmed either, and no case below
+# claims it either way.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Sendcloud's own documented create-parcel request body wraps the
+#     fields under a "parcel" key, {"parcel": {...}} -- quoted in full
+#     above. This format's create operation reads a request body at its
+#     top level, with no mechanism to unwrap a whole-resource envelope from
+#     an incoming request the way it wraps one going out, so the create
+#     case below sends the fields flat rather than nested. The response
+#     envelope itself -- {"parcel": {...}} coming back -- is faithful; only
+#     the request's own wrapper is not reproduced.
+#   - The "No label" state, and the PUT-based second path to a label
+#     described above, are documented and not routed -- see above for why
+#     the id-in-body shape does not fit this format's update operation, and
+#     no id number is ever attached to a "No label" example anywhere in
+#     Sendcloud's published materials, so no fixture claims one.
+#   - The four cancellation failure shapes (400 already-cancelled/delivered/
+#     past-42-days, 404 not-found, 410 announcement-failed) are named and
+#     quoted from prose in Sendcloud's own documentation, and none of the
+#     four has a worked JSON body published anywhere this Recipe found, so
+#     none is a route or a case here.
+#   - The parcel resource has roughly thirty documented fields; this Recipe
+#     declares seventeen. address_divided, data, colli_uuid, collo_nr,
+#     collo_count, awb_tracking_number, box_number, the three dimension
+#     fields, shipping_method_checkout_name, contract and the total_order_
+#     value pair are all real and none is declared.
+#   - Sendcloud's own worked example for parcel creation does not agree with
+#     itself, and this Recipe reproduces the disagreement rather than
+#     smoothing it over: the record's own "id" is 3, and the label URLs the
+#     same response hands back both point at parcel 3172. Quoted exactly as
+#     published; see the parcel fixture below.
+#   - list pagination (the "next"/"previous" cursor URLs Retrieve Parcels
+#     documents) is not modelled -- both fields exist on the wire and
+#     neither is declared.
+#   - No account exists and none was created. Every case below either
+#     carries a verified date because panel.sendcloud.sc was actually called
+#     with the exact request shown, or carries no verified date because it
+#     was read from sendcloud.dev's published reference and never called --
+#     the parcel-shape cases are all the latter; the credential and routing
+#     cases are all the former.
+
+recipe: sendcloud
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://sendcloud.dev/api/v2/parcels/index.md
+
+auth:
+  # Basic on the wire -- see the header for why the software behind it is an
+  # OAuth2 gateway rather than a Basic-auth check. credential: username is
+  # this format's default and matches Sendcloud's own words: "your username
+  # is your Public Key and your password is your Private Key"
+  # (sendcloud.dev/docs/getting-started/authentication).
+  scheme: basic
+  credential: username
+  keys:
+    - cauldronpublickey000000
+  # No absent_error declared: the app's own default sentence -- "Authentica-
+  # tion credentials were not provided." -- already is the generic message
+  # this Recipe's authentication_error carries, so leaving it unset serves
+  # exactly what was observed.
+  #
+  # malformed and rejected are not two sentences here, they are one -- an
+  # Authorization header that will not even base64-decode (Malformed, by
+  # this format's own definition) was checked live and answered the
+  # identical oauth2 gateway body a well-formed wrong pair does (Rejected).
+  # Both names point at the same entry deliberately: naming two different
+  # errors for a provider that sends one sentence would be the false claim
+  # this mechanism exists to prevent.
+  malformed_error: oauth2_invalid_client
+  rejected_error: oauth2_invalid_client
+  # See the header's routing-order section: this reproduces every live case
+  # that sent no credential, including the unrouted-path one, and cannot
+  # also reproduce the gateway short-circuit that fires once any credential
+  # is attached.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: parcels
+  resource:
+    style: wrapped
+    key: parcel
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+
+resources:
+  parcel:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      company_name:
+        type: string
+        null_when_unset: true
+      address:
+        type: string
+      city:
+        type: string
+      postal_code:
+        type: string
+      telephone:
+        type: string
+        null_when_unset: true
+      country:
+        type: map
+      carrier:
+        type: map
+      shipment:
+        type: map
+      # Set once a label has actually been bought. Absent from the record
+      # entirely until then -- see the header: there is no route this
+      # Recipe found that shows this fixture with request_label ever having
+      # been false, so no fixture below omits it, but the type carries the
+      # possibility honestly.
+      label:
+        type: map
+      # {id, message}. Sendcloud's own worked "No label" example never
+      # attaches a number to that message -- see the header -- so this
+      # field is typed as a map rather than a fixed object shape, and no
+      # fixture here supplies it without an id.
+      status:
+        type: map
+      tracking_number:
+        type: string
+        null_when_unset: true
+      weight:
+        type: string
+      # Set only once the parcel has actually been announced to a carrier.
+      # See the header: this is the field a client would need to check to
+      # know whether the create call that made this record also spent
+      # money, and it is not documented as ever being sent null -- only as
+      # present once true, so it is typed to be absent rather than null
+      # before then.
+      date_announced:
+        type: datetime
+        null_when_unset: true
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+      is_return:
+        type: boolean
+        default: false
+      reference:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: POST
+    path: /api/v2/parcels
+    resource: parcel
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /api/v2/parcels
+    resource: parcel
+    operation: list
+
+  - method: GET
+    path: /api/v2/parcels/{id}
+    resource: parcel
+    operation: get
+
+  # A fixed acknowledgement, not the parcel record -- see the header. No
+  # worked body exists for any of the four ways this can fail (400/404/410),
+  # so only the 200 is routed.
+  - method: POST
+    path: /api/v2/parcels/{id}/cancel
+    raw:
+      content_type: application/json
+      text: '{"status": "cancelled", "message": "Parcel has been cancelled"}'
+
+errors:
+  authentication_error:
+    status: 401
+    # A number on the wire, not a string -- see shiphero/recipe.yaml in this
+    # collection for the same auto-coercing convention.
+    code: "401"
+    message: Authentication credentials were not provided.
+    fields:
+      # Dotted, so it lands inside the nested "error" envelope beside code
+      # and message rather than as a sibling of it -- see oauth2_invalid_
+      # client below for the same reasoning.
+      error.request: api/v2/parcels
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+      www-authenticate: Bearer
+      allow: "GET, POST, PUT, HEAD, OPTIONS"
+
+  # The gateway's own sentence, verified for a real key's username paired
+  # with a wrong password, for two different wrong username/password pairs,
+  # and for an Authorization header that will not base64-decode -- all four
+  # landed here identically. See the header for why this is a different
+  # piece of software answering, not a different branch of the same one.
+  oauth2_invalid_client:
+    status: 401
+    code: "401"
+    message: >-
+      oauth2: "invalid_client" "Client authentication failed (e.g., unknown
+      client, no client authentication included, or unsupported
+      authentication method).": Access credentials are invalid
+    fields:
+      # Dotted for the same reason as authentication_error above: this
+      # lands inside the nested "error" envelope rather than beside it.
+      error.status: Unauthorized
+
+  # Starlette's own 404, not Sendcloud's envelope -- reached only when no
+  # Authorization header was sent at all, see the header.
+  unknown_route:
+    status: 404
+    style: flat
+    message_field: detail
+    code_field: "-"
+    message: Not Found
+
+fixtures:
+  empty: {}
+
+  small-account:
+    parcel:
+      # Quoted exactly as sendcloud.dev's own Create a Parcel example shows
+      # it, self-disagreement included: this record's own id is 3, and the
+      # label URLs the same response hands back both name parcel 3172. See
+      # the header's fidelity gaps.
+      - id: 3
+        name: John Doe
+        company_name: Sendcloud
+        address: Stadhuisplein 10
+        city: Eindhoven
+        postal_code: "5611 EM"
+        telephone: "0612345678"
+        country:
+          iso_2: NL
+          iso_3: NLD
+          name: Netherlands
+        carrier:
+          code: postnl
+        shipment:
+          id: 1
+          name: PostNL Standard 0-23kg
+        label:
+          normal_printer:
+            - https://panel.sendcloud.sc/api/v2/label/normal_printer/3172?start_from=0&hash=bbfd669ee9ebb19408b85b33d181a50040fd9bc4
+          label_printer: https://panel.sendcloud.sc/api/v2/label/label_printer/3172?hash=bbfd669ee9ebb19408b85b33d181a50040fd9bc4
+        status:
+          id: 0
+          message: Ready to send
+        tracking_number: S0M3TR4Ck1NgNumB3r
+        weight: "2.000"
+        date_created: "2018-01-01T21:45:30Z"
+        date_updated: "2018-01-01T21:47:12Z"
+        date_announced: "2018-01-01T21:47:13Z"
+        is_return: false
+        reference: some_reference_123
+
+conformance:
+  - name: no credential at all reaches Sendcloud's own app, which names itself
+    source: https://panel.sendcloud.sc/api/v2/parcels
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/parcels
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+        www-authenticate: Bearer
+      body:
+        error.code: 401
+        error.request: api/v2/parcels
+        error.message: Authentication credentials were not provided.
+
+  - name: any credential at all is answered by a different piece of software
+    # A username/password pair this Recipe does not hold. See the header:
+    # this exact pair, a real key's own username paired with a wrong
+    # password, and a header that will not base64-decode all landed on this
+    # identical body live.
+    source: https://panel.sendcloud.sc/api/v2/parcels
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/parcels
+      headers:
+        Authorization: Basic bm90dGhla2V5MDAwMDAwMDAwMDAwOm5vdHRoZWtleTAwMDAwMDAwMDAwMA==
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        error.code: 401
+        error.status: Unauthorized
+        error.message: >-
+          oauth2: "invalid_client" "Client authentication failed (e.g.,
+          unknown client, no client authentication included, or unsupported
+          authentication method).": Access credentials are invalid
+      absent:
+        - error.request
+
+  - name: a header that will not even base64-decode gets the gateway's answer too
+    # Malformed by this format's own definition -- something was sent and it
+    # cannot be a credential -- and still the oauth2 sentence, not the
+    # app's own absent-credential one. See auth.malformed_error above.
+    source: https://panel.sendcloud.sc/api/v2/parcels
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/parcels
+      headers:
+        Authorization: Basic not-valid-base64!!
+    expect:
+      status: 401
+      body:
+        error.code: 401
+        error.status: Unauthorized
+        error.message: >-
+          oauth2: "invalid_client" "Client authentication failed (e.g.,
+          unknown client, no client authentication included, or unsupported
+          authentication method).": Access credentials are invalid
+
+  - name: an unrouted path 404s with no credential sent, and does not care which method
+    source: https://panel.sendcloud.sc/api/v2/nosuchroute12345
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/nosuchroute12345
+    expect:
+      status: 404
+      body:
+        detail: Not Found
+      absent:
+        - error
+
+  - name: and POST to the same fake path gets the identical body
+    source: https://panel.sendcloud.sc/api/v2/nosuchroute12345
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/nosuchroute12345
+    expect:
+      status: 404
+      body:
+        detail: Not Found
+
+  - name: the field that buys the label leaves no trace on the record it produced
+    # request_label is what spent the money -- see the header -- and
+    # Sendcloud's own published response for this exact call never echoes
+    # it back. This case asserts the part a bare create can honestly prove:
+    # the record is minted from what was sent, and request_label is not
+    # among the fields that come back. What request_label actually does to
+    # status and date_announced is shown against the pre-existing fixture
+    # in the two cases below, sourced from the same page.
+    #
+    # Sent flat rather than wrapped under "parcel" -- see the fidelity gaps:
+    # Sendcloud's own documented request body really is {"parcel": {...}},
+    # and this format's create operation reads a request body at its top
+    # level rather than unwrapping a resource-name envelope from it.
+    source: https://sendcloud.dev/api/v2/parcels/create-a-parcel-or-parcels
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/parcels
+      headers:
+        Authorization: Basic Y2F1bGRyb25wdWJsaWNrZXkwMDAwMDA6eA==
+      json:
+        name: John Doe
+        request_label: true
+    expect:
+      status: 200
+      body:
+        parcel.name: John Doe
+      absent:
+        - parcel.request_label
+
+  - name: the label URLs disagree with the record's own id, exactly as published
+    source: https://sendcloud.dev/api/v2/parcels/create-a-parcel-or-parcels
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/parcels/3
+      headers:
+        Authorization: Basic Y2F1bGRyb25wdWJsaWNrZXkwMDAwMDA6eA==
+    expect:
+      status: 200
+      body:
+        parcel.id: 3
+      matches:
+        parcel.label.label_printer: "3172"
+
+  - name: a listing wraps its array under parcels
+    source: https://sendcloud.dev/api/v2/parcels/retrieve-parcels
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/parcels
+      headers:
+        Authorization: Basic Y2F1bGRyb25wdWJsaWNrZXkwMDAwMDA6eA==
+    expect:
+      status: 200
+      body:
+        parcels[0].tracking_number: S0M3TR4Ck1NgNumB3r
+        parcels[0].status.message: Ready to send
+
+  - name: cancelling answers a fixed acknowledgement, not the parcel record
+    # Irreversible, and not a refund -- see the header for what actually
+    # enforces that: re-shipping a cancelled parcel voids its insurance
+    # rather than being refused outright.
+    source: https://sendcloud.dev/api/v2/parcels/cancel-a-parcel
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/parcels/3/cancel
+      headers:
+        Authorization: Basic Y2F1bGRyb25wdWJsaWNrZXkwMDAwMDA6eA==
+    expect:
+      status: 200
+      body:
+        status: cancelled
+        message: Parcel has been cancelled

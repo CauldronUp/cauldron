@@ -1,0 +1,630 @@
+# Airbrake Recipe for Cauldron
+#
+# Rollbar's Recipe in this collection draws the line between one occurrence
+# of an error and the group it belongs to. Bugsnag's draws it a second way.
+# Raygun's draws it a third way and states plainly that the group it lands on
+# carries no count of its own. Airbrake groups too -- unlike its two
+# siblings in this collection, papertrail/recipe.yaml and
+# sumologic/recipe.yaml, which do not group anything at all and are search
+# over discrete lines instead. Airbrake's own group, quoted from its
+# published reference rather than observed (see why below), carries not one
+# count but two: noticeCount and noticeTotalCount sit directly on it,
+# unlike Raygun's error-group, which this collection's own Recipe for it
+# states plainly has neither. Airbrake's project resource goes a step
+# further than any of the four: groupResolvedCount and groupUnresolvedCount
+# sit on the *project*, so a client can learn how many of a project's groups
+# are still open without listing a single one of them.
+#
+# Airbrake's own v4 API is real, versioned past v3 (the version this task
+# named), and reachable -- and almost none of it is reachable *through
+# curl*, for a reason worth stating precisely before anything else in this
+# header: an edge-level access rule, not this API's own authentication,
+# blocks every path this Recipe would otherwise have probed for the group,
+# notice and deploy resources.
+#
+# Probed live, unauthenticated, on 2026-09-01, against both api.airbrake.io
+# hosted API versions:
+#
+#   1. GET /api/v4/projects/{id} -- a bare numeric id, one segment past
+#      "projects" and nothing more -- answers normally: 401,
+#      {"code":401,"type":"Unauthorized","message":
+#      "Project not found or access denied"}, Content-Type: application/json
+#      (honest -- the body really is JSON), with real x-ratelimit-limit,
+#      x-ratelimit-remaining and x-ratelimit-delay headers that move with
+#      every call.
+#   2. Any path one segment deeper than that -- /projects/{id}/groups,
+#      /projects/{id}/notices, /projects/{id}/deploys, or literally any
+#      other word in that position, checked with a nonsense one too --
+#      answers 403 "Request forbidden by administrative rules.", plain HTML,
+#      no ratelimit headers, no Content-Type match to speak of. This is not
+#      Airbrake's application answering; nothing about the URL's *meaning*
+#      changes the verdict, only its *shape* -- one path segment past the
+#      project id is refused categorically, on both /api/v3 and /api/v4, for
+#      groups, notices, deploys and pure nonsense alike. Reproduced across
+#      more than a dozen distinct sub-paths.
+#   3. The one project-id path itself answers identically for a missing key,
+#      a garbage key, and every project id tried, real-looking or absurd
+#      (1, 2, 999999999): the same 81-byte body every time. This is the
+#      answer to the specific question this task asked: a wrong project id
+#      and a wrong key do not differ, as far as an unauthenticated probe can
+#      tell, and neither leaks whether project 1 exists. What was not
+#      testable, and is not claimed, is whether a *valid* key against a
+#      project it does not own answers the same way -- that would need a
+#      real credential this task forbids obtaining, and Airbrake's own
+#      message hedges on exactly this point in its own wording: "not found
+#      *or* access denied," one sentence doing both jobs on purpose.
+#   4. Method handling on the one reachable path splits by method in a way
+#      this Recipe can state precisely and cannot reproduce faithfully.
+#      DELETE /api/v4/projects/1, no credential at all, answers a genuine
+#      405: Content-Type: text/plain (honest), Allow: HEAD, GET, body
+#      "Method Not Allowed" -- 19 bytes, checked live, and the 405 arrives
+#      with *no credential presented at all*, meaning this host checks the
+#      method before it ever looks at authentication, the reverse of
+#      Cauldron's own unconditional auth-before-routing order (see the gap
+#      below). PUT /api/v4/projects/1, also with no credential, does not
+#      404 and does not repeat GET's shape: it answers 401 again, but from a
+#      visibly different backend -- Rails-style headers (x-request-id,
+#      x-runtime, x-frame-options) in place of the Go-style ones GET
+#      carries, and a completely different envelope:
+#      {"error":"Invalid credentials. Not authorized"}, one flat string, no
+#      code, no type, nothing in common with GET's shape but the status
+#      line. Three methods on one path, three different failure surfaces --
+#      Go-backed JSON, Go-backed plain-text 405, and Rails-backed JSON with
+#      a different vocabulary entirely -- and the method alone decides which
+#      one answers.
+#   5. GET /api/v4/this-is-not-a-real-endpoint -- a path resembling nothing
+#      -- answers 404 with Airbrake's own branded web-app 404 page,
+#      text/html, roughly 250KB of the same single-page-app shell every
+#      browser-facing 404 on this domain serves. GET /api/v4/groups -- the
+#      cross-project listing the reference documents by name -- answers a
+#      *different* 404: "404 page not found", 19 bytes, Content-Type:
+#      text/plain, Go's own net/http default. Same status, same absent
+#      credential, two unrelated bodies from what act like two different
+#      backends -- and neither of the two is Airbrake's own group JSON.
+#      Whatever GET /api/v4/groups is documented to do, calling it with no
+#      account attached today reaches nothing resembling that description.
+#
+# Content-Type told the truth on every response this Recipe could actually
+# read: the JSON claims were JSON, the plain-text claims were plain text,
+# and the one HTML claim was HTML. This is a genuine non-finding worth
+# stating rather than skipping past, because raygun/recipe.yaml, elsewhere
+# in this collection, found the opposite on the identical question -- a 403
+# claiming application/json and sending fifteen bytes of prose.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The group, notice and deploy resources below are built entirely from
+#     Airbrake's own published API reference (docs.airbrake.io), quoting its
+#     worked JSON examples verbatim rather than observing them, because
+#     point 2 above is not a caveat about these three resources -- it is the
+#     reason no case for any of them carries a verified date. Every field
+#     name, every example value (the literal path "/path/to/file", the
+#     literal exception "RestClient::NotFound", the literal repository URL)
+#     is the documentation's own, copied rather than invented, and every
+#     status code below for these three resources is the documentation's
+#     stated code, not a struck one.
+#   - Two quoted-vs-bare inconsistencies are worth having pinned rather than
+#     smoothed over, because both are the documentation's own literal
+#     example and neither looks like a typo once you see it twice. A
+#     group's own id is a bare JSON number (1); the same group's
+#     lastDeployId and lastNoticeId, values of the identical kind and a
+#     similar magnitude, are JSON strings ("1"). And a notice's own groupId
+#     -- the identifier that addresses the very group carrying an unquoted
+#     numeric id when fetched directly -- arrives as a JSON string
+#     ("2340000") when read from the notice's side. The same identifier is
+#     two different JSON types depending on which resource is naming it.
+#   - "environment" names two unrelated things on one notice. context lives
+#     under an object and its own environment property is a bare string
+#     naming a deploy stage ("staging"); a sibling top-level property,
+#     spelled identically, is an *object* holding whatever custom keys an
+#     app chose to send (program_name: "JobWorker" in the documentation's
+#     own example). One word, two types, two meanings, one record.
+#   - Cauldron's own credential check is unconditional and method-agnostic:
+#     internal/runtime/handler.go checks it once, before the router is ever
+#     consulted, for every request regardless of HTTP method. Point 4 above
+#     needs the opposite on two counts -- a genuine method-before-auth order
+#     for DELETE, and a *second, distinct* credential-failure envelope for
+#     PUT on the identical path -- and this format has no mechanism for
+#     either: matches_header and matches_query are both evaluated inside
+#     routing, after the credential gate already ran, so they cannot make
+#     the gate itself answer two different ways for two different methods.
+#     The 405 shape is declared and reachable with a credential attached,
+#     the accommodation Rootly's and Census's Recipes in this collection
+#     make for the identical structural limit. PUT's alternate backend and
+#     its distinct envelope are recorded in this header and nowhere else,
+#     because nothing in the format can host a second answer to a question
+#     it already has one fixed answer for.
+#   - Cauldron does not model an implicit HEAD alongside a declared GET, so
+#     this Recipe's own Allow header on the 405 case reads GET rather than
+#     the live HEAD, GET. Stated rather than asserted around.
+#   - GET /api/v4/groups (cross-project) and the two mute/unmute PUT routes
+#     the reference documents are not modelled as routes at all. The first
+#     answers a 404 that is not this API's group shape at all -- see point 5
+#     -- and modelling it as a working listing would claim a shape nothing
+#     live supports today. The second pair is a state transition this
+#     Recipe has no other write route to make it consistent with.
+#   - GET /projects/{id}/groups/{id}/stats and
+#     GET /projects/{id}/notice-status/{uuid} are real, documented paths and
+#     neither is modelled: both are aggregate or async-status shapes this
+#     Recipe's one static fixture per resource cannot honestly demonstrate.
+#   - POST /projects/{id}/notices (the v3 ingestion path) and the v4/v5
+#     notice-creation surface are not modelled, for the same reason
+#     Bugsnag's Recipe in this collection excludes its own Notify API:
+#     different purpose, write-only, and sending a real payload would create
+#     a real error somewhere this task has no account to own.
+#   - Deploy carries no id anywhere in the reference's own worked list
+#     example. No get-one-deploy route is declared for that reason -- there
+#     is nothing documented to address one by.
+#
+# The key below is a fixture and belongs to no project.
+
+recipe: airbrake
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://docs.airbrake.io/docs/devops-tools/api
+
+auth:
+  # The project id lives in the path; the key lives in the query string,
+  # never a header -- the shape this task named specifically. A missing key
+  # and a wrong one answered identically on every live probe, for every
+  # project id tried, so no absent/malformed/rejected split is declared:
+  # every verdict falls to the one message Airbrake itself sends for all of
+  # them.
+  scheme: query
+  param: key
+  # The method and the path are resolved before the key is looked at, struck
+  # live with no key at all for both.
+  after_routing: true
+  keys:
+    - cauldron-airbrake-fixture-key-000000000000
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    count_field: count
+  error:
+    style: flat
+    code_field: code
+    code_type: number
+    type_field: type
+    message_field: message
+
+resources:
+  project:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+        required: true
+      deployId:
+        type: string
+      deployAt:
+        type: datetime
+      noticeTotalCount:
+        type: integer
+      rejectionCount:
+        type: integer
+      fileCount:
+        type: integer
+      deployCount:
+        type: integer
+      # The split Raygun's error-group has no equivalent of at all: how many
+      # of this project's groups are open, without listing one of them.
+      groupResolvedCount:
+        type: integer
+      groupUnresolvedCount:
+        type: integer
+
+  group:
+    collection: groups
+    id:
+      style: numeric
+      type: number
+    fields:
+      # Echoed in the body, unlike Bugsnag's project_id in this collection,
+      # which its own Recipe states is never repeated outside the path.
+      projectId:
+        type: integer
+      resolved:
+        type: boolean
+        default: false
+      errors:
+        type: list
+      context:
+        type: map
+      # A string, unlike this same group's own numeric id -- see the header.
+      lastDeployId:
+        type: string
+      lastDeployAt:
+        type: datetime
+      lastNoticeId:
+        type: string
+      lastNoticeAt:
+        type: datetime
+      noticeCount:
+        type: integer
+      noticeTotalCount:
+        type: integer
+      createdAt:
+        type: datetime
+
+  notice:
+    collection: notices
+    id:
+      style: opaque
+    fields:
+      projectId:
+        type: integer
+      # A string here, on the notice; a bare number on the group itself when
+      # fetched directly. Same identifier, two JSON types -- see the header.
+      groupId:
+        type: string
+      deployId:
+        type: string
+      deployAt:
+        type: datetime
+      errors:
+        type: list
+      # Carries its own environment property, a bare deploy-stage string
+      # (e.g. "staging") -- not to be confused with the sibling field of the
+      # same name two lines below. See the header.
+      context:
+        type: map
+      # An arbitrary object of app-chosen keys, spelled identically to
+      # context.environment and meaning something unrelated. See the
+      # header.
+      environment:
+        type: map
+      session:
+        type: string
+        null_when_unset: true
+      params:
+        type: map
+      createdAt:
+        type: datetime
+
+  deploy:
+    collection: deploys
+    # No id anywhere in the reference's own worked example -- see the
+    # header. Hidden, because nothing on the wire addresses one by it.
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # The scope partition. Never repeated in the body -- the reference's
+      # own worked example lists deploys already scoped to one project and
+      # names none of them a projectId of their own.
+      projectId:
+        type: string
+        in: "-"
+      environment:
+        type: string
+        required: true
+      username:
+        type: string
+      email:
+        type: string
+      gravatarId:
+        type: string
+      repository:
+        type: string
+      revision:
+        type: string
+      version:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v4/projects/{id}
+    resource: project
+    operation: get
+
+  - method: GET
+    path: /api/v4/projects/{projectId}/groups
+    resource: group
+    operation: list
+    scope: [projectId]
+
+  - method: GET
+    path: /api/v4/projects/{projectId}/groups/{id}
+    resource: group
+    operation: get
+    scope: [projectId]
+
+  - method: GET
+    path: /api/v4/projects/{projectId}/groups/{groupId}/notices
+    resource: notice
+    operation: list
+    scope: [projectId, groupId]
+
+  - method: GET
+    path: /api/v4/projects/{projectId}/deploys
+    resource: deploy
+    operation: list
+    scope: [projectId]
+
+  - method: POST
+    path: /api/v4/projects/{projectId}/deploys
+    resource: deploy
+    operation: create
+    scope: [projectId]
+
+errors:
+  # Struck live, four separate ways: no key, a garbage key, and every
+  # combination of those against project ids 1, 2 and 999999999. The
+  # identical 81 bytes every time -- see the header for what that does and
+  # does not establish.
+  authentication_error:
+    status: 401
+    # A string here, converted to a bare JSON number on the wire by
+    # responses.error.code_type -- matching the live body's own unquoted
+    # 401, which sits beside an HTTP status line that says the same thing
+    # twice.
+    code: "401"
+    type: Unauthorized
+    message: "Project not found or access denied"
+
+  # Struck live with no credential at all -- the method mismatch is caught
+  # before Airbrake's own host ever looks at authentication, which
+  # auth.after_routing declares.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: "text/plain; charset=utf-8"
+    message: "Method Not Allowed"
+
+  # A path resembling nothing this API has. Airbrake's own branded web app
+  # 404 page is real, live, text/html and roughly 250KB of single-page-app
+  # shell -- not reproduced verbatim here, because almost none of that size
+  # is information rather than boilerplate framework markup, and this
+  # Recipe would rather say so than paste a quarter of a megabyte of
+  # unrelated JavaScript-bundle scaffolding into a test fixture. The
+  # distinctive fragment below is real text lifted from that page, not
+  # invented.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    message: |
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8" />
+          <title>404 &middot; Airbrake</title>
+      <!-- the rest of this page, roughly 250KB, is Airbrake's own web
+           application shell and is not reproduced here -- see errors.
+           unknown_route's own note above this block -->
+
+fixtures:
+  empty: {}
+
+  # Every value below is copied verbatim from docs.airbrake.io's own worked
+  # JSON examples -- see the header for why no case built from this fixture
+  # carries a verified date.
+  documented-account:
+    project:
+      - id: 1
+        name: "Airbrake project name"
+        deployId: "1"
+        deployAt: "2014-09-26T17:37:33.638348Z"
+        noticeTotalCount: 1
+        rejectionCount: 1
+        fileCount: 1
+        deployCount: 1
+        groupResolvedCount: 1
+        groupUnresolvedCount: 1
+
+    group:
+      - id: 1
+        projectId: 1
+        resolved: false
+        errors:
+          - type: "error type"
+            message: "error message"
+            backtrace:
+              - file: "/path/to/file"
+                function: "func_name"
+                line: 1
+                column: 0
+        context:
+          environment: production
+        lastDeployId: "1"
+        lastDeployAt: "2014-09-26T17:37:33.638348Z"
+        lastNoticeId: "1"
+        lastNoticeAt: "2014-09-26T17:37:33.638348Z"
+        noticeCount: 1
+        noticeTotalCount: 1
+        createdAt: "2014-09-26T17:37:33.638348Z"
+
+    notice:
+      - id: "1234560000000"
+        projectId: 100
+        groupId: "2340000"
+        deployId: "34560000"
+        deployAt: "2020-09-21T21:44:30.72Z"
+        errors:
+          - type: "RestClient::NotFound"
+            message: "404 Not Found"
+            backtrace:
+              - file: "/restclient/abstract_response.rb"
+                function: "exception_with_response"
+                line: 223
+                column: 0
+                code: null
+        context:
+          environment: staging
+          hostname: staging-host-2
+          language: "ruby/2.7.0"
+          notifier:
+            name: airbrake-ruby
+            url: "https://github.com/airbrake/airbrake-ruby"
+            version: "5.0.2"
+          severity: error
+        environment:
+          program_name: JobWorker
+        params:
+          http_body: null
+          http_code: null
+        createdAt: "2020-09-21T22:48:00.385Z"
+
+    deploy:
+      - projectId: "1"
+        environment: production
+        username: john
+        email: john@smith.com
+        gravatarId: "767fc9c115a1b989744c755db47feb60"
+        repository: "https://github.com/airbrake/airbrake"
+        revision: "38748467ea579e7ae64f7815452307c9d05e05c5"
+        version: "v2.0"
+
+conformance:
+  - name: a missing key answers project not found or access denied
+    source: https://api.airbrake.io/api/v4/projects/1
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v4/projects/1
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        code: 401
+        type: Unauthorized
+        message: "Project not found or access denied"
+
+  - name: a garbage key answers the identical body
+    source: https://api.airbrake.io/api/v4/projects/1?key=totallyjunkkey0000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v4/projects/1
+      query:
+        key: totallyjunkkey0000000000
+    expect:
+      status: 401
+      body:
+        message: "Project not found or access denied"
+
+  - name: a project id that could never exist answers the identical body too
+    source: https://api.airbrake.io/api/v4/projects/999999999
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v4/projects/999999999
+    expect:
+      status: 401
+      body:
+        message: "Project not found or access denied"
+      # Neither the missing key nor the absurd project id changes the
+      # sentence -- see the header for what that does and does not prove
+      # about whether this API leaks the existence of a project.
+
+  - name: a wrong method is a genuine 405, and the key is never consulted
+    # Struck live with no credential at all, where it answered 405 before
+    # authentication was ever reached. auth.after_routing carries that
+    # ordering, so this case sends what the live request sent.
+    source: https://api.airbrake.io/api/v4/projects/1
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/v4/projects/1
+    expect:
+      status: 405
+      headers:
+        Allow: "GET"
+      body_matches: "^Method Not Allowed$"
+
+  - name: a path resembling nothing this API has is Airbrake's own branded 404
+    source: https://api.airbrake.io/api/v4/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v4/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body_matches: "404 &middot; Airbrake"
+
+  - name: a group carries two counts, unlike Raygun's error-group in this collection
+    source: https://docs.airbrake.io/docs/devops-tools/api
+    fixture: documented-account
+    request:
+      method: GET
+      path: /api/v4/projects/1/groups/1
+      query:
+        key: cauldron-airbrake-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        id: 1
+        resolved: false
+        noticeCount: 1
+        noticeTotalCount: 1
+        lastDeployId: "1"
+
+  - name: the same identifier is a bare number on the group and a string on its notice
+    # projectId 100 and groupId 2340000 are the notice example's own scope,
+    # quoted from the reference verbatim -- a separate worked example from
+    # the group fixture above, which the documentation does not claim
+    # shares a record with this one.
+    source: https://docs.airbrake.io/docs/devops-tools/api
+    fixture: documented-account
+    request:
+      method: GET
+      path: /api/v4/projects/100/groups/2340000/notices
+      query:
+        key: cauldron-airbrake-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        "notices[0].groupId": "2340000"
+        "notices[0].context.environment": staging
+        "notices[0].environment.program_name": JobWorker
+
+  - name: a project carries resolved and unresolved group counts without listing either
+    source: https://docs.airbrake.io/docs/devops-tools/api
+    fixture: documented-account
+    request:
+      method: GET
+      path: /api/v4/projects/1
+      query:
+        key: cauldron-airbrake-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        groupResolvedCount: 1
+        groupUnresolvedCount: 1
+        name: "Airbrake project name"
+
+  - name: a deploy carries no identifier at all
+    source: https://docs.airbrake.io/docs/devops-tools/api
+    fixture: documented-account
+    request:
+      method: GET
+      path: /api/v4/projects/1/deploys
+      query:
+        key: cauldron-airbrake-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        count: 1
+        "deploys[0].environment": production
+        "deploys[0].revision": "38748467ea579e7ae64f7815452307c9d05e05c5"
+      absent:
+        - "deploys[0].id"

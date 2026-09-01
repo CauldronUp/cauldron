@@ -120,6 +120,28 @@ func (r *Recipe) Validate() error {
 		add("auth.param only applies to the query scheme")
 	}
 
+	// A verdict that names an error nobody declared would fall through to the
+	// generic wording, which is exactly the outcome these fields exist to
+	// avoid -- and it would do it silently, the file claiming a second
+	// sentence the emulator never says.
+	for field, name := range map[string]string{
+		"auth.absent_error":    r.Auth.AbsentError,
+		"auth.malformed_error": r.Auth.MalformedError,
+		"auth.rejected_error":  r.Auth.RejectedError,
+	} {
+		if name == "" {
+			continue
+		}
+
+		if _, ok := r.Errors[name]; !ok {
+			add("%s names %q, which is not in errors", field, name)
+		}
+
+		if r.Auth.Scheme == "" || r.Auth.Scheme == "none" {
+			add("%s only applies to a Recipe that checks a credential", field)
+		}
+	}
+
 	r.validateResources(add)
 	r.validateRoutes(add)
 	for i, c := range r.Conformance {
@@ -253,6 +275,24 @@ func (r *Recipe) Validate() error {
 	}
 
 	// A refusal has to name a failure the Recipe declares, or the route would
+	// A greedy parameter -- {name...} -- swallows the rest of the path, so it
+	// can only be the last thing in one. Declared earlier it would eat the
+	// segments that were supposed to follow it and the route would match
+	// nothing it was written for, silently: the path would compile, the
+	// router would accept it, and every request would miss.
+	for _, route := range r.Routes {
+		parts := strings.Split(strings.Trim(route.Path, "/"), "/")
+
+		for i, part := range parts {
+			if !strings.Contains(part, "...}") || i == len(parts)-1 {
+				continue
+			}
+
+			add("%s %s declares %s before the end of the path, and a greedy parameter can only be the last segment",
+				route.Method, route.Path, part)
+		}
+	}
+
 	// answer a 400 with a body nothing here describes.
 	for _, route := range r.Routes {
 		raise := route.Pagination.OverLimit

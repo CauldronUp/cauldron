@@ -1,0 +1,390 @@
+# SuperTokens Recipe for Cauldron
+#
+# try.supertokens.com answers, which settles the first question this Recipe
+# was written to answer: SuperTokens' Core Driver Interface -- the HTTP API a
+# backend SDK speaks to a Core, self-hosted in production but reachable here
+# as a standing public test deployment -- is a real, live, unauthenticated
+# target, unlike Logto Cloud in this same collection, where no publicly
+# reachable tenant could be found at all.
+#
+# The answer to this collection's own question is the sharpest thing here.
+# GET /recipe/session?sessionHandle=<anything> -- struck live with a
+# garbage handle, with a wrong rid header, and with no rid header at all,
+# three separate requests, byte-identical every time -- answers:
+#
+#   HTTP/1.1 200 OK
+#   Content-Type: application/json;charset=UTF-8
+#
+#   {"status":"UNAUTHORISED","message":"Session does not exist."}
+#
+# Two hundred. Not 401, not 404, not a null. "No session" is a business
+# answer inside a successful envelope, and the Core's own published
+# api_spec.yaml documents it as such on purpose: the 200 response schema for
+# this operation is a `oneOf` between the real session object and this
+# `unauthorisedMessageResponse` shape. A client checking `response.ok` before
+# reading the body never sees the failure at all. Ory Kratos's whoami, in
+# this same collection, answers 401 for the identical question. SuperTokens
+# answers 200. Neither is wrong; they are simply different sentences for the
+# same silence, and this Recipe exists to record which one this provider
+# picked.
+#
+# It gets sharper on inspection: the same word, "UNAUTHORISED", is also this
+# API's real HTTP-level 401 -- but for a different question entirely. The
+# Core's own security parameter is named `api-key` and is, per the spec,
+# literally the `Authorization` header (no Bearer prefix, `required: false`),
+# checked by the Core against whoever is calling it (the backend), not
+# against the session being asked about. Its documented failure is a genuine
+# 401, plain text, one line: "Invalid API key". So this API has two
+# unrelated things both called "unauthorised": one is a transport-level 401
+# about the caller's own credential, the other is an application-level 200
+# about somebody else's session, and the caller's own credential was never
+# checked on this deployment -- see below.
+#
+# rid and the core-vs-SDK split. rid is documented as disambiguating which
+# recipe's handler answers a path two recipes could both register, and the
+# published parameter is `required: false`. Empirically, on the one route
+# this Recipe could reach unauthenticated, it is not merely optional -- it is
+# ignored outright. `rid: session` (correct), `rid: bogus-recipe-name`
+# (wrong) and no rid header at all were struck against the identical request
+# and returned the identical 200 UNAUTHORISED body, byte for byte. What the
+# Core actually requires, established rather than assumed: on this
+# deployment, for this operation, nothing -- no rid, no cdi-version (absent
+# defaults to a supported one; present-but-wrong, e.g. "999.0", is checked
+# and answers 400 "cdi-version 999.0 not supported"), and no Authorization.
+# That is a fact about this one test deployment's configuration, not a claim
+# about every Core -- a production Core is ordinarily configured with an
+# api-key, and this Recipe's auth scheme below is none specifically because
+# none was observed, not because the Core cannot have one.
+#
+# The host is not split the way Ory Network or Mezmo split theirs, and that
+# absence is itself worth recording next to them by name. Mezmo splits two
+# products across two hostnames with disjoint credential schemes. Ory
+# Network, elsewhere in this collection, splits public and admin across one
+# host by which of two credential families a route demands. SuperTokens'
+# Core Driver Interface has no public/admin split in that sense at all --
+# every CDI route is the same "backend calling its own Core" surface. What
+# stands in its place on *this specific deployment* is an infrastructure
+# split nothing in the CDI spec documents: try.supertokens.com sits behind
+# AWS API Gateway, and only a curated handful of method+path pairs are
+# allowlisted. GET /hello, GET /apiversion and GET /recipe/session answer;
+# POST /recipe/session, PUT /hello (both real, both documented, both
+# accepted by the Core's own router per the spec's own `put`/`post`/`delete`
+# operations on /hello) and GET /recipe/session/refresh all answer the
+# identical 403 --
+#
+#   {"Message":"User is not authorized to access this resource because no
+#   identity-based policy allows the execute-api:Invoke action"}
+#
+# -- struck on three separate method+path combinations. That is Amazon's own
+# IAM vocabulary (one capitalised "Message", no code, no envelope this
+# collection has seen anywhere else), and it never reaches SuperTokens'
+# software at all -- confirmed the other direction too: a path with no
+# resource entry in API Gateway's own config at all, nested arbitrarily
+# deep, still reaches the Core and gets the Core's own 404, "Not found",
+# plain text. Three distinct "no" vocabularies, live, on one host: the
+# Core's own 400 validation text, the Core's own 200-with-a-business-verdict
+# answer, and AWS's own infrastructure-level 403 that the Core's software
+# never sees.
+#
+# And the Content-Type header does not tell the truth twice over. GET
+# /hello is documented in the spec as `application/json`, `enum: ["Hello"]`.
+# The live response is `Content-Type: text/html;charset=UTF-8` carrying the
+# six bytes `Hello\n` -- unquoted, so not even valid JSON, whatever the
+# header or the spec claims. The 400 validation bodies ("Field name
+# 'sessionHandle' is missing in GET request", "cdi-version 999.0 not
+# supported") are also served as text/html and are also bare text, not
+# HTML. Only the two real JSON answers -- /apiversion and /recipe/session's
+# 200 -- carry a Content-Type that matches what they send.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - A request with no sessionHandle at all is a genuine third answer (400,
+#     not 200) and is reproduced below by arming validation_error for one
+#     case rather than by routing, because Cauldron's matches_query
+#     expresses "this value" and has no way to express "no value was sent",
+#     and a fallback route answering it faithfully would also have to answer
+#     every wrong-but-present handle the same way, which is not what the
+#     live host does.
+#   - GET /apiversion (the CDI version-negotiation list) is cited above but
+#     not routed. Its body is a bare JSON array with no envelope this
+#     format's list style expects, and modelling it would need a shape this
+#     Recipe does not otherwise use for one route.
+#   - api-key is documented, not modelled: this deployment enforces none,
+#     and Cauldron's auth scheme is one mechanism for the whole Recipe. A
+#     Recipe describing a *configured* Core's 401 "Invalid API key" would
+#     contradict every case struck live against this one.
+#   - userDataInDatabase and userDataInJWT are typed by the spec as
+#     "arbitrary" JSON objects with no fixed shape, and are declared here
+#     only as points of extension, not populated.
+#   - The AWS 403 above is struck on three method+path pairs and is not a
+#     stand-in for every combination this Recipe did not try, the same
+#     caveat census/recipe.yaml states for its own single unmatched-path
+#     case.
+#
+# Every case below not carrying a verified date was read from the Core
+# Driver Interface's own published api_spec.yaml (openapi: 3.0.0, version
+# 5.2.0), not observed -- this Recipe never created or held a real session.
+
+recipe: supertokens
+capability: auth
+version: 0.1.0
+
+upstream:
+  api: "5.4"
+  docs: https://github.com/supertokens/core-driver-interface
+  spec: https://raw.githubusercontent.com/supertokens/core-driver-interface/master/api_spec.yaml
+  spec_hash: 0f97d18101106a447118e55472204df70c8a6582f8be5ea846211214b24a2a68
+  spec_seen: "2026-09-01"
+
+auth:
+  # None, because none was observed -- see the header. A configured Core's
+  # api-key is documented above rather than modelled.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+
+resources:
+  session_info:
+    id:
+      style: opaque
+      field: sessionHandle
+    fields:
+      status:
+        type: string
+        default: OK
+      userId:
+        type: string
+      expiry:
+        type: number
+      timeCreated:
+        type: number
+      tenantId:
+        type: string
+
+routes:
+  - method: GET
+    path: /hello
+    error: hello
+
+  # The one route this Recipe could reach unauthenticated. matches_query
+  # picks the found case by the exact handle the spec's own example uses;
+  # anything else -- a wrong handle, or none at all -- falls to the route
+  # below, which is what the live host actually answers for a handle that
+  # does not exist.
+  - method: GET
+    path: /recipe/session
+    resource: session_info
+    operation: get
+    id_from: query:sessionHandle
+    matches_query:
+      sessionHandle: 68en6gd6-865b-4af6-ba00-96e5c153257d
+
+  - method: GET
+    path: /recipe/session
+    error: session_not_found
+
+  # Real CDI operations (per the spec's own put/post/delete on /hello and
+  # its documented POST for creating a session), refused before the Core's
+  # software is ever reached -- see the header.
+  - method: POST
+    path: /recipe/session
+    error: gateway_forbidden
+
+  - method: GET
+    path: /recipe/session/refresh
+    error: gateway_forbidden
+
+  # A path with no resource entry in API Gateway's own config at all. See
+  # the header: this one reaches the Core, and the Core's own router
+  # answers, unlike the two routes above.
+  - method: GET
+    path: /this/path/was/never/registered/anywhere
+    error: not_found
+
+errors:
+  hello:
+    status: 200
+    style: text
+    headers:
+      Content-Type: "text/html;charset=UTF-8"
+    message: "Hello\n"
+
+  # The finding. See the header at length: 200, not an HTTP-level failure at
+  # all, with the verdict inside the body.
+  session_not_found:
+    status: 200
+    headers:
+      Content-Type: "application/json;charset=UTF-8"
+    fields:
+      status: UNAUTHORISED
+    message: "Session does not exist."
+
+  # A third answer, live and real, reached only by arming it -- see the
+  # header's first fidelity gap for why this is not a route.
+  validation_error:
+    status: 400
+    style: text
+    headers:
+      Content-Type: "text/html;charset=UTF-8"
+    message: "Field name 'sessionHandle' is missing in GET request"
+
+  # AWS API Gateway's own words, not SuperTokens'. See the header: this
+  # never reaches the Core's software at all.
+  gateway_forbidden:
+    status: 403
+    message_field: Message
+    message: "User is not authorized to access this resource because no identity-based policy allows the execute-api:Invoke action"
+
+  # The Core's own router, reached because API Gateway's allowlist has no
+  # entry for this path at all and falls through to it -- unlike the routes
+  # above, which have entries that refuse the method or path outright.
+  not_found:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html;charset=UTF-8"
+    message: "Not found"
+
+fixtures:
+  empty: {}
+
+  one-core:
+    session_info:
+      - id: 68en6gd6-865b-4af6-ba00-96e5c153257d
+        status: OK
+        userId: fa7a0841-b533-4478-95533-0fde890c3483
+        expiry: 1637262633029
+        timeCreated: 1637262633029
+        tenantId: customer1
+
+conformance:
+  - name: the health check is not JSON despite what the spec and the Content-Type both claim
+    source: https://try.supertokens.com/hello
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /hello
+    expect:
+      status: 200
+      headers:
+        Content-Type: "text/html;charset=UTF-8"
+      body_matches: "^Hello\\n$"
+
+  - name: a session handle that exists is a real session object
+    # Documented, not observed -- this Recipe never held a real session.
+    # Field values are the spec's own worked examples, not invented ones.
+    source: https://raw.githubusercontent.com/supertokens/core-driver-interface/master/api_spec.yaml
+    fixture: one-core
+    request:
+      method: GET
+      path: /recipe/session
+      query:
+        sessionHandle: 68en6gd6-865b-4af6-ba00-96e5c153257d
+    expect:
+      status: 200
+      body:
+        status: OK
+        userId: fa7a0841-b533-4478-95533-0fde890c3483
+        sessionHandle: 68en6gd6-865b-4af6-ba00-96e5c153257d
+      absent:
+        - message
+
+  - name: a session handle that does not exist is 200, not an error
+    # The finding. See the header. Struck live with a garbage handle that
+    # was never issued by anything.
+    source: https://try.supertokens.com/recipe/session?sessionHandle=totally-fake-handle-999
+    verified: "2026-09-01"
+    fixture: one-core
+    request:
+      method: GET
+      path: /recipe/session
+      query:
+        sessionHandle: totally-fake-handle-999
+    expect:
+      status: 200
+      headers:
+        Content-Type: "application/json;charset=UTF-8"
+      body:
+        status: UNAUTHORISED
+        message: "Session does not exist."
+      absent:
+        - userId
+        - sessionHandle
+
+  - name: rid does not change the answer, wrong or absent
+    # Struck live three ways -- rid:session, rid:bogus-recipe-name, and no
+    # rid header at all -- all three byte-identical. This case is the
+    # second and third of those; the fixture case above is effectively the
+    # first, since rid was never required to reach it either.
+    source: https://try.supertokens.com/recipe/session?sessionHandle=totally-fake-handle-999
+    verified: "2026-09-01"
+    fixture: one-core
+    request:
+      method: GET
+      path: /recipe/session
+      query:
+        sessionHandle: totally-fake-handle-999
+      headers:
+        rid: bogus-recipe-name
+    expect:
+      status: 200
+      body:
+        status: UNAUTHORISED
+        message: "Session does not exist."
+
+  - name: no sessionHandle at all is a third answer, and only armed reaches it
+    source: https://try.supertokens.com/recipe/session
+    verified: "2026-09-01"
+    arm: validation_error
+    fixture: empty
+    request:
+      method: GET
+      path: /recipe/session
+    expect:
+      status: 400
+      body_matches: "Field name 'sessionHandle' is missing in GET request"
+
+  - name: a real CDI write operation never reaches the Core at all
+    source: https://try.supertokens.com/recipe/session
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /recipe/session
+    expect:
+      status: 403
+      body:
+        Message: "User is not authorized to access this resource because no identity-based policy allows the execute-api:Invoke action"
+      absent:
+        - message
+        - status
+
+  - name: a second method and path confirm it is the gateway's allowlist, not one route
+    source: https://try.supertokens.com/recipe/session/refresh
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /recipe/session/refresh
+    expect:
+      status: 403
+      body:
+        Message: "User is not authorized to access this resource because no identity-based policy allows the execute-api:Invoke action"
+
+  - name: an unregistered path reaches the Core's own router instead
+    source: https://try.supertokens.com/some/deeply/nested/bogus/path
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /this/path/was/never/registered/anywhere
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html;charset=UTF-8"
+      body_matches: "^Not found$"

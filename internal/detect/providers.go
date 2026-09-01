@@ -4974,6 +4974,172 @@ func providers() []provider {
 			gomod:  []string{"github.com/Backblaze/blazer"},
 		},
 		{
+			// The OpenAPI client Ory generates from the same description this
+			// Recipe fingerprints. Not @ory/kratos-client, which the kratos
+			// Recipe already claims and should: a package maps to one Recipe,
+			// and the Kratos-only build belongs to the Kratos one.
+			recipe: "ory",
+			npm:    []string{"@ory/client"},
+			gomod:  []string{"github.com/ory/client-go"},
+		},
+		{
+			// The driver, not an application library. supertokens-node's whole
+			// job is to speak the Core Driver Interface -- the surface this
+			// Recipe describes -- on behalf of an application that never sees
+			// it, which makes it a client of this API in the strictest sense.
+			recipe: "supertokens",
+			npm:    []string{"supertokens-node"},
+			gomod:  []string{"github.com/supertokens/supertokens-golang"},
+		},
+		{
+			// @logto/api, and deliberately not @logto/node. The latter is the
+			// application-side session library; this Recipe describes the
+			// Management API, which is what @logto/api is typed against.
+			recipe: "logto",
+			npm:    []string{"@logto/api"},
+		},
+		{
+			// here-geocoder describes itself as a client for the HERE REST
+			// API, which is this Recipe's surface. @here/olp-sdk-core is not
+			// mapped: it is the Data Platform, a different product.
+			recipe: "here",
+			npm:    []string{"here-geocoder"},
+		},
+		{
+			recipe: "tomtom",
+			npm:    []string{"@tomtom-international/web-sdk-services"},
+		},
+		{
+			recipe: "what3words",
+			npm:    []string{"@what3words/api"},
+		},
+		{
+			recipe: "frontegg",
+			npm:    []string{"@frontegg/client", "@frontegg/rest-api"},
+		},
+		{
+			// @kinde/management-api-js, and deliberately not
+			// @kinde-oss/kinde-nodejs-sdk. The latter is Express middleware
+			// for the end-user OAuth flow; this Recipe describes the
+			// Management API, which is what the former is generated against.
+			recipe: "kinde",
+			npm:    []string{"@kinde/management-api-js"},
+		},
+		{
+			recipe: "propelauth",
+			npm:    []string{"@propelauth/node"},
+		},
+		{
+			recipe: "convex",
+			npm:    []string{"convex"},
+		},
+		{
+			recipe: "xata",
+			npm:    []string{"@xata.io/client"},
+		},
+		{
+			// The driver this Recipe was read from, since the hosted service
+			// it describes no longer resolves. A project holding it is
+			// pointed at something that is not answering.
+			recipe: "fauna",
+			npm:    []string{"fauna"},
+			gomod:  []string{"github.com/fauna/fauna-go/v3"},
+		},
+		{
+			recipe: "papertrail",
+			npm:    []string{"papertrail"},
+		},
+		{
+			recipe: "pandadoc",
+			npm:    []string{"pandadoc-node-client"},
+		},
+		{
+			recipe: "signnow",
+			npm:    []string{"@signnow/api-client"},
+		},
+		{
+			recipe: "anvil",
+			npm:    []string{"@anvilco/anvil"},
+		},
+		{
+			recipe: "together",
+			npm:    []string{"together-ai"},
+		},
+		{
+			recipe: "buttondown",
+			npm:    []string{"buttondown"},
+		},
+		{
+			recipe: "windmill",
+			npm:    []string{"windmill-client"},
+		},
+		{
+			recipe: "nuvei",
+			npm:    []string{"nuvei"},
+		},
+		{
+			// nocodb-sdk, and deliberately not nocodb. Installing the latter
+			// means running NocoDB; the API this Recipe describes is called
+			// by the operator of an instance, from outside it.
+			recipe: "nocodb",
+			npm:    []string{"nocodb-sdk"},
+		},
+		{
+			recipe: "imagekit",
+			npm:    []string{"imagekit"},
+		},
+		{
+			recipe: "transloadit",
+			npm:    []string{"transloadit"},
+		},
+		{
+			recipe: "chroma",
+			npm:    []string{"chromadb"},
+		},
+		{
+			recipe: "bunny",
+			npm:    []string{"bunny-sdk"},
+			gomod:  []string{"github.com/simplesurance/bunny-go"},
+		},
+		{
+			recipe: "bamboohr",
+			npm:    []string{"bamboohr", "node-bamboohr"},
+		},
+		{
+			recipe: "diffbot",
+			npm:    []string{"diffbot"},
+		},
+		{
+			recipe: "northflank",
+			npm:    []string{"@northflank/js-client"},
+		},
+		{
+			recipe: "expensify",
+			npm:    []string{"expensify"},
+		},
+		{
+			recipe: "onfleet",
+			npm:    []string{"@onfleet/node-onfleet"},
+		},
+		{
+			// Generated from the same description this Recipe fingerprints,
+			// and published within the last week -- unlike most of the Go
+			// clients here, which are years old.
+			recipe: "koyeb",
+			gomod:  []string{"github.com/koyeb/koyeb-api-client-go"},
+		},
+		{
+			recipe: "brightdata",
+			npm:    []string{"@brightdata/sdk"},
+		},
+		{
+			// Named for the exact surface this Recipe models: the client for
+			// /v1/extract, which is the plain HTTP extraction half rather
+			// than the browser or search products.
+			recipe: "zyte",
+			npm:    []string{"zyte-api"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},

@@ -1,0 +1,441 @@
+# Worldpay (Access Worldpay) Recipe for Cauldron
+#
+# Worldpay's Card Payments API names its own version in the media type, not
+# the path. /payments/authorizations is the whole address, on every version
+# this Recipe found documentation for -- v5, v6, v7 -- and what changes
+# between them is Content-Type and Accept: application/vnd.worldpay.
+# payments-v6+json for one, application/vnd.worldpay.payments-v7+json for
+# the other, with v6's Accept carrying an extra ".hal" v7's does not
+# (application/vnd.worldpay.payments-v6.hal+json versus plain
+# .payments-v7+json -- checked against docs.worldpay.com's own v6 get-started
+# page and v7's header reference, both cited below). One path, and the media
+# type decides which schema answers it. That is a routing dimension almost
+# nothing else in this collection has: everywhere else here, a version lives
+# in the path or a separate header whose only job is versioning. Here it
+# rides the same header that also says whether the body is JSON at all.
+#
+# What this Recipe can prove about that mechanism and what it cannot are two
+# different lists, and the gap between them is itself the sharpest finding
+# in it.
+#
+# Provable without any credential, and checked live on 2026-09-01 against
+# https://try.access.worldpay.com:
+#
+#   GET  /                          -> 200, a HAL discovery document listing
+#                                       every service this host offers, no
+#                                       credential asked for at all
+#   GET  /payments                  -> 200, Content-Type
+#                                       application/vnd.worldpay.payments-v6+json,
+#                                       unchanged by an Accept header asking
+#                                       for v7, v99 or text/plain -- this
+#                                       particular discovery resource is not
+#                                       content-negotiated, it just always
+#                                       answers v6
+#   GET  /payments/resourceTree     -> 200, application/json, also public
+#   GET  /nonexistent-nowhere       -> 404 {"errorName":"endpointNotFound",
+#                                       "message":"Requested endpoint was not
+#                                       found"}, with or without a credential,
+#                                       any method
+#   GET  /payments/authorizations   -> 405 "method not allowed for this URI"
+#                                       (text/plain), no credential needed to
+#                                       see it -- POST is the only method that
+#                                       path takes, and asking with the wrong
+#                                       one never reaches the credential check
+#                                       at all
+#   PUT, DELETE  (same path)        -> the identical 405, so the finding does
+#                                       not depend on which wrong method was
+#                                       tried
+#
+# So routing resolves before the credential does, and it does not change
+# with the method: every wrong method on a real path gets 405 with no
+# Authorization asked for, and every nonexistent path gets 404 the same way,
+# for GET and POST alike. That is the reverse of Cauldron's own runtime,
+# which checks the credential once, unconditionally, before the router is
+# ever consulted -- see the fidelity gaps.
+#
+# Provable only past the credential gate, and the gate is where this Recipe
+# stops:
+#
+#   POST /payments/authorizations, no Authorization header
+#     -> 401 {"errorName":"headerIsMissing",
+#             "message":"Missing authorization header: Authorization"}
+#   POST /payments/authorizations, Authorization: Bearer junktoken123
+#     -> 401 {"errorName":"headerHasInvalidValue",
+#             "message":"Invalid bearer token used in Authorization"}
+#   POST /payments/authorizations, Authorization: Basic not-valid-base64!!
+#     -> 401 {"errorName":"accessDenied",
+#             "message":"Access to the requested resource has been denied"}
+#   POST /payments/authorizations, well-formed Basic, wrong username/password
+#     -> 401 {"errorName":"accessDenied", "message": (the same sentence)}
+#
+# Four request shapes and three answers -- and the same four requests,
+# repeated with Content-Type and Accept set to the real v7 media type, to
+# plain application/json, to a bogus vnd.worldpay.payments-v99+json, to
+# text/plain, and to nothing at all, come back byte-identical every time.
+# Checked directly: garbage Content-Type plus no Authorization still answers
+# headerIsMissing; garbage Content-Type plus well-formed-but-wrong Basic
+# still answers accessDenied. The media type is never inspected before the
+# credential is, for any credential state this Recipe could produce. So the
+# content-type version-dispatch this header opened with is real -- it is
+# Worldpay's own documented mechanism, cited below -- and it is completely
+# unreachable without a real merchant account, because Basic auth sits in
+# front of it and refuses everything this Recipe can send before content
+# negotiation would ever run. That unreachability, proven by exhausting
+# every combination available without an account, is recorded as the
+# finding rather than papered over with an invented 406 or 415 nobody
+# observed.
+#
+# The three-message split above is worth one more sentence, because it maps
+# onto this format's absent/malformed/rejected verdicts imperfectly on
+# purpose. Cauldron's own Basic-scheme check (internal/runtime/auth.go)
+# calls Go's r.BasicAuth(), which fails to parse both "Bearer junktoken123"
+# (wrong scheme entirely) and "Basic not-valid-base64!!" (right scheme,
+# undecodable) -- one Malformed bucket for both. Live Worldpay does not
+# agree with that bucketing: the wrong-scheme case gets its own sentence,
+# headerHasInvalidValue, and the bad-base64 case gets accessDenied, the same
+# sentence a syntactically fine but wrong credential gets. auth.malformed_
+# error below is wired to the wrong-scheme sentence, because it is the one
+# a missing "Basic " prefix -- the shape failure the field's own
+# documentation describes -- actually produces live. The bad-base64 case is
+# real, checked live, and stated here rather than reachable through the
+# verdict system: this Recipe's Malformed bucket would serve it
+# headerHasInvalidValue, and live Worldpay serves it accessDenied instead.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron checks its one credential, unconditionally, before the
+#     router runs at all -- every Recipe in this collection works this way,
+#     not just this one. Live Worldpay is the other order: route, then
+#     method, then credential, none of it changing with the verb. So the
+#     404 and 405 cases below need no Authorization header to pass against
+#     the live host and need the fixture credential to pass against this
+#     emulator, because this emulator cannot reach its own router without
+#     clearing the auth gate first. Both are recorded; only the emulator's
+#     order is reproduced. See census/recipe.yaml and firehydrant/recipe.yaml
+#     for the same limit against two other providers.
+#   - The same gap reaches the public discovery documents. GET / and
+#     GET /payments and GET /payments/resourceTree take no credential at
+#     all on the real host -- checked live, every one of the cases below
+#     that name them was called with no Authorization header and answered
+#     200. This emulator asks for one anyway, because auth.scheme applies
+#     to the whole Recipe with no per-route exemption. The fixture
+#     credential in each of those cases below is therefore doing something
+#     the live request never needed to.
+#   - No successful authorization was ever called. The one case below with
+#     a full request and a 201 response is read entirely from Worldpay's
+#     own v6 "Authorize a payment" guide -- transactionReference, the
+#     narrative, the card number 4444333322221111 and its expiry, and the
+#     response's outcome and issuer.authorizationCode are all quoted from
+#     that page, cited below, and carry no verified date because no
+#     credential this Recipe could construct ever got past accessDenied to
+#     confirm them. The v7 equivalent of that worked example was not found
+#     -- docs.worldpay.com/access/products/card-payments/v7/authorize-a-payment
+#     404s -- so only the v6 shape is modelled, on the v6 media type.
+#   - paymentInstrument and card brand are not modelled on the payment
+#     resource, on purpose. Worldpay's own example shows a request carrying
+#     "type": "card/plain" and a full card number, and a response carrying
+#     "type": "card/plain+masked" and a brand derived from the card by a BIN
+#     lookup -- two different values for what would be the same declared
+#     field name. A create route in this format echoes back the record it
+#     was sent; declaring that field would echo the unmasked request value
+#     on every case, which is a specific wrong answer, not merely an
+#     incomplete one. outcome and issuer.authorizationCode carry no such
+#     conflict -- a caller never sends either -- so only those two are
+#     modelled, as defaults rather than echoes.
+#   - "Refused" is documented and not modelled as its own case: the guide
+#     states a refusal is also HTTP 201, with outcome: "refused" and a
+#     refusalCode, but shows no complete refused body and no example
+#     refusalCode value to assert. Inventing one to complete the shape was
+#     rejected; the 201-for-both-outcomes finding is recorded in this
+#     header instead, where it can be stated without a fabricated code
+#     attached to it.
+#   - No spec_hash is recorded. developer.worldpay.com's OpenAPI pages
+#     render client-side and returned no fetchable document; no other
+#     stable URL for a complete machine-readable description was found.
+#
+# The Authorization value below is a fixture, base64 of a name that
+# authorizes nothing anywhere. No card number in this file was billed to
+# anyone; 4444333322221111 is Worldpay's own published example number,
+# quoted rather than invented, and is the same card its own documentation
+# uses to demonstrate a passing authorization.
+
+recipe: worldpay
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v6
+  docs: https://docs.worldpay.com/access/products/card-payments/v6/get-started
+  provider: Worldpay
+  supersedes:
+    - version: v7
+      host: try.access.worldpay.com
+      note: >-
+        Same host and path, selected by Content-Type/Accept:
+        application/vnd.worldpay.payments-v7+json rather than v6's
+        .payments-v6+json and .payments-v6.hal+json. See the header: the
+        v7 worked example this Recipe would need to model the difference
+        was not found published anywhere fetchable.
+
+auth:
+  scheme: basic
+  keys:
+    - cauldron-worldpay-fixture
+  # headerIsMissing, live, for no Authorization header at all.
+  absent_error: header_is_missing
+  # headerHasInvalidValue, live, for an Authorization header that is not
+  # even Basic-shaped -- no "Basic " prefix, which is the shape failure
+  # this field's own documentation describes. See the header for the one
+  # case that does not fit: garbled base64 behind a real "Basic " prefix
+  # gets accessDenied live, not this.
+  malformed_error: header_has_invalid_value
+  # accessDenied, live, for a well-formed Basic credential this Recipe does
+  # not hold.
+  rejected_error: access_denied
+
+resources:
+  payment:
+    id:
+      # Not observed for this endpoint. Worldpay's own v6 worked example
+      # response carries no bare id at all -- see the header.
+      style: opaque
+      field: "-"
+    fields:
+      # Never sent by a caller, so a default carries it without echoing
+      # anything back. Documented, not verified -- see the fidelity gaps.
+      outcome:
+        type: string
+        default: authorized
+      issuer_authorizationCode:
+        type: string
+        in: issuer
+        as: authorizationCode
+        default: "12345A"
+
+routes:
+  # Public on the real host; gated here. See the fidelity gaps. Truncated to
+  # the two links this Recipe's own cases follow -- the live document lists
+  # close to thirty services, and reproducing the rest would be padding
+  # rather than a claim about any of them.
+  - method: GET
+    path: /
+    raw:
+      content_type: application/json
+      text: |-
+        {"_links":{"payments:authorize":{"href":"https://try.access.worldpay.com/payments/authorizations"},"service:payments":{"href":"https://try.access.worldpay.com/payments"},"service:tokens":{"href":"https://try.access.worldpay.com/tokens"},"service:verifiedTokens":{"href":"https://try.access.worldpay.com/verifiedTokens"},"service:fraudsight":{"href":"https://try.access.worldpay.com/fraudsight"},"service:payouts":{"href":"https://try.access.worldpay.com/payouts"},"curies":[{"href":"https://try.access.worldpay.com/rels/payments/{rel}","name":"payments","templated":true}]}}
+
+  - method: GET
+    path: /payments
+    raw:
+      # Always this media type live, unchanged by the Accept header sent --
+      # checked with v7, with a bogus version, with text/plain. See the
+      # header. Also truncated -- see the / route above.
+      content_type: application/vnd.worldpay.payments-v6+json
+      text: |-
+        {"_links":{"resourceTree":{"href":"https://try.access.worldpay.com/payments/resourceTree"},"payments:authorize":{"href":"https://try.access.worldpay.com/payments/authorizations"},"payments:events":{"href":"https://try.access.worldpay.com/payments/events"},"curies":[{"name":"payments","href":"https://try.access.worldpay.com/rels/payments/{rel}","templated":true}]}}
+
+  - method: POST
+    path: /payments/authorizations
+    resource: payment
+    operation: create
+    status: 201
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    code_field: errorName
+    message_field: message
+    type_field: "-"
+
+errors:
+  header_is_missing:
+    status: 401
+    code: headerIsMissing
+    message: "Missing authorization header: Authorization"
+
+  header_has_invalid_value:
+    status: 401
+    code: headerHasInvalidValue
+    message: Invalid bearer token used in Authorization
+
+  access_denied:
+    status: 401
+    code: accessDenied
+    message: Access to the requested resource has been denied
+
+  unknown_route:
+    status: 404
+    code: endpointNotFound
+    message: Requested endpoint was not found
+
+  # Plain text live, not this Recipe's JSON error envelope -- style text
+  # serves it as the whole response.
+  method_not_allowed:
+    status: 405
+    style: text
+    # Cauldron's own default for a text-style failure lower-cases the
+    # charset; live Worldpay sends it upper-case, so it is declared rather
+    # than left to the default.
+    headers:
+      Content-Type: "text/plain; charset=UTF-8"
+    message: method not allowed for this URI
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: the root discovery document takes no credential live, and this emulator asks for one anyway
+    source: https://try.access.worldpay.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        # Not needed against the real host -- see the fidelity gaps. Needed
+        # here because auth.scheme applies to every route in this Recipe.
+        Authorization: "Basic Y2F1bGRyb24td29ybGRwYXktZml4dHVyZTpub3QtYS1yZWFsLXNlY3JldC0wMDAw"
+    expect:
+      status: 200
+      matches:
+        "_links.payments:authorize.href": /payments/authorizations
+
+  - name: the payments discovery answers v6 regardless of the Accept header asked for
+    source: https://try.access.worldpay.com/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /payments
+      headers:
+        Authorization: "Basic Y2F1bGRyb24td29ybGRwYXktZml4dHVyZTpub3QtYS1yZWFsLXNlY3JldC0wMDAw"
+        Accept: application/vnd.worldpay.payments-v7+json
+    expect:
+      status: 200
+      headers:
+        # The v7 Accept sent above changed nothing -- checked live with v7,
+        # a bogus version and text/plain, all three answering this same v6
+        # media type.
+        Content-Type: application/vnd.worldpay.payments-v6+json
+
+  - name: no Authorization header at all is headerIsMissing
+    source: https://try.access.worldpay.com/payments/authorizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /payments/authorizations
+      headers:
+        Content-Type: application/vnd.worldpay.payments-v7+json
+      json: {}
+    expect:
+      status: 401
+      body:
+        errorName: headerIsMissing
+        message: "Missing authorization header: Authorization"
+
+  - name: a Bearer-shaped header is not Basic and gets its own sentence
+    source: https://try.access.worldpay.com/payments/authorizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /payments/authorizations
+      headers:
+        Authorization: Bearer junktoken123
+      json: {}
+    expect:
+      status: 401
+      body:
+        errorName: headerHasInvalidValue
+        message: Invalid bearer token used in Authorization
+
+  - name: a well-formed but wrong Basic credential is accessDenied, and the content type sent alongside it never matters
+    source: https://try.access.worldpay.com/payments/authorizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /payments/authorizations
+      headers:
+        Authorization: "Basic MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDpub3RhcmVhbHNlY3JldA=="
+        Content-Type: application/vnd.worldpay.payments-v99+json
+      json: {}
+    expect:
+      status: 401
+      body:
+        errorName: accessDenied
+        message: Access to the requested resource has been denied
+
+  - name: a path nothing routes is 404, no credential needed, any method
+    source: https://try.access.worldpay.com/nonexistent-nowhere
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /nonexistent-nowhere
+      headers:
+        # Not sent on the live call this case cites -- live Worldpay
+        # answered endpointNotFound with no Authorization header at all.
+        # Sent here only because Cauldron checks its one credential before
+        # the router runs, for every Recipe; see the fidelity gaps.
+        Authorization: "Basic Y2F1bGRyb24td29ybGRwYXktZml4dHVyZTpub3QtYS1yZWFsLXNlY3JldC0wMDAw"
+    expect:
+      status: 404
+      body:
+        errorName: endpointNotFound
+        message: Requested endpoint was not found
+
+  - name: the wrong method on a real path is a real 405, and it never asks for a credential either
+    source: https://try.access.worldpay.com/payments/authorizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /payments/authorizations
+      headers:
+        # See the case above -- not sent live, sent here to clear this
+        # emulator's own auth-first order.
+        Authorization: "Basic Y2F1bGRyb24td29ybGRwYXktZml4dHVyZTpub3QtYS1yZWFsLXNlY3JldC0wMDAw"
+    expect:
+      status: 405
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+      body_matches: "method not allowed for this URI"
+
+  - name: a v6 authorization is a 201, and outcome carries the result rather than the HTTP status
+    source: https://docs.worldpay.com/access/products/card-payments/v6/authorize-a-payment
+    fixture: empty
+    request:
+      method: POST
+      path: /payments/authorizations
+      headers:
+        Authorization: "Basic Y2F1bGRyb24td29ybGRwYXktZml4dHVyZTpub3QtYS1yZWFsLXNlY3JldC0wMDAw"
+        Content-Type: application/vnd.worldpay.payments-v6+json
+        Accept: application/vnd.worldpay.payments-v6.hal+json
+      json:
+        transactionReference: "Memory265-13/08/1876"
+        merchant:
+          entity: default
+        instruction:
+          narrative:
+            line1: Mind Palace
+          value:
+            currency: GBP
+            amount: 250
+          paymentInstrument:
+            type: card/plain
+            cardNumber: "4444333322221111"
+            cardExpiryDate:
+              month: 5
+              year: 2035
+    expect:
+      # Documented for both an authorized and a refused outcome -- see the
+      # header and the fidelity gaps for why only this one is asserted.
+      status: 201
+      body:
+        outcome: authorized
+        issuer:
+          authorizationCode: "12345A"

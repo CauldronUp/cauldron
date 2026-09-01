@@ -1,0 +1,372 @@
+# Rapyd Recipe for Cauldron
+#
+# Rapyd signs every request: BASE64(HMAC-SHA256(http_method + url_path + salt
+# + timestamp + access_key + secret_key + body_string)), per Rapyd's own
+# request-signatures reference, cited below, carried across four headers --
+# access_key, salt, timestamp, signature -- rather than one. Cauldron's
+# auth.scheme checks a single header, a single query parameter or a Basic
+# pair, so this Recipe wires the one that actually carries the credential
+# (signature) through auth.scheme and the other three through
+# required_headers, which is the presence-only mechanism this format has for
+# "several headers, one failure" -- see the fidelity gaps for exactly where
+# that split stops matching the wire.
+#
+# Every case below was struck against https://sandboxapi.rapyd.net live, on
+# 2026-09-01, with no account, no access key ever issued and no real HMAC
+# ever computed -- every access_key, salt and signature sent was ordinary
+# junk text.
+#
+# The finding this Recipe exists to record is a three-tier split, and the
+# third tier is not a credential failure at all:
+#
+#   1. Any required header absent, empty, or (for timestamp specifically)
+#      not a number -- 400 MISSING_AUTHENTICATION_HEADERS, full sentence:
+#      "The request did not contain the required headers for
+#      authentication. The request was rejected. Corrective action: Add
+#      authentication headers." Checked with no headers at all, with only
+#      access_key present, with all four present and signature set to the
+#      empty string, and with all four present and timestamp set to the
+#      literal text "not-a-number" -- every one of those five shapes
+#      answered this same 400, byte for byte.
+#   2. All four headers present, non-empty, and timestamp a real number --
+#      401 UNAUTHENTICATED_API_CALL, "The request was rejected due to an
+#      authentication issue. Corrective action: Check the status of your
+#      account in the 'Account Details' page of the Client Portal." Checked
+#      with a signature that is plausible-looking hex, with a signature that
+#      is "!!!not valid at all???", and with a timestamp far enough in the
+#      past to be expired by Rapyd's own 60-second window (documented
+#      below) -- all three answered this same 401. Rapyd does not validate
+#      the signature's shape at all: any non-empty value reaches this tier
+#      and fails here, which means Cauldron's own AWS-SigV4 trick --
+#      auth.pattern, checking a shape Cauldron cannot verify the
+#      cryptography of -- has nothing to check here. There is no shape.
+#      Only presence and this tier's actual verification, neither of which
+#      Cauldron can perform, separate a real signature from typed-out
+#      nonsense.
+#   3. A path nothing routes to, or a real path with a method nothing
+#      registers for it -- 401 UNAUTHORIZED_API_CALL, message the empty
+#      string, and this is the same answer whether no headers were sent at
+#      all or all four were present and well-formed. Checked on a made-up
+#      path with no headers, the identical path with junk-but-complete
+#      headers, PATCH against the real /v1/payments with no headers, and the
+#      same PATCH with junk-but-complete headers -- four combinations, one
+#      answer every time. So routing and method resolve before credential
+#      validity is considered at all, and once either one misses, nothing
+#      about the credential -- present, absent, well-formed or garbage --
+#      changes the answer. That is the third verdict this group of Recipes
+#      was written to look for, and Rapyd's is not a credential verdict:
+#      it is what a routing miss wears when a host answers every failure in
+#      one auth-shaped envelope, and a client with one handler for "401
+#      means look at your key" is misled by exactly this response into
+#      rotating a key that was never the problem.
+#
+# So: can a caller tell a wrong signature apart from a key that was never
+# valid? For Rapyd, mostly. Tier 1 and tier 2 are genuinely two different
+# sentences with two different codes, unlike Nuvei's single merchant check
+# swallowing everything upstream of it. What a caller cannot tell apart is
+# tier 3 from tier 2 by status code alone -- both are 401 -- only by
+# error_code, and only if the client actually reads it rather than
+# switching on the HTTP status the way UNAUTHENTICATED_API_CALL's own
+# corrective-action text ("check your account") invites.
+#
+# Rapyd's own troubleshooting page (cited below) confirms this independent
+# of anything struck live: it documents MISSING_AUTHENTICATION_HEADERS as
+# firing "if timestamp lacks numeric value" in those words, which is
+# exactly the collapse this Recipe found by testing it, and it documents a
+# fourth code this Recipe never triggered -- ROUTE_PERMISSION_ERROR, 400,
+# for a correctly-shaped access/secret key pair that names a feature the
+# account is not configured for. No case below claims it; it is recorded
+# here because reaching it needs a real, specifically under-provisioned
+# account, which this Recipe was never given.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - malformed_error is not set. Live, nothing this Recipe could construct
+#     produced a message distinct from both absent (tier 1) and rejected
+#     (tier 2) -- a header with the wrong shape just lands in tier 1
+#     alongside a header that is not there, the same collapse Together's
+#     Recipe records for its own absent/malformed line. Cauldron's runtime
+#     has no verdict for "present, non-empty, and the wrong shape" on a
+#     plain header scheme in any case; see auth.go's credential function,
+#     which only reaches Malformed through a declared prefix or pattern,
+#     and this scheme declares neither.
+#   - The timestamp-shape collapse (tier 1's fifth case above) is armed
+#     rather than reachable through the normal routes. required_headers
+#     only checks whether a header is present and non-empty, not whether
+#     its value parses as a number, so a non-numeric timestamp reaches this
+#     emulator's credential check as though it were fine and would be
+#     accepted or land in tier 2 -- not the tier-1 answer live Rapyd gives
+#     it. The case below installs live Rapyd's actual answer rather than
+#     one this emulator's ordinary mechanics would derive.
+#   - Tier 3 (unknown_route, method_not_allowed) is declared with status
+#     401 and Rapyd's own UNAUTHORIZED_API_CALL code, which this Recipe's
+#     runtime allows because a Recipe that names a builtin failure owns its
+#     status entirely (see errors.go). The message field is left empty in
+#     this Recipe's own errors table because Cauldron's message rendering
+#     only ever substitutes a declared, non-empty string -- an empty one is
+#     indistinguishable from none at all and falls back to "An error
+#     occurred." -- so this emulator's tier-3 body carries that generic
+#     sentence where live Rapyd sends a literal empty string. The case
+#     below asserts error_code and status, which are faithful, and does not
+#     assert message, which is not.
+#   - response_code duplicates error_code, byte for byte, on every case
+#     this Recipe saw, and operation_id is a UUID minted fresh on every
+#     single call -- neither is a fixed credential-check value that
+#     Cauldron produces automatically. response_code is declared as a
+#     static duplicate per error entry, matching what was observed;
+#     operation_id is not modelled at all; asserting it would either pin a
+#     value the emulator cannot reproduce or invent a UUID nobody sent.
+#   - No resource is modelled. Every route on this host needs the four
+#     headers above, and this Recipe holds no credential real Rapyd
+#     recognises, so no create, list or get was ever answered with
+#     anything but one of the three tiers above. GET /v1/data/countries,
+#     which several other Rapyd integrations treat as a public reference
+#     endpoint, answered tier 1 the same as everything else when this
+#     Recipe tried it with no headers -- there is no unauthenticated route
+#     on this host that this Recipe found. The payment resource below
+#     exists only so a well-formed, correctly-shaped fixture request has
+#     somewhere to succeed in this emulator; it carries no fields, because
+#     no successful body was ever seen to declare one from.
+#   - No spec_hash is recorded. docs.rapyd.net serves its API reference as
+#     prose pages rather than one fetchable machine-readable description.
+#
+# The access_key, salt, secret and signature values below are fixtures.
+# None of them signs anything against a real Rapyd account.
+
+recipe: rapyd
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.rapyd.net/en/request-signatures.html
+
+auth:
+  # The one credential of the four that actually varies per request and
+  # therefore the one Cauldron's scheme can hold a comparable value for. See
+  # the header: Rapyd does not check its shape at all, so there is no
+  # auth.pattern to write the way the AWS Recipes in this collection do --
+  # any non-empty value that is not this fixture reaches tier 2, live and
+  # here alike.
+  scheme: header
+  header: signature
+  keys:
+    - cauldron-rapyd-fixture-signature-0000000000000000000000
+  absent_error: missing_authentication_headers
+  rejected_error: unauthenticated_api_call
+
+# The other three headers Rapyd's signature scheme requires. Presence-only,
+# which is what this mechanism checks -- see the fidelity gaps for the one
+# case (a non-numeric timestamp) where live Rapyd checks more than presence
+# and this cannot.
+required_headers:
+  access_key: missing_authentication_headers
+  salt: missing_authentication_headers
+  timestamp: missing_authentication_headers
+
+resources:
+  # No successful call was ever answered -- see the fidelity gaps. This
+  # exists only so a well-formed fixture request has an operation to
+  # resolve to; it carries no fields because no real response body was ever
+  # observed to declare one from.
+  payment:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # Exists only so this resource is not empty -- see the fidelity gaps.
+      # in: "-" keeps it off the wire either way, so a well-formed fixture
+      # request that clears both auth tiers gets an empty {} rather than an
+      # echo of whatever it sent.
+      amount:
+        type: number
+        in: "-"
+
+routes:
+  - method: POST
+    path: /v1/payments
+    resource: payment
+    operation: create
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: status
+    message_field: message
+    code_field: error_code
+    # Rapyd's own "status" field, nested inside the "status" envelope
+    # alongside it -- {"status": {"status": "ERROR", ...}}. The literal
+    # string "ERROR" on every case this Recipe saw, never the HTTP status.
+    type_field: status
+
+errors:
+  missing_authentication_headers:
+    status: 400
+    type: ERROR
+    code: MISSING_AUTHENTICATION_HEADERS
+    message: "The request did not contain the required headers for authentication. The request was rejected. Corrective action: Add authentication headers."
+    fields:
+      status.response_code: MISSING_AUTHENTICATION_HEADERS
+
+  unauthenticated_api_call:
+    status: 401
+    type: ERROR
+    code: UNAUTHENTICATED_API_CALL
+    message: "The request was rejected due to an authentication issue. Corrective action: Check the status of your account in the 'Account Details' page of the Client Portal."
+    fields:
+      status.response_code: UNAUTHENTICATED_API_CALL
+
+  # See the fidelity gaps: live sends a literal empty string for message,
+  # and this Recipe's runtime cannot render a declared-empty one, so no
+  # message is declared here at all and the generic fallback text is served
+  # instead. error_code and status are faithful; message is not, and the
+  # cases using this do not assert it.
+  unknown_route:
+    status: 401
+    type: ERROR
+    code: UNAUTHORIZED_API_CALL
+    fields:
+      status.response_code: UNAUTHORIZED_API_CALL
+
+  method_not_allowed:
+    status: 401
+    type: ERROR
+    code: UNAUTHORIZED_API_CALL
+    fields:
+      status.response_code: UNAUTHORIZED_API_CALL
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no authentication headers at all is 400, not 401
+    source: https://sandboxapi.rapyd.net/v1/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/payments
+    expect:
+      status: 400
+      body:
+        status.error_code: MISSING_AUTHENTICATION_HEADERS
+        status.response_code: MISSING_AUTHENTICATION_HEADERS
+        status.status: ERROR
+      matches:
+        status.message: "required headers for authentication"
+
+  - name: one header out of four missing is the same 400 as none at all
+    source: https://sandboxapi.rapyd.net/v1/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        access_key: junkaccesskey
+    expect:
+      status: 400
+      body:
+        status.error_code: MISSING_AUTHENTICATION_HEADERS
+
+  - name: a non-numeric timestamp is treated as missing, not as wrong
+    source: https://docs.rapyd.net/en/troubleshooting-authentication-and-authorization-errors.html
+    verified: "2026-09-01"
+    # Armed: see the fidelity gaps. required_headers checks presence only,
+    # and a non-numeric timestamp is present, so ordinary routing would
+    # reach the credential check rather than this. Rapyd's own
+    # troubleshooting page documents the collapse independent of the live
+    # call this case cites.
+    arm: missing_authentication_headers
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        access_key: junkaccesskey
+        salt: junksalt
+        timestamp: not-a-number
+        signature: abc123
+    expect:
+      status: 400
+      body:
+        status.error_code: MISSING_AUTHENTICATION_HEADERS
+
+  - name: all four headers well-formed and wrong is 401 UNAUTHENTICATED_API_CALL, not the same 400
+    source: https://sandboxapi.rapyd.net/v1/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        access_key: junkaccesskey
+        salt: junksalt12345
+        timestamp: "1788250000"
+        signature: "61306a626a6b6a6a6b6a6b6a6b"
+    expect:
+      status: 401
+      body:
+        status.error_code: UNAUTHENTICATED_API_CALL
+        status.response_code: UNAUTHENTICATED_API_CALL
+        status.status: ERROR
+
+  - name: the signature's shape is never checked -- garbage that is not hex or base64 reaches the same 401 a plausible one does
+    source: https://sandboxapi.rapyd.net/v1/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/payments
+      headers:
+        access_key: junkaccesskey
+        salt: junksalt
+        timestamp: "1788250000"
+        signature: "!!!not valid at all???"
+    expect:
+      status: 401
+      body:
+        status.error_code: UNAUTHENTICATED_API_CALL
+
+  - name: a route nothing answers is 401 UNAUTHORIZED_API_CALL regardless of whether credentials were sent at all
+    source: https://sandboxapi.rapyd.net/v1/nonexistent-route-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/nonexistent-route-xyz
+      headers:
+        # Not needed live -- the identical request with no headers at all
+        # answered the same UNAUTHORIZED_API_CALL. Sent here because
+        # Cauldron checks its credential before the router runs; see the
+        # fidelity gaps and worldpay/recipe.yaml for the same limit on
+        # another provider.
+        signature: cauldron-rapyd-fixture-signature-0000000000000000000000
+        access_key: junkaccesskey
+        salt: junksalt
+        timestamp: "1788250000"
+    expect:
+      status: 401
+      body:
+        status.error_code: UNAUTHORIZED_API_CALL
+        status.response_code: UNAUTHORIZED_API_CALL
+
+  - name: a method nothing registers on a real path is the identical answer, not a 405
+    source: https://sandboxapi.rapyd.net/v1/payments
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/payments
+      headers:
+        # See the case above.
+        signature: cauldron-rapyd-fixture-signature-0000000000000000000000
+        access_key: junkaccesskey
+        salt: junksalt
+        timestamp: "1788250000"
+    expect:
+      status: 401
+      body:
+        status.error_code: UNAUTHORIZED_API_CALL

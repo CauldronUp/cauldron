@@ -278,6 +278,28 @@ func Parse(raw []byte) (*Document, error) {
 		return nil, fmt.Errorf("this is an HTML page, not an OpenAPI description; the URL probably serves documentation rather than the description itself")
 	}
 
+	// A self-referential YAML anchor is a crash rather than an error, and it
+	// has to be caught before the typed decode rather than by it.
+	//
+	// Windmill's description is 1.5MB with 720 anchors and 2784 aliases, and
+	// one of them -- ref_96 -- contains itself. Decoding that into this
+	// package's own types walks the node graph through Schema's custom
+	// unmarshaler, which recurses until the goroutine stack passes a
+	// gigabyte and the process dies. No error, no Recipe name, no exit code
+	// worth reading: `cauldron drift` simply stopped.
+	//
+	// Decoding into a plain map first costs one pass and reaches yaml.v3's
+	// own cycle detection, which says exactly which anchor is at fault. A
+	// description that cannot be read is an ordinary outcome here -- drift
+	// has a column for it -- and a description that kills the tool is not.
+	if err := yaml.Unmarshal(raw, &map[string]any{}); err != nil && strings.Contains(err.Error(), "contains itself") {
+		// A FormatError rather than a plain one, because this is a permanent
+		// fact about the document and not a bad afternoon on somebody's CDN.
+		// Reporting it as unreachable would put it in the column that means
+		// "try again tomorrow", and tomorrow will be the same.
+		return nil, &FormatError{Format: "a YAML description with a self-referential anchor", Err: err}
+	}
+
 	var doc Document
 
 	if err := yaml.Unmarshal(raw, &doc); err != nil {

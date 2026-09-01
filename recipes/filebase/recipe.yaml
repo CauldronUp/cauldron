@@ -1,0 +1,203 @@
+# Filebase Recipe for Cauldron
+#
+# Filebase sells "S3-compatible object storage" and the S3 surface really is
+# there -- checked live against s3.filebase.com on 2026-09-01, every failure
+# this Recipe describes answers Content-Type: application/xml with a proper
+# <Error><Code>...</Code><Message>...</Message></Error> body, which is more
+# than Wasabi's Recipe in this collection can say about its own root path.
+# What Filebase does not do, checked the same way, is distinguish *why* a
+# request failed. Three genuinely different mistakes get the identical
+# answer:
+#
+#   GET / (no Authorization header at all)
+#     -> 403 Forbidden: <Error><Code>AccessDenied</Code><Message>Access
+#        Denied</Message>...</Error>
+#
+#   GET / -H "Authorization: junk"
+#     -> byte-identical 403 AccessDenied
+#
+#   GET / with a syntactically valid AWS4-HMAC-SHA256 header naming an access
+#   key that exists nowhere (AKIAFAKEFAKEFAKEFAKE, checked live)
+#     -> byte-identical 403 AccessDenied again
+#
+# Real AWS S3 and Wasabi's own gateway both answer that third case with
+# InvalidAccessKeyId and echo the bogus key back -- checked live for Wasabi,
+# recorded in wasabi/recipe.yaml in this collection. Filebase's gateway never
+# gets that far: whatever is checking the credential stops at "is there
+# something here that could be a signature" and does not go on to ask whether
+# the key it names is real. A client that branches on AccessDenied vs
+# InvalidAccessKeyId -- retry with a fresh signature against the first,
+# surface a configuration error against the second, which is exactly what a
+# real AWS SDK's retry logic does -- gets one branch here regardless of which
+# mistake was actually made.
+#
+# A second tell, on every response this host sends including the successful
+# OPTIONS below: X-Amz-Id-2 is supposed to be AWS's extended per-request
+# trace id, unique every time. Filebase's is one of exactly two values,
+# checked across a dozen live requests: czNndy0x and czNndy0y, which decode
+# from base64 as literally s3gw-1 and s3gw-2 -- not a request id at all, but
+# the name of the backend pod that happened to answer, leaking through a
+# header whose entire documented purpose is to be an opaque trace token. Not
+# modelled as a field, because Cauldron does not generate a rotating pair of
+# constants for a header meant to carry a fresh value every time -- recorded
+# here as the finding it is.
+#
+# Content-Type is the one place this Recipe found a genuine gap in Filebase's
+# own compatibility promise. Every method other than GET and OPTIONS on the
+# root -- checked live: PATCH, POST, PUT, DELETE, HEAD -- answers:
+#
+#   501 Not Implemented: <Error><Code>NotImplemented</Code><Message>A header
+#   you provided implies functionality that is not implemented.</Message>
+#   ...</Error>
+#
+# with no Allow header naming what would have worked, and a message about "a
+# header you provided" on a request that carried none beyond the defaults
+# curl sends -- the sentence names the wrong culprit. Real S3 answers an
+# unsupported method with 405 MethodNotAllowed and an Allow header; Filebase
+# answers every one of five different wrong methods with the same 501 and
+# the same misdirected explanation. OPTIONS, uniquely, succeeds: 200, empty
+# body, no CORS headers of any kind -- so it is not serving a preflight
+# either, just answering something that happens to satisfy curl -X OPTIONS
+# and nothing a browser's actual CORS handshake would look for.
+#
+# Filebase's backing store is IPFS (and, per its own marketing, Sia and
+# Storj), and the S3 surface is a translation layer in front of it. Whether
+# that shows: checked live, the anonymous and malformed-credential surface
+# above never reveals it -- no CID, no backend hint, nothing beyond the
+# rotating pod name above. Filebase's own documentation says a successful
+# object write does, though: PutObject, GetObject and HeadObject responses
+# all carry x-amz-meta-cid, the object's IPFS content identifier, in the
+# response headers ("To return an object's IPFS CID once it has been
+# uploaded, you will need to return the x-amz-meta-cid header" -- Filebase's
+# own docs, cited below). A bucket can carry one too: PutBucketTagging with a
+# generateBucketCid tag set true answers with the generated folder CID under
+# the same x-amz-meta-cid header. Neither is verified here -- both require a
+# successful authenticated write, and this Recipe was never run against a
+# real account. Source, no verified date; see the fidelity gap below.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not implement SigV4. The credential is checked by shape,
+#     the same acknowledged gap as the AWS Recipes and Wasabi's Recipe in
+#     this collection.
+#   - No object or bucket CRUD is modelled. No route here was ever reached
+#     with a real credential, so there is no observed success body to serve,
+#     and Step 3 of the brief this was written against is explicit that an
+#     invented one is worse than an absent route.
+#   - x-amz-meta-cid on a successful PutObject/GetObject/HeadObject, and the
+#     same header on a tagged bucket's generated folder CID, are documented
+#     by Filebase and not verified live, for the reason above. No fixture
+#     claims to carry a CID value, because no real one was ever observed --
+#     inventing one is exactly the mistake Step 3 warns against.
+#   - The 501-not-405 shape for every non-GET/OPTIONS method, and the
+#     rotating X-Amz-Id-2, are recorded above as live-checked prose rather
+#     than served: Cauldron checks one credential scheme before routing is
+#     attempted, for every method alike, so an anonymous PATCH or POST never
+#     reaches routing at all here -- it meets the same wired answer GET does.
+#     Reproducing the 501 exactly would need a route Cauldron would only ever
+#     serve to a request that had already cleared the credential shape check,
+#     which none of the five methods above did when this was verified.
+#   - No spec/spec_hash is recorded. Filebase's S3 API reference is prose
+#     documentation rather than a single machine-readable description.
+#
+# The Authorization value below is a fixture pattern match, not a secret --
+# nothing before the colon in AKIAFAKEFAKEFAKEFAKE belongs to any account.
+
+recipe: filebase
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.filebase.com
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape only -- see dynamodb/recipe.yaml, sqs/recipe.yaml,
+  # ses/recipe.yaml, secretsmanager/recipe.yaml and wasabi/recipe.yaml for the
+  # same pattern on the same grounds.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+  # All three verdicts converge on the identical AccessDenied body, verified
+  # live for absence, for "junk", and for a well-shaped signature naming a
+  # key that does not exist -- see the header. One entry, wired to both.
+  absent_error: access_denied
+  malformed_error: access_denied
+
+responses:
+  error:
+    style: text
+
+routes:
+  # Reached only once a request clears the shape check above. Answers the
+  # same access_denied a shape failure does, because that is what Filebase
+  # itself does: verified live with a syntactically valid signature naming
+  # AKIAFAKEFAKEFAKEFAKE, an access key that exists nowhere. error needs no
+  # resource and no operation -- see the fidelity gap on object/bucket CRUD.
+  - method: GET
+    path: /
+    error: access_denied
+
+errors:
+  # Verified live three separate ways -- see the header for all three. Same
+  # status, same headers, same 191-byte body every time.
+  access_denied:
+    status: 403
+    code: AccessDenied
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>AccessDenied</Code><Message>Access Denied</Message><RequestId>fe13824f71a65ee1f29c4b9195e1cfd2</RequestId><HostId>czNndy0y</HostId></Error>
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all is 403 AccessDenied, in real XML this time
+    source: https://s3.filebase.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Error><Code>AccessDenied</Code><Message>Access Denied</Message>'
+
+  - name: a header present and wrong answers exactly the same body as no header at all
+    source: https://s3.filebase.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: junk
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Error><Code>AccessDenied</Code><Message>Access Denied</Message>'
+
+  - name: a well-shaped signature naming no real key answers the same body a third time
+    # Real AWS and Wasabi both distinguish this from the two cases above with
+    # InvalidAccessKeyId -- see wasabi/recipe.yaml. Filebase does not.
+    source: https://s3.filebase.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+        x-amz-date: "20260901T072231Z"
+        x-amz-content-sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Error><Code>AccessDenied</Code><Message>Access Denied</Message>'

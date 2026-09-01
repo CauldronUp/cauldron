@@ -1,0 +1,711 @@
+# Koyeb Recipe for Cauldron
+#
+# A create does not return a deployment. It returns the service, and the
+# service disagrees with itself about which deployment it means.
+#
+# POST /v1/services answers 200 -- not 201 -- with {"service": {...}}, the
+# full Service record, per CreateServiceReply in Koyeb's own published
+# description. A Service carries three separate deployment-pointer fields at
+# once -- active_deployment_id, latest_deployment_id and
+# last_provisioned_deployment_id -- and the description gives none of them a
+# sentence explaining how they can differ; only the names say so. What the
+# create response does NOT carry is a Deployment at all, and the field a
+# caller reads first, service.status, is not the field describing whether the
+# build finished. Service.Status is a nine-value enum -- STARTING, HEALTHY,
+# DEGRADED, UNHEALTHY, DELETING, DELETED, PAUSING, PAUSED, RESUMING, default
+# STARTING -- and Deployment.Status is a different, sixteen-value enum --
+# PENDING, PROVISIONING, SCHEDULED, CANCELING, CANCELED, ALLOCATING, STARTING,
+# HEALTHY, DEGRADED, UNHEALTHY, STOPPING, STOPPED, ERRORING, ERROR, STASHED,
+# SLEEPING, default PENDING -- and the two enums share four words
+# (STARTING, HEALTHY, DEGRADED, UNHEALTHY) while meaning two different things
+# by them: one describes the service's own read of its active deployment's
+# runtime health, the other describes where one specific deployment sits in
+# its build-and-roll-out lifecycle. A client that reads service.status ==
+# "HEALTHY" off a create response and calls the deploy finished has read the
+# coarser of two enums, off the wrong resource, and the actual deployment --
+# addressed by one of three pointers the description never distinguishes --
+# is a second GET away, at PENDING or anywhere else in its own sixteen values.
+#
+# Koyeb's own reference page for deployments
+# (koyeb.com/docs/reference/deployments) gives every one of the sixteen
+# states a one-sentence description, but only twelve of them: CANCELING,
+# CANCELED, ERRORING and STASHED are real, wire-typed enum values in the
+# published OpenAPI description with no prose anywhere explaining what
+# triggers them. Of the twelve the page does describe, exactly one is named
+# as a failure: "Error -- The Deployment failed. This can happen when the
+# build of your application failed, your application crashed, or because of
+# an internal error of the platform." All three causes -- a build failure, a
+# runtime crash, and an unrelated platform fault -- collapse onto the same
+# status. A failed build is not a distinct HTTP error and it is not a
+# distinct status from a service that built fine and then crashed: it is
+# "Error", full stop, on a 200 the same as every other status. The page never
+# uses the word "terminal." Read plainly against its own sentences: Stopped
+# ("All Instances ... are stopped") and Error read as endpoints because
+# nothing on the page describes a way out of either; Healthy, Degraded,
+# Unhealthy and Sleeping describe a live deployment cycling as instances pass
+# and fail health checks or idle out, which is a loop rather than a
+# destination, and this Recipe does not claim Healthy stops changing.
+#
+# Redeploying an existing service (POST /v1/services/{id}/redeploy,
+# RedeployReply) answers with {"deployment": {...}} directly, per the same
+# description -- the plain, single-resource shape Turso's and SingleStore's
+# Recipes in this collection both needed scheme: none to approximate, because
+# neither of their providers hands back the created thing itself. Koyeb does,
+# here. It is not modelled as a route below: the {id} path segment names the
+# service being redeployed and the response is a freshly minted deployment
+# with its own, different id, so the one field this format has to bind a path
+# segment to a record (scope, matched by name to a field the path parameter
+# is called after) collides -- Koyeb's own description names the path
+# parameter "id", which is also the deployment's own primary identifier field
+# name, and scope has no way to say "this {id} names a different resource's
+# id than the one this route returns." Stated here rather than forced into a
+# route that would silently bind the wrong field.
+#
+# Checked live, with no account and no key, against app.koyeb.com on the date
+# below:
+#
+#   no Authorization header at all              -> 401 "Route needs to be
+#                                                   authenticated"
+#   Authorization: junkjunkjunk12345 (no Bearer) -> 401 "Bad authorization
+#                                                   string" (code and message
+#                                                   are the same string)
+#   Authorization: Bearer junkjunkjunk12345      -> 401 "Invalid token format"
+#   Authorization: Bearer <JWT-shaped, fake sig> -> 401 "Invalid token"
+#
+# Four distinct sentences for four distinct shapes of "wrong", all under the
+# same {"status":401,"code":...,"message":...} envelope except the second,
+# whose code is the sentence itself rather than a symbolic name. Cauldron's
+# absent/malformed/rejected verdict has three slots and this host answers
+# with four, the same overflow Turso's Recipe in this collection already
+# hit for the identical reason (JWT parsing has more failure stages than a
+# credential check has verdicts) -- so, as Turso's Recipe does, this one
+# expresses auth as scheme: none with matches_header pinned to the exact
+# bytes actually sent, on the one route (GET /v1/services) where all four
+# were struck. Every other routed GET and POST below was checked only for
+# the plain no-credential case, and only that case is declared for them --
+# claiming the other three would-be tiers there is not something this task's
+# probing actually established.
+#
+# Routing runs before authentication, unconditionally, on every path this
+# Recipe struck: an unrouted path and a real path with the wrong method both
+# answer before any credential is examined, whether one is sent or not.
+# But the two 404s are not the same 404. A path Koyeb has no route for at
+# all answers {"status":404,"code":"Not Found","message":"Not Found"}; the
+# identical path struck with PATCH or DELETE instead of GET --
+# /v1/apps, a route that only accepts GET and POST -- answers a different
+# body, {"status":404,"code":"url_not_found","message":"Url not found"}, and
+# never a 405. Both were struck with no credential and with a wrong one, and
+# the credential changed nothing in either case: this host tells "no such
+# path" from "that path, wrong method" apart while refusing to say either
+# one needs a real HTTP status name for a wrong verb.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API token was ever requested,
+#     guessed or used. Every 200 below is drafted from
+#     api.prod.koyeb.com/public.swagger.json, not observed, and carries no
+#     `verified:` date. The 401s and the two 404 shapes are struck live,
+#     unauthenticated, and carry one.
+#   - Only the exact credential values this Recipe actually sent are routed
+#     to their real sentence. A wrong bearer token that is neither the
+#     literal junk word nor the literal fake JWT below falls to the
+#     no-credential fallback rather than to "Invalid token format" -- the
+#     same approximation Turso's Recipe states about its own catch-all, for
+#     the same structural reason: Cauldron matches matches_header on exact
+#     bytes, not on shape.
+#   - redeploy is real and not routed -- see above.
+#   - App (the container Services live in), pause, resume, scale, the
+#     provisioning-stage callback routes, service_events,
+#     regional_deployments and services-autocomplete are all real paths in
+#     the description and none are modelled. This Recipe is about the one
+#     mechanism the group it belongs to was written to find: what a create
+#     returns, and the state machine behind the id it names.
+#   - DeploymentDefinition -- the build/runtime spec every deployment
+#     carries, covering Docker vs buildpack, ports, scaling, health checks,
+#     env vars -- is real, enormous, and not modelled, the same judgement
+#     Temporal Cloud's Recipe in this collection makes about NamespaceSpec.
+#   - Deployment.Role (INVALID, ACTIVE, UPCOMING, CURRENT) is real, on every
+#     Deployment the description declares, and not modelled: nothing in the
+#     description says what governs a transition between them, and Koyeb's
+#     own multi-region, multi-instance rollout mechanics are out of scope
+#     for the one mechanism this Recipe was sent to check.
+#   - Pagination is limit/offset per the description's own query parameters,
+#     and the response envelope echoes limit and offset back beside count
+#     and has_next. This format's offset style pages correctly; echoing the
+#     two request values into the body is not a mechanism it has, so
+#     count_field and has_more_field are served and limit/offset are not.
+#   - The x-ratelimit-limit response header this host actually sends is a
+#     two-part value, "400, 400;w=60" -- a plain number and an IETF
+#     RateLimit-Limit-shaped quota beside it, on the same header, every
+#     response. Noted here rather than modelled: none of this Recipe's
+#     routes carry rate-limit headers.
+
+recipe: koyeb
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://www.koyeb.com/docs/reference/api
+  spec: https://api.prod.koyeb.com/public.swagger.json
+  spec_hash: cf101efded1dec8745651d25564cce545632a42f8da67cccfbab4dd346124550
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer, but this host answers four different sentences for
+  # four different shapes of "wrong" on the one route that was struck all
+  # four ways -- see the header. scheme: none plus matches_header on every
+  # route is the same trade Turso's Recipe in this collection makes for the
+  # identical reason: a single Recipe-wide verdict has three slots and this
+  # host uses four.
+  scheme: none
+
+responses:
+  # {"service": {...}}, {"deployment": {...}} -- every single-object route
+  # wraps under the resource's own name, per CreateServiceReply,
+  # GetServiceReply, GetDeploymentReply and RedeployReply alike in the
+  # published description. Empty Key falls back to the resource's own name,
+  # which is exactly this shape.
+  resource:
+    style: wrapped
+  list:
+    style: wrapped
+    count_field: count
+    has_more_field: has_next
+  error:
+    style: flat
+    code_field: code
+    message_field: message
+    fields:
+      status: 401
+
+resources:
+  service:
+    collection: services
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      # INVALID_TYPE, WEB, WORKER, DATABASE or SANDBOX.
+      type:
+        type: string
+        default: WEB
+      # STARTING, HEALTHY, DEGRADED, UNHEALTHY, DELETING, DELETED, PAUSING,
+      # PAUSED or RESUMING. Describes the service's own read of its ACTIVE
+      # deployment's runtime health -- not whether the LATEST deployment,
+      # which may be a different one, ever finished. See the header.
+      status:
+        type: string
+        default: STARTING
+      app_id:
+        type: string
+      organization_id:
+        type: string
+      project_id:
+        type: string
+      # Three separate pointers at once, none of them explained in the
+      # description beyond its own name. See the header.
+      active_deployment_id:
+        type: string
+        null_when_unset: true
+      latest_deployment_id:
+        type: string
+        null_when_unset: true
+      last_provisioned_deployment_id:
+        type: string
+        null_when_unset: true
+      version:
+        type: string
+      messages:
+        type: list
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+  deployment:
+    collection: deployments
+    id:
+      style: opaque
+    fields:
+      # PENDING, PROVISIONING, SCHEDULED, CANCELING, CANCELED, ALLOCATING,
+      # STARTING, HEALTHY, DEGRADED, UNHEALTHY, STOPPING, STOPPED, ERRORING,
+      # ERROR, STASHED or SLEEPING. The 201-equivalent 200 this Recipe's
+      # create route answers with never reaches past this default -- see the
+      # header.
+      status:
+        type: string
+        default: PENDING
+      service_id:
+        type: string
+      app_id:
+        type: string
+      messages:
+        type: list
+      version:
+        type: string
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      allocated_at:
+        type: datetime
+        null_when_unset: true
+      started_at:
+        type: datetime
+        null_when_unset: true
+      succeeded_at:
+        type: datetime
+        null_when_unset: true
+      terminated_at:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  # The one route struck all four ways live -- see the header. More specific
+  # matches_header routes outrank the plain fallback regardless of write
+  # order, the same rule Turso's Recipe relies on.
+  - method: GET
+    path: /v1/services
+    resource: service
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    # limit and offset are the parameter names the description gives; the
+    # page size itself is not stated anywhere in it, so this is Cauldron's
+    # own operational default rather than a figure Koyeb documents.
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+    list:
+      key: services
+
+  - method: GET
+    path: /v1/services
+    matches_header:
+      # The exact bytes this Recipe sent live: "Bearer " plus a bare junk
+      # word, no JWT structure at all.
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_token_format
+
+  - method: GET
+    path: /v1/services
+    matches_header:
+      # The exact bytes this Recipe sent live: a well-formed three-segment
+      # JWT (real header, real payload, fake signature), not this fixture's
+      # token.
+      Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjYXVsZHJvbiJ9.fakefakefakefakefakefakefakefake
+    error: invalid_token
+
+  - method: GET
+    path: /v1/services
+    matches_header:
+      # No "Bearer " prefix at all -- the exact bytes this Recipe sent live.
+      Authorization: junkjunkjunk12345
+    error: bad_authorization_string
+
+  # No credential of any kind -- the true fallback. See the header for why
+  # an untested wrong bearer token also lands here rather than on one of the
+  # three sentences above.
+  - method: GET
+    path: /v1/services
+    error: authentication_error
+
+  - method: GET
+    path: /v1/services/{id}
+    resource: service
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+
+  - method: GET
+    path: /v1/services/{id}
+    error: authentication_error
+
+  # 200, not 201, and the full Service -- never a Deployment. See the header.
+  - method: POST
+    path: /v1/services
+    resource: service
+    operation: create
+    status: 200
+    matches_header:
+      Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+
+  - method: POST
+    path: /v1/services
+    error: authentication_error
+
+  - method: GET
+    path: /v1/deployments
+    resource: deployment
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    filters:
+      - param: service_id
+        field: service_id
+      - param: app_id
+        field: app_id
+    pagination:
+      style: offset
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+    list:
+      key: deployments
+
+  - method: GET
+    path: /v1/deployments
+    error: authentication_error
+
+  # The poll endpoint the group this Recipe belongs to was written to find.
+  - method: GET
+    path: /v1/deployments/{id}
+    resource: deployment
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+
+  - method: GET
+    path: /v1/deployments/{id}
+    error: authentication_error
+
+  # A wrong method on a real path. Never a 405 -- see the header.
+  - method: PATCH
+    path: /v1/services
+    error: method_mismatch
+
+  - method: GET
+    path: /v1/this-is-not-a-real-endpoint
+    error: unknown_route
+
+errors:
+  authentication_error:
+    status: 401
+    code: authentication_error
+    message: Route needs to be authenticated
+
+  # Right shape (has the "Bearer " prefix), not JWT-parseable at all.
+  invalid_token_format:
+    status: 401
+    code: authentication_error
+    message: Invalid token format
+
+  # Right shape, JWT-parseable, not a token this Recipe holds.
+  invalid_token:
+    status: 401
+    code: authentication_error
+    message: Invalid token
+
+  # No "Bearer " prefix. The code and the message are the identical string
+  # on the live host, not a symbolic name beside prose -- checked live.
+  bad_authorization_string:
+    status: 401
+    code: Bad authorization string
+    message: Bad authorization string
+
+  # A path Koyeb has no route for at all. Checked live, with and without a
+  # credential: identical either way.
+  unknown_route:
+    status: 404
+    code: Not Found
+    message: Not Found
+
+  # A real path, wrong method. A different body from unknown_route above --
+  # checked live, with and without a credential -- and never a 405.
+  method_mismatch:
+    status: 404
+    code: url_not_found
+    message: Url not found
+
+fixtures:
+  empty: {}
+
+  one-app:
+    service:
+      # Healthy, and its own status says nothing about whether the
+      # deployment it currently points at is the newest one -- see the
+      # header.
+      - id: 3f9a1c2e-6b8d-4e17-9a2f-8c5d0b1e6a34
+        name: storefront-web
+        type: WEB
+        status: HEALTHY
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+        organization_id: 1a2b3c4d-5e6f-4708-9a1b-2c3d4e5f6071
+        project_id: 8e1f2a3b-4c5d-4e6f-8071-9a2b3c4d5e60
+        active_deployment_id: d4f7a92e-1c3b-4a6d-8e5f-2b9c7a1d4e63
+        latest_deployment_id: d4f7a92e-1c3b-4a6d-8e5f-2b9c7a1d4e63
+        last_provisioned_deployment_id: d4f7a92e-1c3b-4a6d-8e5f-2b9c7a1d4e63
+        version: "3"
+        created_at: "2026-01-10T12:00:00Z"
+        updated_at: "2026-08-19T09:15:00Z"
+
+      # A newer deployment is out and failed to provision. active still
+      # points at the old, healthy one; latest points at the one that
+      # errored; last_provisioned points at neither, because provisioning
+      # never completed for it. Three pointers, three different answers,
+      # and service.status alone -- still HEALTHY, because the ACTIVE
+      # deployment is fine -- says nothing about the third one at all.
+      - id: 9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+        name: nightly-reconcile
+        type: WORKER
+        status: HEALTHY
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+        organization_id: 1a2b3c4d-5e6f-4708-9a1b-2c3d4e5f6071
+        project_id: 8e1f2a3b-4c5d-4e6f-8071-9a2b3c4d5e60
+        active_deployment_id: 2e5c8b1a-9f3d-4c76-8a1e-5b0d3f7c2a91
+        latest_deployment_id: a1c4e7b2-6d9f-4830-9b2e-7c1a5d8f3b60
+        version: "7"
+        created_at: "2025-11-02T08:30:00Z"
+        updated_at: "2026-08-30T04:00:00Z"
+
+    deployment:
+      # What a create leaves behind. PENDING, minutes-old, and nothing on
+      # this record says whether the build will succeed.
+      - id: d4f7a92e-1c3b-4a6d-8e5f-2b9c7a1d4e63
+        status: PENDING
+        service_id: 3f9a1c2e-6b8d-4e17-9a2f-8c5d0b1e6a34
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+        version: "3"
+        created_at: "2026-08-19T09:14:00Z"
+        updated_at: "2026-08-19T09:14:02Z"
+
+      # The service's own active_deployment_id above. Fully settled.
+      - id: 2e5c8b1a-9f3d-4c76-8a1e-5b0d3f7c2a91
+        status: HEALTHY
+        service_id: 9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+        version: "6"
+        created_at: "2026-08-01T04:00:00Z"
+        updated_at: "2026-08-01T04:03:11Z"
+        allocated_at: "2026-08-01T04:00:41Z"
+        started_at: "2026-08-01T04:01:20Z"
+        succeeded_at: "2026-08-01T04:03:11Z"
+
+      # The service's own latest_deployment_id above, and a different
+      # record entirely. ERROR, per the header: this could be a build
+      # failure, a crash, or a platform fault, and this status is the only
+      # one this API sends for any of the three.
+      - id: a1c4e7b2-6d9f-4830-9b2e-7c1a5d8f3b60
+        status: ERROR
+        service_id: 9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+        version: "7"
+        created_at: "2026-08-30T04:00:00Z"
+        updated_at: "2026-08-30T04:01:47Z"
+        allocated_at: "2026-08-30T04:00:22Z"
+        started_at: "2026-08-30T04:00:55Z"
+        terminated_at: "2026-08-30T04:01:47Z"
+
+conformance:
+  - name: no credential at all is a plain sentence about the route, not the token
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/services
+    expect:
+      status: 401
+      body:
+        status: 401
+        code: authentication_error
+        message: Route needs to be authenticated
+
+  - name: a header with no Bearer prefix at all gets a fourth sentence, code equals message
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/services
+      headers:
+        Authorization: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        code: Bad authorization string
+        message: Bad authorization string
+
+  - name: Bearer plus a bare junk word fails a shape check, not a lookup
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/services
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        code: authentication_error
+        message: Invalid token format
+
+  - name: Bearer plus a well-formed fake JWT fails a later, different check
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/services
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjYXVsZHJvbiJ9.fakefakefakefakefakefakefakefake
+    expect:
+      status: 401
+      body:
+        code: authentication_error
+        message: Invalid token
+
+  - name: an unrouted path is a plain 404, no credential needed to see it
+    source: https://app.koyeb.com/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        code: Not Found
+        message: Not Found
+
+  - name: the same unrouted path with a credential attached answers identically
+    source: https://app.koyeb.com/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 404
+      body:
+        code: Not Found
+        message: Not Found
+
+  - name: a real path with the wrong method is a different 404, never a 405
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/services
+    expect:
+      status: 404
+      body:
+        code: url_not_found
+        message: Url not found
+
+  - name: and a credential does not turn that one into a 405 either
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/services
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 404
+      body:
+        code: url_not_found
+        message: Url not found
+
+  - name: a POST to create a service is gated by the plain check, not the four-tier one
+    source: https://app.koyeb.com/v1/services
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/services
+    expect:
+      status: 401
+      body:
+        message: Route needs to be authenticated
+
+  - name: creating a service answers the service, wrapped, and three deployment pointers agree because nothing has diverged yet
+    source: https://api.prod.koyeb.com/public.swagger.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/services
+      headers:
+        Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+      json:
+        name: new-service
+        app_id: 7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+    expect:
+      status: 200
+      body:
+        service.name: new-service
+        service.status: STARTING
+      absent:
+        - deployment
+        - service.deployment
+
+  - name: the service's three deployment pointers can name two different records
+    source: https://api.prod.koyeb.com/public.swagger.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/services/9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+      headers:
+        Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        service.status: HEALTHY
+        service.active_deployment_id: 2e5c8b1a-9f3d-4c76-8a1e-5b0d3f7c2a91
+        service.latest_deployment_id: a1c4e7b2-6d9f-4830-9b2e-7c1a5d8f3b60
+
+  - name: the deployment that pointer names is not healthy at all
+    source: https://api.prod.koyeb.com/public.swagger.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/deployments/a1c4e7b2-6d9f-4830-9b2e-7c1a5d8f3b60
+      headers:
+        Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        deployment.status: ERROR
+        deployment.service_id: 9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+
+  - name: filtering deployments by service_id narrows the list, and the envelope carries a count and a has_next
+    source: https://api.prod.koyeb.com/public.swagger.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/deployments?service_id=9b4e2f81-5a7c-4d90-8e3f-1c6b9a2d5f70
+      headers:
+        Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "deployments[0].id": 2e5c8b1a-9f3d-4c76-8a1e-5b0d3f7c2a91
+        "deployments[1].id": a1c4e7b2-6d9f-4830-9b2e-7c1a5d8f3b60
+        count: 2
+        has_next: false
+      absent:
+        - deployments[2]
+
+  - name: filtering deployments by app_id narrows the same list a different way
+    source: https://api.prod.koyeb.com/public.swagger.json
+    fixture: one-app
+    request:
+      method: GET
+      path: /v1/deployments?app_id=7c2e4a91-3f6b-4d8e-b1a5-9e7c3d2f8b60
+      headers:
+        Authorization: Bearer cauldron-koyeb-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        count: 3
+      absent:
+        - deployments[3]

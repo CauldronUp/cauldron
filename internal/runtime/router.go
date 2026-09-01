@@ -16,6 +16,19 @@ type segment struct {
 	param   string
 	prefix  string
 	suffix  string
+	// greedy says this parameter swallows the rest of the path, slashes and
+	// all. Declared {name...}, which is Go's own ServeMux spelling, and
+	// permitted only as the last segment for the same reason ServeMux permits
+	// it only there: anywhere else there is nothing to say where it stops.
+	//
+	// Identifiers with slashes in them are commoner than the shape of a URL
+	// path suggests. A DOI is "10.1145/3510003" and Semantic Scholar takes it
+	// raw. A Guardian content id is "world/2023/jan/01/some-headline" -- five
+	// segments that are one identifier. A Hugging Face repo is "org/name".
+	// Percent-encoding the slash does not help: Semantic Scholar answers a
+	// %2F with an error naming the encoding, so the client cannot escape its
+	// way out of the problem either.
+	greedy bool
 }
 
 // route is a compiled recipe.Route ready to match against a request.
@@ -88,12 +101,51 @@ func mentions(query, field string) bool {
 		at += from
 		end := at + len(field)
 
-		if (at == 0 || !isNameRune(query[at-1])) && (end == len(query) || !isNameRune(query[end])) {
+		if boundaryBefore(query, at) && boundaryAfter(query, end) {
 			return true
 		}
 
 		from = at + 1
 	}
+}
+
+// boundaryBefore reports whether the character before a match ends a word.
+//
+// A percent-escape is a delimiter wearing a disguise. In a form-encoded body
+// the punctuation around a value is escaped, so a marker sitting immediately
+// after a quote or a brace is preceded by the last hex digit of %22 or %7B --
+// which is a digit, which is a name character, so the whole-word check refused
+// a match that is plainly a whole word.
+//
+// Expensify is what found it: its API takes a JSON document inside a form
+// field, so every structural character in that document arrives percent-
+// encoded, and three cases had to be rewritten to route by a JSON body they
+// do not really send.
+func boundaryBefore(s string, at int) bool {
+	if at == 0 {
+		return true
+	}
+
+	if !isNameRune(s[at-1]) {
+		return true
+	}
+
+	// Two hex digits and a percent sign: the escape is the boundary.
+	return at >= 3 && s[at-3] == '%' && isHexDigit(s[at-2]) && isHexDigit(s[at-1])
+}
+
+// boundaryAfter is the plain check, and stays plain on purpose.
+//
+// The escape problem is one-sided. A percent-escape that FOLLOWS a match
+// starts with '%', which is not a name character, so the ordinary test
+// already calls it a boundary. Only the escape before a match hides its
+// delimiter behind a hex digit.
+func boundaryAfter(s string, end int) bool {
+	return end == len(s) || !isNameRune(s[end])
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 func isNameRune(c byte) bool {
@@ -115,10 +167,18 @@ func compilePath(path string) []segment {
 			if close := strings.Index(part[open:], "}"); close >= 0 {
 				close += open
 
+				name := part[open+1 : close]
+
+				greedy := strings.HasSuffix(name, "...")
+				if greedy {
+					name = strings.TrimSuffix(name, "...")
+				}
+
 				out = append(out, segment{
-					param:  part[open+1 : close],
+					param:  name,
 					prefix: part[:open],
 					suffix: part[close+1:],
+					greedy: greedy,
 				})
 
 				continue
@@ -155,9 +215,15 @@ func (r *router) matchSelecting(method, path, query, body string, params url.Val
 	slash := len(path) > 1 && strings.HasSuffix(path, "/")
 
 	var (
-		best      route
-		bestVars  map[string]string
-		bestScore = -1
+		best     route
+		bestVars map[string]string
+		// No starting value, because a score can be negative: a greedy
+		// segment scores below zero so that a route spelling a request out
+		// always beats one that swallows everything. Seeded at -1, the first
+		// greedy route to match tied with the sentinel and lost to it, and
+		// the request fell through to a 405 naming a method it had already
+		// used. found is the guard instead.
+		bestScore int
 		found     bool
 	)
 
@@ -228,7 +294,7 @@ func (r *router) matchSelecting(method, path, query, body string, params url.Val
 			score += 1000 * len(candidate.spec.MatchesQuery)
 		}
 
-		if score > bestScore {
+		if !found || score > bestScore {
 			best, bestVars, bestScore, found = candidate, vars, score, true
 		}
 	}
@@ -270,7 +336,14 @@ func (r *router) allowedMethods(path string) []string {
 }
 
 func (rt route) matches(parts []string) (map[string]string, int, bool) {
-	if len(parts) != len(rt.segments) {
+	// A greedy last segment relaxes the length check in one direction only:
+	// it can stand for several path segments but never for none, so a route
+	// ending {id...} still needs something after the literals to swallow.
+	if last := len(rt.segments) - 1; last >= 0 && rt.segments[last].greedy {
+		if len(parts) < len(rt.segments) {
+			return nil, 0, false
+		}
+	} else if len(parts) != len(rt.segments) {
 		return nil, 0, false
 	}
 
@@ -280,6 +353,10 @@ func (rt route) matches(parts []string) (map[string]string, int, bool) {
 	for i, seg := range rt.segments {
 		if seg.param != "" {
 			value := parts[i]
+
+			if seg.greedy {
+				value = strings.Join(parts[i:], "/")
+			}
 
 			if !strings.HasPrefix(value, seg.prefix) || !strings.HasSuffix(value, seg.suffix) {
 				return nil, 0, false
@@ -303,6 +380,19 @@ func (rt route) matches(parts []string) (map[string]string, int, bool) {
 			}
 
 			vars[seg.param] = value
+
+			// A greedy parameter is the least specific thing a path can
+			// declare, so it must never outscore a route that spells the same
+			// request out. /paper/search and /paper/{id...} both match
+			// /paper/search; the literal has to win, and would anyway on its
+			// own segment score, but only until somebody writes a greedy
+			// route with more literals in front of it. Scoring it negative
+			// keeps that from being a race the specific route can lose.
+			if seg.greedy {
+				score--
+
+				continue
+			}
 
 			// Literal text around a parameter is still evidence of a more
 			// specific route, so /orders/{id}.json beats /orders/{id}.

@@ -1,0 +1,321 @@
+# Diffbot Recipe for Cauldron
+#
+# Diffbot's Article and Product APIs are a single GET call against
+# /v3/{api} -- token and url on the query string, one JSON object back. No
+# job id, no polling: docs.diffbot.com's own OpenAPI description for the
+# newest Python SDK's extract() call blocks until the page has been
+# downloaded and parsed. (Diffbot's separate Crawlbot product, at
+# /v3/crawl, IS a submit-and-poll job queue -- job_name, poll_interval, a
+# watch=True loop in diffbot/crawl.py -- but that is a different product on
+# a different path and this Recipe does not model it. The brief for this
+# collection asked about Article and Product specifically, and those two
+# are synchronous.)
+#
+# **Missing and wrong tokens get different sentences, verified directly
+# against api.diffbot.com on 2026-09-01.** No token parameter at all:
+#
+#   401  {"requestId":"...","code":401,"message":"Unauthorized. Token is required."}
+#
+# A token parameter that is merely wrong:
+#
+#   401  {"requestId":"...","code":401,"message":"Unauthorized. Incorrect token."}
+#
+# Both were called against /v3/article and /v3/product, with and without a
+# url on the request, and the message never changed for a reason other than
+# the token: url is not inspected until after the token passes. **token=,
+# sent as an explicit empty string, answers byte-identical to token left off
+# the URL entirely** -- also checked directly. That is not automatic: the
+# same distinction sank ScrapingBee and Browserless into a stated coverage
+# gap in their own Recipes, because their auth was rebuilt out of ordinary
+# routes matched with matches_query, which can assert a parameter equals ""
+# but not that it is absent, so a truly-missing parameter fell through to
+# the wrong-key route instead of the missing-key one. Diffbot needs no such
+# workaround: auth.scheme: query reads the parameter with net/http's
+# url.Values.Get, which returns "" for both an absent key and an explicit
+# empty one, and that is exactly what Diffbot itself does not tell apart
+# either. The fixture-quality trick that has no analogue is not needed
+# because the underlying mechanism already matches the provider.
+#
+# **A path Diffbot does not recognise is checked differently, and this
+# Recipe does not reproduce it.** /v3/nosuchendpoint, bare /v3/, and bare /
+# all answer 401 too -- never 404 -- but a third shape, checked with no
+# token and again with a wrong one, byte-identical both times:
+#
+#   401  {"code":401,"message":"Unauthorized","requestId":"...","errorCode":401,"error":"Not authorized API token."}
+#
+# That is not the fine-grained "Token is required." / "Incorrect token."
+# pair /v3/article gives; it is a third sentence, with two extra fields
+# (errorCode, error) alongside the two the routed shape has, and it does
+# not distinguish an absent token from a wrong one -- both probes above
+# answered it identically, which the routed shape never does. Method was
+# checked too: GET and DELETE on /v3/nosuchendpoint answered the same
+# coarse body. So Diffbot's real gate is path-aware -- known API name, fine
+# sentence and a real distinction; unknown path, coarse sentence and no
+# distinction -- and Cauldron's auth.after_routing expresses two orderings
+# (credential always first, or route always first), neither of which is
+# "credential is always checked, but which sentence you get depends on
+# whether the path was recognised." Forcing after_routing: true and
+# declaring every method Diffbot might route would buy back the coarse
+# shape for genuinely unrouted paths at the cost of the method-invariance
+# above (Cauldron's own 405 would fire for any undeclared method on a
+# declared path, which real Diffbot never does -- see next paragraph).
+# This Recipe keeps auth.scheme: query with the default ordering, which
+# means every request this emulator sees -- routed or not -- gets the fine
+# sentence. That is wrong for a path this Recipe does not route, and it is
+# the one deliberate simplification in this file rather than an oversight.
+#
+# **The gate does not care about method either**, which the default
+# ordering reproduces for free: DELETE and PUT on /v3/article with no
+# token, and OPTIONS with none either, all answered the exact fine-grained
+# 401 pair above, never a 405. Checked directly on 2026-09-01.
+#
+# **The central finding: a failure about the TARGET page, not about the
+# call, is served at HTTP 200.** This project holds no Diffbot token, so
+# nothing past the auth gate was called -- but Diffbot's own official
+# Python client says exactly this, in code rather than prose. From
+# github.com/diffbot/diffbot-python-client, src/diffbot/errors.py:
+#
+#   class ExtractionError(DiffbotError):
+#       """The Diffbot API returned a 200 but reported an extraction failure."""
+#
+# and src/diffbot/extract.py:
+#
+#   client._raise_for_status(response)      # raises on any non-2xx status
+#   return _parse_response(client, response.json())
+#
+#   def _parse_response(client, data):
+#       if "errorCode" in data:
+#           raise ExtractionError(data["errorCode"], data.get("error", ""))
+#       return data
+#
+# _raise_for_status runs first and raises for anything that is not 2xx, so
+# _parse_response only ever sees a body Diffbot answered with success. An
+# "errorCode" appearing in THAT body -- the shape docs.diffbot.com shows for
+# "Could Not Download Page", {"errorCode":404,"error":"Could not download
+# page (404)"} -- is therefore a 200 by construction, not a guess about
+# what the docs meant. This is the same shape Firecrawl's Recipe in this
+# collection calls success:false at 200; Diffbot's version has no boolean
+# flag, only the presence of errorCode itself as the signal. Auth and rate
+# limits are the opposite: _raise_for_status special-cases 401, 403 and 429
+# to real non-2xx exceptions before errorCode is ever consulted, which
+# matches this Recipe's own live-verified 401s above. The dividing line
+# this whole file is about -- is a failure about YOUR call or about the
+# PAGE -- is, on Diffbot, the line between an HTTP status the SDK raises on
+# and a body field the SDK has to go looking for after deciding the call
+# already succeeded.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The path-recognition split above is not modelled; see that paragraph.
+#   - requestId is a fresh identifier on every real call and appears on
+#     every routed 401 this project observed. Cauldron's error envelope has
+#     no per-request substitution for an extra sibling field the way
+#     resource_missing has {detail} for an id, so it is left out of this
+#     Recipe's body entirely rather than filled with a value that would
+#     look real and never match. The header above shows it because the
+#     live wire does carry it; the conformance cases below do not assert
+#     it, and a strict byte-for-byte comparison against a real response
+#     would need to ignore that one field.
+#   - The successful Article response below is copied verbatim from
+#     www.diffbot.com/docs/extract/article's own worked example (the MIT
+#     Technology Review piece) because this project holds no token to call
+#     it and cannot invent a title, a sentiment score or a byline. No
+#     equivalent full worked example was found for a successful Product
+#     call, so this Recipe does not claim one -- Step 3's rule, applied:
+#     leave the route out rather than pad it. The 200-with-errorCode shape
+#     IS carried for both /v3/article and /v3/product, because that shape
+#     is documented at the Extract API level rather than per-endpoint.
+#   - Analyze (/v3/analyze, the auto-detecting endpoint the Python SDK
+#     defaults to), Crawlbot, the Knowledge Graph DQL API, the LLM/RAG
+#     endpoint and Web Search are not modelled. Only Article and Product,
+#     the two this collection asked about.
+#   - No public OpenAPI document for the REST API was found, so
+#     upstream.spec is not set. upstream.docs points at the human page this
+#     Recipe's worked example was read from.
+
+recipe: diffbot
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://www.diffbot.com/docs/extract/article
+
+# Absent and empty collapse to the same verdict because Cauldron's own
+# query-scheme check reads the parameter with url.Values.Get, which returns
+# "" for both -- and that happens to be exactly what Diffbot itself does
+# not tell apart either. See the header comment: this is the one case in
+# this whole collection where the runtime's own limitation and the
+# provider's real behaviour line up instead of fighting each other.
+auth:
+  scheme: query
+  param: token
+  keys:
+    - cauldrondiffbot0000000000000000000
+  absent_error: token_required
+  rejected_error: incorrect_token
+
+responses:
+  # {"requestId","code","message"} -- code always mirrors the HTTP status,
+  # so status_field fills it without repeating the number in every error
+  # entry. requestId is not modelled; see the header comment.
+  error:
+    style: flat
+    message_field: message
+    status_field: code
+    code_field: "-"
+
+routes:
+  # Documented, not observed -- this project holds no token. Copied
+  # verbatim from www.diffbot.com/docs/extract/article's own worked
+  # example.
+  - method: GET
+    path: /v3/article
+    matches_query:
+      token: cauldrondiffbot0000000000000000000
+      url: https://www.technologyreview.com/2020/09/04/1008156/knowledge-graph-ai-reads-web-machine-learning-natural-language-processing/
+    raw:
+      content_type: application/json;charset=UTF-8
+      text: |
+        {"request":{"pageUrl":"https://www.technologyreview.com/2020/09/04/1008156/knowledge-graph-ai-reads-web-machine-learning-natural-language-processing/","api":"article","version":3},"humanLanguage":"en","objects":[{"date":"Fri, 04 Sep 2020 00:00:00 GMT","sentiment":0.153,"author":"Will Douglas Heaven","siteName":"MIT Technology Review","type":"article","title":"This know-it-all AI learns by reading the entire web nonstop","text":"Back in July, OpenAI's latest language model, GPT-3, dazzled with its ability to churn out paragraphs that look as if they could have been written by a human..."}],"type":"article","title":"This know-it-all AI learns by reading the entire web nonstop | MIT Technology Review"}
+
+  # The central finding. A 200, not a 4xx -- see the header comment's
+  # ExtractionError evidence from Diffbot's own Python client. The URL is
+  # this project's own fixture, under this project's own test domain,
+  # because the shape is documented at the Extract-API level and this
+  # project is not claiming a call it never made.
+  - method: GET
+    path: /v3/article
+    matches_query:
+      token: cauldrondiffbot0000000000000000000
+      url: https://docs.cauldron.test/missing
+    status: 200
+    raw:
+      content_type: application/json;charset=UTF-8
+      text: |
+        {"errorCode":404,"error":"Could not download page (404)"}
+
+  # Same shape, same source, the other endpoint this collection asked
+  # about. No Product-specific worked example exists for the success case;
+  # see the header comment for why that route is not here at all.
+  - method: GET
+    path: /v3/product
+    matches_query:
+      token: cauldrondiffbot0000000000000000000
+      url: https://docs.cauldron.test/missing
+    status: 200
+    raw:
+      content_type: application/json;charset=UTF-8
+      text: |
+        {"errorCode":404,"error":"Could not download page (404)"}
+
+errors:
+  token_required:
+    status: 401
+    message: "Unauthorized. Token is required."
+
+  incorrect_token:
+    status: 401
+    message: "Unauthorized. Incorrect token."
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no token at all is refused before url is even read
+    source: https://api.diffbot.com/v3/article
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/article?url=https://example.com
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: "Unauthorized. Token is required."
+
+  - name: an empty token parameter is treated exactly like a missing one
+    source: https://api.diffbot.com/v3/article?token=&url=https://example.com
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/article?token=&url=https://example.com
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. Token is required."
+
+  - name: a token that is merely wrong is a completely different sentence
+    source: https://api.diffbot.com/v3/article?token=junktoken1234567890&url=https://example.com
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/article?token=junktoken1234567890&url=https://example.com
+    expect:
+      status: 401
+      body:
+        code: 401
+        message: "Unauthorized. Incorrect token."
+
+  - name: and that wrong-token sentence does not care whether url is even present
+    source: https://api.diffbot.com/v3/article?token=junktoken1234567890
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/article?token=junktoken1234567890
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. Incorrect token."
+
+  - name: the same gate, unchanged, in front of Product
+    source: https://api.diffbot.com/v3/product?token=
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v3/product?token=
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized. Token is required."
+
+  - name: a successful Article call returns objects, not an error
+    source: https://www.diffbot.com/docs/extract/article
+    request:
+      method: GET
+      path: /v3/article?token=cauldrondiffbot0000000000000000000&url=https://www.technologyreview.com/2020/09/04/1008156/knowledge-graph-ai-reads-web-machine-learning-natural-language-processing/
+    expect:
+      status: 200
+      body:
+        humanLanguage: en
+        objects[0].title: "This know-it-all AI learns by reading the entire web nonstop"
+        objects[0].sentiment: 0.153
+      absent:
+        - errorCode
+        - error
+
+  - name: a page Diffbot could not download is a 200 with errorCode inside it
+    source: https://github.com/diffbot/diffbot-python-client/blob/master/src/diffbot/errors.py
+    request:
+      method: GET
+      path: /v3/article?token=cauldrondiffbot0000000000000000000&url=https://docs.cauldron.test/missing
+    expect:
+      # Not 404. The wrapper call succeeded; the page did not. See the
+      # header comment's ExtractionError evidence.
+      status: 200
+      body:
+        errorCode: 404
+        error: "Could not download page (404)"
+      absent:
+        - objects
+
+  - name: the same 200-wrapped failure shape reaches Product too
+    source: https://github.com/diffbot/diffbot-python-client/blob/master/src/diffbot/extract.py
+    request:
+      method: GET
+      path: /v3/product?token=cauldrondiffbot0000000000000000000&url=https://docs.cauldron.test/missing
+    expect:
+      status: 200
+      body:
+        errorCode: 404
+        error: "Could not download page (404)"

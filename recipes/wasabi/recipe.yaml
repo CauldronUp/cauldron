@@ -1,0 +1,273 @@
+# Wasabi Recipe for Cauldron
+#
+# Wasabi sells itself as "S3 compatible", and the compatibility is real for
+# the calls. What it stops covering, checked live against s3.wasabisys.com
+# on 2026-09-01, is the boundary case every S3 client's error handling is
+# actually written against: what comes back when the credential is missing
+# or wrong.
+#
+# A request against the bucket-listing root carrying no Authorization header
+# at all does not answer as an S3 API. It answers a bare HTTP redirect:
+#
+#   GET / (no header of any kind)
+#     -> 303 See Other, Content-Type: text/html, Location: https://www.wasabi.com
+#        <a href="https://www.wasabi.com">See Other</a>.
+#
+# No Content-Type: application/xml, no <Error>, nothing an S3 SDK's error
+# path would recognise -- a client built against AWS's own contract, which
+# guarantees an XML error body for every non-2xx S3 response, gets an HTML
+# anchor tag and a redirect it was never coded to follow. This is the sharpest
+# finding in the group: it is not that Wasabi's XML disagrees with AWS's, it
+# is that the anonymous case does not produce XML at all.
+#
+# Send *any* Authorization header, however wrong, and the marketing redirect
+# disappears. A garbage value reaches the real S3 gate and gets the real S3
+# answer:
+#
+#   GET / -H "Authorization: junk"
+#     -> 403 Forbidden, Content-Type: application/xml
+#        <Error><Code>AccessDenied</Code><Message>User: anonymous is not
+#        authorized to perform: s3:ListAllMyBuckets on resource:
+#        arn:aws:s3:::</Message>...</Error>
+#
+# A third, distinct answer for a credential that is the right *shape* and the
+# wrong value -- a syntactically valid AWS4-HMAC-SHA256 header naming an
+# access key that does not exist:
+#
+#   GET / -H "Authorization: AWS4-HMAC-SHA256 Credential=AKIAFAKE.../..., ..."
+#     -> 403 Forbidden, Content-Type: application/xml
+#        <Error><Code>InvalidAccessKeyId</Code><Message>The AWS Access Key Id
+#        you provided does not exist in our records.</Message>
+#        <AWSAccessKeyId>AKIAFAKEFAKEFAKEFAKE</AWSAccessKeyId>...</Error>
+#
+# and it echoes the bogus key straight back in AWSAccessKeyId -- confirming
+# key-existence is checked before signature validity, and telling an anonymous
+# prober exactly which of their guesses reached that check.
+#
+# Three tiers, three shapes, one redirect that is not a shape at all. Cauldron
+# models this with auth.pattern checking the credential by shape (Cauldron
+# does not implement SigV4, the same acknowledged gap the AWS Recipes in this
+# collection all carry) and its absent/malformed verdicts wired to the two
+# live-verified answers above; the third -- a well-shaped credential naming no
+# real key -- is not a verdict Cauldron's own check produces, so it is served
+# by the one declared route instead, reached only once a plausible-looking
+# signature has been let through.
+#
+# The redirect and the AccessDenied case are both struck on the bucket-listing
+# root. A path naming an actual bucket does not redirect even with no
+# credential at all -- checked live, GET /some-bucket-name/ with nothing
+# presented answers 404 NoSuchBucket in the same XML shape as the malformed
+# case above, with the bucket's own name echoed in a BucketName element and
+# an x-amz-bucket-region: us-east-1 header alongside it. That is a second,
+# path-dependent answer to "what does anonymous get", and Cauldron's own
+# credential check runs once, before routing, for the whole Recipe -- it
+# cannot special-case one path's absent behaviour and not another's. The root
+# is what this Recipe wires; the bucket-scoped 404 is recorded here rather
+# than served.
+#
+# Which HTTP verb is sent changes the error family entirely, and not in the
+# direction a status code would suggest. Checked live, both with no
+# credential:
+#
+#   POST /   -> 405 Method Not Allowed, application/xml
+#              <Error><Code>MethodNotAllowed</Code>...</Error> -- ordinary S3.
+#
+#   PATCH /  -> 400 Bad Request, Content-Type: text/xml (not application/xml)
+#              <ErrorResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+#                <Error><Type>Sender</Type><Code>BadRequest</Code>
+#                <Message>An error occurred when parsing the HTTP
+#                request.</Message></Error>...</ErrorResponse>
+#
+# PATCH is not a verb S3's own request parser recognises at all, so it never
+# reaches the S3 error vocabulary and instead falls into the *IAM* API's XML
+# envelope -- ErrorResponse/Error/Type/Code, a different element structure
+# under a different XML namespace, borrowed wholesale from a different AWS
+# product family that Wasabi's gateway apparently shares a parser with. A
+# client's XML error parser tuned for <Error><Code> at the top level, which
+# is what every other failure on this host sends, breaks on the one nested a
+# level deeper under a namespaced envelope. Not modelled -- see below.
+#
+# Wasabi Account Control (WACA), at partner.wasabisys.com, is a wholly
+# separate product: JSON, not XML, with its own header vocabulary
+# (X-Wasabi-Partner-Api-Version, X-Wasabi-Service: partner_api,
+# X-Wasabi-Cluster-Id) and its own credential. Checked live against
+# GET /v1/accounts, the endpoint WACA's own quick-start names for connectivity:
+#
+#   no credential                          -> 403 {"Msg":"You are not
+#                                              permitted to complete that
+#                                              action"}
+#   Authorization: junk                    -> 403, byte-identical body
+#   GET  /v1/no-such-path                  -> 404 {"Msg":"URL Not Found"}
+#   POST /v1/accounts (wrong method)       -> 404 {"Msg":"URL Not Found"},
+#                                              same as an unknown path -- a
+#                                              method nothing is registered
+#                                              for is indistinguishable from
+#                                              a typo'd one, and neither ever
+#                                              mentions a credential
+#
+# WACA collapses missing and wrong into one identical sentence, the same
+# direction Filebase's Recipe in this collection collapses all three of its
+# own tiers -- and it is JSON beside an S3 endpoint on a sibling hostname that
+# is XML, the same two-protocols-one-vendor shape Backblaze's Recipe in this
+# collection describes for b2's native API sitting beside its own S3 gateway.
+# Not modelled as routes: Cauldron checks one credential scheme for a whole
+# Recipe, before routing is attempted, and that scheme is the S3 gateway's
+# SigV4 shape here -- a WACA request carries a bare API key with no such
+# shape and would be rejected by the wrong gate before ever reaching a WACA
+# route. Recorded as evidence instead, the same resolution Mezmo's Recipe in
+# this collection reaches for its own second, incompatible credential scheme.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron does not implement SigV4. The credential is checked by shape,
+#     which is the same gap the AWS Recipes in this collection all declare,
+#     and a well-shaped signature naming a key this Recipe has never seen
+#     reaches the one route declared below regardless of whether the
+#     signature is actually valid for anything.
+#   - No object or bucket CRUD is modelled -- no PUT, no GET on a key, no
+#     bucket create. Every authenticated call that would produce one was
+#     never made: this Recipe never held a real Wasabi credential, and Step 3
+#     of the brief this was written against is explicit that an invented
+#     success body is worse than an absent route. What is here is the
+#     anonymous and malformed-credential surface, verified, and nothing past
+#     it.
+#   - The bucket-scoped 404 NoSuchBucket, the PATCH-triggers-IAM-XML shape,
+#     the POST-triggers-ordinary-XML MethodNotAllowed shape, and the whole of
+#     WACA are recorded above as live-checked prose rather than served, for
+#     the routing-before-auth reasons given in each case above.
+#   - No spec/spec_hash is recorded. Wasabi publishes API documentation as
+#     prose pages rather than a single machine-readable description, so there
+#     is nothing here to fingerprint.
+#
+# The Authorization value below is a fixture pattern match, not a secret --
+# nothing before the colon in AKIAFAKEFAKEFAKEFAKE belongs to any account.
+
+recipe: wasabi
+capability: storage
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.wasabi.com/docs/apis
+
+auth:
+  scheme: header
+  header: Authorization
+  # SigV4, checked by shape only -- see the header for why, and see
+  # dynamodb/recipe.yaml, sqs/recipe.yaml, ses/recipe.yaml and
+  # secretsmanager/recipe.yaml for the same pattern on the same grounds.
+  pattern: '^AWS4-HMAC-SHA256 Credential=[^,]+, ?SignedHeaders=[^,]+, ?Signature=[0-9a-f]+$'
+  # No header at all: the marketing redirect, verified live, byte for byte
+  # the one live answer this Recipe ever got for silence.
+  absent_error: anonymous_redirect
+  # A header present and not shaped like a credential at all -- "junk", the
+  # exact value this was checked against live.
+  malformed_error: access_denied
+
+responses:
+  error:
+    style: text
+
+routes:
+  # Reached only once a request clears the shape check above -- a credential
+  # that looks like a real AWS4-HMAC-SHA256 signature and names no key this
+  # Recipe (or the real Wasabi) has ever issued. error needs no resource and
+  # no operation, because nothing past the credential check is modelled: see
+  # the fidelity gap on object/bucket CRUD above.
+  - method: GET
+    path: /
+    error: invalid_access_key_id
+
+errors:
+  # Verified live: GET / with zero headers at all, including no Authorization
+  # of any kind. text style so the body is served exactly as captured rather
+  # than wrapped in a JSON envelope that would misrepresent an HTML redirect
+  # as a JSON API answering politely.
+  anonymous_redirect:
+    status: 303
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+      Location: https://www.wasabi.com
+    message: |-
+      <a href="https://www.wasabi.com">See Other</a>.
+
+  # Verified live: GET / -H "Authorization: junk". The real S3 error vocabulary,
+  # once anything at all is presented. RequestId, HostId and CMReferenceId
+  # below are the exact values one real response carried -- Wasabi generates
+  # a fresh one per request and this Recipe serves the captured snapshot
+  # rather than a new one each time, which is why conformance only asserts
+  # the stable Code and Message rather than the whole document.
+  access_denied:
+    status: 403
+    code: AccessDenied
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>AccessDenied</Code><Message>User: anonymous is not authorized to perform: s3:ListAllMyBuckets on resource: arn:aws:s3:::</Message><RequestId>19C9645F07A61342:A</RequestId><HostId>+h19v4Wyar2CwU7VvKJuAhF5XzlJSrs5uhgh2hHrHnBQlX+kXERghzj7v/K2skymtZaQ6acSViOT</HostId><CMReferenceId>MTc4ODI0NjY4MyBBMTQtVTM2LnByb2QxLmFzaGJ1cm4gNTExNTM1MDgxNzo2MTY2ODIxODo0Mg==</CMReferenceId></Error>
+
+  # Verified live: GET / with a syntactically valid AWS4-HMAC-SHA256 header
+  # naming AKIAFAKEFAKEFAKEFAKE, an access key id that exists nowhere. Note
+  # the key is echoed back in AWSAccessKeyId -- existence is checked, and the
+  # answer says which of an anonymous prober's guesses it was checking.
+  invalid_access_key_id:
+    status: 403
+    code: InvalidAccessKeyId
+    style: text
+    headers:
+      Content-Type: application/xml
+    message: |-
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Error><Code>InvalidAccessKeyId</Code><Message>The AWS Access Key Id you provided does not exist in our records.</Message><AWSAccessKeyId>AKIAFAKEFAKEFAKEFAKE</AWSAccessKeyId><RequestId>95C92F4FB0004D60:B</RequestId><HostId>EI6uB396+Y1AXj8P041MurMGT+dzjoqFSL5DfJAHktTpToQJh24s+LcJDqxNGSiCjQPtYquOKdE8</HostId><CMReferenceId>MTc4ODI0NzM3NiBBMTEtVTE4LnByb2QxLmFzaGJ1cm4gMzYyMTc4MzI2MjozNDY2MjYxMDo4Nw==</CMReferenceId></Error>
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all does not answer as S3 -- it redirects to the marketing site
+    source: https://s3.wasabisys.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 303
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+        Location: https://www.wasabi.com
+      body_matches: 'href="https://www.wasabi.com"'
+
+  - name: any Authorization header at all, however wrong, reaches the real S3 gate
+    source: https://s3.wasabisys.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: junk
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Error><Code>AccessDenied</Code><Message>User: anonymous is not authorized to perform: s3:ListAllMyBuckets'
+
+  - name: a well-shaped signature naming no real key is a third, distinct answer
+    source: https://s3.wasabisys.com/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: "AWS4-HMAC-SHA256 Credential=AKIAFAKEFAKEFAKEFAKE/20260901/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+        x-amz-date: "20260901T072231Z"
+        x-amz-content-sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/xml
+      body_matches: '<Error><Code>InvalidAccessKeyId</Code><Message>The AWS Access Key Id you provided does not exist in our records\.</Message><AWSAccessKeyId>AKIAFAKEFAKEFAKEFAKE</AWSAccessKeyId>'

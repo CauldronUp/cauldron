@@ -1,0 +1,554 @@
+# Transloadit Recipe for Cauldron
+#
+# This is the provider in its group that is asynchronous on purpose and says
+# so in its own field names. Creating an Assembly answers 200 -- not 201 --
+# with an object that carries an explicit machine-readable status, "ok", and
+# the *same* two identifiers a caller polls with are handed back on the same
+# response: assembly_id, assembly_url and assembly_ssl_url. Nothing about
+# this has to be inferred. Two complete, real worked examples from
+# Transloadit's own published docs, quoted verbatim below, show the same
+# resource shape twice with one field having moved:
+#
+#   POST /assemblies, transloadit.com/docs/api/assemblies-post/:
+#     "ok": "ASSEMBLY_EXECUTING", "execution_duration": 0.001,
+#     "uploads": [], "results": {}
+#
+#   GET  /assemblies/{id} once it is done, transloadit.com/docs/api/assembly-status-response/:
+#     "ok": "ASSEMBLY_COMPLETED", "execution_duration": 5.281,
+#     "uploads": [ ... one file ... ], "results": { ":original": [...], "faces_detected": [...] }
+#
+# The trap the collection is looking for is visible in the FIRST of those two
+# bodies, not the second: bytes_received and bytes_expected are already
+# equal (1687 and 1687) on the response that is still executing. A client
+# that treats "all bytes are in" as "the job is done" is done polling before
+# Transloadit is done working, because the byte counters describe the
+# upload, which finished in 0.049s, and execution_duration -- 0.001, not yet
+# the 5.281 the completed example shows -- and results -- {}, not the
+# populated object the completed example shows -- are what actually say so.
+# Three fields on one object, and only two of them move together.
+#
+# Compare this against the rest of the collection's answers to the same
+# question, which this Recipe was written to sit beside:
+#
+#   - temporal/recipe.yaml: creating a namespace never returns the namespace
+#     at all -- it returns a *separate* AsyncOperation object, polled at a
+#     *different* route, with its own id. Transloadit does not do that. The
+#     Assembly you poll is the same object type the create call already
+#     handed back, at the identifier the create call already handed back --
+#     closer to pandadoc/recipe.yaml's shape (the same resource, twice, one
+#     field moved) than to Temporal's.
+#   - sumologic/recipe.yaml: a search is "submitted as a job and polled to
+#     completion" against an index, with no grouping abstraction underneath
+#     it -- mechanically the closest relative here. Transloadit's assembly_id
+#     is Sumo Logic's job id with a media pipeline behind it instead of a
+#     query engine.
+#   - turso/recipe.yaml: a create response truncated to a projection with no
+#     state field anywhere to poll. Transloadit is the opposite of careless
+#     about this: "ok" is declared, documented with its full enum, and
+#     present on every single response this Recipe found, successful or not.
+#
+# Three more things, checked live against api2.transloadit.com on the date
+# below, no account, no signing key ever created:
+#
+# **The identifier that answers GET /assemblies/{id} needs no credential at
+# all.** Transloadit's own docs say so in as many words -- "This request can
+# be issued by anyone who knows the assembly_ssl_url" -- and the wire agrees:
+# GET /assemblies/0123456789abcdef0123456789abcdef, sent with no auth_key,
+# no signature, nothing, answered 404 {"error":"ASSEMBLY_NOT_FOUND",
+# "message":"The Assembly you requested crashed or does not exist.",
+# "reason":"Assembly not found when fetching status","http_code":404,
+# "assembly_id":"0123456789abcdef0123456789abcdef",
+# "aId":"0123456789abcdef0123456789abcdef"} -- a real, application-level
+# answer, not an auth failure. The 32-character id is the only thing
+# standing in for a credential on this one route, which is a second and
+# very different answer to the "is a made-up value indistinguishable from a
+# real one" question this collection keeps asking: here, knowing the id
+# really is knowing the secret, by design, and Transloadit says so itself.
+# GET /assemblies (the list, no id) draws no such exception -- see below.
+#
+# **The credential is not one sentence away from itself, it is four.** Every
+# mutating and every listing route reads a `params` field (query string on a
+# GET, form field on a POST) holding a JSON object whose `auth.key` names
+# the account. Struck live, in order of how much of that shape was supplied:
+#
+#   nothing at all                         -> 400 NO_PARAMS_FIELD    "No params field provided."
+#   params={}                              -> 400 NO_AUTH_PARAMETER  "No auth parameter provided."
+#   params={"auth":{}}                     -> 400 NO_AUTH_KEY_PARAMETER "No auth key parameter provided."
+#   params={"auth":{"key":"junkjunkjunk"}} -> 400 GET_ACCOUNT_UNKNOWN_AUTH_KEY "Could not get workspace, this is an unknown auth key."
+#
+# Four distinct error codes for four distinct amounts of "not a credential",
+# all 400 rather than 401 -- Transloadit does not consider a call carrying no
+# auth at all a different HTTP status from one carrying a wrong key, only a
+# different sentence. Cauldron's own auth check distinguishes exactly two
+# things -- Absent and Malformed -- and this format's scheme vocabulary
+# (bearer / basic / header / query) has no primitive for "a credential is a
+# named field nested inside a JSON blob that also carries the request's own
+# parameters," the same shape problem AWS SigV4 solves in this collection by
+# checking a pattern rather than a value (see dynamodb/recipe.yaml). So auth
+# below is scheme: none, the device temporal/recipe.yaml already uses for
+# the same reason (there, one public route the Recipe-wide scheme would
+# have gated; here, one route -- GET by id -- that takes no credential at
+# all, sitting beside others that need a four-tier one no built-in scheme
+# expresses). Every route past the public one is gated by hand with
+# matches_query against one fixed fixture value, the same device Temporal's
+# /cloud/* routes use with matches_header. NO_PARAMS_FIELD is what an
+# unmatched request answers automatically, because it is what the plain
+# majority of "did not send the right params value" looks like; the other
+# three tiers are real, verified live and dated below, and reachable only by
+# arming them for one request each -- the device mezmo/recipe.yaml and
+# rootly/recipe.yaml both already use for a provider's second and third
+# failure shape.
+#
+# **Routing is checked before any of that.** An unrouted path and a wrong
+# method on a real path both answer 404 SERVER_404 with no params field
+# supplied at all -- struck live both ways -- so whatever the four-tier
+# check above does, it never runs against a request the router was never
+# going to match. There is also no 405 anywhere on this host: DELETE
+# /assemblies, a real path with the wrong method, answers the identical
+# SERVER_404 shape an unrouted path does, method and path both echoed back
+# in the body. No 405 anywhere is turso/recipe.yaml's finding about a
+# completely different provider; here it is the same finding about a
+# provider that also, unlike Turso, tells "missing" from "wrong" once a
+# request clears routing at all.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No upstream.spec. Transloadit's API reference is a set of individual
+#     doc pages, not one fetchable machine-readable description, so there is
+#     nothing here for a fingerprint to hash.
+#   - SERVER_404's real body also echoes method, path, user_ip, user_agent
+#     and user_referer -- confirmed live, all five, values that differ by
+#     definition on every single request a real caller makes. This format
+#     has no mechanism to echo an arbitrary request's own method or client
+#     IP into a static error body, so only the two fields that do not vary
+#     by caller (error, message) plus the constant http_code are served; the
+#     per-request fields are named here and not modelled.
+#   - ASSEMBLY_NOT_FOUND's real body likewise carries assembly_id and aId,
+#     the id from the path repeated under two different keys. Both are the
+#     request's own path parameter, which this Recipe's fixture-based errors
+#     cannot echo back either, for the same reason.
+#   - The create and list routes' success bodies are entirely the two
+#     worked examples quoted above, not observed: no account exists to sign
+#     a real request, and Transloadit requires one even to read
+#     `GET /assemblies` (the list -- contrast the single-assembly GET, which
+#     needs nothing). Of roughly forty fields the published examples show,
+#     this Recipe declares thirteen -- the ones that carry the async story --
+#     and states the rest are real and left out: warnings, account_id,
+#     build_id, client_agent/client_ip/client_referer, companion_url,
+#     executing_jobs/running_jobs/started_jobs, execution_start,
+#     expected_tus_uploads/started_tus_uploads/finished_tus_uploads, fields,
+#     has_dupe_jobs, instance, is_infinite, jobs_queue_duration,
+#     last_job_completed, merged_params, notify_*, params, parent_assembly_status,
+#     parent_id, queue_duration, start_date, template, template_id,
+#     transloadit_client, tus_url, upload_meta_data_extracted, uppyserver_url,
+#     websocket_url.
+#   - Step definitions, Assembly Instructions, Templates and Robots -- the
+#     actual transformation DSL a `params.steps` object configures -- are
+#     entirely out of scope. This Recipe is about the one mechanism the task
+#     asked for, not a model of what Transloadit can be told to do.
+#   - GET /assemblies/{id}'s wrong-method and unrouted-path behaviour was
+#     checked; its *successful* GET was not (no real assembly exists to
+#     fetch), so the "assembly" resource's 200 shape carries no verified
+#     date anywhere, only its 404 does.
+#
+# Every case below carrying `verified: "2026-09-01"` was called against
+# api2.transloadit.com exactly as shown, that day, with no account and no
+# signing key. Every other case was read from transloadit.com/docs/api/ and
+# says so by carrying no verified date.
+
+recipe: transloadit
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://transloadit.com/docs/api/
+
+auth:
+  # See the header: a four-tier field-shape check embedded in a JSON blob
+  # inside a query/form parameter, which none of scheme bearer/basic/header/
+  # query expresses. scheme: none plus hand-matched routes is the same
+  # device temporal/recipe.yaml uses for its own, differently-shaped reason.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    code_field: error
+    message_field: message
+  list:
+    style: wrapped
+    count_field: count
+  resource:
+    style: bare
+
+resources:
+  assembly:
+    collection: items
+    id:
+      style: hex
+      length: 32
+      field: assembly_id
+    fields:
+      # ASSEMBLY_UPLOADING, ASSEMBLY_EXECUTING while the job is running;
+      # ASSEMBLY_COMPLETED, ASSEMBLY_ABORTED or a failed state once it is
+      # not. "An Assembly is running if ok is either ASSEMBLY_UPLOADING or
+      # ASSEMBLY_EXECUTING" -- Transloadit's own words. This is the field
+      # the whole Recipe exists to pin.
+      ok:
+        type: string
+        default: ASSEMBLY_EXECUTING
+      # Only present once the Assembly has stopped running -- absent, not
+      # empty, on the still-executing worked example quoted in the header.
+      message:
+        type: string
+        null_when_unset: true
+      assembly_url:
+        type: string
+      assembly_ssl_url:
+        type: string
+      # Equal to bytes_expected on the still-executing worked example. Byte
+      # transfer finishing is not the same fact as the Assembly finishing --
+      # see the header.
+      bytes_received:
+        type: number
+      bytes_expected:
+        type: number
+      upload_duration:
+        type: number
+      # 0.001 while still executing, 5.281 once complete, on Transloadit's
+      # own two worked examples. This is the number that actually moves
+      # while bytes_received/bytes_expected already agree.
+      execution_duration:
+        type: number
+        null_when_unset: true
+      # {} while running, one key per Step once results exist. A dynamic,
+      # per-Assembly-config object -- modelled as a map because nothing about
+      # its keys is fixed by this Recipe.
+      results:
+        type: map
+      uploads:
+        type: list
+    constants:
+      http_code: 200
+
+  # No worked example exists for a failed Assembly's shape; error and
+  # message are documented as present only once ok has stopped meaning
+  # "running", and are declared on the resource above rather than fixtured
+  # here for that reason.
+
+routes:
+  # Public. No matches_query at all: this is the one route on this host
+  # that takes no credential, verified live -- see the header.
+  - method: GET
+    path: /assemblies/{id}
+    resource: assembly
+    operation: get
+    not_found: assembly_not_found
+
+  - method: GET
+    path: /assemblies
+    resource: assembly
+    operation: list
+    matches_query:
+      params: '{"auth":{"key":"cauldron_transloadit_fixture_0000000000"}}'
+    pagination:
+      style: page
+      limit: 50
+      limit_param: pagesize
+      cursor_param: page
+      first_page: 1
+
+  # Falls through when the fixture value above is not the exact params sent
+  # -- which includes params being absent entirely. See the header for why
+  # only this one of the four live tiers is what an unmatched request
+  # naturally reaches.
+  - method: GET
+    path: /assemblies
+    error: no_params_field
+
+  - method: POST
+    path: /assemblies
+    resource: assembly
+    operation: create
+    matches_query:
+      params: '{"auth":{"key":"cauldron_transloadit_fixture_0000000000"}}'
+    status: 200
+
+  - method: POST
+    path: /assemblies
+    error: no_params_field
+
+  # Explicit, because Cauldron's own default for a method no declared route
+  # accepts on a known path is a real 405 -- and on this host, verified
+  # live, there is no 405 anywhere: DELETE here answers the identical
+  # SERVER_404 shape an unrouted path does. See the header.
+  - method: DELETE
+    path: /assemblies
+    error: unknown_route
+
+errors:
+  # The organic fallback -- see the header. Live, verified.
+  no_params_field:
+    status: 400
+    code: NO_PARAMS_FIELD
+    message: No params field provided.
+    fields:
+      http_code: 400
+
+  # Real, live, verified -- reachable in this Recipe only by arming it for
+  # one request, the same device mezmo/recipe.yaml and rootly/recipe.yaml
+  # each use for a provider's second and third failure shape.
+  no_auth_parameter:
+    status: 400
+    code: NO_AUTH_PARAMETER
+    message: No auth parameter provided.
+    fields:
+      http_code: 400
+
+  no_auth_key_parameter:
+    status: 400
+    code: NO_AUTH_KEY_PARAMETER
+    message: No auth key parameter provided.
+    fields:
+      http_code: 400
+
+  unknown_auth_key:
+    status: 400
+    code: GET_ACCOUNT_UNKNOWN_AUTH_KEY
+    message: "Could not get workspace, this is an unknown auth key."
+    fields:
+      http_code: 400
+
+  # Every unrouted path and every wrong method on a real path, live,
+  # verified, in both directions -- see the header. The real body also
+  # echoes method/path/user_ip/user_agent/user_referer; not modelled, see
+  # the fidelity gaps.
+  unknown_route:
+    status: 404
+    code: SERVER_404
+    message: unknown method / url
+    fields:
+      http_code: 404
+
+  assembly_not_found:
+    status: 404
+    code: ASSEMBLY_NOT_FOUND
+    message: The Assembly you requested crashed or does not exist.
+    fields:
+      reason: Assembly not found when fetching status
+      http_code: 404
+
+fixtures:
+  empty: {}
+
+  # The two worked examples from Transloadit's own docs, quoted verbatim in
+  # the header -- one still running, one complete. Neither is observed:
+  # both are cited, and neither carries a verified date anywhere in
+  # conformance below.
+  freshly-created:
+    assembly:
+      - id: 0fce5b1063e611e88d8eb130f7921d8a
+        assembly_id: 0fce5b1063e611e88d8eb130f7921d8a
+        ok: ASSEMBLY_EXECUTING
+        message: The assembly is currently being executed.
+        assembly_url: http://api2.morven.transloadit.com/assemblies/0fce5b1063e611e88d8eb130f7921d8a
+        assembly_ssl_url: https://api2-morven.transloadit.com/assemblies/0fce5b1063e611e88d8eb130f7921d8a
+        bytes_received: 1687
+        bytes_expected: 1687
+        upload_duration: 0.049
+        execution_duration: 0.001
+        results: {}
+        uploads: []
+
+  completed:
+    assembly:
+      - id: 7828446e5acd4aa996dce3455ec914e9
+        assembly_id: 7828446e5acd4aa996dce3455ec914e9
+        ok: ASSEMBLY_COMPLETED
+        message: The Assembly was successfully completed.
+        assembly_url: http://api2.jenks.transloadit.com/assemblies/7828446e5acd4aa996dce3455ec914e9
+        assembly_ssl_url: https://api2-jenks.transloadit.com/assemblies/7828446e5acd4aa996dce3455ec914e9
+        bytes_received: 486608
+        bytes_expected: 486608
+        upload_duration: 2.814
+        execution_duration: 5.281
+        results:
+          ":original":
+            - id: a30bd0776e7f4ac3817b056d102e8219
+              name: joe-gardner-149699.jpg
+          faces_detected:
+            - id: b8d12f6c517541ca86bf50c537cedb27
+              name: joe-gardner-149699.jpg
+        uploads:
+          - id: a30bd0776e7f4ac3817b056d102e8219
+            name: joe-gardner-149699.jpg
+            size: 485784
+
+conformance:
+  - name: no params field at all is the organic 400
+    source: https://api2.transloadit.com/assemblies
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /assemblies
+    expect:
+      status: 400
+      body:
+        error: NO_PARAMS_FIELD
+        message: No params field provided.
+
+  - name: an empty params object is a different sentence, arming past the organic default
+    # Real request: ?params=%7B%7D -- an empty JSON object. Live.
+    source: https://api2.transloadit.com/assemblies
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_auth_parameter
+    request:
+      method: GET
+      path: /assemblies
+      query:
+        params: "{}"
+    expect:
+      status: 400
+      body:
+        error: NO_AUTH_PARAMETER
+        message: No auth parameter provided.
+
+  - name: an auth object with no key is a third sentence
+    source: https://api2.transloadit.com/assemblies
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_auth_key_parameter
+    request:
+      method: GET
+      path: /assemblies
+      query:
+        params: '{"auth":{}}'
+    expect:
+      status: 400
+      body:
+        error: NO_AUTH_KEY_PARAMETER
+        message: No auth key parameter provided.
+
+  - name: a well-formed but unknown key is a fourth sentence, still 400 rather than 401
+    source: https://api2.transloadit.com/assemblies
+    verified: "2026-09-01"
+    fixture: empty
+    arm: unknown_auth_key
+    request:
+      method: GET
+      path: /assemblies
+      query:
+        params: '{"auth":{"key":"junkjunkjunk12345"}}'
+    expect:
+      status: 400
+      body:
+        error: GET_ACCOUNT_UNKNOWN_AUTH_KEY
+        message: "Could not get workspace, this is an unknown auth key."
+
+  - name: fetching a nonexistent assembly by id needs no credential at all
+    # Live, no params of any kind sent -- this is the route Transloadit's own
+    # docs say needs only the id. See the header.
+    source: https://api2.transloadit.com/assemblies/0123456789abcdef0123456789abcdef
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /assemblies/0123456789abcdef0123456789abcdef
+    expect:
+      status: 404
+      body:
+        error: ASSEMBLY_NOT_FOUND
+        message: The Assembly you requested crashed or does not exist.
+        reason: Assembly not found when fetching status
+
+  - name: an unrouted path 404s with no params sent, method and all
+    source: https://api2.transloadit.com/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+    expect:
+      status: 404
+      body:
+        error: SERVER_404
+        message: unknown method / url
+
+  - name: and so does a wrong method on a real path -- there is no 405 on this host
+    # DELETE /assemblies, no params sent. Live -- see turso/recipe.yaml for
+    # the same absence on a different provider.
+    source: https://api2.transloadit.com/assemblies
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /assemblies
+    expect:
+      status: 404
+      body:
+        error: SERVER_404
+        message: unknown method / url
+
+  - name: listing wraps under items with a count, the shape assemblies-get documents
+    # Doc-sourced (transloadit.com/docs/api/assemblies-get/ shows
+    # {"items": [...], "count": N}); this Recipe's own single-assembly
+    # fixture stands in for the list, so count here is 1, self-consistently,
+    # not the unrelated "50" that page's own example account happens to show.
+    source: https://transloadit.com/docs/api/assemblies-get/
+    fixture: completed
+    request:
+      method: GET
+      path: /assemblies
+      query:
+        params: '{"auth":{"key":"cauldron_transloadit_fixture_0000000000"}}'
+    expect:
+      status: 200
+      body:
+        count: 1
+        "items[0].assembly_id": 7828446e5acd4aa996dce3455ec914e9
+        "items[0].ok": ASSEMBLY_COMPLETED
+
+  - name: a freshly created Assembly is 200, not 201, and defaults to executing
+    # Doc-sourced, quoted verbatim in the header -- no account exists to
+    # create a real one. bytes_received/bytes_expected/results in the real
+    # worked example (1687, 1687, {}) describe one specific real upload's
+    # byte count; a create this emulator serves has no uploaded content to
+    # measure, so it mints a fresh id rather than replaying the fixture's
+    # literal one and leaves those three unset instead of inventing a
+    # number nothing here observed.
+    source: https://transloadit.com/docs/api/assemblies-post/
+    fixture: empty
+    request:
+      method: POST
+      path: /assemblies
+      query:
+        params: '{"auth":{"key":"cauldron_transloadit_fixture_0000000000"}}'
+    expect:
+      status: 200
+      body:
+        ok: ASSEMBLY_EXECUTING
+      absent:
+        - error
+
+  - name: bytes finishing is not execution finishing -- the same id, polled once it is actually done
+    # Doc-sourced, quoted verbatim in the header. execution_duration moved
+    # from 0.001 to 5.281 and results moved from {} to populated; bytes_received
+    # and bytes_expected already agreed on the still-executing response.
+    source: https://transloadit.com/docs/api/assembly-status-response/
+    fixture: completed
+    # No params sent -- this route needs none, which is itself part of what
+    # this case demonstrates.
+    request:
+      method: GET
+      path: /assemblies/7828446e5acd4aa996dce3455ec914e9
+    expect:
+      status: 200
+      body:
+        ok: ASSEMBLY_COMPLETED
+        assembly_id: 7828446e5acd4aa996dce3455ec914e9
+        execution_duration: 5.281
+      absent:
+        - error

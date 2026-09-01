@@ -75,7 +75,12 @@ func TestTheREADMEBreakdownOfLiveCasesMatchesTheRecipes(t *testing.T) {
 	// after the dot in crates.io, the bare apostrophe on RubyGems' and the line
 	// break in the middle of a claim -- and the fourth time the sum was what
 	// noticed, because a claim that does not match is simply not counted.
-	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z.[:space:]-]*?)'s?`).FindAllStringSubmatch(paragraph, -1)
+	// Digits belong in the name half. n8n and what3words are both real
+	// providers and neither could be attributed at all while the pattern
+	// allowed only letters -- the paragraph would name them, the parser
+	// would skip them, and the total would silently fail to add up with
+	// nothing saying which provider was missing.
+	claims := regexp.MustCompile(`([A-Z][a-z]+)[[:space:]]+(?:is|are)[[:space:]]+(?:the[[:space:]]+)?([A-Za-z][A-Za-z0-9.[:space:]-]*?)'s?`).FindAllStringSubmatch(paragraph, -1)
 	if len(claims) == 0 {
 		t.Fatal("no provider counts were found in the paragraph; update this test with the form it takes now")
 	}

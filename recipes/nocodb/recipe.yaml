@@ -1,0 +1,529 @@
+# NocoDB Recipe for Cauldron
+#
+# Airtable's Recipe in this collection sends a user-defined column's name as
+# the JSON key on every record, so renaming a column breaks every client
+# reading it. Baserow's Recipe, alongside this one, defaults to an
+# immutable field_<id> and only sends the user's own name if a request
+# opts in with ?user_field_names=true. NocoDB is the third answer, and it
+# is Airtable's answer, not Baserow's: a row from GET
+# /api/v2/tables/{tableId}/records comes back keyed by the column's own
+# title, always, with no opt-out. Checked against NocoDB's own published
+# v2 data-API description (data-apis-v2.nocodb.com, backed by
+# nocodb.com/apis/v2/swagger-v2.json) rather than assumed -- its own worked
+# example answers {"list": [{"Id": 1, "SingleLineText": "David", "Year":
+# 2023, ...}], "pageInfo": {...}}. SingleLineText and Year are column
+# titles, sitting at the top level beside Id, not under a nested "fields"
+# key the way Airtable's are and not behind an internal id the way
+# Baserow's default is. An integration written against NocoDB today reads
+# record.Name the way an Airtable integration does, and breaks the same
+# afternoon somebody renames the column -- this Recipe models it as the
+# same shape as Airtable's on purpose, because it is the same shape, sourced
+# from a different vendor. NocoDB is open source with a hosted offering
+# (app.nocodb.com) the same way Baserow is, and this Recipe's live cases
+# were struck against that host rather than a self-hosted instance.
+#
+# The credential story does not carry a second live scheme the way
+# Baserow's does. NocoDB documents two headers -- xc-token for a generated
+# API token and xc-auth for the browser session JWT -- and
+# GET /api/v2/meta/nocodb/info answers "authType":"jwt" unauthenticated,
+# naming the session scheme as primary. But struck live, four different
+# credential states against the same route -- no header, a wrong xc-token,
+# a wrong xc-auth, and a wrong Authorization: Bearer -- answer the
+# byte-identical body:
+#
+#   {"error":"ERR_AUTHENTICATION_REQUIRED","message":"Authentication
+#   required - Invalid token"}
+#
+# Two live prefixes and one live sentence: the opposite of Baserow's own
+# finding in this same group, where two live prefixes answer three
+# different sentences. auth.absent_error, auth.malformed_error and
+# auth.rejected_error all stay unset here on purpose -- not because they
+# were not checked, but because they were, and every verdict this host can
+# reach collapsed to the one message below.
+#
+# Routing and the credential check disagree about order, and the split is
+# not by path or by method -- it is by whether the route names an id to
+# resolve. A route with nothing to look up checks the credential first:
+#
+#   GET /api/v2/meta/bases/        no header    -> 401 ERR_AUTHENTICATION_REQUIRED
+#
+# A route that names an id resolves it BEFORE it asks who is calling, live,
+# checked with and without a credential attached, byte-identical either way:
+#
+#   GET /api/v2/meta/bases/{id}         (fake id) -> 404 ERR_BASE_NOT_FOUND
+#   GET /api/v2/tables/{id}/records     (fake id) -> 404 ERR_TABLE_NOT_FOUND
+#   GET /api/v2/tables/{id}/records/{r} (fake id) -> 404 ERR_TABLE_NOT_FOUND
+#
+# and the message names the exact id sent, not a generic sentence: "Table
+# 'mtxxxxxxxxxxxxxx' not found". A caller can enumerate which table and
+# base ids exist on this host with no credential of any kind. A wrong
+# method on a real path answers differently from either of those, in a
+# third shape again: PUT /api/v2/meta/bases/ -- PUT is not a route this
+# path has -- answers Express's own {"msg":"Cannot PUT
+# /api/v2/meta/bases/"}, live, the identical body a genuinely unrouted path
+# gets. So this host has three shapes for "no": a route with an id
+# resolves the id first and never mentions a credential; a route with none
+# to resolve checks the credential first; and a method nothing registers
+# skips both and answers the bare framework 404, naming the method it
+# refused.
+#
+# Cauldron's own auth check is one Recipe-wide setting, checked either
+# entirely before routing or entirely after it, and this host needs
+# neither: id-addressed routes need routing (specifically, resolving the
+# id) BEFORE the credential is asked for at all, and the list-bases route
+# needs the opposite. So auth.scheme is none here, and only the
+# list-bases route carries a hand-rolled matches_header pair -- the same
+# device Census's Recipe in this collection uses for its own per-route
+# split. The id-addressed routes below carry no matches_header at all:
+# Cauldron's own not_found handling, unconditional on the credential, is
+# what stands in for NocoDB's own id-first check, and it needed no
+# extra mechanism because that check genuinely does not consult the
+# credential either.
+#
+# Pagination is a genuine list/pageInfo envelope, not Airtable's cursor-
+# shaped offset and not Baserow's page/size query pair with a next URL in
+# the body. A request sends limit and offset; the answer reports totalRows
+# (the whole matching set, not the page: NocoDB's own worked example shows
+# page=1, pageSize=1, totalRows=5 together), page and pageSize (the
+# position and size the response actually used, which is not the same
+# vocabulary the request sent), and isFirstPage/isLastPage as booleans
+# rather than a token or a next-page URL. A client that terminates a
+# paging loop on isLastPage: false-until-true never has to construct a URL
+# or hold a cursor at all -- a fourth pagination shape in a group of four
+# providers, none of which pages the same way as any of the others.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Writing to a table id that resolves before a credential is checked is
+#     verified live for GET only. Whether a WRONG credential against a
+#     table that DOES exist is refused, and at what point, is not stated:
+#     nothing unauthenticated could create a table to find out, and this
+#     Recipe's own id-addressed routes therefore never enforce a credential
+#     at all once the id resolves -- a real fidelity gap, not a modelling
+#     choice. What is verified is narrower and stated precisely above: the
+#     id is resolved before the credential is even read.
+#   - isFirstPage has no field in this format's vocabulary to hold it
+#     (isLastPage maps onto complete_field, the one boolean this format
+#     already has for "no pages remain"); isFirstPage is real, documented,
+#     and not modelled.
+#   - created_at and updated_at are real, documented on nearly everything,
+#     and use a format this Recipe cannot type honestly: NocoDB's own
+#     worked examples show "2023-10-16 08:56:32+00:00" -- a space rather
+#     than a T, no trailing Z -- not the RFC 3339 shape this format's
+#     datetime type renders. Declaring them as datetime would silently
+#     correct NocoDB's own timestamp shape into a cleaner one it does not
+#     send. Left out rather than mistyped.
+#   - Update and delete on a record are real (PATCH and DELETE on the same
+#     /records path, addressed by an Id in the request body rather than a
+#     path segment, answering the identical array-of-{Id} shape create
+#     does) and not modelled -- create alone already establishes the
+#     truncated-write-projection finding this group of Recipes keeps
+#     finding in different shapes elsewhere.
+#   - Filtering (where), sorting, field selection and the linked-record
+#     endpoints are real, documented query parameters and routes and none
+#     of them are modelled -- this Recipe is about the naming, ordering and
+#     paging findings, not a full port of the query language.
+#
+# Every case below not carrying a verified date was read from
+# nocodb.com/apis/v2/swagger-v2.json, not observed against a real base --
+# no account was ever created and no token was ever issued to this project.
+# The token below is a fixture and belongs to no workspace.
+
+recipe: nocodb
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.nocodb.com/developer-resources/rest-apis
+  spec: https://nocodb.com/apis/v2/swagger-v2.json
+  spec_hash: 76fa8b22f84be77ea7e208d82cb0c4fc91d126890ca518e14fb8ff65cce5c1d5
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely one live sentence for every credential state this host was
+  # checked with -- see the header for why AbsentError, MalformedError and
+  # RejectedError all stay unset, and why the gate itself is hand-rolled
+  # per route rather than declared once here.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    count_field: pageInfo.totalRows
+    page_field: pageInfo.page
+    limit_field: pageInfo.pageSize
+    complete_field: pageInfo.isLastPage
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: error
+
+resources:
+  base:
+    collection: list
+    id:
+      style: prefixed
+      prefix: "p_"
+    fields:
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+        null_when_unset: true
+
+  # Addressed by its own id directly (GET /api/v2/meta/tables/{id}), which
+  # is what echoes the exact table id in a not-found message -- see the
+  # header. The /records routes below share the identical live finding but
+  # cannot echo the table id the same way, because the id Cauldron resolves
+  # for them is the record's, not the table's; this resource and route
+  # exist to pin the finding precisely rather than approximately.
+  table:
+    id:
+      style: prefixed
+      prefix: "mt"
+    fields:
+      title:
+        type: string
+        required: true
+
+  record:
+    collection: list
+    # "Id", capitalised -- the primary key column's own title, which is
+    # what every worked example in NocoDB's description shows, not a fixed
+    # wire name this format would otherwise default to.
+    id:
+      style: numeric
+      type: number
+      field: Id
+    fields:
+      # The partition lives in the path; NocoDB never repeats it on a row.
+      table_id:
+        type: string
+        in: "-"
+      # Column titles, sitting directly on the row -- see the header.
+      Name:
+        type: string
+        required: true
+      Status:
+        type: string
+        default: Todo
+
+routes:
+  # No id to resolve, so the credential is checked first -- hand-rolled,
+  # the same device Census's Recipe in this collection uses for the same
+  # reason.
+  - method: GET
+    path: /api/v2/meta/bases/
+    resource: base
+    operation: list
+    matches_header:
+      xc-token: cauldron-nocodb-fixture-token-00000000000000000000000000
+
+  - method: GET
+    path: /api/v2/meta/bases/
+    error: authentication_error
+
+  # An id to resolve, and live NocoDB resolves it before it ever asks who
+  # is calling -- see the header. No matches_header at all: nothing here
+  # gates on the credential, because nothing live does either, up to the
+  # point this project could check.
+  - method: GET
+    path: /api/v2/meta/bases/{id}
+    resource: base
+    operation: get
+    not_found: base_not_found
+
+  - method: GET
+    path: /api/v2/meta/tables/{id}
+    resource: table
+    operation: get
+    not_found: table_not_found
+
+  - method: GET
+    path: /api/v2/tables/{table_id}/records
+    resource: record
+    operation: list
+    scope: [table_id]
+    pagination:
+      style: offset
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /api/v2/tables/{table_id}/records/{id}
+    resource: record
+    operation: get
+    scope: [table_id]
+    not_found: table_not_found
+
+  # Answers an array of {"Id": n}, even for one record -- see the header.
+  - method: POST
+    path: /api/v2/tables/{table_id}/records
+    resource: record
+    operation: create
+    scope: [table_id]
+    returns: [id]
+    envelope:
+      style: bare
+      array: true
+
+errors:
+  authentication_error:
+    status: 401
+    message: Authentication required - Invalid token
+    code: ERR_AUTHENTICATION_REQUIRED
+
+  # {detail} carries the exact id from the path, which is what NocoDB's own
+  # message echoes back.
+  base_not_found:
+    status: 404
+    message: "Base '{detail}' not found"
+    code: ERR_BASE_NOT_FOUND
+
+  table_not_found:
+    status: 404
+    message: "Table '{detail}' not found"
+    code: ERR_TABLE_NOT_FOUND
+
+  # Express's own catch-all, live, for a path no route on this host
+  # matches at all -- see the header for how this differs from an id that
+  # merely does not exist. {detail} here carries only the path, not the
+  # method Cauldron passes it with -- every case exercising this uses GET,
+  # so the verb is fixed rather than templated; a case for another method
+  # would need its own declaration.
+  unknown_route:
+    status: 404
+    style: flat
+    message_field: msg
+    code_field: "-"
+    message: "Cannot GET {detail}"
+
+  # NocoDB has no 405 anywhere -- see the header. A method nothing
+  # registers on a real path gets the identical bare shape a genuinely
+  # unrouted path does, live, and {detail} here does carry the method:
+  # Cauldron passes "METHOD path" for this particular fallback.
+  method_not_allowed:
+    status: 404
+    style: flat
+    message_field: msg
+    code_field: "-"
+    message: "Cannot {detail}"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    base:
+      - id: p_cauldron000001
+        title: Support Tracker
+        description: Tickets and their current status
+
+    record:
+      - id: 1
+        table_id: mtcauldron000001
+        Name: Ship the conformance suite
+        Status: Done
+      - id: 2
+        table_id: mtcauldron000001
+        Name: Write the NocoDB Recipe
+        Status: In progress
+
+conformance:
+  - name: no credential is refused on a route with no id to resolve
+    source: https://app.nocodb.com/api/v2/meta/bases/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/bases/
+    expect:
+      status: 401
+      body:
+        error: ERR_AUTHENTICATION_REQUIRED
+        message: Authentication required - Invalid token
+
+  - name: a wrong xc-token answers the identical body, not a different one
+    source: https://app.nocodb.com/api/v2/meta/bases/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/bases/
+      headers:
+        xc-token: junkjunkjunk0000000000000000
+    expect:
+      status: 401
+      body:
+        error: ERR_AUTHENTICATION_REQUIRED
+        message: Authentication required - Invalid token
+
+  - name: a wrong xc-auth session token answers the same body too
+    source: https://app.nocodb.com/api/v2/meta/bases/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/bases/
+      headers:
+        xc-auth: junkjunkjunk
+    expect:
+      status: 401
+      body:
+        error: ERR_AUTHENTICATION_REQUIRED
+        message: Authentication required - Invalid token
+
+  - name: an id that belongs to no base is refused before a credential would even matter
+    source: https://app.nocodb.com/api/v2/meta/bases/pxxxxxxxxxxxxxxx
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/bases/pxxxxxxxxxxxxxxx
+    expect:
+      status: 404
+      body:
+        error: ERR_BASE_NOT_FOUND
+        message: Base 'pxxxxxxxxxxxxxxx' not found
+
+  - name: and a wrong credential attached to that same request changes nothing
+    source: https://app.nocodb.com/api/v2/meta/bases/pxxxxxxxxxxxxxxx
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/bases/pxxxxxxxxxxxxxxx
+      headers:
+        xc-token: junkjunkjunk0000000000000000
+    expect:
+      status: 404
+      body:
+        error: ERR_BASE_NOT_FOUND
+        message: Base 'pxxxxxxxxxxxxxxx' not found
+
+  - name: a table id nobody holds is refused the same way, naming the id it was sent
+    source: https://app.nocodb.com/api/v2/meta/tables/mtxxxxxxxxxxxxxx
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/meta/tables/mtxxxxxxxxxxxxxx
+    expect:
+      status: 404
+      body:
+        error: ERR_TABLE_NOT_FOUND
+        message: Table 'mtxxxxxxxxxxxxxx' not found
+
+  - name: and the identical finding holds for the records route a table id addresses too
+    # Cauldron cannot echo the table id here the same way -- see the header
+    # and the table resource's own comment. This pins the status and code
+    # live; the case above pins the exact message.
+    source: https://app.nocodb.com/api/v2/tables/mtxxxxxxxxxxxxxx/records
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/tables/mtxxxxxxxxxxxxxx/records/1
+    expect:
+      status: 404
+      body:
+        error: ERR_TABLE_NOT_FOUND
+
+  - name: a path no route matches answers Express's own shape, not this API's
+    source: https://app.nocodb.com/api/v2/nonexistent-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/nonexistent-endpoint-xyz
+    expect:
+      status: 404
+      body:
+        msg: Cannot GET /api/v2/nonexistent-endpoint-xyz
+      absent:
+        - error
+        - message
+
+  - name: a method nothing registers on a real path gets the identical bare shape, naming the method
+    source: https://app.nocodb.com/api/v2/meta/bases/
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /api/v2/meta/bases/
+    expect:
+      status: 404
+      body:
+        msg: Cannot PUT /api/v2/meta/bases/
+
+  - name: a row's columns sit at the top level under their own titles
+    source: https://nocodb.com/apis/v2/swagger-v2.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/tables/mtcauldron000001/records/1
+    expect:
+      status: 200
+      body:
+        Id: 1
+        Name: Ship the conformance suite
+        Status: Done
+      absent:
+        - fields
+        - data
+
+  - name: a listing wraps its array under list, beside pageInfo
+    source: https://nocodb.com/apis/v2/swagger-v2.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/tables/mtcauldron000001/records
+    expect:
+      status: 200
+      body:
+        list[0].Id: 1
+        list[0].Name: Ship the conformance suite
+        pageInfo.totalRows: 2
+      absent:
+        - data
+        - results
+        - has_more
+
+  - name: totalRows is the whole matching set, not the page in front of you
+    source: https://nocodb.com/apis/v2/swagger-v2.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /api/v2/tables/mtcauldron000001/records
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        pageInfo.totalRows: 2
+        pageInfo.pageSize: 1
+        pageInfo.isLastPage: false
+      matches:
+        list[0].Id: "^1$"
+      absent:
+        - list[1]
+
+  - name: creating a record answers an array of just the id, not the row it made
+    source: https://nocodb.com/apis/v2/swagger-v2.json
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v2/tables/mtcauldron000001/records
+      json:
+        Name: Added through the API
+    expect:
+      status: 200
+      matches:
+        "[0].Id": "^[0-9]+$"
+      absent:
+        - "[0].Name"
+        - "[0].Status"
+        - Name

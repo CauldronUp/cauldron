@@ -1,0 +1,407 @@
+# Zyte API Recipe for Cauldron
+#
+# Zyte answers the question this whole collection is organised around more
+# plainly than any other provider in it, in its own words, in its own
+# error-handling documentation: "Zyte API sends a successful response, i.e.
+# a response with an HTTP status code of 200, when that response provides
+# the requested data" -- and a bad response from the TARGET counts as
+# provided data. Zyte's own worked example: request
+# https://toscrape.com/not-found through /v1/extract, and "you get a
+# successful response from Zyte API, where the value of the statusCode
+# response field is 404." One HTTP status line, two numbers that both
+# matter: 200 on the wire, 404 in the body, and only the second one is
+# about the page you asked for. (source:
+# https://docs.zyte.com/zyte-api/usage/errors.html)
+#
+# The dividing line is not "did something go wrong", it is "whose fault is
+# it". Zyte's own docs draw it explicitly:
+#
+#   - The TARGET answered with a non-200 status that was not a ban -> 200
+#     from Zyte, statusCode carries the real number.
+#   - A browser action failed mid-page (a click timed out) -> still 200;
+#     the actions field in the response says what happened.
+#   - Automatic extraction did not match the page -> still 200;
+#     metadata.probability says how confident Zyte is.
+#   - Zyte could not download the page AT ALL because it got banned and
+#     could not route around it -> Zyte's OWN failure, HTTP 520.
+#   - The domain does not resolve, so there was never a page to be wrong
+#     about -> Zyte's OWN failure, HTTP 421, before any fetch is attempted.
+#   - Your request was malformed, or your key does not work -> Zyte's OWN
+#     failure, HTTP 400/401/403.
+#
+# So a website timing out and Zyte failing to reach a website are two
+# different HTTP statuses on this API, on purpose, and the second one
+# (521, permanent download error; 520, temporary/ban) is Zyte admitting the
+# fault is its own routing rather than the target's content.
+#
+# **Auth is genuinely three-way, verified directly against api.zyte.com on
+# 2026-09-01, and Zyte's own reference documentation states the same
+# grouping in words.** No Authorization header at all:
+#
+#   401  {"type":"/auth/not-valid","title":"Authentication Info Invalid","status":401,
+#         "detail":"No valid authentication info found in the request. Check the documentation for the correct authentication schema."}
+#
+# A syntactically fine Basic credential that is simply wrong (checked with
+# `--user junkapikey1234567890:`, the documented convention -- API key as
+# username, empty password):
+#
+#   401  {"type":"/auth/key-not-found","title":"Authentication Key Not Found","status":401,
+#         "detail":"The authentication key is not valid or can't be matched."}
+#
+# And `Authorization: Bearer junktoken1234567890` -- the wrong SCHEME
+# entirely, Basic-only API given a Bearer credential -- answers the exact
+# same not-valid body as no header at all, byte for byte. Zyte's own
+# reference doc (zyte-api/usage/reference, the Problem schema's 401
+# examples) names these two cases "Invalid authentication data" and
+# "Invalid API key" respectively and describes the first as covering "Your
+# API key is not properly specified, e.g. missing or malformed" -- missing
+# and malformed, explicitly grouped as one sentence in Zyte's own words,
+# which is exactly what this Recipe's absent_error and malformed_error
+# being the same entry claims.
+#
+# **One case where Cauldron's own verdict engine draws the malformed line
+# in a different place than Zyte does, verified directly.** `Authorization:
+# Basic bm90LXZhbGlkLWJhc2U2NCEhIQ==`-shaped garbage that fails to decode to
+# a real user:pass pair -- checked as `Authorization: Basic
+# not-valid-base64!!!` -- answers key-not-found, the REJECTED sentence, not
+# not-valid. Go's net/http.Request.BasicAuth, which
+# internal/runtime/auth.go's basic-scheme check calls, returns ok=false for
+# exactly this (header present, "Basic " prefix present, undecodable
+# payload), and this runtime's own rule is "no header at all is Absent,
+# anything else BasicAuth rejects is Malformed" -- so Cauldron would answer
+# not-valid here, and real Zyte answers key-not-found. The common case this
+# Recipe is built to get right -- forgetting the scheme, or sending a
+# Bearer token to a Basic-only API -- is unaffected; this is the one
+# adjacent shape (a "Basic "-prefixed value whose base64 will not decode at
+# all) where the two disagree, stated here rather than silently wrong.
+#
+# **Routing and method resolve before the credential is ever read, verified
+# with no Authorization header sent at all.** GET /v1/extract (the
+# endpoint is POST-only):
+#
+#   405  {"type":"/request/invalid","title":"HTTP 405 Method Not Allowed","status":405,"detail":"HTTP 405 Method Not Allowed"}
+#
+# A path this project invented, /v1/no-such-route:
+#
+#   404  {"type":"/request/invalid","title":"HTTP 404 Not Found","status":404,"detail":"HTTP 404 Not Found"}
+#
+# Both checked again with a well-formed wrong Basic credential attached --
+# identical either way. This is the same ordering Fireworks' Recipe
+# elsewhere in this collection already named: auth.after_routing: true.
+#
+# **This is a synchronous, single-request API, by Zyte's own description,
+# not this Recipe's inference.** The OpenAPI document for POST /v1/extract
+# says so directly: "This endpoint blocks until the result is ready. It is
+# intended for short-running operations." No job id, no polling field
+# anywhere in Response200.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - This project holds no Zyte API key, so nothing past the auth gate was
+#     called. The 200-with-statusCode case is Zyte's own worked example
+#     (toscrape.com/not-found -> statusCode 404), not a call this project
+#     made; the literal httpResponseBody a real fetch would carry is not
+#     invented and is left out of the fixture below rather than padded
+#     with content nobody read.
+#   - Every documented failure past the auth gate carries a Retry-After
+#     header on 429/503, and this Recipe only models one 429 variant
+#     (over-user-limit) of the three documented; over-domain-limit and
+#     over-org-domain-limit are the identical shape with a different type
+#     string and are not repeated here.
+#   - Ban handling (520), permanent download errors (521), account
+#     suspension (403) and the invalid-request family (400, 421, 422, 451)
+#     are all documented with literal worked examples in Zyte's own
+#     OpenAPI reference and are modelled below from that document, not
+#     from a call this project made.
+#   - Browser rendering, actions, screenshots, network capture, automatic
+#     extraction (article/product/etc.), the Search API and the IDE
+#     scripting API are not modelled. Only plain HTTP extraction
+#     (httpResponseBody), which is the one mode that answers the
+#     whose-status-code question this collection is about most directly.
+
+recipe: zyte
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.zyte.com/zyte-api/usage/errors.html
+  # No spec recorded. reference.md is a Markdown documentation page that
+  # embeds Zyte's schema in prose, not a machine-readable description --
+  # fetched and read directly, and it fails to parse as YAML at line 8
+  # because line 8 is a sentence. It was recorded as a spec when this
+  # Recipe was written, which is a mistake worth naming rather than
+  # silently deleting: a .md URL under a docs host is exactly the shape
+  # that looks like a description and is not one. openapi.yaml and
+  # openapi.json were both tried under docs.zyte.com and api.zyte.com and
+  # all four 404, so there is nothing here for drift to watch.
+
+# Basic, API key as username, no password -- Zyte's own documented
+# convention (docs.zyte.com/zyte-api/usage/reference: "Use your Zyte API
+# key as username, and no password"), which is also Cauldron's default
+# Credential ("username"), so no override is needed.
+#
+# absent_error and malformed_error are the SAME entry because Zyte's own
+# docs group them as one sentence -- see the header comment. rejected_error
+# is the one case with a distinct message. See the header comment for the
+# one narrow shape (Basic with undecodable base64) where this runtime's own
+# Malformed/Rejected line falls on the opposite side of Zyte's.
+auth:
+  scheme: basic
+  keys:
+    - cauldronzyteapikey000000000000000000000000000000000000000000
+  absent_error: auth_not_valid
+  malformed_error: auth_not_valid
+  rejected_error: auth_key_not_found
+  # Verified directly: an unrouted path 404s and a wrong method 405s, both
+  # with no Authorization header sent at all. See the header comment.
+  after_routing: true
+
+responses:
+  # RFC 7807-shaped: {"type","title","status","detail"}, identical on every
+  # failure this project observed or found documented. status_field mirrors
+  # the HTTP status automatically rather than repeating the number on every
+  # entry below.
+  error:
+    style: flat
+    message_field: detail
+    status_field: status
+    code_field: "-"
+    type_field: type
+
+routes:
+  # The central finding, and the specific case: a 404 from the target, a
+  # 200 from Zyte. Zyte's own worked example, cited directly in the header
+  # comment and in this case's source below -- this project did not call
+  # toscrape.com/not-found itself, per this collection's standing rule
+  # against sending target URLs to a scraping API without a credential or
+  # authorisation to drive it. Declared before the default below so its
+  # more specific selector wins.
+  - method: POST
+    path: /v1/extract
+    selects_body: 'https://toscrape.com/not-found"'
+    status: 200
+    raw:
+      content_type: application/json
+      text: |
+        {"url":"https://toscrape.com/not-found","statusCode":404}
+
+  # The default: a page the target answered normally, and also what any
+  # OTHER request body this Recipe was not given a specific fixture for
+  # gets -- including the auth-probing conformance cases below, which is
+  # what lets the credential gate (checked only after a route matches,
+  # since auth.after_routing: true) fire for them at all. url and
+  # statusCode are the OpenAPI document's own schema-level example values
+  # (Response200), verbatim -- not a page this project fetched. See the
+  # header comment: httpResponseBody is left out rather than invented.
+  - method: POST
+    path: /v1/extract
+    status: 200
+    raw:
+      content_type: application/json
+      text: |
+        {"url":"https://example.com/item-page/","statusCode":200}
+
+errors:
+  auth_not_valid:
+    status: 401
+    type: /auth/not-valid
+    message: "No valid authentication info found in the request. Check the documentation for the correct authentication schema."
+    fields:
+      title: Authentication Info Invalid
+    headers:
+      Content-Type: application/problem+json
+      WWW-Authenticate: 'Basic realm="Zyte API"'
+
+  auth_key_not_found:
+    status: 401
+    type: /auth/key-not-found
+    message: "The authentication key is not valid or can't be matched."
+    fields:
+      title: Authentication Key Not Found
+    headers:
+      Content-Type: application/problem+json
+      WWW-Authenticate: 'Basic realm="Zyte API"'
+
+  # Documented, not observed: this project's account-suspension probing
+  # stops at "this project has no account". Zyte's own worked example.
+  account_suspended:
+    status: 403
+    type: /auth/account-suspended
+    message: "Account is suspended, check billing details."
+    fields:
+      title: Account Suspended
+    headers:
+      Content-Type: application/problem+json
+
+  # The target's domain does not resolve. This is Zyte's OWN failure --
+  # there was never a page to pass a status code back from -- which is why
+  # it is a 421 from Zyte rather than a 200 with some statusCode inside it.
+  # Documented, not observed.
+  domain_unreachable:
+    status: 421
+    type: /website/domain-unreachable
+    message: "The domain is invalid or unreachable. Please check the domain name and try again. Verify the domain name and ensure it is registered and valid before restarting the crawl."
+    fields:
+      title: Domain Unreachable
+    headers:
+      Content-Type: application/problem+json
+
+  # One of three documented 429 shapes; see the header comment for the
+  # other two. Documented, not observed.
+  over_user_limit:
+    status: 429
+    type: /limits/over-user-limit
+    message: "Too many requests to a specific domain. Retry in N seconds from 'Retry-After' header."
+    fields:
+      title: Over User Requests Limit
+    headers:
+      Content-Type: application/problem+json
+      Retry-After: "30"
+
+  # A ban Zyte could not route around in time -- ITS failure to reach the
+  # target ban-free, not the target answering badly. Documented, not
+  # observed.
+  website_ban:
+    status: 520
+    type: /download/temporary-error
+    message: "Zyte API could not get a ban-free response in a reasonable time. See https://docs.zyte.com/zyte-api/usage/errors.html#ban-responses"
+    fields:
+      title: Website Ban
+    headers:
+      Content-Type: application/problem+json
+
+  # Overrides Cauldron's generic 404 body with Zyte's real one -- reachable
+  # with no Authorization header at all, per the header comment.
+  unknown_route:
+    status: 404
+    type: /request/invalid
+    message: "HTTP 404 Not Found"
+    fields:
+      title: HTTP 404 Not Found
+    headers:
+      Content-Type: application/problem+json
+
+  # Same override for a wrong method on a real path -- also reachable with
+  # no credential at all.
+  method_not_allowed:
+    status: 405
+    type: /request/invalid
+    message: "HTTP 405 Method Not Allowed"
+    fields:
+      title: HTTP 405 Method Not Allowed
+    headers:
+      Content-Type: application/problem+json
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no Authorization header at all is auth not-valid
+    source: https://api.zyte.com/v1/extract
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /v1/extract
+      json:
+        url: https://example.com
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/problem+json
+        WWW-Authenticate: 'Basic realm="Zyte API"'
+      body:
+        type: /auth/not-valid
+        title: Authentication Info Invalid
+        status: 401
+        detail: "No valid authentication info found in the request. Check the documentation for the correct authentication schema."
+
+  - name: a well-formed but wrong Basic credential is a different type entirely
+    source: https://api.zyte.com/v1/extract
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /v1/extract
+      headers:
+        Authorization: "Basic anVua2FwaWtleTEyMzQ1Njc4OTA6"
+      json:
+        url: https://example.com
+    expect:
+      status: 401
+      body:
+        type: /auth/key-not-found
+        title: Authentication Key Not Found
+
+  - name: the wrong SCHEME entirely answers the same as no credential at all
+    source: https://api.zyte.com/v1/extract
+    verified: "2026-09-01"
+    request:
+      method: POST
+      path: /v1/extract
+      headers:
+        Authorization: "Bearer junktoken1234567890"
+      json:
+        url: https://example.com
+    expect:
+      status: 401
+      body:
+        type: /auth/not-valid
+
+  - name: a wrong method 405s with no credential sent at all
+    source: https://api.zyte.com/v1/extract
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/extract
+    expect:
+      # Not 401. Routing and method resolve first -- see the header
+      # comment.
+      status: 405
+      body:
+        type: /request/invalid
+        title: HTTP 405 Method Not Allowed
+
+  - name: an unrouted path 404s with no credential sent at all
+    source: https://api.zyte.com/v1/no-such-route
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/no-such-route
+    expect:
+      status: 404
+      body:
+        type: /request/invalid
+        title: HTTP 404 Not Found
+
+  - name: a page the target answered normally is a 200 wrapping a 200
+    source: https://docs.zyte.com/zyte-api/usage/reference.html
+    request:
+      method: POST
+      path: /v1/extract
+      headers:
+        Authorization: "Basic Y2F1bGRyb256eXRlYXBpa2V5MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOg=="
+      json:
+        url: https://example.com/item-page/
+        httpResponseBody: true
+    expect:
+      status: 200
+      body:
+        url: https://example.com/item-page/
+        statusCode: 200
+
+  - name: a target 404 is a 200 from Zyte with the real status inside it
+    source: https://docs.zyte.com/zyte-api/usage/errors.html
+    request:
+      method: POST
+      path: /v1/extract
+      headers:
+        Authorization: "Basic Y2F1bGRyb256eXRlYXBpa2V5MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwOg=="
+      json:
+        url: https://toscrape.com/not-found
+        httpResponseBody: true
+    expect:
+      # Not 404. The wrapper call succeeded; the target answered 404. See
+      # the header comment.
+      status: 200
+      body:
+        statusCode: 404

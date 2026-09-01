@@ -1,0 +1,569 @@
+# PandaDoc Recipe for Cauldron
+#
+# This is the provider this group of three exists to answer a question about:
+# a document is not ready the moment you create it, and PandaDoc says so in
+# its own words rather than making you infer it. Creating a document from a
+# template answers 201 with {"status": "document.uploaded", ...} and an
+# info_message that reads, verbatim, "You need to poll the Document Status
+# method until the status will be changed to document.draft." The document's
+# own reference table is just as direct: "document.uploaded -- The document
+# has just been created or uploaded. It is in processing and will be in
+# document.draft state soon," and separately, "it usually retains a
+# document.uploaded status for 3-5 seconds while the document syncs across
+# PandaDoc servers." Nothing about this is left to be discovered by polling
+# and noticing -- the provider states the window, states the field, and
+# states the failure mode: document.error is "terminal, you should stop
+# polling after getting it." A create can fail asynchronously the same way
+# Temporal Cloud's AsyncOperation can, and PandaDoc's version of that failure
+# has a name of its own rather than borrowing the create response's shape.
+#
+# Two neighbours in this collection found the same gap wearing different
+# clothes. Turso's create returns the record it made, truncated to a
+# projection with no state field anywhere -- nothing to poll, because nothing
+# on the resource claims to say when it is ready. Temporal Cloud's create
+# never returns the resource at all -- it returns an AsyncOperation, a
+# separate object built to be polled, with its own id and its own terminal
+# states. PandaDoc is the plain case directly between them: the *same*
+# resource comes back both times, under the *same* field names, and the only
+# difference between the unfinished answer and the finished one is the value
+# of one field the provider tells you to watch. status: document.uploaded and
+# status: document.draft are two GETs on the identical id, asserted below
+# from PandaDoc's own published examples -- id fANp5wW5EwY7AkiTkTGekZ mid
+# processing, id XjV64iXRJMerjSpk428QSF once drafted, and version moves from
+# null to "2" across the same two records, a second field agreeing with the
+# first about what changed.
+#
+# A related but separate finding, so as not to conflate the two: the create
+# and "Document Status" responses are *always* this small (nine fields or
+# fewer) even once a document reaches document.draft or document.completed.
+# The full record -- recipients, fields, pricing, tokens, an editing lock --
+# lives at a third endpoint, GET .../documents/{id}/details, which this
+# Recipe does not model (see the gaps below). That is a Turso-shaped
+# truncation sitting beside the async gap, not the same claim as it: Document
+# Status is deliberately minimal forever, not minimal-until-ready.
+#
+# Three more, checked live against api.pandadoc.com with no account and no
+# credential, on the date below:
+#
+#   1. A missing credential and a wrong one answer different sentences, which
+#      most providers in this collection do not bother to do. No
+#      Authorization header at all: {"type":"authentication_error","detail":
+#      "Authentication credentials were not provided."}. Authorization:
+#      API-Key junkjunkjunk: {"type":"authentication_error","detail":
+#      "Invalid key."}. Same type, same 401, a different sentence in detail
+#      -- so a client logging detail can tell "never configured a key" from
+#      "configured the wrong one," which is exactly the distinction Turso's
+#      Recipe in this collection needed two error names for and Temporal
+#      Cloud's needed none.
+#   2. The scheme is genuinely API-Key, not Bearer, and the wire says so:
+#      Authorization: API-Key <key>, no other word before the key, confirmed
+#      against the live host and against the security scheme PandaDoc's own
+#      published OpenAPI description declares ("The value should be prefixed
+#      with API-Key followed by a space"). Sending the usual Bearer prefix is
+#      not a shortcut here; it is a different, wrong string.
+#   3. Where the auth check sits relative to routing depends on which kind of
+#      "wrong" the request is, and the two questions this Recipe was asked to
+#      probe -- an unknown path, and a wrong method on a real one -- get
+#      different answers. A path this API does not register at all
+#      (/public/v1/this-is-not-a-real-endpoint) answers 404 as an HTML page,
+#      Content-Type text/html, regardless of credential: routing refuses it
+#      before anything asks who is calling. A *real* path with the *wrong*
+#      method (PATCH or PUT on /public/v1/documents, which the Allow header
+#      on every response from that path lists as GET, POST, DELETE, HEAD,
+#      OPTIONS) does not 405 at all -- it answers the identical 401 the
+#      credential check would give a GET, checked both with no credential and
+#      with a wrong one, live. So the credential is checked before a method
+#      is matched against what a *known* path accepts, and a path is matched
+#      before the credential is checked at all -- two different orderings on
+#      one host, split along a line neither Temporal Cloud's Recipe (routing
+#      always first) nor FireHydrant's (credentials always first, even for an
+#      unregistered path) draws, and not Census's either, whose split runs
+#      along HTTP method rather than along how wrong the path is. Whether a
+#      *real* 405 exists anywhere on this host -- for a method that is wrong
+#      on a path a valid credential can reach -- is not established; every
+#      probe this task permits reaches the credential check first.
+#   4. Content-Type does not lie here, which is worth stating as a finding in
+#      its own right rather than assuming: every JSON failure this Recipe
+#      struck live answered Content-Type: application/json honestly, and the
+#      one response that is not JSON (the unknown-route HTML page) is
+#      correctly labelled text/html rather than dressed up as the API's own
+#      shape. The infidelity this task went looking for -- a Content-Type
+#      that announces JSON and sends something else -- is not here. What is
+#      here is a second failure shape the API's own error envelope never
+#      produces, served by the layer in front of it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 200 below is read from PandaDoc's own published OpenAPI
+#     description (github.com/PandaDoc/pandadoc-openapi-specification,
+#     fetched directly rather than through a summarising tool, precisely so
+#     the ids and timestamps quoted are the provider's literal examples and
+#     not a paraphrase of them) and carries no `verified:` date. The 401s and
+#     the 404 are struck live, unauthenticated, and carry one.
+#   - Creating a document takes recipients, tokens, fields, metadata and tags
+#     in the request body, per that same description; only template_uuid is
+#     enforced here, and the rest are accepted and dropped rather than
+#     echoed. Recipients, in particular, are not modelled as a resource at
+#     all -- signer email, name, role and signing order are a real and
+#     documented part of this API's surface, and describing them honestly
+#     would mean a second resource this task's questions do not turn on.
+#   - GET .../documents/{id}/details -- the full record, with recipients,
+#     fields, pricing tables, an editing lock and an approval flow -- is real
+#     and not modelled. It is a materially larger schema than the nine-ish
+#     fields Document Status and create both answer with, and declaring it
+#     for a shape no case here would exercise usefully was judged not worth
+#     the noise, the same call Temporal Cloud's Recipe makes about
+#     NamespaceSpec's nested configuration.
+#   - The 409 conflict PandaDoc documents for acting on a document too soon
+#     is real and not routed. Its own schema example is exact: {"id": ...,
+#     "status": "document.uploaded", "info_message": "Warning - Document
+#     status document.uploaded doesn't mean that the document already exist
+#     - processing happens asynchronously..."}, on Send Document and on most
+#     of the other write endpoints past create. It is stated here because it
+#     is the provider naming this Recipe's whole subject in its own error
+#     body; it is not turned into a route because doing so would mean
+#     inventing which requests against an unmodelled resource (Send Document
+#     needs recipients this Recipe does not carry) succeed and which do not,
+#     which is worse than leaving the citation in prose.
+#   - links (the {rel, href, type} array pointing back at Document Status)
+#     and uuid (which duplicates id verbatim on every example this
+#     description shows) are real fields on the create and status responses
+#     and are not modelled: links templates a URL per record this format has
+#     no mechanism to generate, and uuid has no way in this vocabulary to
+#     assert it always equals a sibling field rather than carrying its own
+#     value.
+#   - Templates, content library items, forms, pricing tables, webhooks,
+#     the embedded editor, and the separate OAuth2 app-authorization flow
+#     (POST /oauth2/token, a different credential scheme entirely, for
+#     PandaDoc's marketplace apps rather than a direct API-Key integration)
+#     are all real surface and none of it is modelled. Documents only.
+#   - Rate limiting is documented -- 429 {"type":"throttled","detail":
+#     "Request was throttled."} -- and never triggered live, so no specific
+#     Retry-After value is served.
+#   - Request-body validation (the 400 a missing recipient or a malformed
+#     token produces) is documented and not modelled; this Recipe's create
+#     route enforces only that the request names a template.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: pandadoc
+capability: signing
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.pandadoc.com/reference/about
+  spec: https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/main/openapi.yaml
+  spec_hash: b23608263eb52e5af401780fb332ce3af01f8d983eebb418f30c2a4cdeb3556e
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely "API-Key <key>", not "Bearer <key>" -- checked against the live
+  # host and against the security scheme PandaDoc's own description declares.
+  # Expressed as scheme none plus matches_header below, the same trade
+  # Temporal Cloud's and Turso's Recipes in this collection make, for a
+  # related reason: a single Cauldron-wide scheme checks the credential
+  # unconditionally before routing is even attempted, for every path, and
+  # that is not what this host does -- see the header's third finding. An
+  # unknown path here 404s before anything asks who is calling; a known path
+  # with the wrong method still asks first. Only a per-route check can serve
+  # both.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    type_field: type
+    message_field: detail
+    code_field: "-"
+
+resources:
+  document:
+    collection: results
+    id:
+      style: opaque
+      field: id
+    fields:
+      name:
+        type: string
+      # document.uploaded, document.error, document.draft, document.sent,
+      # document.viewed, document.waiting_approval, document.rejected,
+      # document.approved, document.waiting_pay, document.paid,
+      # document.completed, document.voided, document.declined,
+      # document.external_review, document.scheduled -- PandaDoc's own
+      # complete list. document.uploaded is what a create actually leaves
+      # behind; it is not a default invented for this Recipe.
+      status:
+        type: string
+        default: document.uploaded
+      date_created:
+        type: datetime
+      date_modified:
+        type: datetime
+      # Absent on the "processing after create" example this Recipe cites,
+      # present and "2" on the "in draft" example beside it -- a second field
+      # that moves across the same status transition, not asserted for its
+      # own sake.
+      version:
+        type: string
+        null_when_unset: true
+      expiration_date:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+      # The partition a create request names and this resource does not
+      # otherwise carry.
+      template_uuid:
+        type: string
+        in: "-"
+
+routes:
+  - method: GET
+    path: /public/v1/documents
+    resource: document
+    operation: list
+    matches_header:
+      Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    pagination:
+      # PandaDoc's own words: count for the size ("Default is 50 documents,
+      # maximum is 100 documents"), page for the position, both in the
+      # query. Confirmed against the published description rather than
+      # guessed.
+      style: page
+      limit: 50
+      max_limit: 100
+      limit_param: count
+      cursor_param: page
+      first_page: 1
+    filters:
+      # The listing's own status filter is numeric and the resource's status
+      # field is a string -- two different vocabularies for one idea, both
+      # taken verbatim from the same description's parameter table.
+      - param: status
+        field: status
+        values:
+          "0": [document.draft]
+          "1": [document.sent]
+          "2": [document.completed]
+          "3": [document.uploaded]
+          "4": [document.error]
+          "5": [document.viewed]
+          "6": [document.waiting_approval]
+          "7": [document.approved]
+          "8": [document.rejected]
+          "9": [document.waiting_pay]
+          "10": [document.paid]
+          "11": [document.voided]
+          "12": [document.declined]
+          "13": [document.external_review]
+          "14": [document.scheduled]
+
+  - method: GET
+    path: /public/v1/documents
+    error: authentication_error
+
+  # "Document Status" in PandaDoc's own naming: the same route serves a
+  # document mid-processing and one that has settled, distinguished by
+  # nothing but the value of status.
+  - method: GET
+    path: /public/v1/documents/{id}
+    resource: document
+    operation: get
+    matches_header:
+      Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+
+  - method: GET
+    path: /public/v1/documents/{id}
+    error: authentication_error
+
+  # Never a finished document. See the header.
+  - method: POST
+    path: /public/v1/documents
+    resource: document
+    operation: create
+    status: 201
+    matches_header:
+      Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    returns: [id, name, status, date_created, date_modified, expiration_date, version]
+    fields:
+      # PandaDoc's own sentence, quoted exactly from the published
+      # description rather than paraphrased.
+      info_message: You need to poll the Document Status method until the status will be changed to document.draft
+
+  - method: POST
+    path: /public/v1/documents
+    error: authentication_error
+
+  # A wrong HTTP method on a real path never reaches a method check at all --
+  # see the header. Declaring it under authentication_error rather than a
+  # 405 is the finding, not an omission of one.
+  - method: PATCH
+    path: /public/v1/documents
+    error: authentication_error
+
+  - method: PUT
+    path: /public/v1/documents
+    error: authentication_error
+
+  # A path that resembles nothing this API registers.
+  - method: GET
+    path: /public/v1/this-is-not-a-real-endpoint
+    error: unknown_route
+
+errors:
+  authentication_error:
+    status: 401
+    type: authentication_error
+    message: Authentication credentials were not provided.
+
+  # Reached only by arming it: the live failure this reproduces needs a
+  # credential that is present and wrong, which Cauldron's own check cannot
+  # tell apart from an absent one on its own -- the same device Mezmo's and
+  # FireHydrant's Recipes in this collection use for an identical problem.
+  invalid_key:
+    status: 401
+    type: authentication_error
+    message: Invalid key.
+
+  # Read from the published description rather than struck live: no account
+  # exists to be throttled on purpose, and this task forbids exhausting a
+  # rate limit that belongs to everybody sharing this address.
+  rate_limit:
+    status: 429
+    type: throttled
+    message: Request was throttled.
+
+  # The CDN/WAF layer in front of the API (Imperva), not the API's own JSON
+  # shape -- struck live, and correctly labelled text/html rather than
+  # dressed up as JSON. See the header's fourth finding. The real page also
+  # carries a bot-challenge <script> tag whose query string (ns=, cb=) is a
+  # different number on every single call, checked twice live to confirm --
+  # that part is not reproduced here, because it is not a stable fact about
+  # this API, only about the CDN's request counter at the moment of asking.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: |-
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <title>Not Found</title>
+      </head>
+      <body>
+        <h1>Not Found</h1><p>The requested resource was not found on this server.</p>
+      </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+  # Every id and status pair below is copied from a worked example in
+  # PandaDoc's own published OpenAPI description, not invented for this
+  # Recipe. fANp5wW5EwY7AkiTkTGekZ is its "Document processing after
+  # create" example; XjV64iXRJMerjSpk428QSF is its "Document in draft"
+  # example and also its List Documents example; 6NbHUUu6uuYN2tqJvgtf9h is
+  # the second record in that same List Documents example.
+  documents:
+    document:
+      - id: fANp5wW5EwY7AkiTkTGekZ
+        name: Document from file
+        # Mid processing. Nothing on this record says so beyond this one
+        # field -- see the header.
+        status: document.uploaded
+        date_created: "2024-07-02T16:21:57.510203Z"
+        date_modified: "2024-07-02T16:21:57.708251Z"
+
+      - id: XjV64iXRJMerjSpk428QSF
+        name: Sample Document
+        status: document.draft
+        date_created: "2024-07-02T16:21:35.770196Z"
+        date_modified: "2024-07-02T16:21:37.696724Z"
+        # "2", not null -- moved across the same transition status did.
+        version: "2"
+
+      - id: 6NbHUUu6uuYN2tqJvgtf9h
+        name: Services Invoice
+        status: document.completed
+        date_created: "2024-01-25T15:35:27.186107Z"
+        date_modified: "2024-06-21T15:07:34.192101Z"
+        version: "2"
+        expiration_date: "2024-08-20T15:07:32.869161Z"
+
+conformance:
+  - name: a missing credential names its own absence
+    source: https://api.pandadoc.com/public/v1/documents
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/v1/documents
+    expect:
+      status: 401
+      headers:
+        content-type: application/json
+      body:
+        type: authentication_error
+        detail: Authentication credentials were not provided.
+
+  - name: a wrong credential answers a different sentence, armed because Cauldron cannot tell wrong from missing on its own
+    source: https://api.pandadoc.com/public/v1/documents
+    verified: "2026-09-01"
+    arm: invalid_key
+    fixture: empty
+    request:
+      method: GET
+      path: /public/v1/documents
+      headers:
+        Authorization: API-Key junkjunkjunk
+    expect:
+      status: 401
+      body:
+        type: authentication_error
+        detail: Invalid key.
+
+  - name: create is gated by the identical check a read is
+    source: https://api.pandadoc.com/public/v1/documents
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /public/v1/documents
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: a path this API never registered is an HTML 404, not the API's own JSON shape
+    source: https://api.pandadoc.com/public/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        content-type: text/html; charset=utf-8
+
+  - name: a wrong method on a real path never reaches a method check at all
+    # PATCH is not in the Allow header any response from this path carries
+    # (GET, POST, DELETE, HEAD, OPTIONS), and the answer is not 405 -- it is
+    # the identical credential failure a GET without one gets. See the
+    # header's third finding.
+    source: https://api.pandadoc.com/public/v1/documents
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /public/v1/documents
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: and a credential that is merely wrong reaches the identical check on the wrong method too
+    source: https://api.pandadoc.com/public/v1/documents
+    verified: "2026-09-01"
+    arm: invalid_key
+    fixture: empty
+    request:
+      method: PATCH
+      path: /public/v1/documents
+      headers:
+        Authorization: API-Key junkjunkjunk
+    expect:
+      status: 401
+      body:
+        detail: Invalid key.
+
+  - name: a document mid-processing carries the status the create response promised to change
+    source: https://developers.pandadoc.com/reference/document-status
+    fixture: documents
+    request:
+      method: GET
+      path: /public/v1/documents/fANp5wW5EwY7AkiTkTGekZ
+      headers:
+        Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: document.uploaded
+
+  - name: polling the same shape once drafted shows the field the caller was told to watch
+    source: https://developers.pandadoc.com/reference/document-status
+    fixture: documents
+    request:
+      method: GET
+      path: /public/v1/documents/XjV64iXRJMerjSpk428QSF
+      headers:
+        Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: document.draft
+        # Moved from null to "2" across the same transition -- a second
+        # field agreeing with the first about what changed.
+        version: "2"
+
+  - name: creating a document answers document.uploaded and says so is not the end of it
+    source: https://developers.pandadoc.com/reference/create-document-from-pandadoc-template
+    fixture: empty
+    request:
+      method: POST
+      path: /public/v1/documents
+      headers:
+        Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+      json:
+        template_uuid: hryJY9mqYZHjQCYQuSjRQg
+        name: Document from Template
+    expect:
+      status: 201
+      body:
+        status: document.uploaded
+        info_message: You need to poll the Document Status method until the status will be changed to document.draft
+      matches:
+        id: ".+"
+
+  - name: the list wraps under results with no count anywhere beside it
+    # Checked against the published DocumentListResponse schema directly:
+    # the property set is exactly {id, name, status, date_created,
+    # date_modified, date_completed, expiration_date, version} inside
+    # results, and nothing describing how many documents matched in total.
+    source: https://developers.pandadoc.com/reference/list-documents
+    fixture: documents
+    request:
+      method: GET
+      path: /public/v1/documents
+      headers:
+        Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].id": fANp5wW5EwY7AkiTkTGekZ
+      absent:
+        - count
+        - total
+        - has_more
+        - page
+
+  - name: the status filter narrows by a number the resource's own field never carries
+    source: https://developers.pandadoc.com/reference/list-documents
+    fixture: documents
+    request:
+      method: GET
+      path: "/public/v1/documents?status=0"
+      headers:
+        Authorization: API-Key cauldron-pandadoc-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].id": XjV64iXRJMerjSpk428QSF
+      absent:
+        - results[1]

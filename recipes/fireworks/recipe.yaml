@@ -1,0 +1,368 @@
+# Fireworks AI Recipe for Cauldron
+#
+# Two API designs on one hostname, behind one gateway, disagreeing about
+# everything except how to refuse you.
+#
+# api.fireworks.ai/inference/v1/* is the OpenAI-compatible surface. Point an
+# OpenAI client at it and it works, which is the whole selling point.
+# api.fireworks.ai/v1/accounts/{account}/* is the control plane, and it is
+# not OpenAI-shaped at all -- it is Google's API Improvement Proposals, down
+# to the vocabulary:
+#
+#   {"models": [...], "nextPageToken": "...", "totalSize": 42}
+#
+# where OpenAI would send {"object": "list", "data": [...]}. Three keys, none
+# of them shared with the other half of the same host. And a model's
+# identifier there is not an id at all but a resource name --
+# "accounts/my-account/models/my-model", Fireworks' own worked example -- a
+# slash-joined path fragment carried as a field value. So the two halves
+# disagree about the envelope, about paging, and about what an identifier is.
+#
+# The failure surface is shared, which is how you can tell it is one gateway.
+# Both halves answer the identical body to the identical mistake, verified
+# against both:
+#
+#   no Authorization header      401  "You must provide an API key. See
+#                                     https://docs.fireworks.ai/... for more
+#                                     information."
+#   Authorization: Bearer junk   401  "The API key you provided is invalid."
+#   Authorization: junk          401  "The API key you provided is invalid."
+#   Authorization: "Bearer "     401  "The API key you provided is invalid."
+#
+# **Fireworks is the pair to the Together AI Recipe written beside it, and
+# the two split the middle case in opposite directions.** Both providers tell
+# an absent credential from a wrong one, which most of this collection cannot.
+# The interesting request is the one in between -- a header that is present
+# and cannot be a credential, "Authorization: junk" with no scheme. Together
+# calls that missing. Fireworks calls it invalid. The byte-identical request,
+# to two APIs that both advertise OpenAI compatibility, and they classify it
+# on opposite sides of the line.
+#
+# **An error message quotes back a path the caller never sent.** A request to
+# /inference/v1/nosuchroute is refused with "Path not found: /v1/nosuchroute",
+# and DELETE /inference/v1/models with "Method DELETE not allowed for path
+# /v1/models". The gateway strips its own /inference prefix before composing
+# the sentence, so the path in the message does not appear in any log the
+# caller keeps. Grepping for the string you were told about finds nothing.
+#
+# **Routing and method both resolve before the credential.** An unrouted path
+# 404s and a wrong method 405s, each with no credential sent at all. That is
+# the reverse of Together, where DELETE on a real path answers 401 rather
+# than 405 -- so of two providers in one category, one checks the credential
+# before the method and the other after.
+#
+# This Recipe is the first to declare auth.after_routing, which exists because
+# of it. Eighteen Recipes here had written a paragraph explaining that their
+# provider routes first and the emulator could not; Fireworks' two ordering
+# cases now send exactly what the live requests sent -- no Authorization
+# header at all -- and are verified rather than approximated.
+#
+# **The envelope carries a request id twice and a type that is always the
+# same word.** request_id sits at the top level, outside the error object,
+# and repeats the X-Request-Id response header exactly -- checked, matching
+# byte for byte. Meanwhile "type" is the literal string "error" on every
+# failure, which makes it a field that has never distinguished anything;
+# code is the discriminator that actually varies (UNAUTHORIZED, NOT_FOUND,
+# METHOD_NOT_ALLOWED). OpenAI's shape puts the meaning in type and Fireworks
+# copies the key without the meaning.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No upstream.spec. Fireworks embeds an OpenAPI fragment inside each
+#     documentation page rather than serving one document -- the fragment
+#     below was read from the List Models page and names its own version,
+#     "Gateway REST API 5.10.0" -- and a fingerprint needs something drift
+#     can fetch again. The Make Recipe carries the same gap for the same
+#     reason.
+#   - The inference half's own /v1/models is not modelled. Reaching it needs
+#     a key, no worked example of its 200 exists in Fireworks'
+#     documentation, and inventing an OpenAI-shaped body for it would be
+#     asserting the compatibility claim rather than checking it. Its failure
+#     behaviour is live-verified and served; its success is not claimed.
+#   - The model fixture's values are the "e.g." strings in Fireworks' own
+#     schema titles -- accounts/my-account/models/my-model, "My Model" --
+#     cited and not observed, so that case carries no verified date.
+#   - state and status are declared in the schema as references to two more
+#     objects and are not modelled: no worked example gives either one a
+#     value, and a state machine assembled from an enum is a guess about
+#     which state a new model starts in.
+
+recipe: fireworks
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.fireworks.ai/api-reference/list-models
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - fw_cauldron000000000000000000
+  # Absent gets its own sentence, with a documentation URL inside it.
+  # Everything else that is present and unacceptable -- unprefixed, empty
+  # after the prefix, or simply wrong -- gets the other one, which is this
+  # Recipe's default. That is Fireworks' own classification and the opposite
+  # of Together's.
+  absent_error: missing_key
+  # The route and the method are resolved before the credential is looked at,
+  # which is Fireworks' arrangement and the reverse of Together's. Verified
+  # both ways: an unrouted path 404s and a wrong method 405s with nothing
+  # sent at all.
+  after_routing: true
+
+responses:
+  # Google's API Improvement Proposals, not OpenAI's. The collection is under
+  # its own resource name, the cursor is nextPageToken, and the count is
+  # totalSize.
+  list:
+    style: wrapped
+    key: models
+    count_field: totalSize
+    # Google's spelling of a cursor. Omitted entirely when there are no
+    # further pages, which the description states as a fact about the field
+    # rather than sending an empty string.
+    cursor_field: nextPageToken
+    omit_when_empty: true
+  resource:
+    style: bare
+  # Nested under "error", with request_id outside it at the top level. code
+  # is the discriminator; type is the literal word "error" every time.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: type
+
+resources:
+  model:
+    id:
+      # Not an id. A resource name: "accounts/my-account/models/my-model",
+      # which is a path fragment stored as a field value, so the identifier
+      # of a model contains three slashes and the word "models" inside it.
+      style: opaque
+      field: name
+    fields:
+      displayName:
+        type: string
+      description:
+        type: string
+      createTime:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/accounts/{account_id}/models
+    resource: model
+    operation: list
+    # Not scoped by the account segment, deliberately. Partitioning would
+    # need account_id as a field on the model, and Fireworks does not send
+    # one -- the account is inside the resource name and nowhere else, so
+    # declaring a field to hold it would put a key on the wire the real API
+    # has never sent. The header records this; every account here answers
+    # with the same catalogue.
+    pagination:
+      style: cursor
+      # 50 by default, coerced down from anything above 200 rather than
+      # refused -- Fireworks' own description says so in as many words.
+      limit: 50
+      max_limit: 200
+      limit_param: pageSize
+      cursor_param: pageToken
+
+errors:
+  # What a credential that is present and unacceptable gets: unprefixed,
+  # empty after the prefix, or a well-formed token nobody issued. All three
+  # verified live, on both halves of the host.
+  authentication_error:
+    status: 401
+    code: UNAUTHORIZED
+    type: error
+    message: The API key you provided is invalid.
+
+  # What no credential at all gets. The message carries a documentation URL,
+  # which is the one place any of these failures tells you what to do.
+  missing_key:
+    status: 401
+    code: UNAUTHORIZED
+    type: error
+    message: >-
+      You must provide an API key. See
+      https://docs.fireworks.ai/api-reference/introduction#authentication for
+      more information.
+
+  # The path quoted here is the one the gateway composed after stripping its
+  # own prefix, not the one the caller sent. See the header.
+  unknown_route:
+    status: 404
+    code: NOT_FOUND
+    type: error
+    message: "Path not found: {detail}"
+
+  method_not_allowed:
+    status: 405
+    code: METHOD_NOT_ALLOWED
+    type: error
+    message: "Method not allowed for path {detail}"
+
+fixtures:
+  empty: {}
+
+  account:
+    model:
+      # Fireworks' own "e.g." strings, from the schema titles on its List
+      # Models page. Cited, not observed.
+      - id: accounts/my-account/models/my-model
+        displayName: My Model
+        description: An example model
+        createTime: "2026-01-01T00:00:00Z"
+      # A second record so a page of one can prove the cursor field is
+      # emitted under the name the description gives it.
+      - id: accounts/my-account/models/my-other-model
+        displayName: My Other Model
+        description: A second example model
+        createTime: "2026-01-02T00:00:00Z"
+
+conformance:
+  - name: the control plane speaks Google's vocabulary, not OpenAI's
+    # models, nextPageToken and totalSize, where the other half of this same
+    # host answers OpenAI's {object, data}. From Fireworks' own embedded
+    # description and its schema examples, so no verified date.
+    source: https://docs.fireworks.ai/api-reference/list-models
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models
+      headers:
+        Authorization: Bearer fw_cauldron000000000000000000
+    expect:
+      status: 200
+      body:
+        "models[0].name": accounts/my-account/models/my-model
+        "models[0].displayName": My Model
+        totalSize: 2
+
+  - name: the cursor is nextPageToken, which is Google's word and not OpenAI's
+    # A name a Recipe chooses is only a claim if something asserts it where
+    # the value exists, so this asks for one of two records and holds the
+    # token that comes back. Declared in Fireworks' own description: pageSize
+    # going in, nextPageToken coming back, omitted rather than emptied once
+    # there are no further pages.
+    source: https://docs.fireworks.ai/api-reference/list-models
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models?pageSize=1
+      headers:
+        Authorization: Bearer fw_cauldron000000000000000000
+    expect:
+      status: 200
+      matches:
+        nextPageToken: "."
+
+  - name: no credential is told to go and read the documentation
+    # Live, and verified on both halves of the host: the inference surface
+    # and the control plane answer this byte for byte.
+    source: https://api.fireworks.ai/v1/accounts/fireworks/models
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models
+    expect:
+      status: 401
+      body:
+        error.code: UNAUTHORIZED
+        error.type: error
+        error.message: >-
+          You must provide an API key. See
+          https://docs.fireworks.ai/api-reference/introduction#authentication
+          for more information.
+
+  - name: and a wrong one is told only that it is wrong
+    source: https://api.fireworks.ai/v1/accounts/fireworks/models
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models
+      headers:
+        Authorization: Bearer junk
+    expect:
+      status: 401
+      body:
+        error.code: UNAUTHORIZED
+        error.message: The API key you provided is invalid.
+
+  - name: a header with no scheme is called wrong, not missing
+    # The pair to the Together AI case of the same name. The byte-identical
+    # request there answers "Missing API key"; Fireworks puts it on the
+    # other side of the line. Live.
+    source: https://api.fireworks.ai/inference/v1/models
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models
+      headers:
+        Authorization: junk
+    expect:
+      status: 401
+      body:
+        error.message: The API key you provided is invalid.
+
+  - name: an empty credential after the prefix is wrong as well
+    # "Authorization: Bearer " with nothing after it. Somebody sent that, so
+    # Fireworks does not call it absent. Live.
+    source: https://api.fireworks.ai/inference/v1/models
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/accounts/my-account/models
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error.message: The API key you provided is invalid.
+
+  - name: an unrouted path is refused before the credential is looked at
+    # Live, with no Authorization header whatsoever, which is what
+    # establishes the ordering: the router answers before the credential is
+    # examined. auth.after_routing carries it, so the case sends what the
+    # real request sent. The real message quotes /v1/nosuchroute for a
+    # request to /inference/v1/nosuchroute -- see the header.
+    source: https://api.fireworks.ai/inference/v1/nosuchroute
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/nosuchroute
+    expect:
+      status: 404
+      body:
+        error.code: NOT_FOUND
+        error.type: error
+        error.message: "Path not found: /v1/nosuchroute"
+
+  - name: and so is a wrong method, which Together answers with a 401 instead
+    # Live, again with no credential. DELETE on a real path is a real 405
+    # here. The Together AI Recipe records the byte-identical request
+    # answering 401, because that host checks the credential before the
+    # method -- one declaration apart, and it is the declaration that makes
+    # the pair legible.
+    source: https://api.fireworks.ai/inference/v1/models
+    verified: "2026-09-01"
+    fixture: account
+    request:
+      method: DELETE
+      path: /v1/accounts/my-account/models
+    expect:
+      status: 405
+      body:
+        error.code: METHOD_NOT_ALLOWED
+        error.type: error

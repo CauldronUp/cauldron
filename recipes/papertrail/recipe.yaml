@@ -1,0 +1,520 @@
+# Papertrail Recipe for Cauldron
+#
+# Rollbar's Recipe in this collection draws the line between one occurrence
+# of an error and the group it belongs to. Bugsnag's draws it a second way.
+# Raygun's draws it a third way and states plainly that the group it lands on
+# carries no count of its own. Papertrail does not draw that line at all,
+# because there is no group side to draw it against: there is no error
+# resource here, no group, no occurrence count, nothing that aggregates two
+# log lines into one thing a client can page through. There is a stream of
+# discrete lines and a search over them. The question this Recipe answers is
+# not "how does this provider group" -- it is "what does an API look like
+# when the grouping abstraction this collection keeps finding was simply
+# never the model." Sumo Logic's Recipe in this collection, written the same
+# day, answers the identical question about a provider with a fundamentally
+# different wire shape and reaches the same answer: search, not aggregation.
+#
+# Papertrail was acquired by SolarWinds in 2014. papertrailapp.com/ itself
+# now 301s to https://www.papertrail.com -- checked live, and the redirect
+# target and the Set-Cookie on the way there are both real. But the API does
+# not follow the marketing site: every /api/v1/* path on papertrailapp.com
+# answered directly, with no redirect at all, checked on every route this
+# Recipe declares. The acquisition moved the brochure. It did not move the
+# host a real integration talks to, and papertrailapp.com/api/v1/ is still
+# where that host is.
+#
+# Probed live, unauthenticated and with a well-formed-but-wrong credential,
+# on 2026-09-01:
+#
+#   1. No Authorization header, HTTP Basic with a garbage id and no
+#      password, and "Authorization: Bearer junktoken12345" (a different
+#      scheme entirely) all three answer the identical 27-byte body:
+#      "HTTP Basic: Access denied." -- plain text, and Content-Type claims
+#      text/html for it regardless. Missing, malformed and merely-wrong
+#      collapse to one sentence here, the same collapse Turso's and
+#      Census's Recipes in this collection already record for their own
+#      providers. Papertrail's own recommended scheme, the
+#      X-Papertrail-Token header, was tried with the identical garbage
+#      value too, live, and got the identical "HTTP Basic" wording back --
+#      so even the credential Papertrail's own docs call recommended is
+#      refused in the vocabulary of the credential its docs call the
+#      fallback.
+#   2. A path with no route at all -- /api/v1/this-is-not-a-real-endpoint --
+#      answers 404 with Papertrail's own branded HTML page, checked with no
+#      credential and again with a well-formed-but-wrong one: byte-identical
+#      either way. Routing runs to completion regardless of the credential
+#      on this host -- the opposite of the auth-first order Rootly's and
+#      FireHydrant's Recipes in this collection each record for their own
+#      unrouted paths, and the same order Turso's Recipe finds for itself.
+#      auth.after_routing carries that, so the case below sends what the
+#      live request sent -- nothing -- and is verified rather than
+#      approximated. Rootly's own case still cannot be, and the difference
+#      is worth knowing: Rootly switches order depending on whether the
+#      route exists, and Papertrail does not switch at all.
+#   3. A wrong method on a route that exists answers a genuine 405 with a
+#      real Allow header: PUT /api/v1/systems.json -> 405, Allow: GET, POST
+#      (systems.json is not modelled below -- see the fidelity gaps -- but
+#      its live Allow header is real, dated evidence and worth having);
+#      POST /api/v1/events/search.json -> 405, Allow: GET -- both struck
+#      live with no credential at all, because on the real host routing
+#      answers a method mismatch before auth is ever consulted. Cauldron's
+#      own order is the reverse (see point 2), so the case below needs a
+#      credential to reach the 405 at all. Both live responses send
+#      Content-Type: text/html for a body that is Content-Length: 1 -- one
+#      byte, a single space character, not a tag in sight. One existing
+#      Recipe in this collection (raygun/recipe.yaml) already found a
+#      provider whose 403 claims application/json and delivers fifteen
+#      bytes of plain prose; this is the same lie told a different way --
+#      text/html promised, and what actually arrives is not even as much
+#      text as the word "html" is long.
+#
+# Papertrail's own HTTP API reference is explicit about the one shape this
+# Recipe could not reach live: "Failed requests return 400 Bad Request, and
+# a JSON hash is provided containing a single key called message... For
+# example: {"message":"Sad panda"}." That is the provider's own documented
+# words, quoted rather than paraphrased, and it was never observed: every
+# malformed-parameter request this Recipe tried (a non-numeric min_id, sent
+# both with and without a credential) answered the same 401 the credential
+# check gives everything else, because on this host the credential is
+# checked before a parameter ever gets far enough to be judged malformed.
+# Reaching the documented 400 needs a working credential this task forbids
+# obtaining, so it is declared below with no verified date, distinct from
+# the 401 shape this Recipe actually struck and can date.
+#
+# The documentation also promises three rate-limit headers --
+# X-Rate-Limit-Limit (currently 25), X-Rate-Limit-Remaining and
+# X-Rate-Limit-Reset (currently 5 seconds) -- "the API returns" them, stated
+# without qualification. None of the three ever appeared on any of the
+# roughly fifteen 401s, 404s and 405s this Recipe's probing produced.
+# Whether they are sent only once a credential clears the gate, or the
+# documentation is simply stale, is not something an unauthenticated probe
+# can settle, and this Recipe does not guess: no rate-limit header is
+# declared below.
+#
+# The one resource worth modelling in full is the search result itself,
+# because Papertrail's own reference gives two complete, worked JSON
+# examples for it and this is where the "log search, not a group" framing
+# actually shows up on the wire: every field is on the log line, there is no
+# separate object anywhere for "this kind of message" to attach a count to,
+# and paging is not offset or cursor but a moving window between two event
+# ids. Quoted here because it is a genuine, sourced type inconsistency
+# rather than a guess: min_id and max_id, in the envelope, are JSON strings
+# ("min_id": "7711561783320576") -- and id, the identical magnitude of
+# number, on each event inside that same response, is a bare unquoted JSON
+# number ("id": 7711561783320576). The boundary of the window is a string;
+# the position of a specific line inside it is a number. A client that reads
+# one and assumes the other's type is wrong on whichever one it did not
+# check first.
+#
+# "Done" is not one field either. The reference documents four different
+# booleans, and states that exactly one of them appears depending on why the
+# search stopped: reached_beginning (searching backward, hit the start of
+# retention), reached_end (searching forward, hit the present), and a page
+# that is simply full carries reached_record_limit instead, or
+# reached_time_limit when a time bound was the reason. No case here can
+# demonstrate more than one of the four without inventing a second scenario
+# nobody's documentation walks through, so only reached_beginning -- the one
+# the reference's own worked example carries -- is served, and the other
+# three are named rather than guessed at.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Systems (GET /api/v1/systems.json and the writes alongside it) is a
+#     real, live-reachable route and its credential behaviour is exactly
+#     what groups.json and events/search.json already demonstrate below --
+#     the same global auth gate, checked the same way, including the live
+#     Allow: GET, POST on a wrong method. It is not declared as a route at
+#     all, because no worked example of a full system record, with real
+#     field values, exists anywhere in Papertrail's own published
+#     documentation -- only the generic _links convention, which is a shape
+#     and not a record -- and this task's own rule is to leave a route out
+#     and say so rather than invent a field nobody published. Groups fare
+#     one field better: the documentation's write example
+#     (group[name]=Customer+servers on a PUT) names one real field, so
+#     group is declared below and proven only against an empty fixture, the
+#     same choice make/recipe.yaml makes for its own undocumented scenario
+#     record.
+#   - min_time / max_time (the timestamp alternative to min_id / max_id),
+#     the tail parameter, and q (the search query string itself) are real,
+#     documented parameters and none of them are modelled: this Recipe's one
+#     fixture answers every search request identically, because implementing
+#     Papertrail's own query language is out of scope the same way GROQ,
+#     SOQL and Algolia's search syntax already are elsewhere in this
+#     collection.
+#   - reached_end, reached_record_limit and reached_time_limit, and the
+#     min_time_at field that rides beside the last two, are documented and
+#     not served -- see above.
+#   - The POST /api/v1/searches.json (saved search) endpoint and the system-
+#     to-group join endpoint are real, documented, and not modelled: this
+#     Recipe is about the search surface the task named, not a full port of
+#     the account-management API.
+#   - CORS is documented ("Papertrail's API supports cross-origin resource
+#     sharing") and not exercised; nothing about it was checked live.
+#
+# The values below are documentation examples and fixtures, not secrets, and
+# belong to no account.
+
+recipe: papertrail
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.papertrail.com/help/http-api/
+
+auth:
+  # Routing runs to completion before the credential is examined, verified
+  # twice over: an unrouted path and a wrong method both answer identically
+  # with a credential and without one.
+  after_routing: true
+  # HTTP Basic, per Papertrail's own reference -- and the recommended
+  # X-Papertrail-Token header collapses into this same one shape live (see
+  # the header), so declaring header-scheme-plus-fallback would claim a
+  # distinction the wire does not make. All three verdicts -- absent,
+  # malformed, and a wrong-but-well-formed credential -- answered the
+  # identical body in every live probe, so none of the three optional error
+  # overrides is set: every verdict falls to authentication_error, which is
+  # what Auth.ErrorFor does automatically when a Recipe declares none of
+  # them.
+  scheme: basic
+  keys:
+    - cauldron-papertrail-fixture-key
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  event:
+    collection: events
+    id:
+      # A bare JSON number on the wire, unlike the envelope's own min_id and
+      # max_id -- see the header.
+      style: numeric
+      type: number
+    fields:
+      hostname:
+        type: string
+        required: true
+      received_at:
+        type: datetime
+        required: true
+      display_received_at:
+        type: string
+      severity:
+        type: string
+        default: Info
+      facility:
+        type: string
+        default: User
+      source_id:
+        type: integer
+      source_name:
+        type: string
+        required: true
+      source_ip:
+        type: string
+      program:
+        type: string
+      message:
+        type: string
+        required: true
+
+  # The one field the documentation's own write example names
+  # (group[name]=Customer+servers on a PUT). Everything else about this
+  # resource's shape is undocumented -- see the header.
+  group:
+    collection: groups
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/events/search.json
+    resource: event
+    operation: list
+    list:
+      # A moving window, not a total. min_id and max_id bracket what was
+      # examined, and reached_beginning says why the search stopped rather
+      # than how much there was to find -- see the header on why only this
+      # one of the four documented stop-reasons is served.
+      fields:
+        min_id: "7711561783320576"
+        max_id: "7711582041804800"
+        reached_beginning: true
+
+  - method: GET
+    path: /api/v1/groups.json
+    resource: group
+    operation: list
+
+errors:
+  # All three credential verdicts -- absent, present-but-unparseable, and
+  # well-formed-but-wrong -- answered this identical body on every live
+  # probe. See the header for the third scheme (X-Papertrail-Token) that
+  # collapses into it too.
+  authentication_error:
+    status: 401
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+      WWW-Authenticate: 'Basic realm="Papertrail API"'
+    message: "HTTP Basic: Access denied."
+
+  # Papertrail's own branded page, reproduced verbatim -- it names no
+  # specific path anywhere in its body, so one static message is faithful
+  # for every route this Recipe does not declare.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    message: |
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width">
+          <title>Papertrail :: 404 Not Found</title>
+          <link href="/error_pages.css" media="screen" rel="stylesheet" type="text/css" />
+        </head>
+        <body id="public">
+          <div id="viewport">
+            <div id="hdr" class="hdr">
+              <div class="inner">
+                <div class="wrapper">
+                  <div class="left">
+                    <img src="https://cdn.papertrailapp.com/web/images/pt-logo.png" width="150" alt="Papertrail" />
+                  </div>
+                  <div class="right link-menu">
+                    <ul>
+                      <li><a href="/">Home</a></li>
+                      <li><a href="http://twitter.com/papertrailapp">@papertrailapp</a></li>
+                      <li><a href="/login">Log In</a></li>
+                    </ul>
+                  </div>
+                  <div class="clearfix"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="container error-pages">
+              <div class="white-strip e403">
+                <div class="wrapper">
+                  <div>
+                    <h2><strong>404</strong> Not Found</h2>
+                    <p>
+                      <strong>Sorry, the page you were looking for doesn't exist.</strong>
+                    </p>
+                    <p>
+                      It seems that you've veered into unknown territory, and
+                      we'd love for you to come back. Try the <a href="/dashboard">dashboard</a>,
+                      <a href="http://www.papertrailstatus.com">status</a>, or
+                      <a href="http://help.papertrailapp.com/">support</a>.
+                    </p>
+                    <p>Yours,<br />The Papertrail Team</p>
+                  </div>
+
+                  <div class="clearfix"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+
+  # Struck live on /api/v1/events/search.json, whose only declared method is
+  # GET -- the Allow header is not set here and is left to Cauldron's own
+  # auto-computed value, which for this one-method path matches the live
+  # one exactly. See the header on why systems.json's own Allow is not
+  # asserted the same way.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    # One byte: a single space, not a tag in it. See the header for the
+    # Content-Type this claims and does not deliver.
+    message: " "
+
+  # Documented, not observed -- see the header for why an unauthenticated
+  # probe could never reach it. Quoted verbatim from Papertrail's own
+  # reference, "Sad panda" included, because that literal example is what
+  # the documentation gives and this Recipe does not have a better one to
+  # substitute.
+  parameter_invalid:
+    status: 400
+    style: flat
+    message_field: message
+    message: "Sad panda"
+
+fixtures:
+  empty: {}
+
+  # Both events are Papertrail's own worked example, quoted verbatim from
+  # its HTTP API reference rather than invented: hostnames, source ids,
+  # messages and ips are the documentation's literal values.
+  search-results:
+    event:
+      - id: 7711561783320576
+        hostname: abc
+        received_at: "2011-05-18T20:30:02-07:00"
+        display_received_at: "May 18 20:30:02"
+        severity: Info
+        facility: Cron
+        source_id: 2
+        source_name: abc
+        source_ip: "208.75.57.121"
+        program: CROND
+        message: "message body"
+      - id: 7711562567655424
+        hostname: def
+        received_at: "2011-05-18T20:30:02-07:00"
+        display_received_at: "May 18 20:30:02"
+        severity: Info
+        facility: Cron
+        source_id: 19
+        source_name: server1
+        source_ip: "208.75.57.120"
+        program: CROND
+        message: "A short event"
+
+conformance:
+  - name: no credential at all is HTTP Basic; Access denied, in plain text
+    # Struck live against /api/v1/systems.json; groups.json, the route this
+    # Recipe actually declares, was checked too and answers byte-identically
+    # -- the credential check is global on this host and this emulator both.
+    source: https://papertrailapp.com/api/v1/systems.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/groups.json
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+        WWW-Authenticate: 'Basic realm="Papertrail API"'
+      body_matches: "^HTTP Basic: Access denied\\.$"
+
+  - name: a well-formed but wrong Basic credential answers the identical body
+    source: https://papertrailapp.com/api/v1/systems.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/groups.json
+      headers:
+        # curl -u "junktoken12345:" -- the documented recommended token,
+        # sent as a Basic username with no password, exactly as the docs'
+        # own curl example structures it.
+        Authorization: "Basic anVua3Rva2VuMTIzNDU6"
+    expect:
+      status: 401
+      body_matches: "^HTTP Basic: Access denied\\.$"
+
+  - name: a completely different scheme collapses into the same sentence
+    source: https://papertrailapp.com/api/v1/systems.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/groups.json
+      headers:
+        Authorization: "Bearer junktoken12345"
+    expect:
+      status: 401
+      body_matches: "^HTTP Basic: Access denied\\.$"
+
+  - name: an unrouted path answers Papertrail's own branded page
+    # Called live twice, with no credential and again with a well-formed
+    # wrong one: byte-identical 404 both times, because routing runs to
+    # completion regardless of the credential on this host.
+    # auth.after_routing carries that, so this is the request that was made.
+    source: https://papertrailapp.com/api/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body_matches: "Sorry, the page you were looking for doesn't exist"
+
+  - name: a wrong method on a route that exists is a real 405
+    # Struck live with no credential at all -- routing answers a method
+    # mismatch before auth is checked on this host -- and sent here the same
+    # way. See the header.
+    source: https://papertrailapp.com/api/v1/events/search.json
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/events/search.json
+    expect:
+      status: 405
+      headers:
+        # Auto-computed by Cauldron from the one method this Recipe
+        # declares for this path -- matches the live value exactly, unlike
+        # systems.json's, which the header explains.
+        Allow: "GET"
+      body_matches: "^ $"
+
+  - name: min_id and max_id are strings, and each event's own id is a number
+    source: https://www.papertrail.com/help/search-api/
+    fixture: search-results
+    request:
+      method: GET
+      path: /api/v1/events/search.json
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tcGFwZXJ0cmFpbC1maXh0dXJlLWtleTo="
+    expect:
+      status: 200
+      body:
+        min_id: "7711561783320576"
+        max_id: "7711582041804800"
+        reached_beginning: true
+        "events[0].id": 7711561783320576
+        "events[0].source_name": abc
+        "events[1].source_name": server1
+
+  - name: there is no group here for a count to sit on -- every field is on the line itself
+    source: https://www.papertrail.com/help/search-api/
+    fixture: search-results
+    request:
+      method: GET
+      path: /api/v1/events/search.json
+      headers:
+        Authorization: "Basic Y2F1bGRyb24tcGFwZXJ0cmFpbC1maXh0dXJlLWtleTo="
+    expect:
+      status: 200
+      body:
+        "events[0].message": "message body"
+        "events[0].program": CROND
+        "events[0].source_ip": "208.75.57.121"
+      absent:
+        - "events[0].group"
+        - "events[0].group_id"
+        - "events[0].count"
+        - "events[0].occurrences"
+
+  - name: the documented 400 shape, never reachable without a working credential
+    source: https://www.papertrail.com/help/http-api/
+    arm: parameter_invalid
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/events/search.json
+    expect:
+      status: 400
+      body:
+        message: "Sad panda"

@@ -1,0 +1,670 @@
+# Lever Recipe for Cauldron
+#
+# Lever has no separate Candidate object at the top of its API. The object
+# every route here answers with is an Opportunity, and Lever's own
+# documentation is explicit that the word is chosen to avoid the other two:
+# "Candidates can be applied to multiple job postings, meaning that
+# candidates can have multiple applications... An Opportunity will have no
+# more than one Application." One person, one job, one Opportunity -- so a
+# person who applies twice is two Opportunities, each carrying its own
+# stage, its own archive state, its own interview history, and neither
+# knows the other exists by looking at itself.
+#
+# What ties them back into one human is a field, not a search: every
+# Opportunity carries contact, the UID of a separate, fetchable Contact
+# resource (GET /v1/contacts/{contact}) that holds the name, the emails and
+# the phones once, no matter how many jobs the person is being considered
+# for. Two Opportunities with the same contact value are the same person by
+# construction, not by matching on email in application code -- which is
+# the opposite of Workable's answer to the same question (see
+# workable/recipe.yaml): Workable mints a wholly separate Candidate profile
+# per job with no shared identifier at all, and its own help centre says
+# outright that merging them is not supported. Greenhouse (see
+# greenhouse/recipe.yaml) keeps the person and the application as two
+# resources from the start, Candidate and Application, with the parent
+# already holding an applications array. Lever's shape is a third answer:
+# the parent IS the application, and the person is a field on it rather
+# than the other way around.
+#
+# A second durable/configured split sits beside the first one. Opportunity
+# carries a stage -- a free string naming whichever pipeline step this
+# account configured, "phone-screen" for one workspace and something else
+# for the next -- and Lever's own /v1/stages resource pairs every one of
+# those with a pipeline value from a fixed five-word vocabulary: lead,
+# applicant, screen, onsite, offer. That is the same shape FireHydrant's
+# header describes for incident.io's severity object and calls out
+# FireHydrant itself for lacking: a workspace-chosen label sitting beside a
+# fixed word an integration can actually branch on without reading the
+# account's own configuration first. This Recipe declares both and the
+# route that turns one into the other.
+#
+# The wire evidence, checked live against api.lever.co with no account and
+# no key ever created:
+#
+#   GET  /v1/opportunities                        no header      -> 401 {"code":"UnauthorizedError","message":"The request requires authentication."}
+#   GET  /v1/opportunities   Authorization: Bearer junktoken12345 -> 401 {"code":"InvalidCredentialsError","message":"Invalid Bearer Token"}
+#   GET  /v1/opportunities   Basic junkapikey12345:  (empty pw)   -> 403 {"code":"NotAuthorized","message":"Authentication incorrect. The key you provided appears to be invalid. You may want to double-check you typed it correctly."}
+#   GET  /v1/opportunities   Basic :junkapikey12345  (empty user) -> 403 {"code":"NotAuthorized","message":"Must provide API key as username."}
+#   POST /v1/opportunities                        no header      -> 401, identical to the GET above
+#   PATCH /v1/opportunities                       no header      -> 405 {"code":"MethodNotAllowedError","message":"PATCH is not allowed"}, allow: GET, POST
+#   GET  /v1/this-is-not-a-real-resource-xyz      no header      -> 404 {"code":"ResourceNotFound","message":"/v1/this-is-not-a-real-resource-xyz does not exist"}
+#   GET  /v1/this-is-not-a-real-resource-xyz      Basic junkapikey12345: -> byte-identical 404 to the line above
+#
+# Four distinct verdicts, not two. A missing header, a bearer token (the
+# wrong scheme entirely), a basic credential in the wrong half, and a basic
+# credential that is merely wrong all answer differently, and this Recipe
+# can only carry three of them: auth.absent_error, auth.malformed_error and
+# auth.rejected_error give one sentence each to no-credential,
+# wrong-scheme-presented, and right-shape-but-unrecognised. The fourth --
+# Basic auth with the key placed in the password slot and the username left
+# empty, "Must provide API key as username" -- is a real, distinct, live
+# sentence this Recipe cannot also serve: Cauldron's basic-scheme check
+# reads whichever half auth.credential names (username, here, matching
+# Lever's own instruction to put the key there) and calls anything else a
+# rejected credential, the same verdict a genuinely wrong key gets. Recorded
+# here rather than forced into a fourth field the format does not have.
+#
+# The other three map cleanly onto real Cauldron mechanics, and the mapping
+# is worth spelling out because it is not an accident of which requests
+# happened to get tried:
+#
+#   - No Authorization header at all is Absent under Cauldron's own basic
+#     check (r.BasicAuth() never even attempted), and Lever's own sentence
+#     for it -- "The request requires authentication" -- is also the
+#     generic one, so auth.absent_error names it directly.
+#   - "Authorization: Bearer junktoken12345" does not parse as Basic, so
+#     Cauldron calls it Malformed on its own, with no arming required, and
+#     Lever's live answer for exactly this shape -- "Invalid Bearer Token"
+#     -- is auth.malformed_error.
+#   - A well-formed Basic credential carrying a key this Recipe does not
+#     hold is Rejected, and Lever's answer -- the "double-check you typed it
+#     correctly" sentence, at 403 rather than 401 -- is auth.rejected_error.
+#
+# Routing is checked before authentication here, for every method and every
+# path, which is the same ordering Rootly's Recipe describes and the
+# opposite of Cauldron's own runtime, whose authorised(r) check is
+# unconditional and runs before the router is ever consulted (see
+# firehydrant/recipe.yaml for the provider that ordering was built for).
+# The unrouted-path row above was struck twice -- once with no credential,
+# once with a wrong one -- and got the identical body both times, so the
+# 404 cannot be an artefact of authentication having already failed; the
+# router answers before Lever's auth check ever sees the request. The same
+# is true of the method row: PATCH on a real path answered 405 with no
+# credential presented at all, which an auth-first check would have refused
+# for the credential rather than the method. auth.after_routing declares
+# that ordering, so both cases below send exactly what the live probes
+# sent -- no Authorization header of any kind -- and both are verified.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The fourth credential-shape sentence above ("Must provide API key as
+#     username") is not servable; see the auth discussion.
+#   - Declaring the ordering has one cost worth naming, because it is a
+#     cost this Recipe pays for its own incompleteness rather than for
+#     Lever's behaviour. With auth.after_routing set, the emulator answers
+#     about the routes it declares, and this Recipe declares no create. So
+#     POST /v1/opportunities with no credential answers 405 here and
+#     answered 401 live -- struck directly, and the 401 is right, because
+#     the route exists on Lever. The gap is the route table, not the order:
+#     Lever routes first and this Recipe knows fewer routes than Lever has.
+#     Recorded here rather than papered over with a create route that
+#     serves nothing, or with a 405 case asserting a status the real API
+#     does not send.
+#   - Cauldron's generic 405 renders its detail as "{method} {path}",
+#     because that string is fixed in the runtime and this file cannot
+#     change it (internal/ is out of bounds for a Recipe). Lever's own
+#     405 names only the method -- "PATCH is not allowed" -- with no path in
+#     it. The conformance case below asserts the status and the Allow
+#     header, both of which match exactly, and does not assert the message
+#     text, which cannot.
+#   - Of the documented Opportunity fields (name, headline, contact, emails,
+#     phones, stage, confidentiality, location, links, tags, owner,
+#     followers, applications, sources, origin, archived, urls,
+#     isAnonymized, dataProtection, resume and more) this Recipe declares
+#     about fifteen. archived is modelled as archivedAt and archivedReason;
+#     the reason is carried as the archive-reason UID rather than resolved
+#     to its text, because GET /v1/archive_reasons is not declared here and
+#     resolving it in the fixture without that route would be answering a
+#     lookup this Recipe cannot actually serve.
+#   - applications, the array Lever nests under each Opportunity describing
+#     the single application that produced it, is not modelled. Everything
+#     it would carry beyond what created the Opportunity (postingOwner,
+#     referrer, custom question answers) is out of scope here.
+#   - create, update, archive and stage-change routes are not modelled.
+#     Every route below is a GET.
+#   - No worked JSON example for a single Opportunity or a single Contact is
+#     shown anywhere in Lever's published documentation that this Recipe's
+#     research reached -- only field-by-field schema prose. The envelope
+#     (wrapped under "data", for both a list and a single object alike) is
+#     inferred from the pattern every other single-object endpoint in the
+#     same document follows, not from a worked example of this one, and
+#     every resource-shaped case below is sourced rather than verified for
+#     that reason.
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Only the credential-shaped and routing-shaped cases below
+#     were actually called against api.lever.co; every other case is read
+#     from hire.lever.co/developer/documentation and carries no verified
+#     date.
+#   - This Recipe carries no upstream.spec. Lever's documentation is prose
+#     and schema tables rather than a published OpenAPI or Postman
+#     description reachable without a login, so there is nothing to point a
+#     spec-drift check at.
+#
+# Keys below are fixtures, not secrets.
+
+recipe: lever
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: lever
+  docs: https://hire.lever.co/developer/documentation
+
+auth:
+  # Routing runs before authentication on every method, verified with no
+  # credential at all against both a real path and one that does not exist.
+  after_routing: true
+  # The API key is the Basic username, with an empty password -- Lever's own
+  # words: "Authenticate to the Lever API via basic auth by providing an API
+  # key as the username and leaving the password blank." Verified live: a
+  # key placed in the password slot instead is refused with a sentence
+  # naming exactly that mistake (see the header).
+  scheme: basic
+  keys:
+    - cauldron_lever_fixture_key
+  absent_error: lever_authentication_required
+  malformed_error: lever_invalid_bearer_token
+  rejected_error: lever_invalid_credentials
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: next
+    has_more_field: hasNext
+  resource:
+    # Inferred from the pattern every other single-object endpoint in
+    # Lever's documentation follows; no worked example of this exact
+    # endpoint was found. See the header.
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+
+resources:
+  opportunity:
+    collection: data
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      headline:
+        type: string
+        null_when_unset: true
+      # The field that answers "is this the same person": a Contact UID,
+      # shared across every Opportunity that person holds. Two Opportunities
+      # with the same value here are the same human by construction -- see
+      # the header for how this compares with Greenhouse's Candidate and
+      # Workable's un-linked per-job profile.
+      contact:
+        type: string
+        required: true
+      emails:
+        type: list
+      phones:
+        type: list
+      # A free string this account configured -- "phone-screen" means
+      # nothing outside it. The fixed vocabulary a report can actually
+      # branch on is the stage resource's own pipeline field, not this one;
+      # see the header's comparison with incident.io's severity object.
+      stage:
+        type: string
+      # A Posting UID, absent on an Opportunity nobody has attached to a job
+      # yet -- Lever's own version of Greenhouse's prospect, though nothing
+      # here names it that. No worked example showing null versus omitted
+      # was found, so this Recipe takes the more conservative reading and
+      # omits the key rather than claiming a null the documentation never
+      # showed.
+      posting:
+        type: string
+      owner:
+        type: string
+        null_when_unset: true
+      tags:
+        type: list
+      sources:
+        type: list
+      # Absent until somebody archives the Opportunity; not deletion, the
+      # same shape Greenhouse's rejected application has, and still returned
+      # by a plain list. Omitted rather than nulled for the same reason as
+      # posting above.
+      archivedAt:
+        type: datetime
+        in: archived
+        stamped: false
+      # The archive-reason UID rather than its resolved text -- see the
+      # header for why this Recipe does not also declare archive_reasons.
+      archivedReason:
+        type: string
+        in: archived
+        as: reason
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+        null_when_unset: true
+      lastInteractionAt:
+        type: datetime
+        null_when_unset: true
+        stamped: false
+
+  # The durable person. Two opportunity records referencing the same
+  # contact id are the same human; there is no other resource here to
+  # search or merge, because there is nothing to merge -- see the header.
+  contact:
+    id:
+      style: uuid
+    fields:
+      name:
+        type: string
+        required: true
+      headline:
+        type: string
+        null_when_unset: true
+      emails:
+        type: list
+      phones:
+        type: list
+      isAnonymized:
+        type: boolean
+        default: false
+
+  # A workspace's own configured pipeline steps, each paired with one of a
+  # fixed five words -- lead, applicant, screen, onsite, offer -- that means
+  # the same thing in every account. See the header.
+  stage:
+    collection: data
+    id:
+      style: opaque
+    fields:
+      text:
+        type: string
+        required: true
+      pipeline:
+        type: string
+        required: true
+      rank:
+        type: integer
+
+routes:
+  - method: GET
+    path: /v1/opportunities
+    resource: opportunity
+    operation: list
+    pagination:
+      # Lever's own words: "limit ... can range between 1 and 100 items",
+      # default 100; "offset ... An offset token specifying the next page."
+      style: cursor
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /v1/opportunities/{id}
+    resource: opportunity
+    operation: get
+
+  - method: GET
+    path: /v1/contacts/{id}
+    resource: contact
+    operation: get
+
+  - method: GET
+    path: /v1/stages
+    resource: stage
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+
+errors:
+  # auth.absent_error. Live, byte for byte, for a request carrying no
+  # Authorization header at all.
+  lever_authentication_required:
+    status: 401
+    code: UnauthorizedError
+    message: The request requires authentication.
+
+  # auth.malformed_error. Live, for "Authorization: Bearer junktoken12345"
+  # -- a header that was sent and does not parse as Basic. Lever's own
+  # sentence names the scheme it saw and refused, not a generic complaint.
+  lever_invalid_bearer_token:
+    status: 401
+    code: InvalidCredentialsError
+    message: Invalid Bearer Token
+
+  # auth.rejected_error. Live, for a well-formed Basic credential (key as
+  # username, empty password) this Recipe does not hold. 403, not 401 --
+  # the one place Lever's own two failure families disagree on status.
+  lever_invalid_credentials:
+    status: 403
+    code: NotAuthorized
+    message: Authentication incorrect. The key you provided appears to be invalid. You may want to double-check you typed it correctly.
+
+  # The runtime's own unmatched-route answer, renamed and reworded to
+  # Lever's live shape. {detail} is the request path, exactly as Lever's own
+  # message states it -- "{path} does not exist" -- and it was struck live
+  # with two different credential states and answered identically both
+  # times; see the header.
+  unknown_route:
+    status: 404
+    code: ResourceNotFound
+    message: "{detail} does not exist"
+
+  # The runtime's own wrong-method answer. Verified for status and for the
+  # Allow header; the message text is not, because Cauldron's own template
+  # bakes in the path and Lever's does not -- see the header.
+  method_not_allowed:
+    status: 405
+    code: MethodNotAllowedError
+    message: "{detail} is not allowed"
+
+  resource_missing:
+    status: 404
+    code: ResourceNotFound
+    message: "{detail} was not found"
+
+fixtures:
+  empty: {}
+
+  small-org:
+    contact:
+      # One human. Two Opportunities below share this id, which is the
+      # entire mechanism -- there is no search, no merge, nothing else
+      # tying them together.
+      - id: 8f14e45f-ceea-467e-bd76-15fa0a789e0b
+        name: Alan Turing
+        headline: Formerly Bletchley Park
+        emails:
+          - a.turing@example.com
+        phones: []
+      - id: 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f1b
+        name: Hedy Lamarr
+        headline: Formerly MGM Studios
+        emails:
+          - h.lamarr@example.com
+        phones: []
+
+    stage:
+      - id: lead-new
+        text: New Lead
+        pipeline: lead
+        rank: 0
+      - id: phone-screen
+        text: Phone Screen
+        pipeline: screen
+        rank: 1
+      - id: onsite-loop
+        text: Onsite Loop
+        pipeline: onsite
+        rank: 2
+
+    opportunity:
+      # Turing, at one job, still active in screening. Same contact as the
+      # next record below, which is the entire point of this fixture.
+      - id: 1b4e28ba-2fa1-11d2-883f-0016d3cc0001
+        name: Alan Turing
+        contact: 8f14e45f-ceea-467e-bd76-15fa0a789e0b
+        emails:
+          - a.turing@example.com
+        stage: phone-screen
+        posting: 4b2c9e10-0000-4000-8000-000000000010
+        owner: recruiter-1
+        tags:
+          - referral
+        sources:
+          - Referral
+        createdAt: "2026-06-01T14:00:00.000Z"
+        updatedAt: "2026-06-10T09:30:00.000Z"
+        lastInteractionAt: "2026-06-10T09:30:00.000Z"
+
+      # Turing again, a different job, archived as underqualified. "The
+      # opportunity's status" is not one thing here any more than it is on
+      # Greenhouse's applications: this person is simultaneously active on
+      # one Opportunity and archived on another.
+      - id: 2c5f39cb-3fb2-22e3-994f-0016d3cc0002
+        name: Alan Turing
+        contact: 8f14e45f-ceea-467e-bd76-15fa0a789e0b
+        emails:
+          - a.turing@example.com
+        stage: lead-new
+        posting: 5c3d0f21-0000-4000-8000-000000000020
+        owner: recruiter-2
+        tags: []
+        sources:
+          - Applied
+        archivedAt: "2026-07-02T11:00:00.000Z"
+        archivedReason: reason-underqualified
+        createdAt: "2026-06-20T08:00:00.000Z"
+        updatedAt: "2026-07-02T11:00:00.000Z"
+
+      # Lamarr, one Opportunity, no posting yet -- sourced and not attached
+      # to a job.
+      - id: 3d6a4adc-4fc3-33f4-aa5f-0016d3cc0003
+        name: Hedy Lamarr
+        contact: 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f1b
+        emails:
+          - h.lamarr@example.com
+        stage: onsite-loop
+        owner: recruiter-1
+        tags: []
+        sources:
+          - Sourced
+        createdAt: "2026-07-15T10:00:00.000Z"
+        updatedAt: "2026-08-01T16:00:00.000Z"
+        lastInteractionAt: "2026-08-01T16:00:00.000Z"
+
+# Every case below carries source. A verified date means this Recipe called
+# api.lever.co with exactly the request shown and recorded exactly what came
+# back; its absence means the case was read from
+# hire.lever.co/developer/documentation, or -- for the two routing cases
+# below -- reached only through the fixture credential Cauldron's own
+# unconditional auth check requires, a request this Recipe never made
+# against the live API. See the header.
+conformance:
+  - name: no credential at all is refused for authentication
+    source: https://api.lever.co/v1/opportunities
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/opportunities
+    expect:
+      status: 401
+      headers:
+        # Lever's live header carries a charset suffix
+        # ("application/json; charset=utf-8"); Cauldron's own JSON writer
+        # does not add one, so only the media type is asserted here.
+        Content-Type: application/json
+      body:
+        code: UnauthorizedError
+        message: The request requires authentication.
+
+  - name: a bearer token is the wrong scheme, and says so
+    source: https://api.lever.co/v1/opportunities
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/opportunities
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        code: InvalidCredentialsError
+        message: Invalid Bearer Token
+
+  - name: a well-formed but unrecognised key is a 403, not a 401
+    source: https://api.lever.co/v1/opportunities
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /v1/opportunities
+      headers:
+        # junkapikey12345 as the Basic username, empty password.
+        Authorization: Basic anVua2FwaWtleTEyMzQ1Og==
+    expect:
+      status: 403
+      body:
+        code: NotAuthorized
+        message: Authentication incorrect. The key you provided appears to be invalid. You may want to double-check you typed it correctly.
+
+  - name: a wrong method on a real path is refused for the method, not the credential
+    # Struck live with NO Authorization header at all, and answered 405
+    # rather than the 401 an auth-first check would give -- routing runs
+    # before authentication here, for every method, not only for a path
+    # that does not exist. auth.after_routing carries that, so this is the
+    # request that was made. The live Allow header read "GET, POST"; this
+    # Recipe does not model the create route (see the header), so its own
+    # Allow only names GET -- a true subset of the live answer, not an
+    # invented one.
+    source: https://api.lever.co/v1/opportunities
+    verified: "2026-09-01"
+    fixture: small-org
+    request:
+      method: PATCH
+      path: /v1/opportunities
+    expect:
+      status: 405
+      headers:
+        allow: "GET"
+      body:
+        code: MethodNotAllowedError
+
+  - name: an unrouted path answers the same way with no credential and a wrong one
+    # Struck live twice, with no credential and with a rejected
+    # Basic one, and both calls answered this identical body.
+    # auth.after_routing carries the ordering, so this is the uncredentialed
+    # request as it was made.
+    source: https://api.lever.co/v1/this-is-not-a-real-resource-xyz
+    verified: "2026-09-01"
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-resource-xyz
+    expect:
+      status: 404
+      body:
+        code: ResourceNotFound
+        message: /v1/this-is-not-a-real-resource-xyz does not exist
+
+  - name: one contact, two opportunities, two outcomes
+    source: https://hire.lever.co/developer/documentation#opportunities
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/opportunities
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+    expect:
+      status: 200
+      body:
+        "data[0].contact": 8f14e45f-ceea-467e-bd76-15fa0a789e0b
+        "data[0].stage": phone-screen
+        # Same contact, different Opportunity, archived rather than active.
+        # "The candidate's status" is not a thing that exists here any more
+        # than it is on Greenhouse.
+        "data[1].contact": 8f14e45f-ceea-467e-bd76-15fa0a789e0b
+        "data[1].archived.reason": reason-underqualified
+      absent:
+        # Not archived: neither field of the nested object is stamped in.
+        - "data[0].archived.archivedAt"
+        - "data[0].archived.reason"
+
+  - name: an archived opportunity carries a reason and is still listed
+    source: https://hire.lever.co/developer/documentation#opportunities
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/opportunities/2c5f39cb-3fb2-22e3-994f-0016d3cc0002
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+    expect:
+      status: 200
+      body:
+        "data.archived.archivedAt": "2026-07-02T11:00:00.000Z"
+        "data.archived.reason": reason-underqualified
+        # A closed job still has a live Opportunity attached to it, and an
+        # archived Opportunity still carries whichever stage it stopped at.
+        "data.stage": lead-new
+
+  - name: a sourced opportunity has no posting
+    source: https://hire.lever.co/developer/documentation#opportunities
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/opportunities/3d6a4adc-4fc3-33f4-aa5f-0016d3cc0003
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+    expect:
+      status: 200
+      body:
+        "data.contact": 3c9f8b2a-1d4e-4f6a-9b3c-2e7d5a8c0f1b
+      absent:
+        - data.posting
+        - data.archived.archivedAt
+
+  - name: the contact record holds the name once, not once per opportunity
+    source: https://hire.lever.co/developer/documentation#contacts
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/contacts/8f14e45f-ceea-467e-bd76-15fa0a789e0b
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+    expect:
+      status: 200
+      body:
+        data:
+          name: Alan Turing
+          headline: Formerly Bletchley Park
+
+  - name: a stage carries a fixed pipeline word beside its own configured name
+    source: https://hire.lever.co/developer/documentation#stages
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/stages
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+    expect:
+      status: 200
+      body:
+        "data[1].text": Phone Screen
+        "data[1].pipeline": screen
+
+  - name: opportunities page by limit and an opaque offset token
+    source: https://hire.lever.co/developer/documentation#pagination
+    fixture: small-org
+    request:
+      method: GET
+      path: /v1/opportunities
+      headers:
+        Authorization: Basic Y2F1bGRyb25fbGV2ZXJfZml4dHVyZV9rZXk6
+      query:
+        limit: "1"
+    expect:
+      status: 200
+      body:
+        hasNext: true
+      matches:
+        next: ".+"
+      absent:
+        - "data[1]"

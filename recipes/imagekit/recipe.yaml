@@ -1,0 +1,499 @@
+# ImageKit Recipe for Cauldron
+#
+# ImageKit's whole pitch is that a transformation is not a request you wait
+# on: it is a query string. `ik.imagekit.io/demo/img.jpg?tr=w-300,h-300` is
+# resized at the CDN edge the first time anyone asks for it and cached after,
+# and nothing on api.imagekit.io -- the host this Recipe is scoped to -- ever
+# creates a transform job, because there is no job. That is the group's
+# question answered by absence rather than by a field: File
+# (GET /v1/files/{fileId}/details) has no status, no state, no phase
+# anywhere on it, confirmed against the Stainless-generated Node SDK's own
+# TypeScript interface (raw.githubusercontent.com/imagekit-developer/
+# imagekit-nodejs/main/src/resources/files/files.ts, which the SDK's own
+# first line says is "generated from our OpenAPI spec") -- because nothing
+# about a file is ever mid-transform. url and thumbnail are two of the
+# fields on that same interface, present unconditionally, because both are
+# just the delivery URL with different query parameters and neither one
+# waits on anything to finish. That puts ImageKit beside turso/recipe.yaml
+# in this collection more than beside any of the others: Turso's create
+# response is a *truncated* projection with no state field because nobody
+# thought to add one; ImageKit's File has no state field because, for the
+# one operation the task asked this group to examine, there is genuinely
+# nothing to be in a state about.
+#
+# **That is not the same claim as "ImageKit has no asynchronous jobs at
+# all."** It has exactly one, on the same host, and it looks like every
+# other answer in this collection: POST /v1/files/purge answers with
+# `{"requestId": string}` and nothing else -- confirmed against the same
+# SDK source, cache/invalidation.ts, whose own docstring says "Purge cache
+# is an asynchronous process and it may take some time to reflect the
+# changes" -- and GET /v1/files/purge/{requestId} takes that *exact* id
+# back and answers `{"status": "Pending" | "Completed"}`. The identifier the
+# create call hands back is the one the poll route takes, with no
+# translation, which answers two of the task's specific questions at once:
+# yes there is a status field in the create response's neighbourhood
+# (requestId, not status, but it is what you poll with), and yes there is a
+# polling endpoint, and yes it is addressed by exactly what create returned.
+# Compare temporal/recipe.yaml, whose AsyncOperation is the same shape
+# (created object carries only an id and a state that starts pending, polled
+# separately) with a media pipeline standing in for a namespace provisioner.
+# Compare singlestore/recipe.yaml the other way: SingleStore hands back "a
+# password and nothing to poll" for its own async step, which is precisely
+# the trap ImageKit's purge route avoids by handing back a field whose only
+# job is to be polled with.
+#
+# One gap sits between those two findings and is worth stating rather than
+# leaving implicit. The Upload API -- the one route that actually *creates*
+# a file -- lives on a different host, upload.imagekit.io, outside this
+# Recipe's scope (only api.imagekit.io is modelled, per the task). Its own
+# response type, FileUploadResponse, carries an `extensionStatus` field
+# ("success" | "failed" | "pending", with a webhook firing once a pending
+# one settles) for AI-tagging extensions requested at upload time -- and
+# that field does **not** appear anywhere on the ordinary File type GET
+# /v1/files/{fileId}/details answers with. A caller who did not keep the
+# upload response, or whose webhook delivery was lost, has no route on this
+# host to ask again. This is read from the same SDK source as everything
+# else in this paragraph, not observed, because the route it describes is
+# out of scope by host.
+#
+# Three more things, checked live against api.imagekit.io with no account
+# and no key, that date the auth story precisely:
+#
+#   no Authorization header at all         -> 401 "Your request does not
+#                                              contain private API key."
+#   Authorization: Bearer junkjunkjunk     -> 401, byte-identical
+#   Authorization: Basic not-valid-base64  -> 401, byte-identical
+#   HTTP Basic, username junkjunkjunk12345 -> 403 "Your account cannot be
+#                                              authenticated."
+#
+# **Absent and malformed collapse; rejected is a different status code, not
+# only a different sentence.** Nothing at all, a bearer token wearing the
+# wrong scheme entirely, and a Basic header whose payload will not even
+# decode as base64 all land on the identical 401 -- ImageKit's own check for
+# "is there a private key here" runs before it tries to read one out, so
+# anything that is not recognisably Basic never gets that far. A value that
+# *is* well-formed Basic and simply names an account that does not exist
+# gets a different HTTP status as well as a different sentence: 403, not
+# 401. auth.absent_error and auth.malformed_error both name the same entry
+# below for that reason -- the same device together/recipe.yaml uses for its
+# own two-tier collapse -- and auth.rejected_error names the one that is
+# genuinely separate.
+#
+# **The credential is checked before routing, on every path.** An unrouted
+# path and a wrong method on a real path both answer the identical 401
+# "does not contain private API key" with no credential sent, and the
+# identical 403 "cannot be authenticated" with a junk one -- checked all
+# four ways. auth.after_routing is not set: ImageKit checks first, always,
+# which is fireheydrant/recipe.yaml's arrangement (see
+# firehydrant/recipe.yaml) and the opposite of fireworks/recipe.yaml,
+# here/recipe.yaml and papertrail/recipe.yaml, which is worth stating
+# because this task named those three as the worked examples for the
+# opposite finding and this provider genuinely does not show it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No upstream.spec. docs.imagekit.io / imagekit.io/docs is a client-
+#     rendered Next.js app: curl and WebFetch both retrieve the page
+#     skeleton and none of the reference content, confirmed live on the
+#     date below, which is the exact failure mode docs/backlog.md already
+#     recorded for this provider ("Four dead ends in a row ... Statsig and
+#     ImageKit"). What broke that dead end open here was not the docs site
+#     at all -- it was imagekit-nodejs, whose SDK is generated from
+#     ImageKit's real OpenAPI description by Stainless and whose TypeScript
+#     interfaces are that description in a fetchable, citable form. There is
+#     still no single spec URL to fingerprint, so no spec_hash is recorded,
+#     but every field name and shape below traces to a specific file at a
+#     specific commit-independent path in that repository, quoted in the
+#     conformance cases' own source: fields.
+#   - Of File's roughly thirty documented fields this Recipe declares
+#     eleven. AITags, customCoordinates, customMetadata, embeddedMetadata,
+#     selectedFieldsSchema and the video-only fields (audioCodec, bitRate,
+#     duration, videoCodec) are entirely absent.
+#   - update, delete, copy, move, rename and the whole custom-metadata-field
+#     surface are not modelled. Only list, get and the purge pair are.
+#   - No success case for GET /v1/files or GET /v1/files/{id}/details
+#     carries a verified date: both need a real private key to return
+#     anything but a 401/403, and this Recipe was written with neither. The
+#     shape is sourced from the SDK interfaces named above; the values are
+#     this Recipe's own fixtures, not a worked example, because the SDK
+#     source documents types, not example payloads.
+#   - Rate limiting is undocumented anywhere this Recipe found and was never
+#     triggered live.
+#
+# Every case below carrying `verified: "2026-09-01"` was called against
+# api.imagekit.io exactly as shown, that day, with no account and no key.
+# Every other case cites the imagekit-nodejs source file it was read from
+# and carries no verified date. Keys below are fixtures, not secrets.
+
+recipe: imagekit
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://imagekit.io/docs/api-reference
+
+auth:
+  scheme: basic
+  # The private API key is the Basic username; ImageKit's own convention
+  # leaves the password empty, confirmed live (this Recipe's probes used
+  # `-u '<value>:'`).
+  credential: username
+  keys:
+    - cauldron_imagekit_fixture_private_key_000000000
+  # Nothing at all and a well-formed-but-wrong-scheme Authorization header
+  # both land on ImageKit's own generic sentence -- verified live, three
+  # separate ways. See the header.
+  absent_error: missing_private_key
+  malformed_error: missing_private_key
+  # A genuinely Basic, genuinely undecodable-as-a-known-key credential gets
+  # a different status as well as a different sentence -- 403, not 401.
+  # Verified live.
+  rejected_error: account_not_authenticated
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    fields:
+      help: "For support kindly contact us at support@imagekit.io ."
+
+resources:
+  file:
+    collection: files
+    id:
+      style: opaque
+      field: fileId
+    fields:
+      name:
+        type: string
+      filePath:
+        type: string
+      # "image", "non-image" -- confirmed against files.ts's File interface,
+      # which types this as a bare string rather than an enum.
+      fileType:
+        type: string
+      mime:
+        type: string
+      url:
+        type: string
+      thumbnail:
+        type: string
+      size:
+        type: integer
+      height:
+        type: integer
+        null_when_unset: true
+      width:
+        type: integer
+        null_when_unset: true
+      isPrivateFile:
+        type: boolean
+        default: false
+      tags:
+        type: list
+        null_when_unset: true
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  # POST /v1/files/purge's response. requestId is the only field --
+  # confirmed against cache/invalidation.ts's InvalidationCreateResponse,
+  # which declares exactly one optional property and nothing else.
+  purge_request:
+    collection: "-"
+    id:
+      style: opaque
+      field: requestId
+    fields: {}
+
+  # GET /v1/files/purge/{requestId}'s response. status is the only field --
+  # confirmed against InvalidationGetResponse, a one-property interface.
+  purge_status:
+    collection: "-"
+    id:
+      style: opaque
+      field: requestId
+      # This resource is polled, never listed or created independently of
+      # purge_request, so its id is carried by the request path rather than
+      # echoed in the body -- InvalidationGetResponse has no requestId field
+      # of its own, only status.
+    fields:
+      status:
+        type: string
+        default: Pending
+
+routes:
+  - method: GET
+    path: /v1/files
+    resource: file
+    operation: list
+    # limit and skip, confirmed against assets.ts's AssetListParams -- offset
+    # paging, not a cursor. Neither field's own default is stated anywhere
+    # in that source, so the page size below is this emulator's own choice
+    # rather than a cited ImageKit fact.
+    pagination:
+      style: offset
+      limit: 10
+      limit_param: limit
+      cursor_param: skip
+
+  - method: GET
+    path: /v1/files/{id}/details
+    resource: file
+    operation: get
+
+  - method: POST
+    path: /v1/files/purge
+    resource: purge_request
+    operation: create
+    status: 200
+    # InvalidationCreateResponse has exactly one property. Declaring returns
+    # says so structurally rather than by leaving the resource's fields
+    # empty and hoping nothing echoes the request body -- see the "no status
+    # field in the create response" conformance case below, which is the
+    # point this route exists to prove.
+    returns:
+      - id
+
+  - method: GET
+    path: /v1/files/purge/{id}
+    resource: purge_status
+    operation: get
+
+errors:
+  missing_private_key:
+    status: 401
+    message: Your request does not contain private API key.
+
+  account_not_authenticated:
+    status: 403
+    message: Your account cannot be authenticated.
+
+fixtures:
+  empty: {}
+
+  small-library:
+    file:
+      - id: cauldron_file_0000000000000001
+        fileId: cauldron_file_0000000000000001
+        name: hero-banner.jpg
+        filePath: /marketing/hero-banner.jpg
+        fileType: image
+        mime: image/jpeg
+        url: https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg
+        thumbnail: https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg?tr=n-media_library_thumbnail
+        size: 214032
+        height: 1080
+        width: 1920
+        isPrivateFile: false
+        tags:
+          - marketing
+          - hero
+        createdAt: "2026-07-01T09:00:00.000Z"
+        updatedAt: "2026-07-01T09:00:00.000Z"
+
+  purge-pending:
+    purge_request:
+      - id: cauldron_purge_0000000000000001
+        requestId: cauldron_purge_0000000000000001
+    purge_status:
+      - id: cauldron_purge_0000000000000001
+        requestId: cauldron_purge_0000000000000001
+        status: Pending
+
+  purge-completed:
+    purge_status:
+      - id: cauldron_purge_0000000000000002
+        requestId: cauldron_purge_0000000000000002
+        status: Completed
+
+conformance:
+  - name: no credential at all is the generic sentence
+    source: https://api.imagekit.io/v1/files
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/files
+    expect:
+      status: 401
+      body:
+        message: Your request does not contain private API key.
+        help: "For support kindly contact us at support@imagekit.io ."
+
+  - name: an Authorization header of the wrong scheme entirely gets the same sentence
+    # "Authorization: Bearer junkjunkjunk12345" -- not Basic at all. Live,
+    # byte-identical to no header.
+    source: https://api.imagekit.io/v1/files
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/files
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        message: Your request does not contain private API key.
+
+  - name: Basic that will not even decode as base64 also collapses to absent
+    # "Authorization: Basic not-valid-base64!!!". Live, byte-identical to
+    # no header at all -- the check that answers "missing" runs before
+    # anything tries to decode what was sent.
+    source: https://api.imagekit.io/v1/files
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/files
+      headers:
+        Authorization: "Basic not-valid-base64!!!"
+    expect:
+      status: 401
+      body:
+        message: Your request does not contain private API key.
+
+  - name: well-formed Basic naming an unknown key is 403, not 401
+    # HTTP Basic, username junkjunkjunk12345, empty password. Live -- a
+    # different status as well as a different sentence from every case
+    # above.
+    source: https://api.imagekit.io/v1/files
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/files
+      headers:
+        Authorization: Basic anVua2p1bmtqdW5rMTIzNDU6
+    expect:
+      status: 403
+      body:
+        message: Your account cannot be authenticated.
+
+  - name: an unrouted path answers the same 401, no credential needed to see it
+    source: https://api.imagekit.io/v1/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/totally-bogus-endpoint-xyz
+    expect:
+      status: 401
+      body:
+        message: Your request does not contain private API key.
+
+  - name: and the same unrouted path with a junk credential answers the 403 instead
+    # Confirms the credential is checked before routing decides the path
+    # does not exist -- the 403 depends only on the credential shape, never
+    # on whether the path is real.
+    source: https://api.imagekit.io/v1/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/totally-bogus-endpoint-xyz
+      headers:
+        Authorization: Basic anVua2p1bmtqdW5rMTIzNDU6
+    expect:
+      status: 403
+      body:
+        message: Your account cannot be authenticated.
+
+  - name: a wrong method on a real path is refused for its credentials, not a 405
+    source: https://api.imagekit.io/v1/files
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/files
+    expect:
+      status: 401
+      body:
+        message: Your request does not contain private API key.
+
+  - name: listing wraps nothing -- a bare array, per the SDK's AssetListResponse
+    source: https://raw.githubusercontent.com/imagekit-developer/imagekit-nodejs/main/src/resources/assets.ts
+    fixture: small-library
+    request:
+      method: GET
+      path: /v1/files
+      headers:
+        Authorization: Basic Y2F1bGRyb25faW1hZ2VraXRfZml4dHVyZV9wcml2YXRlX2tleV8wMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        "[0].fileId": cauldron_file_0000000000000001
+        "[0].url": https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg
+      absent:
+        - data
+        - files
+
+  - name: the file's own url and thumbnail exist unconditionally -- nothing here waits on a transform
+    source: https://raw.githubusercontent.com/imagekit-developer/imagekit-nodejs/main/src/resources/files/files.ts
+    fixture: small-library
+    request:
+      method: GET
+      path: /v1/files/cauldron_file_0000000000000001/details
+      headers:
+        Authorization: Basic Y2F1bGRyb25faW1hZ2VraXRfZml4dHVyZV9wcml2YXRlX2tleV8wMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        fileId: cauldron_file_0000000000000001
+        url: https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg
+        thumbnail: https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg?tr=n-media_library_thumbnail
+      absent:
+        - status
+        - state
+        - extensionStatus
+
+  - name: purging returns only an id -- no status field anywhere on this response
+    source: https://raw.githubusercontent.com/imagekit-developer/imagekit-nodejs/main/src/resources/cache/invalidation.ts
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/files/purge
+      headers:
+        Authorization: Basic Y2F1bGRyb25faW1hZ2VraXRfZml4dHVyZV9wcml2YXRlX2tleV8wMDAwMDAwMDA6
+      json:
+        url: https://ik.imagekit.io/cauldron_demo/marketing/hero-banner.jpg
+    expect:
+      status: 200
+      matches:
+        requestId: '^\S+$'
+      absent:
+        - status
+
+  - name: polling that exact id shows Pending before it settles
+    source: https://raw.githubusercontent.com/imagekit-developer/imagekit-nodejs/main/src/resources/cache/invalidation.ts
+    fixture: purge-pending
+    request:
+      method: GET
+      path: /v1/files/purge/cauldron_purge_0000000000000001
+      headers:
+        Authorization: Basic Y2F1bGRyb25faW1hZ2VraXRfZml4dHVyZV9wcml2YXRlX2tleV8wMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: Pending
+
+  - name: and Completed once it has, the only two values the SDK's own type admits
+    source: https://raw.githubusercontent.com/imagekit-developer/imagekit-nodejs/main/src/resources/cache/invalidation.ts
+    fixture: purge-completed
+    request:
+      method: GET
+      path: /v1/files/purge/cauldron_purge_0000000000000002
+      headers:
+        Authorization: Basic Y2F1bGRyb25faW1hZ2VraXRfZml4dHVyZV9wcml2YXRlX2tleV8wMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: Completed

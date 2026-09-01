@@ -6,7 +6,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/CauldronUp/cauldron/internal/recipe"
 )
+
+// unshipped is a name no Recipe has, for the tests that need one.
+//
+// Three of them needed one and all three said "netsuite", which was true until
+// a NetSuite Recipe shipped and turned "this name is unknown" into "this name
+// is a provider we emulate". Every one of those tests then failed for a reason
+// that had nothing to do with what it was testing, in a package nobody had
+// touched.
+//
+// A provider's name is a bad fixture for absence, because absence is exactly
+// the property this collection exists to remove. This one cannot become a
+// Recipe, and the test below fails loudly if somebody proves that wrong.
+const unshipped = "not-a-provider-and-never-going-to-be"
+
+func TestTheUnshippedFixtureNameIsStillUnshipped(t *testing.T) {
+	for _, name := range recipe.Bundled() {
+		if name == unshipped {
+			t.Fatalf("%q ships now, so the tests using it as an unknown name are testing nothing", unshipped)
+		}
+	}
+}
 
 func run(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
