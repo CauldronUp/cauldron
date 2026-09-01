@@ -1,0 +1,535 @@
+# Scout APM Recipe for Cauldron
+#
+# Scout watches application performance, and it draws the same line this
+# collection keeps finding drawn three different ways already --
+# rollbar/recipe.yaml (item vs occurrence), bugsnag/recipe.yaml (Error vs
+# Event), raygun/recipe.yaml (error-group vs instance), appsignal/recipe.yaml
+# (no group at all) and airbrake/recipe.yaml (group vs notice) -- except
+# Scout draws it twice, once on each side of what it monitors:
+#
+#   - Performance: an Endpoint ("UsersController#index") is a name with
+#     rolled-up numbers beside it -- throughput, response_time, error_rate,
+#     a 95th percentile -- and, checked against Scout's own OpenAPI
+#     description (api/v0/openapi.yaml, fetched and fingerprinted below),
+#     it has no id field anywhere in its schema. Not opaque, not hidden --
+#     absent. The only handle on one is its own name, and the description's
+#     own examples put that name in the *path* of other routes
+#     (/apps/1234/endpoints/UsersController) as well as in the body. A
+#     Trace, by contrast, is GET /apps/{id}/traces/{trace_id}: a plain
+#     integer, one occurrence, one request, with its own total_call_time and
+#     mem_delta. The group has no id; the occurrence does.
+#   - Exceptions: an ErrorGroup does have an id (integer, per the
+#     description's own parameter schema) but carries no stack, no request,
+#     nothing about what happened -- name, message, status, errors_count,
+#     last_error_at, and a list of the components it was seen on. The
+#     individual Error underneath it -- GET .../error_groups/{id}/errors --
+#     has its own id too, and everything the group does not: message,
+#     created_at, request_params, request_uri, location, request_session,
+#     trace, context. But there is no route in the description that
+#     addresses one Error by its own id directly; the only way to reach one
+#     is inside the errors list for its group. An id that exists as a field
+#     and names no route of its own is Airbrake's deploy problem
+#     (airbrake/recipe.yaml) from the opposite direction -- there, the field
+#     is missing entirely; here, the field exists and the route does not.
+#
+# So the answer this task asked for is two answers, on two axes of the same
+# provider: the smallest thing Scout has an id for that is also addressable
+# on its own is the Trace (GET one, by a plain integer, no encoding, no
+# name lookup); the smallest thing it tracks at all, addressable or not, is
+# the Error, one row per request that raised, nested one level below a group
+# that itself has an id but no detail.
+#
+# ── Auth: two real submission methods, one modelled ──
+#
+# The description's own security scheme is a single header, X-SCOUT-API
+# (components.securitySchemes.apiKeyHeader, type apiKey, in header) -- and
+# its own prose adds a second, undocumented-on-purpose alternative: "a URL
+# query string argument named key ... isn't documented in OpenAPI spec below
+# for simplicity, but is possible." Both were checked live, on 2026-09-01,
+# against GET /api/v0/apps: no header, a junk X-SCOUT-API value, and a junk
+# ?key= all answer the identical 108-byte body,
+# {"header":{"status":{"code":403,"message":"Forbidden, check your API
+# key"},"apiVersion":"0.1"},"results":{}} -- so the query form is real and
+# live-consulted, not merely a doc's aside, and absent and wrong collapse to
+# one sentence on both submission paths. Cauldron's own auth scheme is one
+# mechanism per Recipe; the header form is what the description's own
+# securitySchemes commit to, so that is what is modelled, and the query
+# alternative is recorded here rather than silently dropped.
+#
+# ── Routing before auth, and no 405 anywhere ──
+#
+# Verified live, all with no credential attached: GET /api/v0/apps/12345
+# (a real route, a made-up id) answers the same 403 above -- so a matched
+# route still gates on the credential. But GET
+# /api/v0/this-route-does-not-exist-xyz answers 404, nine bytes, the bare
+# word "Not Found", Content-Type left at Rails' default and an X-Cascade:
+# pass header -- Rails' own signature for "no route matched," present with
+# and without a credential attached. And OPTIONS, POST, PATCH and DELETE
+# against /api/v0/apps -- a route that only ever declares GET -- answer the
+# identical nine-byte 404, not a 405, credential or no credential. This is
+# the third provider in this collection to answer "no 405 anywhere" to that
+# exact probe, after turso/recipe.yaml and dynatrace/recipe.yaml alongside
+# this one, on three unrelated backends.
+#
+# One more shape was checked and is worth having pinned precisely: a nested
+# path this Recipe does model the shallow half of --
+# /api/v0/apps/12345/traces, no such route -- answers the same 404, while
+# /api/v0/apps/12345/endpoints, a real route, answers the 403 above. Probing
+# the difference is how the endpoints route was confirmed to exist at all,
+# ahead of reading the description.
+#
+# ── Known fidelity gaps, stated rather than hidden ──
+#
+#   - Endpoint's own performance numbers -- throughput, response_time,
+#     error_rate, the 95th percentile, max_allocations,
+#     percentage_of_total, formatted_method_name -- are declared required in
+#     the description and carry no worked example value anywhere in it, only
+#     name ("UsersController#index") and link
+#     ("/apps/1234/endpoints/UsersController") do. This Recipe's fixture
+#     sets the two fields it has real values for and leaves the rest unset
+#     rather than inventing plausible-looking numbers -- a real Endpoint
+#     record has more populated than this one does.
+#   - ErrorGroup, Error and Trace carry no worked example value anywhere in
+#     the description either -- every property on all three is a bare typed
+#     schema entry, unlike App and Endpoint. This Recipe declares their
+#     shape (it is real, read from the description) and backs every route
+#     that returns one with the empty fixture only, per this task's own
+#     instruction to prove a shape rather than invent the numbers inside it.
+#   - Metrics (list and get, on both apps and jobs), Jobs, Anomaly Events and
+#     Insights (current and historical) are real, documented routes and none
+#     are modelled. Metrics and Insights answer aggregated or computed
+#     series with no worked example to check a shape against. Jobs share
+#     Endpoint's own addressing problem one level worse: a Job's own id is
+#     "Base64 URL-encoded... e.g. ZGVmYXVsdC9EdW1teVdvcmtlcg==
+#     [default/DummyWorker]," the same transform-between-display-and-path
+#     problem appsignal/recipe.yaml states for its own sample ids ("#"
+#     replaced with "-hash-" before a path can carry it) -- this format has
+#     no field for a value that is one thing in the body and a computed
+#     transform of itself in the URL, and neither Recipe invents one.
+#   - Endpoint- and job-scoped nested routes (metrics, traces, for a specific
+#     endpoint or job) all carry that same base64 path segment and are not
+#     modelled for the same reason -- only the plain listing
+#     (/apps/{id}/endpoints) and the app-scoped trace-by-id route, neither of
+#     which needs one, are.
+#   - ErrorGroupDetail (the single-error-group get response) adds one field
+#     the list response does not have, latest_error -- a full nested Error.
+#     Not modelled: doing so faithfully needs an Error with real content,
+#     which is exactly the gap stated two points up, and the errors-list
+#     route already carries this collection's group-vs-occurrence point more
+#     clearly than one embedded field would.
+#
+# Keys below are fixtures and belong to no real Scout account.
+
+recipe: scoutapm
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: "0.1"
+  docs: https://scoutapm.com/docs/api/
+  spec: https://scoutapm.com/api/v0/openapi.yaml
+  spec_hash: 5d234718b20c7c927b392777b0bc470595e914b77e012faeda9ef12eef61c285
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: header
+  header: X-SCOUT-API
+  keys:
+    - cauldron-scout-fixture-key-0000000000000000
+  # Verified live: a real, matched route (GET /api/v0/apps/12345, a made-up
+  # id) still answers 403 with no credential, but an unrouted path and a
+  # wrong method on a real path both 404 with no credential at all -- see
+  # the header.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: results
+  resource:
+    style: wrapped
+    key: results
+  error:
+    # flat, not this format's own "nested" default: nested's own key is a
+    # single literal map key, not a nesting path, and Scout's status sits
+    # two levels down. flat's per-field paths call the same dotted-path
+    # setter this format's list/resource envelopes use, so header.status.*
+    # nests the way results.app and results.errors do below.
+    style: flat
+    message_field: header.status.message
+    code_field: header.status.code
+    fields:
+      header:
+        apiVersion: "0.1"
+      results: {}
+  success:
+    fields:
+      header:
+        status:
+          code: 200
+          message: OK
+        apiVersion: "0.1"
+
+resources:
+  app:
+    collection: results.apps
+    id:
+      type: number
+      style: numeric
+    fields:
+      name:
+        type: string
+        required: true
+      last_reported_at:
+        type: datetime
+        null_when_unset: true
+
+  endpoint:
+    # No id anywhere in the description's own schema -- see the header. The
+    # only handle on one is its own name, which the description's other
+    # routes address by path rather than by an id this Recipe could declare.
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      app_id:
+        type: string
+        in: "-"
+      name:
+        type: string
+        required: true
+      link:
+        type: string
+        required: true
+      # Declared in the description as required, and required is a real
+      # claim about the wire; the value is not. See the header for why
+      # these seven carry no fixture value.
+      "95th_percentile":
+        type: number
+        null_when_unset: true
+      percentage_of_total:
+        type: number
+        null_when_unset: true
+      formatted_method_name:
+        type: string
+        null_when_unset: true
+      throughput:
+        type: number
+        null_when_unset: true
+      response_time:
+        type: number
+        null_when_unset: true
+      error_rate:
+        type: number
+        null_when_unset: true
+      max_allocations:
+        type: integer
+        null_when_unset: true
+
+  error_group:
+    collection: results.error_groups
+    id:
+      type: number
+      style: numeric
+    fields:
+      app_id:
+        type: string
+        in: "-"
+      name:
+        type: string
+      message:
+        type: string
+      status:
+        type: string
+      errors_count:
+        type: integer
+      last_error_at:
+        type: datetime
+      request_components:
+        type: list
+      request_uri:
+        type: string
+        null_when_unset: true
+      app_environment:
+        type: string
+        null_when_unset: true
+
+  error:
+    collection: results.errors
+    id:
+      type: number
+      style: numeric
+    fields:
+      app_id:
+        type: string
+        in: "-"
+      error_group_id:
+        type: string
+        in: "-"
+      message:
+        type: string
+      created_at:
+        type: datetime
+      request_params:
+        type: map
+        null_when_unset: true
+      request_uri:
+        type: string
+        null_when_unset: true
+      location:
+        type: string
+        null_when_unset: true
+      request_session:
+        type: map
+        null_when_unset: true
+      trace:
+        type: list
+      context:
+        type: map
+
+  trace:
+    id:
+      type: number
+      style: numeric
+    fields:
+      app_id:
+        type: string
+        in: "-"
+      time:
+        type: datetime
+      total_call_time:
+        type: number
+      mem_delta:
+        type: number
+        null_when_unset: true
+      metric_name:
+        type: string
+      uri:
+        type: string
+        null_when_unset: true
+      context:
+        type: map
+
+routes:
+  - method: GET
+    path: /api/v0/apps
+    resource: app
+    operation: list
+
+  - method: GET
+    path: /api/v0/apps/{id}
+    resource: app
+    operation: get
+    envelope:
+      key: results.app
+
+  - method: GET
+    path: /api/v0/apps/{app_id}/endpoints
+    resource: endpoint
+    operation: list
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v0/apps/{app_id}/error_groups
+    resource: error_group
+    operation: list
+    scope: [app_id]
+
+  - method: GET
+    path: /api/v0/apps/{app_id}/error_groups/{id}
+    resource: error_group
+    operation: get
+    scope: [app_id]
+    envelope:
+      key: results.error_group
+
+  - method: GET
+    path: /api/v0/apps/{app_id}/error_groups/{error_group_id}/errors
+    resource: error
+    operation: list
+    scope: [app_id, error_group_id]
+
+  - method: GET
+    path: /api/v0/apps/{app_id}/traces/{id}
+    resource: trace
+    operation: get
+    scope: [app_id]
+    envelope:
+      key: results.trace
+
+errors:
+  # Verified live, three ways: no credential, a junk X-SCOUT-API header, and
+  # a junk ?key= query parameter, all against GET /api/v0/apps. Identical
+  # 108-byte body every time -- see the header. No absent/malformed/rejected
+  # split: this is the one sentence Scout has for all three.
+  authentication_error:
+    status: 403
+    code: "403"
+    message: "Forbidden, check your API key"
+
+  # Verified live: a nonsense path, no credential. Nine bytes, plain text,
+  # Rails' own X-Cascade: pass header -- not the header/results JSON
+  # envelope every other response on this host carries.
+  unknown_route:
+    status: 404
+    style: text
+    message: "Not Found"
+    headers:
+      X-Cascade: pass
+
+  # Verified live: OPTIONS, POST, PATCH and DELETE against /api/v0/apps (a
+  # GET-only route), no credential. The identical nine-byte 404 the unrouted
+  # path gets -- see the header. Declared separately from unknown_route on
+  # purpose, the same way turso/recipe.yaml and dynatrace/recipe.yaml do:
+  # the finding is that the two are indistinguishable here too.
+  method_not_allowed:
+    status: 404
+    style: text
+    message: "Not Found"
+    headers:
+      X-Cascade: pass
+
+  # Documented (NotFound response, api/v0/openapi.yaml) rather than
+  # observed: reaching it needs a working key this task has no account to
+  # obtain.
+  resource_missing:
+    status: 404
+    code: "404"
+    message: "Record Not Found"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    app:
+      # The description's own example values, reused rather than invented:
+      # id 1234 and name "My Application" both appear as "e.g." values on
+      # the App schema itself.
+      - id: 1234
+        name: "My Application"
+
+    endpoint:
+      # name and link are the description's own worked examples. The seven
+      # performance fields are left unset -- see the header.
+      - app_id: "1234"
+        name: "UsersController#index"
+        link: "/apps/1234/endpoints/UsersController"
+
+conformance:
+  - name: an app is the description's own worked example
+    source: https://scoutapm.com/api/v0/openapi.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v0/apps/1234
+      headers:
+        X-SCOUT-API: cauldron-scout-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        results.app.id: 1234
+        results.app.name: "My Application"
+        header.status.code: 200
+        header.apiVersion: "0.1"
+
+  - name: an endpoint has no id anywhere on it
+    source: https://scoutapm.com/api/v0/openapi.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v0/apps/1234/endpoints
+      headers:
+        X-SCOUT-API: cauldron-scout-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        results[0].name: "UsersController#index"
+        results[0].link: "/apps/1234/endpoints/UsersController"
+      # Not opaque, not hidden -- absent. The name is the only handle a
+      # client has on this record.
+      absent:
+        - results[0].id
+
+  - name: a group's own id names no route -- errors are reached only through it
+    source: https://scoutapm.com/api/v0/openapi.yaml
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v0/apps/1234/error_groups/9999/errors
+      headers:
+        X-SCOUT-API: cauldron-scout-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        results.errors: []
+
+  - name: a trace is reached directly, by a plain integer, no group in between
+    source: https://scoutapm.com/api/v0/openapi.yaml
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v0/apps/1234/traces/555
+      headers:
+        X-SCOUT-API: cauldron-scout-fixture-key-0000000000000000
+    expect:
+      # The empty fixture has no trace 555 -- this proves the route and the
+      # not-found shape rather than a fabricated trace body. See the header
+      # for why no trace content is modelled.
+      status: 404
+      body:
+        header.status.message: "Record Not Found"
+
+  - name: no credential is refused with the same sentence a wrong one gets
+    source: https://scoutapm.com/api/v0/apps
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v0/apps
+    expect:
+      status: 403
+      body:
+        header.status.code: 403
+        header.status.message: "Forbidden, check your API key"
+        header.apiVersion: "0.1"
+        results: {}
+
+  - name: and a junk key answers exactly the same way, header or query
+    source: https://scoutapm.com/api/v0/apps?key=junk
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v0/apps
+      query:
+        key: junk-not-a-real-key-000000000000
+    expect:
+      status: 403
+      body:
+        header.status.message: "Forbidden, check your API key"
+
+  - name: a path this API has no route for is nine bytes of plain text
+    source: https://scoutapm.com/api/v0/this-route-does-not-exist-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v0/this-route-does-not-exist-xyz
+    expect:
+      status: 404
+      headers:
+        X-Cascade: pass
+      body_matches: "^Not Found$"
+
+  - name: a wrong method on a real path is the identical 404, not a 405
+    source: https://scoutapm.com/api/v0/apps
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/v0/apps
+    expect:
+      status: 404
+      headers:
+        X-Cascade: pass
+      body_matches: "^Not Found$"
