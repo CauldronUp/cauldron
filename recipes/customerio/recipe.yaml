@@ -1,0 +1,529 @@
+# Customer.io Recipe for Cauldron
+#
+# Customer.io is not one API on one host. It is (at least) two: the Track API
+# at track.customer.io, which records events and identifies people, and the
+# App API at api.customer.io, which sends transactional messages and reads
+# data back out. This Recipe models one route from each: POST
+# /api/v1/customers/{identifier}/events (Track) and POST /v1/send/email (App).
+#
+# THE SPLIT THIS RECIPE EXISTS TO ESTABLISH: the two hosts want two different
+# credential types. Track's own OpenAPI description names its security scheme
+# "Tracking-API-Key" and describes it in so many words: "basic authentication
+# scheme. Your credentials are your Site ID and your API key, Base-64
+# encoded." App's names its scheme "Bearer-Auth": "a bearer authentication
+# scheme... a bearer token, known as an App API Key." One host, Basic; the
+# other, Bearer. Checked live, 2026-09-01, against both:
+#
+#   track.customer.io answers a 401 carrying
+#     WWW-Authenticate: Basic realm="Customer.io edge event collection"
+#   api.customer.io answers the identical 401 BODY and sends no
+#     WWW-Authenticate at all.
+#
+# And on both hosts, missing, wrong-scheme and wrong-secret are the same
+# answer. A request with no Authorization header, a request bearing
+# `Authorization: Bearer <garbage>` sent to the Basic-only Track host, and a
+# request bearing a well-formed but wrong Basic credential all come back
+# identically:
+#
+#   401 {"meta": {"error": "Unauthorized request"}}
+#
+# Customer.io joins the list of providers in this collection where a missing
+# credential and a wrong one cannot be told apart -- and goes one further:
+# even the WRONG SCHEME ENTIRELY produces no distinguishing signal beyond the
+# one host's WWW-Authenticate header, which only ever names what that host
+# wants, never what was actually sent.
+#
+# WHAT CAULDRON CANNOT DO HERE, STATED RATHER THAN FORCED: this format checks
+# one credential scheme per Recipe, for every request, before it looks at the
+# path (see internal/runtime/auth.go -- auth is read once, off
+# s.recipe.Auth, with no per-route override). Track wants Basic and App wants
+# Bearer, and there is no mechanism in this format to enforce two different
+# schemes on two different routes in the same Recipe. This Recipe declares
+# `basic`, matching Track -- the host named first in the brief and the one
+# whose WWW-Authenticate header this Recipe can reproduce -- which means the
+# /v1/send/email route below is checked against a scheme the real App API
+# does not accept at all. The 401 BODY this Recipe serves for that route is
+# still faithful (both real hosts send the identical bytes), but the SCHEME
+# enforcement on it is not, and is not modelled as anything other than what
+# it is: a limitation of describing two credential types in one Recipe file,
+# not a claim about what api.customer.io actually accepts.
+#
+# A SECOND FINDING, ORTHOGONAL TO THE FIRST: any 404 on either host -- a GET
+# where a route only takes POST, or a path this Recipe has never heard of --
+# is not an API error at all. It is Customer.io's own marketing website's
+# actual "Page Not Found" page: a full HTML document with inline CSS and the
+# company logo, Content-Type text/html, aimed at a person who clicked a
+# broken link, not a client library. A client calling .json() on that throws.
+# Checked live, 2026-09-01, byte-identical (Content-Length: 3817) whether the
+# path was a real endpoint hit with the wrong method or a path invented for
+# the test. Contrast with the 401 above, which stays JSON on both hosts:
+# Customer.io's authentication failures are API-shaped and its routing
+# failures are marketing-site-shaped, and which one a client gets depends on
+# which of the two ways a request can be wrong.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The auth scheme mismatch on /v1/send/email, above -- the central one.
+#   - Track's own 400 for a malformed event is a DIFFERENT shape from
+#     everything else this Recipe models: {"meta": {"errors": [...]}} --
+#     plural, an array of bare sentence strings, confirmed from Track's own
+#     OpenAPI description. Every other failure this Recipe declares is
+#     {"meta": {"error": "..."}} -- singular, one string. This format's
+#     string_list error style produces an array of bare strings, but its key
+#     can only be a top-level property (confirmed against every string_list
+#     Recipe in this collection: Datadog, Discourse, Kraken, Vault and
+#     others all key it at the top level, none nests it), and this shape
+#     needs it nested one level under "meta" beside a sibling failure that
+#     uses a different style entirely. That combination is not something
+#     this format can express in one Recipe-wide declaration, so it is
+#     recorded here and not modelled: this Recipe does not declare a route-
+#     level validation failure for the Track event route at all.
+#   - The Track event route answers a literal empty object, {}, which
+#     Customer.io's own description states outright: "A successful request
+#     returns an empty object response." This Recipe's event resource hides
+#     its own minted identifier (id.field: "-") and declares `name` with
+#     in: "-" -- present in the stored record so the required check below can
+#     see it, never present on the wire, matching a route that mints nothing
+#     a caller reads back. The one required field enforces that Track's own
+#     schema requires `name`, but the 400 a missing one gets here is this
+#     format's generic parameter_missing fallback, not Track's real
+#     {"meta":{"errors":[...]}} shape -- see the next gap.
+#   - /v1/send/email's `to` field takes a comma-separated string of up to 15
+#     recipients across to/cc/bcc in the real API. This Recipe declares it as
+#     a single opaque string and checks only that it is present, not its
+#     shape.
+#   - transactional_message_id is documented as *either* an integer id or a
+#     string trigger name (oneOf), which this format has no way to express as
+#     a single field type. It is declared untyped here rather than
+#     constrained to the wrong half of the choice.
+#   - No rate_limit case is declared. Customer.io's docs describe a soft,
+#     "not strictly enforced" limit for transactional sends and give no
+#     documented 429 body shape for either host, so none is guessed.
+#   - This Recipe does not model identifying a person (POST
+#     /api/v1/customers/{id}), Track's batch endpoint, the App API's message
+#     or customer read endpoints, or any channel besides email on
+#     /v1/send/*. Two routes, one from each host, is the whole of it.
+
+recipe: customerio
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://docs.customer.io/api/track/
+  spec: https://docs.customer.io/files/journeys-app.json
+  spec_hash: 437012cf116ff7276c9f35a6c0cad62a242e4f56383fb3e9f61a1af43c2109cc
+  spec_seen: "2026-09-01"
+
+auth:
+  # Basic, matching the Track host -- see the header comment for why the App
+  # route below is checked against a scheme the real API for it does not
+  # accept.
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron0000customerio0000trackapikey00
+
+responses:
+  resource:
+    style: bare
+  # {"meta": {"error": "..."}}. Confirmed live for both hosts' 401, and from
+  # the App API's own OpenAPI description for its 400, 403 and 413 -- the
+  # same envelope on every failure this Recipe declares.
+  error:
+    style: flat
+    message_field: meta.error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # Track's event. Its own minted identifier is hidden and its one field
+  # never reaches the wire -- see the header comment on why: the real route
+  # answers a literal {}.
+  event:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      name:
+        type: string
+        required: true
+        in: "-"
+
+  # The App API's transactional email send.
+  delivery:
+    id:
+      style: opaque
+      field: delivery_id
+      length: 28
+    fields:
+      to:
+        type: string
+        required: true
+      transactional_message_id:
+        # Either an integer id or a string trigger name in the real API --
+        # see the header comment. Left untyped rather than picking one.
+        type: string
+      subject:
+        type: string
+      body:
+        type: string
+      from:
+        type: string
+      message_data:
+        type: map
+      identifiers:
+        type: map
+      # A caller-supplied schedule, echoed back only when it was actually
+      # sent -- see the route below. Left untyped as an integer rather than
+      # a timestamp type so it is never auto-stamped when absent.
+      send_at:
+        type: integer
+      # Unix timestamp for when Customer.io accepted and queued the request
+      # -- genuinely stamped at send time, unlike send_at above.
+      queued_at:
+        type: timestamp
+
+routes:
+  - method: POST
+    path: /api/v1/customers/{identifier}/events
+    resource: event
+    operation: create
+    # {}. Nothing else -- see the header comment.
+
+  - method: POST
+    path: /v1/send/email
+    resource: delivery
+    operation: create
+    # send_at only appears in the trimmed response when the record actually
+    # holds one, which only happens when the caller supplied it -- Cauldron's
+    # trim keeps a declared field only when it is present, so naming it here
+    # is safe even though most requests never set it.
+    returns:
+      - id
+      - queued_at
+      - send_at
+
+errors:
+  # Confirmed live, 2026-09-01, identical on both hosts, for a missing
+  # credential, a wrong Basic secret, and a well-formed Bearer token sent to
+  # the Basic-only Track host.
+  authentication_error:
+    status: 401
+    message: "Unauthorized request"
+    headers:
+      WWW-Authenticate: 'Basic realm="Customer.io edge event collection"'
+
+  # Confirmed live, 2026-09-01, byte-identical (Content-Length 3817) for a
+  # GET on the Track event route and for a path this Recipe has never heard
+  # of, on both hosts. Not JSON -- see the header comment.
+  unknown_route: &customerio_404_page
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+    message: |-
+      <!DOCTYPE html>
+      <html lang="en" class="dark">
+        <head>
+          <meta charset="utf-8" />
+          <title>Page Not Found | Customer.io</title>
+          <meta
+            name="description"
+            content="Oops! The page you're looking for doesn't exist."
+          />
+          <meta name="robots" content="noindex, nofollow, nocache" />
+          <meta
+            name="googlebot"
+            content="noindex, nofollow, noarchive, noimageindex, max-video-preview:0, max-image-preview:none, max-snippet:0"
+          />
+          <meta name="meta-robots" content="noindex, nofollow" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            /* Color tokens ------------------------------------------------------ */
+            :root {
+              --bg: hsl(188 69% 10%);
+              --fg: hsl(93 100% 90%);
+              --fg-muted: hsl(93 97% 93%);
+            }
+
+            /* Global reset ------------------------------------------------------ */
+            * {
+              box-sizing: border-box;
+              margin: 0;
+            }
+
+            body {
+              background-color: var(--bg);
+              color: var(--fg);
+              font-family: "Inter", "Arial", system-ui, -apple-system,
+                BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              display: flex;
+              flex-direction: column;
+              min-height: 100vh;
+            }
+
+            /* Header ------------------------------------------------------------ */
+            .site-header {
+              padding: 1.5rem; /* 24 px */
+            }
+            .logo {
+              width: 2.5rem; /* 40 px */
+              height: 2.5rem;
+              fill: currentColor;
+              color: var(--fg);
+            }
+
+            /* Main section ------------------------------------------------------ */
+            .page-main {
+              flex: 1;
+              display: flex;
+              align-items: flex-start;
+              justify-content: flex-start;
+              padding: 6rem 1.5rem; /* 96 px 24 px */
+            }
+            .content {
+              max-width: 28rem; /* 448 px */
+              display: flex;
+              flex-direction: column;
+              gap: 0.5rem; /* 8 px */
+            }
+            @media (min-width: 768px) {
+              .content {
+                gap: 0.5rem; /* 32 px */
+              }
+            }
+
+            /* Typography -------------------------------------------------------- */
+            h1 {
+              font-size: 1.875rem; /* 30 px */
+              line-height: 2.25rem; /* 36 px */
+              font-weight: 600;
+              margin-bottom: 0.75rem; /* 12 px */
+            }
+            p {
+              margin-bottom: 0.5rem; /* 8 px */
+              color: var(--fg-muted);
+            }
+            a.cta {
+              color: var(--fg-muted);
+              text-decoration: underline;
+              text-decoration-thickness: 1px;
+              text-underline-offset: 4px;
+            }
+          </style>
+        </head>
+
+        <body>
+          <!-- Header -->
+          <header class="site-header">
+            <a href="https://customer.io" aria-label="Go to Customer.io homepage">
+              <svg
+                viewBox="0 0 16 15"
+                class="logo"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M11.528 0H7.676v3.746l3.852 3.747-3.852 3.76V15h3.852l3.838-3.746V3.746L11.528 0ZM5.764 1.866 3.838 0H0v3.746l1.912 1.88 1.926 1.867 3.838-3.747-1.912-1.88ZM1.912 9.373 0 11.253V15h3.838l1.926-1.88 1.912-1.866-3.838-3.761-1.926 1.88Z"
+                />
+              </svg>
+            </a>
+          </header>
+
+          <!-- Main content -->
+          <main class="page-main" aria-labelledby="expired-title">
+            <div class="content">
+              <h1 id="expired-title">Page not found</h1>
+
+              <p>
+                Hi there! You probably got here by clicking an expired or broken link
+                from one of our customers. Please request a new link from the sender.
+              </p>
+              <p>
+                Customer.io is a customer engagement platform for web and mobile apps.
+              </p>
+              <a href="https://customer.io" class="cta">Visit Customer.io</a>
+            </div>
+          </main>
+        </body>
+      </html>
+
+  # The identical page, for a wrong method on a route this Recipe does
+  # declare -- see the header comment.
+  method_not_allowed: *customerio_404_page
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: a missing credential is refused, on the Track host
+    source: https://track.customer.io/api/v1/customers/1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/customers/1/events
+      json:
+        name: signed_up
+    expect:
+      status: 401
+      body:
+        meta.error: "Unauthorized request"
+      headers:
+        WWW-Authenticate: 'Basic realm="Customer.io edge event collection"'
+
+  - name: and a wrong Basic secret answers the identical body
+    source: https://track.customer.io/api/v1/customers/1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/customers/1/events
+      headers:
+        Authorization: "Basic anVua3NpdGVpZDpqdW5rYXBpa2V5MDAwMDAwMDAwMDAwMDAwMA=="
+      json:
+        name: signed_up
+    expect:
+      status: 401
+      body:
+        meta.error: "Unauthorized request"
+
+  - name: and a well-formed Bearer token is refused exactly the same way
+    source: https://track.customer.io/api/v1/customers/1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/customers/1/events
+      headers:
+        Authorization: "Bearer junktoken00000000000000000000"
+      json:
+        name: signed_up
+    expect:
+      # The wrong scheme entirely produces no signal beyond the WWW-Authenticate
+      # header this case already checks above -- see the header comment.
+      status: 401
+      body:
+        meta.error: "Unauthorized request"
+
+  - name: the App host's missing-credential body is byte-identical to Track's
+    source: https://api.customer.io/v1/send/email
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/send/email
+      json:
+        to: person@example.com
+    expect:
+      # This Recipe's single auth scheme cannot enforce Bearer here -- see
+      # the header comment -- so this case checks the body only, which is
+      # genuinely identical between hosts.
+      status: 401
+      body:
+        meta.error: "Unauthorized request"
+
+  - name: a GET on the Track event route is Customer.io's own 404 page, not JSON
+    source: https://track.customer.io/api/v1/customers/1/events
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/customers/1/events
+      # Cauldron checks authentication before it resolves a path, for every
+      # Recipe, so this case has to carry a valid credential to reach the
+      # routing failure -- where the real request that produced this
+      # evidence carried none at all.
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+    expect:
+      status: 404
+      body_matches: "Page Not Found \\| Customer\\.io"
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+
+  - name: and a path this Recipe has never heard of answers the identical page
+    source: https://track.customer.io/api/v1/totallynotarealpath
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/totallynotarealpath
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+    expect:
+      status: 404
+      body_matches: "Hi there! You probably got here by clicking an expired or broken link"
+
+  - name: tracking an event answers a literal empty object
+    source: https://docs.customer.io/api/track/
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/customers/1/events
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+      json:
+        name: signed_up
+        data:
+          plan: pro
+    expect:
+      status: 200
+      body: {}
+      # Not an echo of the request -- see the header comment on why this
+      # Recipe's create routes are checked for exactly that.
+      absent:
+        - name
+        - data
+        - id
+
+  - name: sending a transactional email answers a delivery id and a queued time, not an echo of the message
+    source: https://docs.customer.io/files/journeys-app.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/send/email
+      # Basic, not Bearer -- this Recipe's single global scheme, not what the
+      # real api.customer.io host accepts. See the header comment.
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+      json:
+        to: person@example.com
+        transactional_message_id: "3"
+        message_data:
+          first_name: Ada
+    expect:
+      status: 200
+      matches:
+        delivery_id: '^[0-9A-Za-z]{28}$'
+        queued_at: '^[0-9]+$'
+      # Nothing about the message comes back -- no to, no subject, no body --
+      # only what identifies the send and when it was accepted.
+      absent:
+        - to
+        - subject
+        - body
+        - message_data
+        - send_at
+
+  - name: a scheduled send echoes send_at back; an unscheduled one does not
+    source: https://docs.customer.io/files/journeys-app.json
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/send/email
+      headers:
+        Authorization: "Basic c2l0ZTE6Y2F1bGRyb24wMDAwY3VzdG9tZXJpbzAwMDB0cmFja2FwaWtleTAw"
+      json:
+        to: person@example.com
+        transactional_message_id: "3"
+        send_at: 1893456000
+    expect:
+      status: 200
+      body:
+        send_at: 1893456000
+      # A delivery_id is still minted for a scheduled send, which is not a
+      # value the request sent -- the request never named one.
+      matches:
+        delivery_id: '^[0-9A-Za-z]{28}$'
