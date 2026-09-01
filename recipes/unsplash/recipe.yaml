@@ -1,0 +1,461 @@
+# Unsplash Recipe for Cauldron
+#
+# Unsplash has no sandbox, and its own demo tier is fifty requests an hour
+# against a real, shared application -- a suite calling it on every run
+# burns the whole allowance on failures before it reaches a single test
+# that exercises anything else. Everything under "Checked live" below was
+# answered with no credential and with a credential no account issued,
+# against api.unsplash.com, and nothing past that heading was ever
+# answered with a 200: this Recipe has no key, asked for none, and made
+# none.
+#
+# Checked live, 2026-09-01, against GET /photos, GET /photos/{id}, GET /me
+# and GET /search/photos:
+#
+#   1. Every failure is {"errors": [...]}, an array of bare strings, not
+#      objects. api.unsplash.com/photos?per_page=1 with no Authorization
+#      header at all answers 401 with
+#      {"errors":["OAuth error: The access token is invalid"]} -- a plain
+#      string sitting where SendGrid or Clerk would put {"message": ...}.
+#      Code that reads errors[0].message the way it would for either of
+#      those finds undefined on a string that already says exactly what
+#      went wrong.
+#   2. Missing and wrong are the same failure. No Authorization header,
+#      an empty one, one with no "Client-ID " prefix, and one with a
+#      twenty-character junk key all answer the identical 401 body above,
+#      on all four endpoints tried. There is no "you didn't send a key"
+#      message distinct from "that key is not one" -- both read exactly
+#      like a revoked or mistyped credential.
+#   3. X-Ratelimit-Limit and X-Ratelimit-Remaining, which Unsplash's own
+#      rate-limiting docs describe as arriving "on each request," do not
+#      arrive on any of the failures above. Every one of the four 401s
+#      checked carries neither header -- only
+#      access-control-expose-headers listing their names as ones CORS is
+#      allowed to expose, which is a header naming other headers rather
+#      than the headers themselves. This is stated as a finding because
+#      the opposite was the working assumption going in.
+#   4. An address outside every route this API has -- checked against
+#      /totally/bogus/path -- answers 404 with {"errors":["Not found"]}
+#      and no credential at all, which is the one case here where a
+#      completely wrong request needs no key to be refused correctly:
+#      routing happens before whatever checks the Authorization header
+#      does, for a path recognisable as not being one of Unsplash's at
+#      all. It shares the same {"errors": [...]} shape as everything
+#      else, which is the one piece of good news in this list.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - X-Total and X-Per-Page, which Unsplash's docs say a listing answers
+#     with beside the Link header, are not modelled. Cauldron has route
+#     headers, and they are constants; these two describe the collection
+#     the caller just asked for, and a constant here would report the
+#     same total whatever per_page was sent. GitLab and Basecamp's
+#     Recipes already state the identical gap about their own X-Total,
+#     and this is the same shape of absence rather than a new one.
+#   - X-Ratelimit-Limit and X-Ratelimit-Remaining are declared on the two
+#     routes below as constants from the demo-tier number in Unsplash's
+#     own docs (fifty an hour), sourced rather than verified: no call
+#     made for this Recipe ever carried a valid key, so no 200 was ever
+#     available to check them against, and the constant does not
+#     decrement between requests the way the real counter would.
+#   - No case here exercises what a well-formed but non-existent photo id
+#     answers with a valid key. It could not be reached (every reachable
+#     call here answered 401 before any id was looked at), so
+#     resource_missing below is sourced to Unsplash's own generic error
+#     documentation -- the same {"errors": [...]} shape stated to apply
+#     "with standard HTTP status codes" -- rather than to an observed
+#     404. It is a narrower inference than the verified cases above and
+#     is marked as such.
+#   - Search is not routed. Its listing envelope in Unsplash's own docs is
+#     {"total", "total_pages", "results"} -- a different shape from the
+#     bare array GET /photos answers with -- and adding it without a way
+#     to verify either shape live would be one more documented guess
+#     rather than a finding.
+#   - Neither api.unsplash.com nor unsplash.com/documentation serves a
+#     resolvable OpenAPI document at any conventional path, so this
+#     Recipe has no upstream.spec and nothing was recorded with
+#     `cauldron drift`.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: unsplash
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://unsplash.com/documentation
+
+auth:
+  # "Authorization: Client-ID <access key>" -- not Bearer, and the prefix
+  # is part of what a client has to get right.
+  scheme: header
+  header: Authorization
+  prefix: "Client-ID "
+  keys:
+    - cauldron_unsplash_fixture_key
+
+responses:
+  list:
+    style: bare
+    # Paging travels in a Link header and in the X-Total/X-Per-Page
+    # headers the gap above states are not modelled.
+    link_header: true
+    prev_link: true
+  resource:
+    style: bare
+  error:
+    # {"errors": ["..."]} -- bare strings in the array, not
+    # {"errors": [{"message": "..."}]}. list would be the SendGrid shape;
+    # this is Datadog's, and it is the one Unsplash actually sends.
+    style: string_list
+    key: errors
+
+resources:
+  photo:
+    id:
+      # Eleven characters, base62-ish and case-sensitive -- SendGrid's
+      # bare-random shape, not a UUID and not numeric.
+      style: opaque
+      length: 11
+    fields:
+      created_at:
+        type: string
+      updated_at:
+        type: string
+      width:
+        type: integer
+      height:
+        type: integer
+      color:
+        type: string
+      blur_hash:
+        type: string
+      description:
+        type: string
+      alt_description:
+        type: string
+      likes:
+        type: integer
+      current_user_collections:
+        type: list
+      urls:
+        type: map
+      links:
+        type: map
+      user:
+        type: map
+      # Documented as present on a single photo and absent from the list
+      # envelope -- Braze's campaigns/list-vs-details shape, and the
+      # reason this Recipe's list route below declares `returns`.
+      downloads:
+        type: integer
+      public_domain:
+        type: boolean
+      exif:
+        type: map
+      location:
+        type: map
+      tags:
+        type: list
+
+routes:
+  - method: GET
+    path: /photos
+    resource: photo
+    operation: list
+    pagination:
+      style: page
+      limit_param: per_page
+      cursor_param: page
+      limit: 10
+    # The abbreviated shape a listing answers with. downloads, exif,
+    # location, tags and public_domain are single-photo-only fields, and
+    # leaving `returns` off here would put them on every list entry too --
+    # which is not what Unsplash's own docs show a listing answering.
+    returns:
+      - id
+      - created_at
+      - updated_at
+      - width
+      - height
+      - color
+      - blur_hash
+      - description
+      - alt_description
+      - likes
+      - current_user_collections
+      - urls
+      - links
+      - user
+    headers:
+      # Documented, not verified -- see the fidelity gaps above.
+      X-Ratelimit-Limit: "50"
+      X-Ratelimit-Remaining: "49"
+
+  - method: GET
+    path: /photos/{id}
+    resource: photo
+    operation: get
+    headers:
+      X-Ratelimit-Limit: "50"
+      X-Ratelimit-Remaining: "49"
+
+errors:
+  authentication_error:
+    status: 401
+    message: "OAuth error: The access token is invalid"
+
+  # Documented, not observed -- see the fidelity gaps above.
+  resource_missing:
+    status: 404
+    message: "Not found"
+
+fixtures:
+  empty: {}
+
+  gallery:
+    photo:
+      - id: eOePcOakgOA
+        created_at: "2026-06-02T10:14:00Z"
+        updated_at: "2026-08-20T11:00:00Z"
+        width: 4000
+        height: 6000
+        color: "#c2b8a3"
+        blur_hash: "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+        description: Warehouse shelving at golden hour
+        alt_description: rows of metal warehouse shelving lit by low sun
+        likes: 214
+        current_user_collections: []
+        urls:
+          raw: https://images.unsplash.com/photo-eOePcOakgOA
+          full: https://images.unsplash.com/photo-eOePcOakgOA?fm=jpg&q=80
+          regular: https://images.unsplash.com/photo-eOePcOakgOA?w=1080
+          small: https://images.unsplash.com/photo-eOePcOakgOA?w=400
+          thumb: https://images.unsplash.com/photo-eOePcOakgOA?w=200
+        links:
+          self: https://api.unsplash.com/photos/eOePcOakgOA
+          html: https://unsplash.com/photos/eOePcOakgOA
+          download: https://unsplash.com/photos/eOePcOakgOA/download
+          download_location: https://api.unsplash.com/photos/eOePcOakgOA/download
+        user:
+          username: cauldron-fixtures
+          name: Cauldron Fixtures
+          links:
+            self: https://api.unsplash.com/users/cauldron-fixtures
+            html: https://unsplash.com/@cauldron-fixtures
+        downloads: 5123
+        public_domain: false
+        exif:
+          make: Cauldron
+          model: Fixture Camera
+          exposure_time: "1/250"
+          aperture: "2.8"
+          focal_length: "35.0"
+          iso: 100
+        location:
+          city: null
+          country: null
+          position:
+            latitude: null
+            longitude: null
+        tags:
+          - title: warehouse
+          - title: shelving
+      - id: Dwu85P9SOIk
+        created_at: "2026-07-14T08:00:00Z"
+        updated_at: "2026-08-15T09:30:00Z"
+        width: 5472
+        height: 3648
+        color: "#4a5c3d"
+        blur_hash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4"
+        description: null
+        alt_description: forklift moving a pallet in a distribution center
+        likes: 88
+        current_user_collections: []
+        urls:
+          raw: https://images.unsplash.com/photo-Dwu85P9SOIk
+          full: https://images.unsplash.com/photo-Dwu85P9SOIk?fm=jpg&q=80
+          regular: https://images.unsplash.com/photo-Dwu85P9SOIk?w=1080
+          small: https://images.unsplash.com/photo-Dwu85P9SOIk?w=400
+          thumb: https://images.unsplash.com/photo-Dwu85P9SOIk?w=200
+        links:
+          self: https://api.unsplash.com/photos/Dwu85P9SOIk
+          html: https://unsplash.com/photos/Dwu85P9SOIk
+          download: https://unsplash.com/photos/Dwu85P9SOIk/download
+          download_location: https://api.unsplash.com/photos/Dwu85P9SOIk/download
+        user:
+          username: cauldron-fixtures
+          name: Cauldron Fixtures
+          links:
+            self: https://api.unsplash.com/users/cauldron-fixtures
+            html: https://unsplash.com/@cauldron-fixtures
+        downloads: 990
+        public_domain: false
+        exif:
+          make: Cauldron
+          model: Fixture Camera
+          exposure_time: "1/500"
+          aperture: "4.0"
+          focal_length: "24.0"
+          iso: 200
+        location:
+          city: null
+          country: null
+          position:
+            latitude: null
+            longitude: null
+        tags:
+          - title: forklift
+          - title: logistics
+
+conformance:
+  # -- Verified, 2026-09-01, no credential and no account. --
+
+  - name: an unauthenticated call answers errors as an array of bare strings
+    source: https://api.unsplash.com/photos?per_page=1
+    verified: "2026-09-01"
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos
+    expect:
+      status: 401
+      body:
+        # A string, sitting where an object would sit under the list and
+        # string_list styles. errors[0].message would read undefined
+        # against this on a body that already names the problem.
+        "errors[0]": "OAuth error: The access token is invalid"
+      absent:
+        - "errors[0].message"
+        - message
+
+  - name: a junk token answers exactly the same failure as no token at all
+    source: https://api.unsplash.com/photos?per_page=1
+    verified: "2026-09-01"
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos
+      headers:
+        Authorization: Client-ID JUNKTOKEN12345
+    expect:
+      status: 401
+      body:
+        "errors[0]": "OAuth error: The access token is invalid"
+
+  - name: neither rate-limit header appears on the auth failure
+    source: https://api.unsplash.com/photos?per_page=1
+    verified: "2026-09-01"
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos
+    expect:
+      status: 401
+      # The opposite of the working assumption going in: Unsplash's own
+      # docs say these arrive "on each request," and this one carries
+      # neither. See the header comment for what was actually there
+      # instead (an access-control-expose-headers entry naming them).
+      absent_headers:
+        - X-Ratelimit-Limit
+        - X-Ratelimit-Remaining
+
+  - name: a path outside every route here is refused without needing a key
+    source: https://api.unsplash.com/totally/bogus/path
+    verified: "2026-09-01"
+    fixture: gallery
+    request:
+      method: GET
+      path: /totally/bogus/path
+      headers:
+        # Sent here because Cauldron checks the credential before it
+        # resolves a route (see internal/runtime/handler.go); the live
+        # call this is checked against carried no Authorization header at
+        # all and was refused the same way before ever reaching that
+        # check.
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 404
+      body:
+        "errors[0]": Not found
+
+  # -- Documented from unsplash.com/documentation, not verified: nothing
+  #    below this line was ever answered with a 200. --
+
+  - name: a listing is a bare array with no envelope at all
+    source: https://unsplash.com/documentation
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos
+      headers:
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 200
+      body:
+        "[0].id": eOePcOakgOA
+        "[1].id": Dwu85P9SOIk
+      # No downloads, exif, tags or public_domain -- the fields a single
+      # photo carries and a listing does not.
+      absent:
+        - "[0].downloads"
+        - "[0].exif"
+        - "[0].tags"
+
+  - name: the next page is advertised in a Link header
+    source: https://unsplash.com/documentation
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos?per_page=1
+      headers:
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 200
+      header_matches:
+        Link: 'rel="next"'
+
+  - name: a single photo carries fields a listing leaves out
+    source: https://unsplash.com/documentation
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos/eOePcOakgOA
+      headers:
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 200
+      body:
+        id: eOePcOakgOA
+        downloads: 5123
+        "exif.model": Fixture Camera
+        "tags[0].title": warehouse
+
+  - name: rate-limit headers are declared on a success response too
+    source: https://unsplash.com/documentation
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos/eOePcOakgOA
+      headers:
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 200
+      headers:
+        # A constant from the demo tier's own documented ceiling, not a
+        # counter -- see the fidelity gap above.
+        X-Ratelimit-Limit: "50"
+
+  - name: a well-formed id nothing owns is refused the same shape as everything else
+    source: https://unsplash.com/documentation
+    fixture: gallery
+    request:
+      method: GET
+      path: /photos/doesnotexist1
+      headers:
+        Authorization: Client-ID cauldron_unsplash_fixture_key
+    expect:
+      status: 404
+      body:
+        "errors[0]": Not found
