@@ -1,0 +1,368 @@
+# FlightAware AeroAPI Recipe for Cauldron
+#
+# The API key is checked before anything else, including whether the path
+# means anything. Every one of these, called unauthenticated against
+# aeroapi.flightaware.com on 2026-08-31, answered the identical body:
+#
+#   - GET /airports (a real, documented endpoint)
+#   - GET /airportzz (a typo)
+#   - GET /airports/NOTAREALID (a malformed identifier)
+#   - GET / (the API root)
+#   - the same four again with a syntactically plausible but wrong x-apikey
+#
+#         {"title": "Invalid API key", "reason": "INVALID_API_KEY",
+#          "detail": "Provided API key is not valid", "status": 401}
+#
+# byte for byte, including the leading newline and the eight spaces of
+# indentation the real service pads the body with (confirmed with a hex
+# dump; a strict JSON parser does not care, and a client comparing response
+# text against a stored golden string would). There is no signal anywhere in
+# that response about whether the path was ever going to mean anything: a
+# client probing for 404-vs-401 to tell "wrong endpoint" from "wrong key"
+# gets nothing to distinguish them by. Cauldron's own auth gate happens to
+# run before route resolution for every Recipe (internal/runtime/handler.go
+# checks authorised() ahead of routing), which for once is not a fidelity
+# gap -- it is the one place this Recipe's engine and this provider's engine
+# agree on the order, so the case below reproduces the real request exactly.
+#
+# Two things worth pinning that came from FlightAware's own published
+# OpenAPI description (flightaware.com/commercial/aeroapi/resources/
+# aeroapi-openapi.yml, fetched directly and fingerprinted below) rather than
+# from a call, because no key exists to call either with:
+#
+#   1. ident is not a primary key. /flights/search answers with an array,
+#      and two entries in it can carry the same ident -- "AAL100" names an
+#      operator and a flight number, not one flight, so the same string
+#      identifies today's departure and yesterday's. The field the spec
+#      calls unique is fa_flight_id, on the same object, and it is not the
+#      field most people mean when they say "the flight's ident."  A lookup
+#      keyed on ident alone is a lookup that can silently return the wrong
+#      day.
+#   2. Every leg carries three timestamps for each of four events --
+#      scheduled_out/estimated_out/actual_out, and the same trio for off, on
+#      and in -- and they are independent fields, not one field corrected in
+#      place. scheduled_out is what was published, estimated_out is the
+#      current guess, and actual_out is null until the aircraft has actually
+#      pushed back. Code that reads scheduled_out expecting today's estimate
+#      is reading yesterday's plan, and code that reads actual_out expecting
+#      a value before departure reads null on every flight still at the
+#      gate.
+#
+# One thing the documentation states and this Recipe does not model: success
+# responses are declared as `application/json; charset=UTF-8` in the spec,
+# while the 401 observed live above came back as plain `application/json`,
+# no charset -- two different literal Content-Type strings from one
+# provider, on the success and failure paths respectively. Cauldron's JSON
+# writer always sends `application/json` with no charset parameter for
+# every response a Recipe describes as structured fields (see
+# internal/runtime/sandbox.go's writeJSON), and nothing in the Recipe format
+# lets a resource route override it the way `raw.content_type` lets a
+# non-JSON one. The error case below is unaffected -- its content type
+# really does match -- but the success cases would claim
+# `application/json` where the real API's own reference says
+# `application/json; charset=UTF-8`, so no case here asserts Content-Type on
+# a 200.
+#
+# A second, smaller gap: an airport's identifier really is just its code
+# (KJFK, EGLL) -- there is no separate "id" field, `code` carries the
+# identity directly. None of this project's id styles describe a short,
+# structured, provider-assigned code like that; `opaque` ("a bare random
+# string") is the nearest available word and is used here for want of a
+# closer one, not because a FlightAware airport code is actually random.
+
+recipe: flightaware
+capability: scheduling
+version: 0.1.0
+
+upstream:
+  api: "4.17.1"
+  docs: https://www.flightaware.com/aeroapi/portal/documentation
+  spec: https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml
+  spec_hash: 749902e6a837ca741cabe109b6b0908d31b0c98671457bc30124dee4e8b4460d
+  spec_seen: "2026-08-31"
+
+auth:
+  scheme: header
+  header: x-apikey
+  keys:
+    - cauldron-aeroapi-test-key-0000000000000000
+
+responses:
+  list:
+    style: wrapped
+    # Empty: airports and flights collect under different names ("airports",
+    # "flights"), so each resource names its own below rather than sharing
+    # one Recipe-wide key.
+    cursor_field: links.next
+    # The spec's own example marks this a URI reference rather than a bare
+    # token, which is the "path" convention this project also uses for
+    # Salesforce's next: a client is expected to follow it, not to hold it as
+    # an opaque cursor and reassemble a request by hand. Not directly
+    # observed -- no key exists to page against a live account with -- so
+    # this is the documented shape read literally rather than a confirmed
+    # one.
+    cursor_url: path
+    fields:
+      # The spec calls this "Number of pages returned" and ties it to
+      # max_pages, a request parameter this Recipe does not implement: the
+      # real endpoint can concatenate several upstream pages into one
+      # response when asked, and this emulator always answers with exactly
+      # one. num_pages is therefore a constant 1 here regardless of what
+      # max_pages the caller sends, which is a simplification stated rather
+      # than a behaviour observed.
+      num_pages: 1
+  error:
+    style: flat
+    message_field: detail
+    code_field: reason
+    status_field: status
+    type_field: "-"
+
+resources:
+  airport:
+    collection: airports
+    id:
+      style: opaque
+      field: code
+    fields:
+      airport_info_url:
+        type: string
+        null_when_unset: true
+
+  flight:
+    collection: flights
+    id:
+      # fa_flight_id looks like SWA1257-1408132057-airline-0192: assigned by
+      # FlightAware, not a UUID, not a simple counter, and not the field
+      # most integrations mean when they say "the flight's identifier" --
+      # see the file header.
+      style: opaque
+      field: fa_flight_id
+    fields:
+      # Shared with fa_flight_id in casual use and not the same thing: this
+      # is the operator code plus flight number (or a registration for
+      # general aviation), and it is not unique on its own. See the file
+      # header.
+      ident:
+        type: string
+      ident_icao:
+        type: string
+        null_when_unset: true
+      ident_iata:
+        type: string
+        null_when_unset: true
+      origin:
+        type: map
+      destination:
+        type: map
+      status:
+        type: string
+      scheduled_out:
+        type: datetime
+        null_when_unset: true
+      estimated_out:
+        type: datetime
+        null_when_unset: true
+      # Null until the aircraft has actually pushed back. See the file
+      # header: this is a fact about the field, not a fixture omission.
+      actual_out:
+        type: datetime
+        null_when_unset: true
+      scheduled_in:
+        type: datetime
+        null_when_unset: true
+      estimated_in:
+        type: datetime
+        null_when_unset: true
+      actual_in:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /airports
+    resource: airport
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+
+  - method: GET
+    path: /flights/search
+    resource: flight
+    operation: list
+    pagination:
+      style: cursor
+      limit: 50
+    # The real query syntax ("-idents AAL100", "-latlong ...") is a small
+    # DSL over one string parameter. This Recipe does not parse it: every
+    # search answers with the whole fixture set regardless of what query
+    # asks for, which is stated here rather than silently approximated as a
+    # real filter.
+
+errors:
+  authentication_error:
+    status: 401
+    code: INVALID_API_KEY
+    message: Provided API key is not valid
+    fields:
+      title: Invalid API key
+
+fixtures:
+  empty: {}
+
+  small-network:
+    airport:
+      - id: KJFK
+        airport_info_url: https://www.flightaware.com/resources/airport/KJFK
+      - id: EGLL
+        airport_info_url: https://www.flightaware.com/resources/airport/EGLL
+    flight:
+      # Two flights, one ident. AAL100 is a real transatlantic route number;
+      # these two records are the same flight number on different days, and
+      # sharing an ident is the point being demonstrated, not a fixture
+      # collision.
+      - id: AAL100-1735560000-airline-0001
+        ident: AAL100
+        ident_icao: AAL100
+        ident_iata: AA100
+        origin:
+          code: KJFK
+          code_icao: KJFK
+          city: New York
+        destination:
+          code: EGLL
+          code_icao: EGLL
+          city: London
+        status: Arrived
+        # On time: scheduled, estimated and actual all agree.
+        scheduled_out: "2026-08-30T13:00:00Z"
+        estimated_out: "2026-08-30T13:00:00Z"
+        actual_out: "2026-08-30T13:04:00Z"
+        scheduled_in: "2026-08-31T01:10:00Z"
+        estimated_in: "2026-08-31T01:10:00Z"
+        actual_in: "2026-08-31T01:22:00Z"
+      - id: AAL100-1735646400-airline-0002
+        ident: AAL100
+        ident_icao: AAL100
+        ident_iata: AA100
+        origin:
+          code: KJFK
+          code_icao: KJFK
+          city: New York
+        destination:
+          code: EGLL
+          code_icao: EGLL
+          city: London
+        status: Scheduled
+        # Delayed: the estimate has moved 47 minutes past the published
+        # schedule, and actual_out is still null because it has not pushed
+        # back yet.
+        scheduled_out: "2026-08-31T13:00:00Z"
+        estimated_out: "2026-08-31T13:47:00Z"
+        scheduled_in: "2026-08-31T01:10:00Z"
+        estimated_in: "2026-08-31T01:57:00Z"
+
+conformance:
+  # Observed directly, byte for byte.
+  - name: no key at all is refused before the path is even considered
+    source: https://aeroapi.flightaware.com/aeroapi/airports
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /airports
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        title: Invalid API key
+        reason: INVALID_API_KEY
+        detail: Provided API key is not valid
+        status: 401
+
+  # Same body, a path that answers something real when the previous case's
+  # path does not: the point is that the response does not change, so a
+  # client cannot use it to tell "no such endpoint" from "no such key."
+  - name: a bad key on a route that does not exist answers exactly the same
+    source: https://aeroapi.flightaware.com/aeroapi/airportzz
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /this-path-does-not-exist
+      headers:
+        x-apikey: aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCd
+    expect:
+      status: 401
+      body:
+        title: Invalid API key
+        reason: INVALID_API_KEY
+        detail: Provided API key is not valid
+        status: 401
+
+  # From the spec's /airports 200 response schema directly, not called.
+  - name: an airport's identity is its code, and nothing else names it
+    source: https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml
+    fixture: small-network
+    request:
+      method: GET
+      path: /airports
+      query:
+        limit: "1"
+      headers:
+        x-apikey: cauldron-aeroapi-test-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        num_pages: 1
+        "airports[0].code": KJFK
+        "airports[0].airport_info_url": https://www.flightaware.com/resources/airport/KJFK
+      matches:
+        "links.next": ".+"
+
+  - name: a full page carries no next link
+    source: https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml
+    fixture: small-network
+    request:
+      method: GET
+      path: /airports
+      headers:
+        x-apikey: cauldron-aeroapi-test-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "airports[0].code": KJFK
+        "airports[1].code": EGLL
+      absent:
+        - links
+
+  # From the same spec's /flights/search 200 schema: the ident/fa_flight_id
+  # split and the twelve-field time trio are both declared there exactly as
+  # modelled, and neither was exercised against a live account.
+  - name: one ident, two flights, and the times do not have to agree
+    source: https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml
+    fixture: small-network
+    request:
+      method: GET
+      path: /flights/search
+      query:
+        query: '-idents AAL100'
+      headers:
+        x-apikey: cauldron-aeroapi-test-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        # Same ident, two different unique identifiers -- a lookup keyed on
+        # ident alone cannot tell these apart.
+        "flights[0].ident": AAL100
+        "flights[1].ident": AAL100
+        "flights[0].fa_flight_id": AAL100-1735560000-airline-0001
+        "flights[1].fa_flight_id": AAL100-1735646400-airline-0002
+        # The on-time leg: schedule, estimate and reality all agree.
+        "flights[0].scheduled_out": "2026-08-30T13:00:00Z"
+        "flights[0].actual_out": "2026-08-30T13:04:00Z"
+        # The delayed leg: the estimate has moved and actual has not
+        # happened yet, so it is null rather than absent.
+        "flights[1].scheduled_out": "2026-08-31T13:00:00Z"
+        "flights[1].estimated_out": "2026-08-31T13:47:00Z"
+        "flights[1].actual_out": null
