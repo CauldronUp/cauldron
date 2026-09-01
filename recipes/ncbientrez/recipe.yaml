@@ -1,0 +1,883 @@
+# NCBI Entrez E-utilities Recipe for Cauldron
+#
+# efetch tells you it sent JSON, and it did not.
+#
+#   efetch.fcgi?db=pubmed&id=42673563&rettype=abstract&retmode=json
+#   ->  200  Content-Type: application/json; charset=UTF-8
+#            Cancer Res Commun. 2026 Aug 31. doi: 10.1158/2767-9764.CRC-26-0105.
+#            Online ahead of print.
+#
+#            Supermeres containing Discoidin Domain Receptor 1 extracellular
+#            domain promote collagen alignment and immune exclusion in
+#            microsatellite stable colorectal cancer.
+#            ...
+#
+# The header says JSON. The bytes are a word-wrapped plain-text abstract with
+# a blank line between the title and the byline, and there is no position in
+# it a JSON parser gets past. response.json() throws on the letter C, against
+# a header that told the calling code it was safe not to catch that. Ask for
+# the same id with retmode=json and no rettype at all, and the lie is still
+# there, only smaller: the body becomes the bare PMID, "42673563\n" -- which
+# happens to be valid JSON, because a JSON document is allowed to be a single
+# number, so the one request that looks fixed is a coincidence rather than a
+# fix. Two ids requested the same way stops being a coincidence immediately.
+#
+# **Three endpoints, three different ways of saying no, and none of them
+# agree even with themselves.** esearch fails inside its own envelope:
+#
+#   {"header": {"type": "esearch", "version": "0.3"},
+#    "esearchresult": {"ERROR": "Empty term and query_key - nothing todo"}}
+#
+# ERROR, capitalised, where every other key in this API is lower case, sitting
+# where idlist sits on success -- so code reading esearchresult.idlist gets
+# undefined and has to already suspect a failure to go looking for the
+# capitalised key that explains it. esummary fails three different ways
+# depending on what was wrong, and picks a different top-level key each time.
+# An invalid db renames the envelope itself, result becomes esummaryresult,
+# and swaps shape from an object to a bare array of one string:
+#
+#   {"header": {...}, "esummaryresult": ["Invalid db name specified: x"]}
+#
+# A malformed id keeps the envelope's real name and adds a sibling next to it:
+#
+#   {"header": {...}, "error": "Invalid uid notanumber at position= 0",
+#    "result": {"uids": []}}
+#
+# And an id that is well formed but does not exist is not a failure the
+# envelope notices at all: status 200, result.uids lists it, and the record
+# at that key has exactly two fields instead of the usual thirty --
+# {"uid": "999999999999", "error": "cannot get document summary"} -- so the
+# failure is legible only to code that already reads every record it gets
+# back looking for one that is shorter than the others.
+#
+# **And the encoding comes out exactly as broken as it went in.** efetch's
+# plain-text failures are not decoded on the way out:
+#
+#   efetch.fcgi?db=pubmed                    -> 400 "WebEnv+parameter+is+required"
+#   efetch.fcgi?db=notarealdb&id=1            -> 400 "Database%3A+notarealdb+-+is+not+supported"
+#
+# The first is application/x-www-form-urlencoded's "+" for space, left in a
+# text/plain body a browser never applies that rule to. The second still has
+# its percent-escape: %3A is a colon nobody decoded. Both read as though the
+# error text were built by escaping a sentence for a URL and then serving the
+# escaped version instead of the sentence.
+#
+# Written against the live API rather than a document: every case below was
+# checked against eutils.ncbi.nlm.nih.gov on the date in its verified field.
+#
+# Four more the Recipe pins:
+#
+#   1. Every identifier this API mints is a decimal-digit string, quoted,
+#      everywhere: esearch's idlist, esummary's uid, esearchresult's count,
+#      retmax and retstart. count is "5691516" for an open search and "1" for
+#      one pinned by its own uid, and both travel as text on a field whose
+#      name says it counts.
+#   2. pubstatus is "10" -- a status held as a two-character numeral, quoted,
+#      on a resource that also has a field called pmcrefcount holding "",
+#      an empty string rather than a zero, because the name promises a count
+#      and the value is text.
+#   3. A malformed query is not refused. term=...((%29 with a stray, unclosed
+#      parenthesis answers 200 with the ordinary shape and the ordinary
+#      record -- the token is dropped in silence except for a warninglist
+#      the caller has to know to look at, which this Recipe does not model
+#      (see gaps below).
+#   4. retmax is clamped, not refused: asking for 999999999 answers 200 with
+#      "retmax": "9999" and 9999 ids. Recorded here rather than served,
+#      because the Recipe does not model a corpus that size.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - term is not parsed. esearch answers every request with the same
+#     fixture regardless of what was searched for, so the malformed-query
+#     tolerance above is recorded in prose rather than served as a distinct
+#     behaviour: this Recipe cannot search and therefore cannot fail to
+#     search correctly.
+#   - esearch's count, retmax, retstart, translationset and querytranslation
+#     are pinned to one specific query (an exact uid match, which is the one
+#     real request whose count is small enough to model) rather than derived
+#     from the fixture, the same way EPSS pins its scores. A request with a
+#     different retmax or term sees the same pinned numbers back.
+#   - esummary's result is a map keyed by uid with a sibling "uids" array
+#     naming the same keys. Cauldron's map list style wraps the keyed
+#     collection under one name and has no field that mirrors the
+#     collection's own keys back as a second, sibling value inside the same
+#     object -- the only way to add one is a Fields constant, which is a
+#     literal that would go stale the moment a different id (or a different
+#     number of them) is requested. That is a worse infidelity than leaving
+#     it out, so uids is not served here. See "capability" below for the
+#     precise shape of what does not fit.
+#   - efetch's retmode=json trap is modelled for one parameter combination,
+#     rettype=abstract, which is the clearest case: real prose text under a
+#     Content-Type that promises structure. retmode=json with no rettype
+#     also lies, more narrowly -- the body becomes the bare PMID digits,
+#     which happen to parse as JSON by accident -- and that combination is
+#     recorded above rather than served.
+#   - efetch's default XML (no retmode, or retmode=xml) is served as a
+#     283-byte prefix: the DOCTYPE and the opening identification tags,
+#     ending at </PMID>. The real document runs past ten thousand bytes per
+#     citation and none of the rest is modelled; the prefix exists to prove
+#     the shape is XML, not to reproduce the record.
+#   - Only one citation is served on success, plus a second, deliberately
+#     malformed one -- {"uid": ..., "error": "cannot get document summary"}
+#     and nothing else -- that exists only to demonstrate esummary's
+#     per-record failure shape and is never returned by esearch.
+#   - Search-history tokens (usehistory=y, WebEnv, query_key) were verified
+#     against the live API and are not modelled: esearch answered with
+#     "querykey": "1" and a WebEnv beginning "MCID_", and esummary accepted
+#     both back and returned the same record a plain id lookup already
+#     covers. Modelling them would duplicate the id filter below rather than
+#     add a new shape.
+
+recipe: ncbientrez
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: entrez-eutils
+  provider: ncbientrez
+  docs: https://www.ncbi.nlm.nih.gov/books/NBK25501/
+
+auth:
+  # Public, no key. Rate limited to about three requests a second without one.
+  scheme: none
+
+responses:
+  error:
+    # The default for whichever named error below does not say otherwise.
+    # Every shape actually observed overrides key and message_field, because
+    # no two of them agree on either.
+    style: nested
+    key: error
+    # No error in this API carries a code or a category anywhere. Declaring
+    # either by default would put a field on the wire nobody sends.
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  citation:
+    id:
+      # A decimal-digit string, quoted, never a bare JSON number, on every
+      # route that sends one. Not the digits style's usual reason -- a PMID
+      # is well inside a safe integer's range -- but the same wire shape:
+      # text that looks like a number and is declared as text so nothing
+      # downstream parses it into one.
+      style: digits
+    fields:
+      uid:
+        type: string
+      pubdate:
+        type: string
+      epubdate:
+        type: string
+      source:
+        type: string
+      authors:
+        type: list
+      lastauthor:
+        type: string
+      title:
+        type: string
+      sorttitle:
+        type: string
+      volume:
+        type: string
+      issue:
+        type: string
+      pages:
+        type: string
+      lang:
+        type: list
+      nlmuniqueid:
+        type: string
+      issn:
+        type: string
+      essn:
+        type: string
+      pubtype:
+        type: list
+      recordstatus:
+        type: string
+      # "10" -- a status held as a numeral, quoted, beside pmcrefcount below
+      # holding an empty string rather than a zero.
+      pubstatus:
+        type: string
+      articleids:
+        type: list
+      history:
+        type: list
+      references:
+        type: list
+      attributes:
+        type: list
+      # A field named for a count, holding an empty string rather than a
+      # number or a null.
+      pmcrefcount:
+        type: string
+      fulljournalname:
+        type: string
+      elocationid:
+        type: string
+      doctype:
+        type: string
+      sortpubdate:
+        type: string
+      sortfirstauthor:
+        type: string
+      # Present only on the tombstone record below. A citation that exists
+      # has none of these thirty fields shrink to two; this is the field
+      # that marks the one that never did.
+      error:
+        type: string
+
+routes:
+  # esearch: a search that is not modelled, wrapped two objects deep.
+  - method: GET
+    path: /entrez/eutils/esearch.fcgi
+    resource: citation
+    operation: list
+    list:
+      style: wrapped
+      key: esearchresult.idlist
+      # idlist is bare PMIDs, not records: the full citation is what
+      # esummary answers, and esearch never sends more than the id.
+      entry_field: uid
+    fields:
+      header.type: esearch
+      header.version: "0.3"
+      # Pinned to one real request -- an exact uid match -- rather than
+      # derived from the fixture. count is "5691516" for the open term this
+      # Recipe's own header quotes; it is "1" here because this is the one
+      # query whose real count a two-record fixture can actually match.
+      esearchresult.count: "1"
+      esearchresult.retmax: "1"
+      esearchresult.retstart: "0"
+      esearchresult.translationset: []
+      esearchresult.querytranslation: "42673563[UID]"
+
+  # Leaving term out entirely: the one way of asking that fails, on its own
+  # path because this Recipe does not parse term well enough to notice the
+  # absence any other way.
+  - method: GET
+    path: /entrez/eutils/esearch-no-term.fcgi
+    error: esearch_missing_term
+
+  - method: GET
+    path: /entrez/eutils/esearch-bad-db.fcgi
+    error: esearch_invalid_db
+
+  # esummary: a map keyed by uid, with the identifier duplicated inside its
+  # own value under a different name.
+  - method: GET
+    path: /entrez/eutils/esummary.fcgi
+    resource: citation
+    operation: list
+    filters:
+      - param: id
+        field: uid
+    list:
+      style: map
+      key: result
+    fields:
+      header.type: esummary
+      header.version: "0.3"
+
+  - method: GET
+    path: /entrez/eutils/esummary-bad-db.fcgi
+    error: esummary_invalid_db
+
+  - method: GET
+    path: /entrez/eutils/esummary-bad-id.fcgi
+    error: esummary_malformed_id
+
+  # efetch: the retmode=json trap. Matched on the exact combination checked
+  # against the live API; see the fidelity gaps above for what is not.
+  - method: GET
+    path: /entrez/eutils/efetch.fcgi
+    matches_query:
+      retmode: json
+      rettype: abstract
+    error: efetch_json_text_trap
+    # Set before the body, same as the two failures below: the header this
+    # route sends is the whole finding, and it has to survive whatever the
+    # error style would otherwise default it to.
+    headers:
+      Content-Type: application/json; charset=UTF-8
+
+  # Everything else efetch answers with: no retmode, or retmode=xml. Real
+  # XML, truncated to a prefix long enough to prove the shape and no more.
+  - method: GET
+    path: /entrez/eutils/efetch.fcgi
+    error: efetch_default_xml
+    headers:
+      Content-Type: text/xml; charset=UTF-8
+
+  - method: GET
+    path: /entrez/eutils/efetch-no-id.fcgi
+    error: efetch_missing_id
+    headers:
+      Content-Type: text/plain; charset=UTF-8
+
+  - method: GET
+    path: /entrez/eutils/efetch-bad-db.fcgi
+    error: efetch_invalid_db
+    headers:
+      Content-Type: text/plain; charset=UTF-8
+
+  # An id that is well formed and does not exist: 200, three bytes, and none
+  # of them say anything went wrong.
+  - method: GET
+    path: /entrez/eutils/efetch-nonexistent-id.fcgi
+    error: efetch_nonexistent_id
+    headers:
+      Content-Type: text/plain; charset=UTF-8
+
+errors:
+  esearch_missing_term:
+    status: 200
+    style: nested
+    key: esearchresult
+    # Capitalised, where idlist and count beside it on success are both
+    # lower case. The one key that means "something went wrong" is spelled
+    # differently from every key that means "here is your answer."
+    message_field: ERROR
+    message: "Empty term and query_key - nothing todo"
+    fields:
+      header:
+        type: esearch
+        version: "0.3"
+
+  esearch_invalid_db:
+    status: 200
+    style: nested
+    key: esearchresult
+    message_field: ERROR
+    message: "Invalid db name specified: notarealdb"
+    fields:
+      header:
+        type: esearch
+        version: "0.3"
+
+  esummary_invalid_db:
+    status: 200
+    # A bare array holding one string, where a well-formed request answers
+    # an object. Not a list of error objects with the sentence inside one --
+    # the array's only member is the sentence itself.
+    style: string_list
+    # The envelope's own name changes on this failure: "result" on success,
+    # "esummaryresult" here, so code reading body.result off both gets an
+    # object on one and undefined on the other.
+    key: esummaryresult
+    message: "Invalid db name specified: notarealdb"
+    fields:
+      header:
+        type: esummary
+        version: "0.3"
+
+  esummary_malformed_id:
+    status: 200
+    style: flat
+    message_field: error
+    message: "Invalid uid notanumber at position= 0"
+    fields:
+      header:
+        type: esummary
+        version: "0.3"
+      # The envelope keeps its real name here, unlike the invalid-db failure
+      # above, and answers with it empty rather than dropping it.
+      result:
+        uids: []
+
+  efetch_json_text_trap:
+    status: 200
+    style: text
+    # Exactly as served: a word-wrapped plain-text abstract, under a header
+    # that calls it JSON. Line breaks, the blank line before the byline and
+    # the parenthesised affiliation numbers are all real.
+    message: |
+      Cancer Res Commun. 2026 Aug 31. doi: 10.1158/2767-9764.CRC-26-0105. Online ahead
+      of print.
+
+      Supermeres containing Discoidin Domain Receptor 1 extracellular domain promote
+      collagen alignment and immune exclusion in microsatellite stable colorectal
+      cancer.
+
+      Hamilton MS(1), Ellis ST(2), Cao Z(3), Tutanov OS(3), Simmons AJ(3), Aramandla
+      R(3), Higginbotham JN(4), Ramirez M(5), Schnee KW(6), Bechard ME(3), Kaur H(1),
+      Franklin JL(4), Mandal S(5), Lau KS(4), Liu Q(7), Goettel JA(8), Pozzi A(4),
+      Coffey RJ(2).
+
+      Author information:
+      (1)Vanderbilt University Nashville, Tennessee United States.
+      (2)Vanderbilt University Medical Center Nashville, TN United States.
+      (3)Vanderbilt University Medical Center Nashville, Tennessee United States.
+      (4)Vanderbilt University Nashville, TN United States.
+      (5)Vanderbilt University Medical Center United States.
+      (6)Vanderbilt University United States.
+      (7)Vanderbilt University Medical Center Nasville, TN United States.
+      (8)Vanderbilt University Medical Center Nashville United States.
+
+      Immune checkpoint blockade (ICB) is an effective treatment for microsatellite
+      instability-high (MSI-H) colorectal cancers (CRCs) that are highly infiltrated
+      by CD8+ T cells. Microsatellite stable (MSS) CRCs are unresponsive to ICB, at
+      least in part, due to the paucity of intratumoral CD8+ T cells. We recently
+      identified Discoidin Domain Receptor 1 (DDR1) as one of four genes associated
+      with CD8+ T-cell exclusion in MSS CRC. There are conflicting reports about the
+      presence and role of the cleaved ectodomain (cECD) of DDR1 in mouse models of
+      breast and pancreatic cancer. To explore the role of the DDR1 cECD in human CRC,
+      we developed Collagen Alignment and Spatial Transcriptomics Analysis (CASTA),
+      which revealed that genes involved in fibroblast contractility were associated
+      with both DDR1 tumor expression and collagen alignment as determined by
+      label-free second harmonic generation (2HG) imaging of the tumor collagen. Using
+      3D collagen co-cultures of CRC spheroids and fibroblasts, we show that DDR1
+      promotes collagen alignment and CD8+ T-cell exclusion. We found large amounts of
+      DDR1 cECD in MSS CRC supermeres, 25-35 nm secreted amembranous nanoparticles.
+      Supermeres containing DDR1 cECD were sufficient to induce contraction of human
+      colonic fibroblasts. We propose a model in which supermeres containing DDR1 cECD
+      promote the contraction of stromal fibroblasts in MSS CRC, leading to collagen
+      alignment and CD8+ T-cell exclusion. These results support DDR1 cECD as an
+      attractive therapeutic target in MSS CRC.
+
+      DOI: 10.1158/2767-9764.CRC-26-0105
+      PMID: 42673563
+
+  efetch_default_xml:
+    status: 200
+    style: text
+    # A 283-byte prefix of a document that runs past ten thousand: the
+    # DOCTYPE naming the real DTD NCBI publishes, and the tags that identify
+    # which citation this is. Nothing past </PMID> is modelled.
+    message: |-
+      <?xml version="1.0" ?>
+      <!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2025//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd">
+      <PubmedArticleSet>
+      <PubmedArticle><MedlineCitation Status="Publisher" Owner="NLM"><PMID Version="1">42673563</PMID>
+
+  efetch_missing_id:
+    status: 400
+    style: text
+    # application/x-www-form-urlencoded's "+" for space, un-decoded, in a
+    # text/plain body nothing applies that rule to. The trailing newline is
+    # real.
+    message: "WebEnv+parameter+is+required\n"
+
+  efetch_invalid_db:
+    status: 400
+    style: text
+    # The percent-escape is real too: %3A is a colon nobody decoded on the
+    # way out, in the same un-decoded style as the failure above.
+    message: "Database%3A+notarealdb+-+is+not+supported\n"
+
+  efetch_nonexistent_id:
+    status: 200
+    style: text
+    # Three bytes: a citation number, a full stop, a space. No PMID, no
+    # sentence, no field named error -- 200, and the shortest body this
+    # Recipe serves.
+    message: "1. "
+
+fixtures:
+  empty: {}
+
+  citations:
+    citation:
+      - id: "42673563"
+        uid: "42673563"
+        pubdate: "2026 Aug 31"
+        epubdate: "2026 Aug 31"
+        source: "Cancer Res Commun"
+        authors:
+          - name: "Hamilton MS"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Ellis ST"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Cao Z"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Tutanov OS"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Simmons AJ"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Aramandla R"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Higginbotham JN"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Ramirez M"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Schnee KW"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Bechard ME"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Kaur H"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Franklin JL"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Mandal S"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Lau KS"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Liu Q"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Goettel JA"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Pozzi A"
+            authtype: "Author"
+            clusterid: ""
+          - name: "Coffey RJ"
+            authtype: "Author"
+            clusterid: ""
+        lastauthor: "Coffey RJ"
+        title: "Supermeres containing Discoidin Domain Receptor 1 extracellular domain promote collagen alignment and immune exclusion in microsatellite stable colorectal cancer."
+        sorttitle: "supermeres containing discoidin domain receptor 1 extracellular domain promote collagen alignment and immune exclusion in microsatellite stable colorectal cancer"
+        volume: ""
+        issue: ""
+        pages: ""
+        lang:
+          - eng
+        nlmuniqueid: "9918281580506676"
+        issn: ""
+        essn: "2767-9764"
+        pubtype:
+          - "Journal Article"
+        recordstatus: "PubMed - as supplied by publisher"
+        pubstatus: "10"
+        articleids:
+          - idtype: pubmed
+            idtypen: 1
+            value: "42673563"
+          - idtype: doi
+            idtypen: 3
+            value: "10.1158/2767-9764.CRC-26-0105"
+          - idtype: pii
+            idtypen: 4
+            value: "787760"
+        history:
+          - pubstatus: medline
+            date: "2026/08/31 19:42"
+          - pubstatus: pubmed
+            date: "2026/08/31 19:42"
+          - pubstatus: accepted
+            date: "2026/08/28 00:00"
+          - pubstatus: received
+            date: "2026/02/03 00:00"
+          - pubstatus: revised
+            date: "2026/06/17 00:00"
+          - pubstatus: entrez
+            date: "2026/08/31 16:22"
+        references: []
+        attributes:
+          - "Has Abstract"
+        pmcrefcount: ""
+        fulljournalname: "Cancer research communications"
+        elocationid: "doi: 10.1158/2767-9764.CRC-26-0105"
+        doctype: citation
+        sortpubdate: "2026/08/31 00:00"
+        sortfirstauthor: "Hamilton MS"
+
+  # The one real citation, plus a tombstone that exists only to demonstrate
+  # esummary's per-record failure: a uid and an error, and none of the other
+  # thirty fields, because that is exactly what a well-formed, nonexistent id
+  # answers with.
+  citations_with_tombstone:
+    citation:
+      - id: "42673563"
+        uid: "42673563"
+        pubdate: "2026 Aug 31"
+        epubdate: "2026 Aug 31"
+        source: "Cancer Res Commun"
+        authors:
+          - name: "Hamilton MS"
+            authtype: "Author"
+            clusterid: ""
+        lastauthor: "Coffey RJ"
+        title: "Supermeres containing Discoidin Domain Receptor 1 extracellular domain promote collagen alignment and immune exclusion in microsatellite stable colorectal cancer."
+        sorttitle: "supermeres containing discoidin domain receptor 1 extracellular domain promote collagen alignment and immune exclusion in microsatellite stable colorectal cancer"
+        volume: ""
+        issue: ""
+        pages: ""
+        lang:
+          - eng
+        nlmuniqueid: "9918281580506676"
+        issn: ""
+        essn: "2767-9764"
+        pubtype:
+          - "Journal Article"
+        recordstatus: "PubMed - as supplied by publisher"
+        pubstatus: "10"
+        articleids:
+          - idtype: pubmed
+            idtypen: 1
+            value: "42673563"
+        history:
+          - pubstatus: entrez
+            date: "2026/08/31 16:22"
+        references: []
+        attributes:
+          - "Has Abstract"
+        pmcrefcount: ""
+        fulljournalname: "Cancer research communications"
+        elocationid: "doi: 10.1158/2767-9764.CRC-26-0105"
+        doctype: citation
+        sortpubdate: "2026/08/31 00:00"
+        sortfirstauthor: "Hamilton MS"
+      - id: "999999999999"
+        uid: "999999999999"
+        error: "cannot get document summary"
+
+conformance:
+  - name: idlist is bare pmids, wrapped two objects deep
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=42673563%5Buid%5D&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esearch.fcgi
+    expect:
+      status: 200
+      body:
+        header.type: esearch
+        header.version: "0.3"
+        # Quoted, on a field the caller reads as a page size.
+        esearchresult.retmax: "1"
+        esearchresult.retstart: "0"
+        "esearchresult.idlist[0]": "42673563"
+
+  - name: count is a decimal-digit string on a field that counts
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=42673563%5Buid%5D&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esearch.fcgi
+    expect:
+      status: 200
+      body:
+        esearchresult.count: "1"
+        esearchresult.querytranslation: "42673563[UID]"
+        esearchresult.translationset: []
+
+  - name: a malformed term is not refused, it is silently repaired
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=42673563%5Buid%5D%28%28&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      # A stray, unclosed "((" appended to the same exact-match query. The
+      # real API answers 200 with the ordinary shape and drops the token; a
+      # warninglist names it, which this Recipe does not model.
+      path: /entrez/eutils/esearch.fcgi
+    expect:
+      status: 200
+      body:
+        "esearchresult.idlist[0]": "42673563"
+        esearchresult.count: "1"
+
+  - name: leaving term out entirely answers 200 with a capitalised key
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esearch-no-term.fcgi
+    expect:
+      status: 200
+      body:
+        # Where idlist and count sit on success. ERROR is the only
+        # upper-case key anywhere in this API.
+        esearchresult.ERROR: "Empty term and query_key - nothing todo"
+        header.type: esearch
+
+  - name: an unknown db answers 200 in the same capitalised shape
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=notarealdb&term=cancer&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esearch-bad-db.fcgi
+    expect:
+      status: 200
+      body:
+        esearchresult.ERROR: "Invalid db name specified: notarealdb"
+
+  - name: esummary keys a map by uid and repeats it inside the value
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=42673563&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esummary.fcgi?id=42673563
+    expect:
+      status: 200
+      body:
+        header.type: esummary
+        # The identifier is both the object's own key and a field inside it,
+        # under a different name than the wrapper key uses.
+        result.42673563.uid: "42673563"
+        result.42673563.lastauthor: "Coffey RJ"
+        # A status held as a numeral, quoted.
+        result.42673563.pubstatus: "10"
+        # A field named for a count, holding an empty string.
+        result.42673563.pmcrefcount: ""
+        result.42673563.essn: "2767-9764"
+        result.42673563.issn: ""
+
+  - name: the nested arrays keep their own shapes
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=42673563&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esummary.fcgi?id=42673563
+    expect:
+      status: 200
+      body:
+        "result.42673563.authors[0].name": "Hamilton MS"
+        "result.42673563.authors[0].clusterid": ""
+        "result.42673563.articleids[1].idtype": doi
+        "result.42673563.articleids[1].idtypen": 3
+        "result.42673563.history[0].pubstatus": medline
+        "result.42673563.pubtype[0]": "Journal Article"
+
+  - name: a well-formed id that does not exist shrinks to two fields
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=999999999999&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations_with_tombstone
+    request:
+      method: GET
+      path: /entrez/eutils/esummary.fcgi?id=999999999999
+    expect:
+      status: 200
+      body:
+        # Not a request-level failure: status 200, the envelope is the
+        # ordinary success shape, and the one record inside it answers with
+        # a uid and an error instead of the other thirty fields.
+        result.999999999999.uid: "999999999999"
+        result.999999999999.error: "cannot get document summary"
+      absent:
+        - result.999999999999.title
+        - result.999999999999.pubdate
+
+  - name: an invalid db renames the envelope and swaps it to an array
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=notarealdb&id=1&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esummary-bad-db.fcgi
+    expect:
+      status: 200
+      body:
+        header.type: esummary
+        # "result" on success. Here it does not exist at all.
+        "esummaryresult[0]": "Invalid db name specified: notarealdb"
+      absent:
+        - result
+
+  - name: a non-numeric id answers a top-level error beside an empty result
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=notanumber&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/esummary-bad-id.fcgi
+    expect:
+      status: 200
+      body:
+        # The envelope keeps its real name here, unlike the invalid-db
+        # failure above, and it is empty rather than absent.
+        error: "Invalid uid notanumber at position= 0"
+        result.uids: []
+
+  - name: retmode=json on efetch answers plain text under a json header
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=42673563&rettype=abstract&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch.fcgi?db=pubmed&id=42673563&rettype=abstract&retmode=json
+    expect:
+      status: 200
+      # The lie in full: a header that promises structure over bytes that
+      # are not it.
+      headers:
+        Content-Type: application/json; charset=UTF-8
+      body_matches: '^Cancer Res Commun\. 2026 Aug 31\.'
+
+  - name: and the wrapped abstract is real prose, not an escaped fragment
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=42673563&rettype=abstract&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch.fcgi?db=pubmed&id=42673563&rettype=abstract&retmode=json
+    expect:
+      status: 200
+      body_matches: 'DOI: 10\.1158/2767-9764\.CRC-26-0105\nPMID: 42673563'
+
+  - name: everything else efetch answers with is real xml
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=42673563"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch.fcgi?db=pubmed&id=42673563
+    expect:
+      status: 200
+      headers:
+        Content-Type: text/xml; charset=UTF-8
+      body_matches: '<PMID Version="1">42673563</PMID>$'
+
+  - name: a missing id is a 400 with the urlencoding left in
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch-no-id.fcgi
+    expect:
+      status: 400
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+      # "+" for space, undecoded, plus the real trailing newline.
+      body_matches: '^WebEnv\+parameter\+is\+required\n$'
+
+  - name: an invalid db on efetch still has its percent-escape in it
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=notarealdb&id=1&retmode=json"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch-bad-db.fcgi
+    expect:
+      status: 400
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+      # %3A is a colon nobody decoded.
+      body_matches: '^Database%3A\+notarealdb\+-\+is\+not\+supported\n$'
+
+  - name: efetch on a nonexistent id says nothing went wrong at all
+    source: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=999999999999&rettype=abstract&retmode=text"
+    verified: "2026-08-31"
+    fixture: citations
+    request:
+      method: GET
+      path: /entrez/eutils/efetch-nonexistent-id.fcgi
+    expect:
+      # Two hundred. Three bytes. No message, no code, nothing that reads as
+      # a failure by any convention this API uses anywhere else.
+      status: 200
+      body_matches: '^1\. $'
