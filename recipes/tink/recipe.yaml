@@ -1,0 +1,697 @@
+# Tink Recipe for Cauldron
+#
+# api.tink.com is not one API behind one gateway. It is at least three --
+# an older REST layer at /api/v1, a newer gRPC-gateway layer at /data/v2, and
+# whatever answers /api/v1/providers -- stitched onto one hostname, and they
+# do not agree with each other about how to say no. Every failure shape below
+# was called live, without a credential and without creating an account, on
+# 2026-08-31; every resource field comes from swagger.json instead, because
+# nothing in this Recipe's history has ever held a real Tink access token.
+#
+# **Ask the same question -- "who is this?" -- with no credential, and five
+# different services answer five different ways.**
+#
+#   GET /api/v1/user        {"error":{"message":"Wrong type of access token was
+#                             used for this request. ..."}}
+#   GET /api/v1/providers   {"detail":"missing authorization header",
+#                             "instance":"/api/v1/providers","status":401,
+#                             "title":"Unauthorized"}          (application/problem+json)
+#   GET /data/v2/accounts   {"code":16,"message":"authorization header must be
+#                             set to access this endpoint","details":[]}
+#   GET /data/v2/transactions {"code":16,"message":"failed to get authorization
+#                             field from metadata","details":[]}
+#   GET /api/v1/accounts    {"status":401,"reason":"Unauthorized"}
+#
+# Same host, same missing header, same 401, five shapes: a flat status/reason
+# pair, two different nested error.message sentences, an RFC 7807 problem
+# document, and a gRPC status object with a numeric code. A client written
+# against any one of them and pointed at another gets a 401 it cannot parse
+# the way it expects to. This is not five endpoints failing the same way and
+# being described five times -- one config directly proves it, below.
+#
+# **A garbage bearer token and no bearer token are the same failure on
+# /api/v1/user, and different failures on /data/v2/accounts.** Sending
+# `Authorization: Bearer obviously-invalid-token-12345` to /api/v1/user gets
+# byte-for-byte the "wrong type of access token" sentence above -- there is no
+# way to tell, from the response, whether a token was sent and rejected or
+# never sent at all. The same garbage token against /data/v2/accounts gets a
+# third message, "invalid bearer token provided (has it expired?)", visibly
+# different from the "authorization header must be set" it gives with no
+# header at all -- so that service does distinguish absent from wrong, using
+# the identical status and the identical gRPC code (16, UNAUTHENTICATED) for
+# both, and only the prose says which happened.
+#
+# **A path that is not in swagger.json still gets gated before it gets
+# 404'd.** /api/v1/accounts is not a route this API declares -- the real ones
+# are /api/v1/accounts/list and /api/v1/accounts/{id} -- and a GET to it
+# answers 401, not 404. /api/v1/transactions is declared, but only for PUT;
+# a GET to it is not a method the description mentions at all, and it too
+# answers 401 rather than 405. Whatever checks for a credential on these
+# prefixes runs before whatever would notice the request does not otherwise
+# make sense, on both of them. A genuinely unrecognised path -- one sharing no
+# prefix with anything declared -- answers 404 with zero bytes and no
+# Content-Type header at all, checked on both / and a random string under
+# /api/v1.
+#
+# **A monetary amount is a pair of strings, not a number.** Every amount in
+# this API -- an account balance, a transaction total -- is
+# `{"currencyCode": "EUR", "value": {"scale": "-3", "unscaledValue": "19"}}`,
+# and the real amount is `unscaledValue * 10^scale`: 19 * 10^-3, or 0.019 EUR,
+# from swagger.json's own example. A client reading unscaledValue as the
+# amount is off by a factor that changes from field to field, because scale
+# is not fixed the way a cents-vs-dollars API's factor of 100 is -- there is
+# no single constant to divide by that is right twice.
+#
+# **The field named "type" on a transaction is deprecated and does not carry
+# the direction.** transaction.types.type is one of CREDIT_CARD, PAYMENT,
+# WITHDRAWAL, DEFAULT or TRANSFER, its own description says DEPRECATED, and
+# the fixture below -- like most real transactions -- is DEFAULT regardless
+# of which way the money moved. The direction is the sign on
+# amount.value.unscaledValue alone: negative left the account, positive
+# entered it. A client branching on types.type to color a transaction list
+# red or green colors almost everything the same color.
+#
+# **There is no top-level description.** transaction.descriptions holds
+# "original" (the financial institution's own text, verbatim) and "display"
+# (Tink's cleaned-up version) as two required siblings, and swagger.json's
+# own example shows them actually differing -- "TESCO STORES 3297" against
+# "Tesco". Code reading transaction.description gets undefined against either
+# one.
+#
+# One more, in the description nobody reads: swagger.json declares
+# General.User.created as `"type": "string", "format": "date-time"` and gives
+# it the example `"1730116104"` -- ten digits, a Unix second count, as a
+# string, under a format that means an ISO 8601 timestamp everywhere else in
+# the same document. The description contradicts its own example, and this
+# Recipe does not resolve the contradiction it cannot check: created is typed
+# as a plain string below, and the vocabulary's timestamp-as-string type
+# assumes milliseconds, not seconds, so it would have been the wrong guess
+# even choosing one.
+#
+# Separately: swagger.json's own definitions map contains a key named
+# literally `*ProviderListResponse*`, asterisks included, which every $ref
+# pointing at it also spells with asterisks -- self-consistent, and reads
+# like a markdown emphasis marker that escaped a docstring into a type name.
+# It parsed. It is recorded here because a definition name built from regex
+# metacharacters is the kind of thing worth flagging even when it works.
+#
+# Cauldron could not read Swagger 2.0 before today; the whole point of
+# drafting this Recipe was to find out whether the rewrite handles a document
+# this size (195 paths) with a defect like that one in it. See the commit
+# history and the report alongside this Recipe for what `cauldron check`
+# said.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing behind a real token is observed. Every resource field, and
+#     every 200 case below, is read from swagger.json; no request in this
+#     Recipe's history has ever carried a token Tink would accept, because
+#     making one requires a user to authenticate through a real bank.
+#   - Cauldron's own auth check has one shape for "not authorised" and
+#     applies before routing, for every path, the moment a credential is
+#     declared required. Real Tink's five shapes above cannot come from that
+#     mechanism at all -- every case demonstrating one of them arms the
+#     specific failure by name rather than omitting a header and letting the
+#     built-in check answer, because the built-in check could only ever
+#     produce one of the five, uniformly, everywhere.
+#   - The zero-byte, no-Content-Type 404 cannot be reproduced at all, and
+#     there is no conformance case claiming it can. style: text writes its
+#     message verbatim, which looks like the right tool for zero bytes with
+#     message: "" -- except an error's message is only ever applied when it
+#     is non-empty (`if defined.Message != ""`), so an empty one is
+#     indistinguishable from an author who left the field unset, and the
+#     handler falls back to a generic sentence instead of sending nothing.
+#     Confirmed empirically: `cauldron verify` on an earlier draft of this
+#     Recipe, with unknown_route declared exactly this way, sent "An error
+#     occurred." where the real API sends zero bytes. The status (404) does
+#     come through correctly; the body does not, and this format has no
+#     other mechanism for a truly empty error -- raw.go's RawBody.Empty
+#     solves the identical problem for a route's success shape and is not
+#     reachable from the errors table at all. Stated here rather than
+#     claimed by a case that would have to assert the wrong body to pass.
+#   - Only four routes are modelled -- getUser, list providers, list
+#     accounts, list transactions -- out of 195. OAuth itself, payments,
+#     budgets, insights, savings goals, the whole /enrichment surface and the
+#     older /api/v1 account and transaction endpoints are not.
+
+recipe: tink
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.tink.com/api-introduction
+  spec: https://api.tink.com/swagger.json
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-tink-access-token
+
+errors:
+  # No single shape is "the" unauthenticated failure here -- five real ones
+  # are below -- so this is only what Cauldron's own built-in check would
+  # answer for a route nothing arms. Every route this Recipe actually
+  # exercises arms its own observed shape instead, which is the point.
+  authentication_error:
+    status: 401
+    style: flat
+    message_field: reason
+    message: Unauthorized
+    fields:
+      status: 401
+
+  # GET /api/v1/accounts, verified: a path swagger.json does not declare --
+  # the real ones are /api/v1/accounts/list and /api/v1/accounts/{id} -- and
+  # the gate in front of this prefix still answers before a 404 would.
+  unauthorized_flat:
+    status: 401
+    style: flat
+    message_field: reason
+    message: Unauthorized
+    fields:
+      status: 401
+
+  # GET /api/v1/user, verified, with no Authorization header and with an
+  # obviously wrong bearer token alike -- byte for byte the same sentence
+  # either way, so nothing in the response says whether a token was sent.
+  unauthorized_wrong_token_type:
+    status: 401
+    style: nested
+    message: "Wrong type of access token was used for this request. Please visit https://docs.tink.com/resources/api-setup/get-access-token for more information on how to authenticate clients and users. If your troubles persist you can reach us at https://docs.tink.com/resources/support"
+
+  # GET /api/v1/transactions, verified: declared for PUT only, and a GET
+  # still reaches an auth check before it would reach a 405.
+  unauthorized_generic_auth:
+    status: 401
+    style: nested
+    message: "Something went wrong whilst authenticating. Please visit https://docs.tink.com/api-introduction to learn more on how our API works. If your troubles persist you can reach us at https://docs.tink.com/resources/support"
+
+  # GET /api/v1/providers, verified: RFC 7807, and the only one of the five
+  # that names the path it failed on.
+  unauthorized_missing_header:
+    status: 401
+    style: flat
+    message_field: detail
+    message: "missing authorization header"
+    headers:
+      Content-Type: application/problem+json
+    fields:
+      instance: /api/v1/providers
+      status: 401
+      title: Unauthorized
+
+  # GET /data/v2/accounts with no Authorization header, verified.
+  unauthorized_grpc_accounts_missing:
+    status: 401
+    style: flat
+    code_field: code
+    message: "authorization header must be set to access this endpoint"
+    code: "16"
+    fields:
+      details: []
+
+  # GET /data/v2/accounts with an obviously wrong bearer token, verified --
+  # a different sentence from the missing-header case just above, on the
+  # same status and the same gRPC code, so only the prose distinguishes them.
+  unauthorized_grpc_accounts_invalid:
+    status: 401
+    style: flat
+    code_field: code
+    message: "invalid bearer token provided (has it expired?)"
+    code: "16"
+    fields:
+      details: []
+
+  # GET /data/v2/transactions with no Authorization header, verified: a third
+  # sentence again, from the same gRPC family as the two above.
+  unauthorized_grpc_transactions_missing:
+    status: 401
+    style: flat
+    code_field: code
+    message: "failed to get authorization field from metadata"
+    code: "16"
+    fields:
+      details: []
+
+  # A genuinely unrecognised path, verified on both / and a random string
+  # under /api/v1: zero bytes and no Content-Type. text with an empty message
+  # is the closest this vocabulary reaches -- see the header for what it
+  # cannot say.
+  unknown_route:
+    status: 404
+    style: text
+    message: ""
+
+resources:
+  user:
+    id:
+      style: hex
+      length: 32
+    fields:
+      appId:
+        type: string
+      externalUserId:
+        type: string
+      # See the header: swagger.json's own example contradicts its own
+      # declared format, and the vocabulary has no seconds-since-epoch
+      # string type to guess with even if it did not.
+      created:
+        type: string
+      # currency, locale, market and more, none of it observed.
+      profile:
+        type: map
+      flags:
+        type: list
+
+  provider:
+    collection: providers
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      displayName:
+        type: string
+      market:
+        type: string
+      status:
+        type: string
+      type:
+        type: string
+      credentialsType:
+        type: string
+      financialInstitutionId:
+        type: string
+      financialInstitutionName:
+        type: string
+      currency:
+        type: string
+      capabilities:
+        type: list
+      images:
+        type: map
+
+  account:
+    collection: accounts
+    id:
+      style: hex
+      length: 32
+    fields:
+      name:
+        type: string
+      type:
+        type: string
+      # available and booked, each {amount: {currencyCode, value: {scale,
+      # unscaledValue}}}. See the header for what the pair means.
+      balances:
+        type: map
+      dates:
+        type: map
+      # iban, pan, financialInstitution -- whichever the account actually has.
+      identifiers:
+        type: map
+      financialInstitutionId:
+        type: string
+
+  transaction:
+    collection: transactions
+    id:
+      style: hex
+      length: 32
+    fields:
+      accountId:
+        type: string
+      # {currencyCode, value: {scale, unscaledValue}}, signed. The sign is
+      # the direction; types.type is not.
+      amount:
+        type: map
+      status:
+        type: string
+      # {type, financialInstitutionTypeCode}. type is deprecated -- see the
+      # header.
+      types:
+        type: map
+      # {original, display}. Neither is called "description".
+      descriptions:
+        type: map
+      dates:
+        type: map
+      reference:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/v1/user
+    resource: user
+    operation: get
+    # Nothing in the request names who this is. The provider answers about
+    # whoever the token belongs to, which is what auth: rather than a path
+    # parameter or a query parameter says here.
+    id_from: auth
+
+  - method: GET
+    path: /api/v1/providers
+    resource: provider
+    operation: list
+
+  - method: GET
+    path: /data/v2/accounts
+    resource: account
+    operation: list
+    pagination:
+      style: cursor
+      limit_param: pageSize
+      cursor_param: pageToken
+    list:
+      cursor_field: nextPageToken
+
+  - method: GET
+    path: /data/v2/transactions
+    resource: transaction
+    operation: list
+    pagination:
+      style: cursor
+      limit_param: pageSize
+      cursor_param: pageToken
+    list:
+      cursor_field: nextPageToken
+
+responses:
+  list:
+    style: wrapped
+  error:
+    # Neither a code nor a category is common ground across the five shapes
+    # in the header; each error above that needs one (the gRPC pair) sets
+    # its own code_field, and the rest stay silent by default here.
+    code_field: "-"
+    type_field: "-"
+
+fixtures:
+  empty: {}
+
+  # Every identifier, timestamp and amount below is invented for
+  # illustration, most of them adapted from swagger.json's own examples. None
+  # of it was fetched with a token Tink would accept.
+  sample:
+    user:
+      - id: 7f9c2a1b6e4d4f3aa1c8e2b5d6f70123
+        appId: 56a33be25eb9443fbb696f7c61eabd94
+        externalUserId: 2d3bd65493b549e1927d97a2d0683ab8
+        # See the header: this is swagger.json's own example value, kept as
+        # a string, and its meaning is the very thing in question.
+        created: "1730116104"
+        profile:
+          currency: SEK
+          locale: sv_SE
+          market: SE
+        flags:
+          - TRANSFERS
+
+    provider:
+      - id: uk-monzo-oauth2
+        name: uk-monzo-oauth2
+        displayName: Monzo
+        market: UK
+        status: ENABLED
+        type: BANK
+        credentialsType: THIRD_PARTY_APP
+        financialInstitutionId: 3f6a8b2c9d1e4f5a8b7c6d5e4f3a2b19
+        financialInstitutionName: Monzo
+        currency: GBP
+        capabilities:
+          - CHECKING_ACCOUNTS
+          - TRANSFERS
+
+    account:
+      # id, financialInstitutionId and the balance below are swagger.json's
+      # own example values for tink.transactionhistory.accounts.v2.Account.
+      - id: ee7ddbd178494220bb184791783f4f63
+        name: PERSONKONTO
+        type: CHECKING
+        financialInstitutionId: 6e68cc6287704273984567b3300c5822
+        balances:
+          booked:
+            amount:
+              currencyCode: EUR
+              # 19 * 10^-3 = 0.019 EUR. Not 19.
+              value:
+                scale: "-3"
+                unscaledValue: "19"
+        dates:
+          lastRefreshed: "2020-12-15T12:16:58Z"
+        identifiers:
+          iban:
+            iban: SE6930000000011273547693
+            bban: "0000011273547693"
+
+    transaction:
+      # A debit: the account paid Tesco, and the sign on unscaledValue is the
+      # only place that says so.
+      - id: 9c1f4a7e2b6d4c3f8a5e1d2c3b4a5f60
+        accountId: ee7ddbd178494220bb184791783f4f63
+        amount:
+          currencyCode: GBP
+          # -45.99 GBP. Negative because it left the account.
+          value:
+            scale: "2"
+            unscaledValue: "-4599"
+        status: BOOKED
+        types:
+          type: DEFAULT
+          financialInstitutionTypeCode: DEB
+        descriptions:
+          original: "TESCO STORES 3297"
+          display: Tesco
+        dates:
+          booked: "2026-08-20"
+          value: "2026-08-20"
+        reference: "FPS REF 445218"
+
+      # A pending credit: still positive, still DEFAULT, and not yet booked.
+      - id: 1a2b3c4d5e6f70819283a4b5c6d7e8f9
+        accountId: ee7ddbd178494220bb184791783f4f63
+        amount:
+          currencyCode: GBP
+          value:
+            scale: "2"
+            unscaledValue: "250000"
+        status: PENDING
+        types:
+          type: DEFAULT
+        descriptions:
+          original: "SALARY PAYMENT LTD"
+          display: "Salary Payment Ltd"
+        dates:
+          transaction: "2026-08-21"
+
+conformance:
+  # --- Observed against api.tink.com, without a credential, without an account ---
+
+  - name: getUser with no Authorization header
+    source: https://api.tink.com/api/v1/user
+    verified: "2026-08-31"
+    arm: unauthorized_wrong_token_type
+    request:
+      method: GET
+      path: /api/v1/user
+    expect:
+      status: 401
+      body:
+        error.message: "Wrong type of access token was used for this request. Please visit https://docs.tink.com/resources/api-setup/get-access-token for more information on how to authenticate clients and users. If your troubles persist you can reach us at https://docs.tink.com/resources/support"
+
+  - name: getUser with a garbage bearer token gets the identical failure as no token at all
+    source: https://api.tink.com/api/v1/user
+    verified: "2026-08-31"
+    arm: unauthorized_wrong_token_type
+    request:
+      method: GET
+      path: /api/v1/user
+      headers:
+        Authorization: "Bearer obviously-invalid-token-12345"
+    expect:
+      status: 401
+      body:
+        error.message: "Wrong type of access token was used for this request. Please visit https://docs.tink.com/resources/api-setup/get-access-token for more information on how to authenticate clients and users. If your troubles persist you can reach us at https://docs.tink.com/resources/support"
+
+  - name: list providers with no Authorization header is RFC 7807, not the shape getUser sent
+    source: https://api.tink.com/api/v1/providers
+    verified: "2026-08-31"
+    arm: unauthorized_missing_header
+    request:
+      method: GET
+      path: /api/v1/providers
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/problem+json
+      body:
+        detail: "missing authorization header"
+        instance: /api/v1/providers
+        title: Unauthorized
+
+  - name: list accounts with no Authorization header is a gRPC status object, a third shape again
+    source: https://api.tink.com/data/v2/accounts
+    verified: "2026-08-31"
+    arm: unauthorized_grpc_accounts_missing
+    request:
+      method: GET
+      path: /data/v2/accounts
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "authorization header must be set to access this endpoint"
+        details: []
+
+  - name: list accounts distinguishes a missing header from a wrong token, unlike getUser
+    source: https://api.tink.com/data/v2/accounts
+    verified: "2026-08-31"
+    arm: unauthorized_grpc_accounts_invalid
+    request:
+      method: GET
+      path: /data/v2/accounts
+      headers:
+        Authorization: "Bearer obviously-invalid-token-12345"
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "invalid bearer token provided (has it expired?)"
+
+  - name: list transactions with no Authorization header is the same gRPC family, a fourth sentence
+    source: https://api.tink.com/data/v2/transactions
+    verified: "2026-08-31"
+    arm: unauthorized_grpc_transactions_missing
+    request:
+      method: GET
+      path: /data/v2/transactions
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "failed to get authorization field from metadata"
+        details: []
+
+  - name: a path swagger.json never declares still gets gated before it gets 404'd
+    # /api/v1/accounts is not a route -- /api/v1/accounts/list and
+    # /api/v1/accounts/{id} are -- and this is a fifth shape again.
+    source: https://api.tink.com/api/v1/accounts
+    verified: "2026-08-31"
+    arm: unauthorized_flat
+    request:
+      method: GET
+      path: /api/v1/accounts
+    expect:
+      status: 401
+      body:
+        status: 401
+        reason: Unauthorized
+
+  - name: a method swagger.json never declares for this path also gets gated first
+    # /api/v1/transactions is real, and only for PUT. GET is not mentioned
+    # anywhere in the description, and still answers 401 rather than 405.
+    source: https://api.tink.com/api/v1/transactions
+    verified: "2026-08-31"
+    arm: unauthorized_generic_auth
+    request:
+      method: GET
+      path: /api/v1/transactions
+    expect:
+      status: 401
+      body:
+        error.message: "Something went wrong whilst authenticating. Please visit https://docs.tink.com/api-introduction to learn more on how our API works. If your troubles persist you can reach us at https://docs.tink.com/resources/support"
+
+  - name: a genuinely unrecognised path is at least a 404, though not byte-for-byte
+    # Real Tink sends zero bytes and no Content-Type here, confirmed on both
+    # / and this path. See the header for why the body below is Cauldron's
+    # closest reachable approximation rather than the real one: an empty
+    # message is indistinguishable from no message at all, so this asserts
+    # what the status code claims and does not assert the body.
+    source: https://api.tink.com/api/v1/totallyBogusPath12345
+    verified: "2026-08-31"
+    arm: unknown_route
+    request:
+      method: GET
+      path: /api/v1/totallyBogusPath12345
+    expect:
+      status: 404
+
+  # --- Read from swagger.json. No case below was run against a working token ---
+
+  - name: a user carries a created field whose own documentation contradicts itself
+    source: https://api.tink.com/swagger.json
+    fixture: sample
+    request:
+      method: GET
+      path: /api/v1/user
+      headers:
+        Authorization: "Bearer cauldron-tink-access-token"
+    expect:
+      status: 200
+      body:
+        id: 7f9c2a1b6e4d4f3aa1c8e2b5d6f70123
+        appId: 56a33be25eb9443fbb696f7c61eabd94
+        created: "1730116104"
+        profile.market: SE
+        profile.currency: SEK
+
+  - name: a provider is addressed by a slug, not the hex ids everything else uses
+    source: https://api.tink.com/swagger.json
+    fixture: sample
+    request:
+      method: GET
+      path: /api/v1/providers
+      headers:
+        Authorization: "Bearer cauldron-tink-access-token"
+    expect:
+      status: 200
+      body:
+        "providers[0].id": uk-monzo-oauth2
+        "providers[0].displayName": Monzo
+        "providers[0].credentialsType": THIRD_PARTY_APP
+        "providers[0].status": ENABLED
+
+  - name: an account balance is an unscaled integer and a scale, not a float
+    source: https://api.tink.com/swagger.json
+    fixture: sample
+    request:
+      method: GET
+      path: /data/v2/accounts
+      headers:
+        Authorization: "Bearer cauldron-tink-access-token"
+    expect:
+      status: 200
+      body:
+        "accounts[0].id": ee7ddbd178494220bb184791783f4f63
+        "accounts[0].type": CHECKING
+        # 19 * 10^-3, not 19.
+        "accounts[0].balances.booked.amount.currencyCode": EUR
+        "accounts[0].balances.booked.amount.value.scale": "-3"
+        "accounts[0].balances.booked.amount.value.unscaledValue": "19"
+
+  - name: the direction is the sign on the amount, not the deprecated type field
+    source: https://api.tink.com/swagger.json
+    fixture: sample
+    request:
+      method: GET
+      path: /data/v2/transactions
+      headers:
+        Authorization: "Bearer cauldron-tink-access-token"
+    expect:
+      status: 200
+      body:
+        "transactions[0].amount.value.unscaledValue": "-4599"
+        # DEFAULT on a debit and DEFAULT on a credit alike -- see the second
+        # transaction below. It says nothing about direction either way.
+        "transactions[0].types.type": DEFAULT
+        "transactions[0].descriptions.original": "TESCO STORES 3297"
+        "transactions[0].descriptions.display": Tesco
+        "transactions[1].amount.value.unscaledValue": "250000"
+        "transactions[1].types.type": DEFAULT
+        "transactions[1].status": PENDING
+      absent:
+        # Neither "description" nor a signed amount at the top level exists.
+        - "transactions[0].description"
