@@ -1,0 +1,542 @@
+# Onfleet Recipe for Cauldron
+#
+# Onfleet is the odd one in this group and the header says so plainly: there
+# is no label here. Onfleet dispatches last-mile delivery and service
+# tasks to human drivers; it never generates a carrier label, never quotes
+# a rate, and never buys postage. The question this group exists to ask --
+# at which call does a request that does not look like a purchase actually
+# spend money -- does not have a labelled answer for Onfleet, because there
+# is no label-shaped cost to hide. What Onfleet has instead is a dispatch
+# commitment: a task handed to a specific driver, who is now expected
+# somewhere, which is a real-world obligation of a different kind than a
+# postage charge but is still the moment after which undoing the request is
+# not free.
+#
+# **The commitment point is container, not a status word.** POST
+# /api/v2/tasks creates a Task -- "units of work, defined by one destination
+# and one recipient, that administrators create and assign to workers for
+# completion" (docs.onfleet.com/reference/tasks) -- and the record it
+# returns carries a container object: {"type": "WORKER", "worker":
+# "<id>"}. That field, not any status word, is what says who currently holds
+# the task. Both of Onfleet's own worked examples this Recipe found already
+# show a task assigned to a worker -- the Create Task reference's own
+# example has container.type WORKER, a populated worker id, and
+# didAutoAssign: true, all on the very first response
+# (docs.onfleet.com/reference/create-task) -- so no worked example of a
+# genuinely unassigned container's shape was found in the pages this Recipe
+# read, and none is fabricated here to fill the gap; see the fidelity gaps.
+# The taskAssigned and taskUnassigned webhook triggers
+# (docs.onfleet.com/reference/webhooks) confirm assignment is a distinct
+# event Onfleet fires in both directions, which is the strongest evidence
+# this Recipe has that "assigned" and "not assigned" really are two states
+# of the same field rather than a state this API leaves entirely implicit.
+#
+# **state is a number and Onfleet's own reference names only one of its
+# values.** The Create Task example shows state: 0 on a task that is
+# simultaneously worker-assigned, containered to that worker, and
+# didAutoAssign: true -- which, if 0 meant "unassigned," would be a
+# contradiction inside Onfleet's own worked example. The one value this
+# Recipe found stated in words rather than inferred from an example is 3:
+# "If a task has been completed (state is 3) and details were provided by
+# the worker at completion, these will be available in completionDetails"
+# (docs.onfleet.com/reference/get-single-task), and the completed worked
+# example on that same page does show state: 3 alongside a populated
+# completionDetails.events array. So state is typed as a plain integer
+# below, one fixture pins it at 0 exactly as Create Task's own example
+# shows it, and the second pins it at 3 with the citation above -- neither
+# fixture claims a name for 0 that Onfleet's own materials do not give it.
+#
+# Absent, malformed and wrong credentials get the identical sentence here,
+# which puts Onfleet with Airbyte and Temporal Cloud elsewhere in this
+# collection rather than with FireHydrant or Fireworks. Checked live,
+# 2026-09-01, against onfleet.com/api/v2/tasks: no Authorization header at
+# all; this Recipe's own fixture-valid API key's username paired with a
+# wrong one; two different wrong username/password pairs; an Authorization
+# header carrying the Bearer scheme instead of Basic; and one that will not
+# base64-decode -- six different ways of not presenting a credential this
+# Recipe holds, and all six landed on the same 284-byte body:
+#
+#   {"code":"InvalidCredentials","message":{"error":1102,"message":"The API
+#   key provided is invalid.","cause":"The API key provided is not valid.
+#   Please contact support@onfleet.com for further assistance.","request":
+#   "<uuid>","remoteAddress":"<ip>"}}
+#
+# The wording is worth reading literally: even the *no-header-at-all* case
+# is told "the API key provided is invalid," which is a sentence written for
+# a key that arrived and turned out to be wrong, generalised to cover a key
+# that never arrived at all. Onfleet does not distinguish the two states in
+# its own words, so this Recipe does not declare absent_error, malformed_
+# error or rejected_error -- unset, per this format's own rule, falls back
+# to the single message every verdict actually produced live.
+#
+# Basic auth here really is Basic: "A valid key must be provided with every
+# request, via HTTP basic access authentication, where the key string is
+# the username of the request, and the password is blank"
+# (docs.onfleet.com/reference/authentication) -- confirmed live: a key
+# paired with an empty password and a key paired with a non-empty wrong one
+# both land on the identical InvalidCredentials body above.
+#
+# **Routing and method resolve before the credential does, and there is no
+# 404 reachable anywhere on this host.** Checked live, 2026-09-01, with and
+# without a credential attached, both changing nothing:
+#
+#   GET  /api/v2/nosuchroute12345      -> 405 {"code":"MethodNotAllowed",
+#                                          "message":"GET is not allowed"}
+#                                          Allow: OPTIONS
+#   POST /api/v2/nosuchroute12345      -> 405, "POST is not allowed",
+#                                          Allow: OPTIONS
+#   GET  /api/v2/a/b/c/d               -> 405, "GET is not allowed",
+#                                          Allow: OPTIONS (arbitrary depth,
+#                                          same answer)
+#   PATCH /api/v2/tasks                -> 405, "PATCH is not allowed",
+#                                          Allow: DELETE, GET, OPTIONS, POST
+#   OPTIONS /api/v2/tasks               -> 200, full CORS headers, no
+#                                          credential checked at all
+#
+# Every path this Recipe tried -- real, invented, four segments deep --
+# answers something between 200 (OPTIONS) and 405, and never once answered
+# 404. The global CORS preflight handler accepts OPTIONS on literally any
+# path, which is what leaves an Allow: OPTIONS behind on a path nothing else
+# has ever heard of: it is not that the router "knows about" that path, it
+# is that OPTIONS is answered by middleware sitting in front of the router
+# rather than by anything path-specific. This is the mirror image of
+# turso/recipe.yaml elsewhere in this collection, which found no 405
+# anywhere and a mistyped path and a mistyped method landing on the same
+# 404; here a mistyped path and a mistyped method land on the same 405,
+# and neither host has a use for the other's status code at all.
+#
+# Because none of the six cases above -- real path/wrong method, invented
+# path at four different depths -- ever changed with a credential attached,
+# this Recipe declares auth.after_routing: true: the credential is checked
+# only once a request has matched a real route and method, matching
+# Fireworks' arrangement in this collection rather than Together's, and
+# unlike Sendcloud's in this same group, where whether a credential was
+# attached at all changed which failure fired.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - lastId, List Tasks' own cursor field ("Present when more results
+#     exist; absent on final page"), is not declared. Onfleet documents no
+#     worked value for it -- it is an opaque task id from whichever account
+#     produced the previous page -- and this Recipe's two-task fixture has
+#     nothing behind it to page to, so there is no honest way to show it
+#     populated without inventing a value nobody published.
+#   - No worked example of an unassigned task's container/worker shape was
+#     found; see above. The "no label, task assigned to a driver instead"
+#     contrast this group exists to draw is established from the field's
+#     stated meaning and the webhook vocabulary, not from a fixture showing
+#     both states side by side.
+#   - Create Task's own reference names no HTTP status code for a
+#     successful creation, checked directly and confirmed absent from the
+#     page. This Recipe's create route uses 201, this format's own default
+#     for an undeclared create status, which is a property of the format
+#     rather than a fact read from Onfleet's documentation.
+#   - Of roughly thirty documented Task fields this Recipe declares
+#     fourteen. metadata, overrides, feedback, merchant, executor, creator,
+#     the three completeAfter/completeBefore/completionDetails sub-shapes
+#     beyond what the two fixtures show, and every Task Template, Route
+#     Plan and Team endpoint are all real and none is declared.
+#   - The required `from` query parameter on List Tasks (Unix milliseconds,
+#     "Tasks created or completed at or after this time will be included")
+#     is documented and not enforced; this format's required-header
+#     mechanism has no query-parameter equivalent, and no live call ever
+#     reached this route to check the failure it produces when omitted.
+#   - No account exists and none was created. The credential and routing
+#     cases below carry a verified date because onfleet.com was actually
+#     called with the exact request shown; the task-shape cases carry no
+#     verified date because they were read from docs.onfleet.com's published
+#     reference and never called -- no key exists that could have called
+#     them.
+
+recipe: onfleet
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docs.onfleet.com/reference/tasks
+
+auth:
+  # Verified live: absent, malformed-past-recognition, and well-formed-but-
+  # wrong credentials all land on the identical body -- see the header. No
+  # absent_error/malformed_error/rejected_error declared, which is this
+  # format's own way of recording that a provider does not tell them apart.
+  scheme: basic
+  credential: username
+  keys:
+    - cauldronOnfleetApiKey00
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: tasks
+  resource:
+    style: bare
+  # {"code": "<string>", "message": {"error": <int>, "message": "<prose>",
+  # ...}} -- a string code beside a nested object whose own "message" field
+  # carries the sentence, and whose own "error" field carries a second,
+  # numeric code. Two fields named error/code at two different nesting
+  # depths, meaning two different things.
+  error:
+    style: flat
+    message_field: message.message
+    code_field: message.error
+
+resources:
+  task:
+    id:
+      style: opaque
+    fields:
+      organization:
+        type: string
+      timeCreated:
+        type: timestamp
+      timeLastModified:
+        type: timestamp
+      shortId:
+        type: string
+      trackingURL:
+        type: string
+      # Absent from the record until a driver is dispatched to it -- see the
+      # header. Both fixtures below have it set, because no unassigned
+      # worked example was ever found to model.
+      worker:
+        type: string
+        null_when_unset: true
+      # See the header at length: an integer, not a fixed vocabulary this
+      # Recipe can name beyond the one value (3) Onfleet's own reference
+      # states in words.
+      state:
+        type: integer
+      notes:
+        type: string
+        null_when_unset: true
+      pickupTask:
+        type: boolean
+        default: false
+      dependencies:
+        type: list
+      # {"type": "WORKER", "worker": "<id>"} -- the field this Recipe's
+      # header argues is the real commitment point.
+      container:
+        type: map
+      completionDetails:
+        type: map
+      destination:
+        type: map
+      recipients:
+        type: list
+      didAutoAssign:
+        type: boolean
+        null_when_unset: true
+
+routes:
+  - method: POST
+    path: /api/v2/tasks
+    resource: task
+    operation: create
+    # No status documented -- see the fidelity gaps. This is the format's
+    # own default for an undeclared create status, stated rather than left
+    # silent.
+    status: 201
+
+  - method: GET
+    path: /api/v2/tasks/all
+    resource: task
+    operation: list
+
+  - method: GET
+    path: /api/v2/tasks/{id}
+    resource: task
+    operation: get
+
+errors:
+  # Six different ways of not presenting a held credential, all verified
+  # live landing here -- see the header.
+  authentication_error:
+    status: 401
+    style: flat
+    message_field: message.message
+    code_field: message.error
+    code: "1102"
+    message: The API key provided is invalid.
+    fields:
+      code: InvalidCredentials
+      message.cause: >-
+        The API key provided is not valid. Please contact
+        support@onfleet.com for further assistance.
+
+  # No 404 exists anywhere on this host -- see the header. Verified for GET
+  # specifically; the live message names whichever method was actually
+  # used (POST got "POST is not allowed" on the identical path), which this
+  # static override cannot also express for every method at once.
+  unknown_route:
+    status: 405
+    style: flat
+    message_field: message
+    code_field: code
+    code: MethodNotAllowed
+    message: GET is not allowed
+    headers:
+      Allow: OPTIONS
+
+  # A real path, a method it does not register. Verified for PATCH on
+  # /api/v2/tasks specifically -- see the header for why the message names
+  # the method and this static override only carries the one verified.
+  method_not_allowed:
+    status: 405
+    style: flat
+    message_field: message
+    code_field: code
+    code: MethodNotAllowed
+    message: PATCH is not allowed
+    headers:
+      Allow: "DELETE, GET, OPTIONS, POST"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    task:
+      # Onfleet's own Create Task worked example, quoted in full where
+      # declared -- including the state: 0 beside an already-assigned
+      # worker the header discusses at length.
+      - id: kc8SS1tzuZ~jqjlebKGrUmpe
+        organization: yAM*fDkztrT3gUcz9mNDgNOL
+        timeCreated: 1455156667000
+        timeLastModified: 1455156667234
+        shortId: 8f983639
+        trackingURL: https://onf.lt/8f98363993
+        worker: 1LjhGUWdxFbvdsTAAXs0TFos
+        state: 0
+        notes: >-
+          Order 332: 24oz Stumptown Finca El Puente, 10 x Aji de Gallina
+          Empanadas, 13-inch Lelenitas Tres Leches
+        pickupTask: false
+        dependencies: []
+        container:
+          type: WORKER
+          worker: 1LjhGUWdxFbvdsTAAXs0TFos
+        completionDetails:
+          events: []
+          time: null
+        destination:
+          id: zrVXZi5aDzOZlAghZaLfGAfA
+          location: [-122.4438337, 37.7940329]
+          address:
+            street: Vallejo Street
+            number: "2829"
+            city: San Francisco
+            state: California
+            postalCode: "94123"
+            country: United States
+          notes: >-
+            Small green door by garage door has pin pad, enter *4821*
+        recipients:
+          - id: G7rcM2nqblmh8vj2do1FpaOQ
+            name: Blas Silkovich
+            phone: "+16505554481"
+            notes: Knows Neiman, VIP status.
+        didAutoAssign: true
+
+      # Onfleet's own Get Single Task worked example for a completed task --
+      # the one place its reference states, in words, what a numeric state
+      # value means.
+      - id: qNMz6CKwQ*26FOslywsiQxhY
+        organization: yAM*fDkztrT3gUcz9mNDgNOL
+        timeCreated: 1455072004000
+        timeLastModified: 1455152824153
+        shortId: 5f8b5c65
+        trackingURL: https://onf.lt/5f8b5c65f9
+        worker: h*wSb*apKlDkUFnuLTtjPke7
+        state: 3
+        notes: ""
+        pickupTask: false
+        dependencies: []
+        container:
+          type: WORKER
+          worker: h*wSb*apKlDkUFnuLTtjPke7
+        completionDetails:
+          events:
+            - name: start
+              time: 1455072035445
+            - name: arrival
+              time: 1455152532564
+              location: [-122.401521416785, 37.7762999215933]
+            - name: departure
+              time: 1455072096121
+              location: [-122.401357311869, 37.776509919239]
+          failureReason: "NONE"
+          time: 1455152532732
+          notes: All went great, customer loves us.
+          success: true
+        destination:
+          id: Nml*Tdh1EMIk1RE46maqOLEQ
+          location: [-122.40522369999996, 37.7718827]
+          address:
+            street: Brannan Street
+            number: "888"
+            city: San Francisco
+            state: California
+            postalCode: "94103"
+            country: United States
+        recipients:
+          - id: xX87G1gSkeLvGXlHn2tn0~iB
+            name: Mikel
+            phone: "+16502837547"
+
+conformance:
+  - name: no credential at all is told a key was provided and is wrong
+    source: https://onfleet.com/api/v2/tasks
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/tasks
+      json: {}
+    expect:
+      status: 401
+      body:
+        code: InvalidCredentials
+        message.error: 1102
+        message.message: The API key provided is invalid.
+        message.cause: >-
+          The API key provided is not valid. Please contact
+          support@onfleet.com for further assistance.
+
+  - name: a key this Recipe does not hold answers identically
+    source: https://onfleet.com/api/v2/tasks
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/tasks/all
+      headers:
+        Authorization: Basic d3JvbmdPbmZsZWV0QXBpS2V5MDAwMDA6
+    expect:
+      status: 401
+      body:
+        code: InvalidCredentials
+        message.message: The API key provided is invalid.
+
+  - name: a header carrying the wrong scheme entirely answers identically too
+    source: https://onfleet.com/api/v2/tasks
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/tasks/all
+      headers:
+        Authorization: Bearer sometoken
+    expect:
+      status: 401
+      body:
+        code: InvalidCredentials
+        message.error: 1102
+
+  - name: no path on this host ever 404s -- an invented one 405s instead
+    source: https://onfleet.com/api/v2/nosuchroute12345
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v2/nosuchroute12345
+    expect:
+      status: 405
+      headers:
+        Allow: OPTIONS
+      body:
+        code: MethodNotAllowed
+        message: GET is not allowed
+
+  - name: a real path with the wrong method 405s with the real allowed set
+    source: https://onfleet.com/api/v2/tasks
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/v2/tasks
+    expect:
+      status: 405
+      headers:
+        Allow: "DELETE, GET, OPTIONS, POST"
+      body:
+        code: MethodNotAllowed
+        message: PATCH is not allowed
+
+  - name: a listing wraps its array under tasks, not a bare array
+    source: https://docs.onfleet.com/reference/list-tasks
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/tasks/all?from=0
+      headers:
+        Authorization: Basic Y2F1bGRyb25PbmZsZWV0QXBpS2V5MDA6
+    expect:
+      status: 200
+      body:
+        tasks[0].shortId: 8f983639
+        tasks[1].state: 3
+
+  - name: state 3 is the one value Onfleet's own reference names in words
+    source: https://docs.onfleet.com/reference/get-single-task
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/tasks/qNMz6CKwQ*26FOslywsiQxhY
+      headers:
+        Authorization: Basic Y2F1bGRyb25PbmZsZWV0QXBpS2V5MDA6
+    expect:
+      status: 200
+      body:
+        state: 3
+        completionDetails.events[0].name: start
+        completionDetails.events[1].name: arrival
+        completionDetails.success: true
+
+  - name: container names who currently holds the task, not any status word
+    # The commitment point this group asked for: worker and container agree
+    # on who the task belongs to, and state (0, here) does not participate
+    # in that answer at all -- see the header on why 0 cannot be read as
+    # "unassigned" from this same example.
+    source: https://docs.onfleet.com/reference/create-task
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/v2/tasks/kc8SS1tzuZ~jqjlebKGrUmpe
+      headers:
+        Authorization: Basic Y2F1bGRyb25PbmZsZWV0QXBpS2V5MDA6
+    expect:
+      status: 200
+      body:
+        container.type: WORKER
+        container.worker: 1LjhGUWdxFbvdsTAAXs0TFos
+        worker: 1LjhGUWdxFbvdsTAAXs0TFos
+        didAutoAssign: true
+        state: 0
+
+  - name: a bare create mints a new record from what was sent, not a fixture
+    # See the GET case above for the container-based commitment shape --
+    # Onfleet's own worked examples are records already assigned, and this
+    # format's create operation mints a fresh record from the request body
+    # rather than a pre-existing fixture, so container/worker/didAutoAssign
+    # are legitimately absent here unless the caller sent them.
+    source: https://docs.onfleet.com/reference/create-task
+    fixture: small-account
+    request:
+      method: POST
+      path: /api/v2/tasks
+      headers:
+        Authorization: Basic Y2F1bGRyb25PbmZsZWV0QXBpS2V5MDA6
+      json:
+        notes: Leave at the front desk.
+        pickupTask: false
+    expect:
+      status: 201
+      body:
+        notes: Leave at the front desk.
+        pickupTask: false
+        worker: null
+      absent:
+        - container
