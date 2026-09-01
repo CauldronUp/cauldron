@@ -1,0 +1,483 @@
+# Render Recipe for Cauldron
+#
+# render.com/openapi.json is not this API.
+#
+# It resolves, and it is a different product: the "Render AI Discovery API",
+# a docs-search endpoint for AI agents. The description for the thing this
+# Recipe actually emulates -- services, deploys, the build-then-live gap -- is
+# published at api-docs.render.com/v1.0/openapi/render-public-api-1.json,
+# three redirects deeper and mentioned nowhere on the page a client would
+# guess from the well-known URL. Everything below is drafted from that
+# document.
+#
+# A listing does not answer with the records. It answers with an array of
+# wrappers, one per record, each holding the record one level down under its
+# own name and a pagination cursor beside it:
+#
+#   [{"cursor": "...", "service": {...}}, {"cursor": "...", "service": {...}}]
+#
+# serviceList is declared as an array of serviceWithCursor, which is
+# {service, cursor} and nothing else -- and deployList is the same shape a
+# resource over, {deploy, cursor}. A client written against a plain array of
+# services reads response[0].id and gets undefined, because the id is at
+# response[0].service.id. Every single-object route -- GET one service, GET
+# one deploy, the 201 a created deploy answers with -- sends the bare record
+# with no such wrapper, so the wrapping is a property of listing rather than
+# of the resource, and code that works against one route breaks against the
+# other with the same object type.
+#
+# Triggering a deploy does not deploy anything. POST .../deploys answers 201
+# with a deploy whose status is drawn from an eleven-value enum -- created,
+# queued, build_in_progress, update_in_progress, live, deactivated,
+# build_failed, update_failed, canceled, pre_deploy_in_progress,
+# pre_deploy_failed -- and the 201 fires the moment the job is accepted, long
+# before any of them is "live". Whether the new code ever serves a request is
+# a second call, to GET the same deploy later, and there is no version of
+# triggering one that waits. A script that deploys and immediately asserts
+# success is asserting on a job that has barely started.
+#
+# Checked live, without a key, on 2026-08-31:
+#
+#   GET https://api.render.com/v1/services -> 401 {"message":"Unauthorized"}
+#
+# Sending an obviously wrong bearer token instead of no header at all answers
+# the identical 26 bytes -- {"message":"Unauthorized"}, byte for byte. Render
+# does not distinguish absent credentials from wrong ones, which is the
+# opposite of Upstash's Recipe next door. A DELETE against the same path,
+# a method neither declared route accepts, answers the same 401 too: the
+# credential check runs before the method is even looked at, so an
+# unauthenticated caller cannot tell a real path from a typo by the status
+# code alone. An undefined path entirely -- /v1/thisdoesnotexist -- answers
+# 404 with a bare "404 page not found" in text/plain: Render's own router,
+# outside anything this description claims, and a different shape again from
+# the JSON envelope every declared route uses for its failures.
+#
+# Three fields on one resource are spelled three different ways, and none of
+# them is a boolean:
+#
+#   suspended:    "suspended" | "not_suspended"
+#   autoDeploy:   "yes" | "no"
+#   notifyOnFail: "default" | "notify" | "ignore"
+#
+# `if (service.suspended)` is true for a running service, because
+# "not_suspended" is a non-empty string. `service.autoDeploy === true` is
+# false for one that auto-deploys on every push, because the provider never
+# sends true. And notifyOnFail is not a pair at all -- it is a three-way
+# switch with "default" meaning something a caller cannot read off without a
+# separate lookup. A single naming convention would have made one of these
+# bugs; three different ones make three, in three different shapes.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No call below carries a real credential. Cauldron never requests or
+#     stores one, so every 200 in this file is drafted from the description
+#     and none of them has been watched happen. Only the unauthenticated
+#     failures were checked against the live API, and the header says which
+#     is which.
+#   - The per-item cursor is not modelled. This format can wrap a list entry
+#     under its own resource name, which is the half that breaks a client,
+#     and it has no mechanism to put a second, unrelated field -- the
+#     record's own paging cursor -- beside that wrapper rather than inside
+#     it. Declaring cursor as a field of service or deploy would put it
+#     inside the wrapped object, one level away from where Render actually
+#     sends it, which is a more misleading answer than leaving it out.
+#     Pagination itself is still modelled: cursor and limit are accepted as
+#     query parameters, up to Render's own maximum of 100.
+#   - serviceDetails is not modelled. It is a oneOf five different shapes --
+#     static site, web service, private service, background worker, cron
+#     job -- decided by the sibling `type` field, and this format has no way
+#     to vary a resource's own fields by the value of another field on the
+#     same record. staticSiteDetails and cronJobDetails do not even carry the
+#     same properties as webServiceDetails, so region, plan and the
+#     autoscaling-adjacent numInstances all stay undeclared rather than
+#     modelled as though every service type carried them.
+#   - Deploy identifiers are declared as opaque strings on purpose. Service
+#     ids appear in the description's own examples as srv-xxxxx and
+#     srv-abc123, so the srv- prefix is documented rather than guessed; no
+#     deploy id appears anywhere in the description at all, and a dep-
+#     prefix would be common convention rather than anything this file
+#     verified.
+#   - Nothing is provisioned, scaled, rolled back or suspended. Disks,
+#     custom domains, environment groups, autoscaling, blueprints and every
+#     other tag in this description besides Services and Deploys are not
+#     modelled.
+
+recipe: render
+capability: hosting
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://render.com/docs/api
+  spec: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+  spec_hash: 96d8587a12bdebac84cc5690d51fa0552b73fc49eab1d7ee9b23819f0c83db8f
+  spec_seen: "2026-08-31"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-render-api-key
+
+responses:
+  list:
+    # A bare array at the top: serviceList and deployList are both declared as
+    # arrays with nothing wrapping them. entry_style is what puts each record
+    # under its own name one level down.
+    style: bare
+    entry_style: wrapped
+  resource:
+    style: bare
+  error:
+    # {"message": "Unauthorized"} and nothing beside it -- no code, no type --
+    # which is exactly what a bare 401 sent with no credentials at all
+    # answers with.
+    style: flat
+
+resources:
+  service:
+    collection: services
+    id:
+      style: prefixed
+      prefix: "srv-"
+    fields:
+      name:
+        type: string
+      # web_service, static_site, private_service, background_worker or
+      # cron_job. Decides which of five shapes serviceDetails would take, if
+      # this format could vary a resource's fields by a sibling's value.
+      type:
+        type: string
+        default: web_service
+      # "suspended" or "not_suspended" -- a string, not the boolean every one
+      # of these three fields' names implies.
+      suspended:
+        type: string
+        default: not_suspended
+      # "yes" or "no". A second boolean-shaped field and a second spelling.
+      autoDeploy:
+        type: string
+        default: "yes"
+      # "default", "notify" or "ignore" -- not a boolean-shaped field at all,
+      # and the third spelling for the third field that looks like one.
+      notifyOnFail:
+        type: string
+        default: default
+      branch:
+        type: string
+        default: main
+      repo:
+        type: string
+      slug:
+        type: string
+      rootDir:
+        type: string
+        default: ""
+      ownerId:
+        type: string
+      dashboardUrl:
+        type: string
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  deploy:
+    collection: deploys
+    id:
+      # No prefix documented anywhere in the description. srv- is; dep- is
+      # not, so this stays opaque rather than borrowing a convention from a
+      # different resource.
+      style: opaque
+    fields:
+      # The service a deploy belongs to. Render's own schema has no such
+      # property on a deploy -- the partition lives in the path and nowhere
+      # else -- the same shape Fly's app_name and Hetzner's collection field
+      # already needed.
+      service_id:
+        type: string
+        in: "-"
+      # created, queued, build_in_progress, update_in_progress, live,
+      # deactivated, build_failed, update_failed, canceled,
+      # pre_deploy_in_progress or pre_deploy_failed. The 201 that creates one
+      # fires long before this ever reaches "live".
+      status:
+        type: string
+        default: build_in_progress
+      trigger:
+        type: string
+        default: api
+      commit_id:
+        type: string
+        in: commit
+        as: id
+      commit_message:
+        type: string
+        in: commit
+        as: message
+      startedAt:
+        type: datetime
+      # Absent while the build is in flight, which is the state a client
+      # meets immediately after the 201 that started it.
+      finishedAt:
+        type: datetime
+        null_when_unset: true
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/services
+    resource: service
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+      max_limit: 100
+      cursor_param: cursor
+
+  - method: GET
+    path: /v1/services/{id}
+    resource: service
+    operation: get
+
+  - method: GET
+    path: /v1/services/{service_id}/deploys
+    resource: deploy
+    operation: list
+    scope: [service_id]
+    pagination:
+      style: cursor
+      limit: 20
+      max_limit: 100
+      cursor_param: cursor
+
+  # The headline. 201, and the deploy it answers with is not live.
+  - method: POST
+    path: /v1/services/{service_id}/deploys
+    resource: deploy
+    operation: create
+    scope: [service_id]
+    status: 201
+    returns:
+      - id
+      - status
+      - trigger
+      - createdAt
+      - updatedAt
+      - startedAt
+      - finishedAt
+
+  - method: GET
+    path: /v1/services/{service_id}/deploys/{id}
+    resource: deploy
+    operation: get
+    scope: [service_id]
+
+errors:
+  # No code, no type, nothing but the sentence -- checked against the live
+  # API with no credentials at all and again with an obviously wrong bearer
+  # token, and the two answers were byte for byte the same.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+fixtures:
+  empty: {}
+
+  one-workspace:
+    service:
+      - id: srv-c5nfjr56l47e77dv1eqg
+        name: storefront-web
+        type: web_service
+        suspended: not_suspended
+        autoDeploy: "yes"
+        notifyOnFail: default
+        branch: main
+        repo: https://github.com/cauldron-example/storefront-web
+        slug: storefront-web
+        rootDir: ""
+        ownerId: usr-c5nfjr56l47e77dv1eqh
+        dashboardUrl: https://dashboard.render.com/web/srv-c5nfjr56l47e77dv1eqg
+        createdAt: "2026-01-10T12:00:00Z"
+        updatedAt: "2026-08-19T09:15:00Z"
+
+      # Suspended, and told apart from a running service only by a string
+      # that is not the word "false". autoDeploy off is "no", not false, and
+      # notifyOnFail sits at its third value rather than either half of a
+      # pair.
+      - id: srv-d2qhup56l47e77dv2frt
+        name: nightly-reconcile
+        type: cron_job
+        suspended: suspended
+        autoDeploy: "no"
+        notifyOnFail: ignore
+        branch: main
+        repo: https://github.com/cauldron-example/nightly-reconcile
+        slug: nightly-reconcile
+        rootDir: jobs/reconcile
+        ownerId: usr-c5nfjr56l47e77dv1eqh
+        dashboardUrl: https://dashboard.render.com/cron/srv-d2qhup56l47e77dv2frt
+        createdAt: "2025-11-02T08:30:00Z"
+        updatedAt: "2026-07-01T04:00:00Z"
+
+    deploy:
+      # Accepted, and nowhere near live. This is what the 201 hands back.
+      - id: 6f19a2c4e8b1d730f4a29c31
+        service_id: srv-c5nfjr56l47e77dv1eqg
+        status: build_in_progress
+        trigger: api
+        commit_id: 9a1c3e7
+        commit_message: "Bump checkout timeout"
+        startedAt: "2026-08-19T09:14:02Z"
+        createdAt: "2026-08-19T09:14:00Z"
+        updatedAt: "2026-08-19T09:14:02Z"
+
+      # Live, some time later. Reaching this state took a second request to
+      # a route the 201 never told anyone to poll.
+      - id: 3b8d5f10c9e4a726b1f7038d
+        service_id: srv-c5nfjr56l47e77dv1eqg
+        status: live
+        trigger: new_commit
+        commit_id: 4d7f291
+        commit_message: "Fix checkout redirect"
+        startedAt: "2026-08-18T14:02:11Z"
+        finishedAt: "2026-08-18T14:03:47Z"
+        createdAt: "2026-08-18T14:02:09Z"
+        updatedAt: "2026-08-18T14:03:47Z"
+
+      # Failed, and the 201 that started it was still a clean success.
+      - id: a4e720f3d18b6c95e2071fa4
+        service_id: srv-d2qhup56l47e77dv2frt
+        status: build_failed
+        trigger: manual
+        commit_id: e83a105
+        commit_message: "Add retry to reconcile job"
+        startedAt: "2026-06-30T04:00:03Z"
+        finishedAt: "2026-06-30T04:01:20Z"
+        createdAt: "2026-06-30T04:00:00Z"
+        updatedAt: "2026-06-30T04:01:20Z"
+
+# Only the two cases below were made against api.render.com. Everything else
+# is drafted from render-public-api-1.json, and none of it has been watched
+# happen, which is exactly what the missing verified field says.
+conformance:
+  - name: no credentials at all is a bare, uncoded 401
+    source: https://api.render.com/v1/services
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/services
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+      absent:
+        - code
+        - type
+
+  - name: an obviously wrong bearer token gets the identical answer
+    # Checked byte for byte against the case above: 26 bytes, both times,
+    # {"message":"Unauthorized"}. Render does not say which was wrong.
+    source: https://api.render.com/v1/services
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/services
+      headers:
+        Authorization: "Bearer rnd_totally_invalid_token_123"
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a listing wraps every record one level down
+    source: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+    fixture: one-workspace
+    request:
+      method: GET
+      path: /v1/services
+      headers:
+        Authorization: "Bearer cauldron-render-api-key"
+    expect:
+      status: 200
+      body:
+        "[0].service.name": storefront-web
+        "[1].service.name": nightly-reconcile
+      absent:
+        - "[0].id"
+        - "[0].name"
+        - services
+        - data
+
+  - name: two boolean-shaped fields and neither is a boolean
+    source: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+    fixture: one-workspace
+    request:
+      method: GET
+      path: /v1/services/srv-d2qhup56l47e77dv2frt
+      headers:
+        Authorization: "Bearer cauldron-render-api-key"
+    expect:
+      status: 200
+      body:
+        # Truthy in every language that treats a non-empty string as true,
+        # for a service that is turned off.
+        suspended: suspended
+        # Not the JSON literal false, for a service that will not redeploy on
+        # its own.
+        autoDeploy: "no"
+        notifyOnFail: ignore
+
+  - name: triggering a deploy answers before the build finishes
+    source: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+    fixture: one-workspace
+    request:
+      method: POST
+      path: /v1/services/srv-c5nfjr56l47e77dv1eqg/deploys
+      headers:
+        Authorization: "Bearer cauldron-render-api-key"
+      json: {}
+    expect:
+      status: 201
+      body:
+        status: build_in_progress
+        trigger: api
+        finishedAt: null
+      absent:
+        - service
+        - service_id
+
+  - name: and the same deploy can still fail after that 201 was clean
+    source: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+    fixture: one-workspace
+    request:
+      method: GET
+      path: /v1/services/srv-d2qhup56l47e77dv2frt/deploys/a4e720f3d18b6c95e2071fa4
+      headers:
+        Authorization: "Bearer cauldron-render-api-key"
+    expect:
+      status: 200
+      body:
+        status: build_failed
+        finishedAt: "2026-06-30T04:01:20Z"
+
+  - name: a deploy listing wraps the same way a service listing does
+    source: https://api-docs.render.com/v1.0/openapi/render-public-api-1.json
+    fixture: one-workspace
+    request:
+      method: GET
+      path: /v1/services/srv-c5nfjr56l47e77dv1eqg/deploys
+      headers:
+        Authorization: "Bearer cauldron-render-api-key"
+    expect:
+      status: 200
+      body:
+        "[0].deploy.status": build_in_progress
+        "[1].deploy.status": live
+      absent:
+        - "[0].status"
+        - "[0].id"
