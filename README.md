@@ -55,7 +55,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 | Area | State |
 |---|---|
-| Detection engine (Composer, npm, Go modules) | Working. 282 of 314 Recipes are reachable from a dependency |
+| Detection engine (Composer, npm, Go modules) | Working. 282 of 315 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe. Of the 102 Recipes that emit events, 44 declare one and 58 fall back to a default modelled on Stripe's and not equal to it -- Stripe's own Recipe now declares the fuller real thing -- so the fallback is a convention rather than a claim about any provider |
@@ -65,14 +65,14 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 3109 cases, 794 of them checked against a live API |
-| Spec drift (`cauldron drift`) | Working. 33 Recipes are checked against their provider's own OpenAPI document; 281 name none yet |
+| Conformance suites (`cauldron verify`) | Working. 3118 cases, 803 of them checked against a live API |
+| Spec drift (`cauldron drift`) | Working. 33 Recipes are checked against their provider's own OpenAPI document; 282 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 314: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter, Nominatim, Open Library, Wikipedia, Hacker News, PokeAPI, MusicBrainz, Open Food Facts, Crossref, Zippopotam, TVmaze, Sunrise-Sunset, NHTSA vPIC, Wikidata, GBIF, Nager.Date, Wayback Machine, National Weather Service, OpenTDB, Open Brewery DB, PoetryDB, Datamuse, Art Institute of Chicago, Postcodes.io, Met Museum, Rick and Morty, Deck of Cards, TheMealDB, World Bank, disease.sh, Dog CEO, Advice Slip, SWAPI, Chuck Norris, Open Notify, Agify, Bible API, CoinGecko, iTunes Search, EPSS, Chess.com, ip-api, Where the ISS at, TfL, openFDA, OpenAlex, MBTA, Carbon Intensity, UK Police, FHRS, BoC Valet, FBI Wanted, Zenodo, UniProt, Spaceflight News, ClinicalTrials.gov, DataCite, Deezer, iNaturalist, RCSB, Europe PMC, OpenAIRE, ROR, Nobel Prize, PDBe, Jisho, Stack Exchange, Kraken, Scryfall, Lichess, Gutendex, Wikimedia, SEC EDGAR |
+| Recipes shipped | 315: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter, Nominatim, Open Library, Wikipedia, Hacker News, PokeAPI, MusicBrainz, Open Food Facts, Crossref, Zippopotam, TVmaze, Sunrise-Sunset, NHTSA vPIC, Wikidata, GBIF, Nager.Date, Wayback Machine, National Weather Service, OpenTDB, Open Brewery DB, PoetryDB, Datamuse, Art Institute of Chicago, Postcodes.io, Met Museum, Rick and Morty, Deck of Cards, TheMealDB, World Bank, disease.sh, Dog CEO, Advice Slip, SWAPI, Chuck Norris, Open Notify, Agify, Bible API, CoinGecko, iTunes Search, EPSS, Chess.com, ip-api, Where the ISS at, TfL, openFDA, OpenAlex, MBTA, Carbon Intensity, UK Police, FHRS, BoC Valet, FBI Wanted, Zenodo, UniProt, Spaceflight News, ClinicalTrials.gov, DataCite, Deezer, iNaturalist, RCSB, Europe PMC, OpenAIRE, ROR, Nobel Prize, PDBe, Jisho, Stack Exchange, Kraken, Scryfall, Lichess, Gutendex, Wikimedia, SEC EDGAR, Alpha Vantage |
 
 ## Try it
 
@@ -322,7 +322,7 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 3109 cases, 794 run against
+That second line is the honest one. Of every Recipe: 3118 cases, 803 run against
 a live account and 2315 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
@@ -2168,6 +2168,24 @@ with `Content-Type: application/xml`, in S3's vocabulary rather than EDGAR's.
 Nothing in it mentions a company or a filing. A client calling `.json()` on a
 404 throws on the first character.
 
+Nine are Alpha Vantage's, where **every failure is an HTTP 200.**
+Wrong symbol, missing function, bogus function, missing parameter, throttled --
+every response observed was 200, with no `Retry-After` and no `X-RateLimit`
+header anywhere, so a client branching on `response.ok` takes the success path
+for all of them. The two failure shapes then disagree about which key to read:
+leaving off `apikey` answers `{"Error Message": ...}` and everything else wrong
+answers `{"Information": ...}`, so code checking one finds `undefined` on the
+other. And `Information` means two unrelated things -- a request to fix and a
+request to retry -- in the same key, with the same status, and nothing to
+separate them.
+
+**The keys are unreachable with a dot.** `"Meta Data"` has a space,
+`"Time Series (Daily)"` has parentheses, and a level down they are `"1. open"`
+and `"5. volume"` -- beginning with a digit, containing a full stop. The same
+figure is even prefixed to different widths by different functions:
+`TIME_SERIES_DAILY` calls it `"1. open"` and `GLOBAL_QUOTE` calls it
+`"02. open"`.
+
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
 
@@ -2354,7 +2372,7 @@ question about the Recipe that wants a live call to settle. Recording a
 description a Recipe contradicts files the argument as a fingerprint and loses
 it.
 
-**The number will not reach 314.** Most providers publish nothing, and this
+**The number will not reach 315.** Most providers publish nothing, and this
 search reaches only descriptions served at a conventional URL -- a provider
 publishing in a GitHub repository, which is how eleven of the first twelve here
 were found, still needs a person to say where it is.
@@ -2375,7 +2393,7 @@ $ cauldron drift
   adyen                    unchanged since 2026-08-30
   ...
 
-33 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 281 with no description to check.
+33 unchanged, 0 moved, 0 unreachable, 0 in a format this cannot read, 0 unrecorded, 282 with no description to check.
 A Recipe with no description this can read is not verified by this. It is unexamined.
 ```
 
@@ -2402,7 +2420,7 @@ Six states, and only one of them fails a build:
 | `unreachable` | The host did not answer, or answered with something that is not a description. Not drift: a docs host returning 503 has said nothing about whether the provider changed anything |
 | `unsupported` | The provider publishes a description in a format this cannot read -- RAML, AsyncAPI, WSDL. Separate from `unreachable` because it is permanent: a host answering 503 is a Tuesday, a format with no reader stays true tomorrow. Swagger 2.0 was here until it was rewritten on the way in |
 | `unrecorded` | A description is named and has never been fingerprinted, so nothing was compared |
-| `undeclared` | No description is recorded for this Recipe. 281 of the 314, and falling -- see `cauldron discover` |
+| `undeclared` | No description is recorded for this Recipe. 282 of the 315, and falling -- see `cauldron discover` |
 
 It runs on a schedule rather than on every pull request, in
 `.github/workflows/drift.yml`, because a pull request must not go red because
@@ -2479,7 +2497,7 @@ Three rules keep the addition honest rather than merely large:
 
 It is off by default, and has to be: reaching for a description is a network
 call in a tool whose whole value is that it works without one. A Recipe whose
-provider publishes nothing -- 281 of the 314 here -- is served exactly as it
+provider publishes nothing -- 282 of the 315 here -- is served exactly as it
 always was, and told so plainly.
 
 ### Which version, and which one it replaced
@@ -2528,7 +2546,7 @@ These are the decisions the project intends to be held to.
 
 A project can also say so itself. `cauldron add mercury` writes a `cauldron.yaml` listing the providers it talks to, which is how a project reaches a Recipe no dependency maps to, or one it talks to over raw HTTP with no library at all. The first `add` copies whatever detection already found into the file, so starting one loses nothing, and from then on the file is the answer rather than the guess.
 
-The table reaches 282 of the 314 Recipes. The other 32 ship and can be named
+The table reaches 282 of the 315 Recipes. The other 33 ship and can be named
 directly. Every one of them was looked for: some publish no client at all,
 and some publish a package whose name matches the provider and whose contents
 do not -- `basecamp` on npm is a set of Astro components for somebody's scout
