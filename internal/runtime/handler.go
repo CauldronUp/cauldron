@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CauldronUp/cauldron/internal/recipe"
 	"github.com/CauldronUp/cauldron/internal/store"
 )
 
@@ -71,8 +72,12 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.authorised(r) {
-		exchange.Status = s.writeRecipeError(w, "authentication_error", 401, "authentication_required", "Invalid API key provided.")
+	if verdict := s.credential(r); verdict != recipe.Accepted {
+		// Which of the provider's sentences applies depends on how the
+		// credential failed. A Recipe that declares only one gets that one for
+		// every verdict, which is how every Recipe behaved before the
+		// distinction existed.
+		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), 401, "authentication_required", "Invalid API key provided.")
 
 		return
 	}

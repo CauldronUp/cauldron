@@ -120,6 +120,28 @@ func (r *Recipe) Validate() error {
 		add("auth.param only applies to the query scheme")
 	}
 
+	// A verdict that names an error nobody declared would fall through to the
+	// generic wording, which is exactly the outcome these fields exist to
+	// avoid -- and it would do it silently, the file claiming a second
+	// sentence the emulator never says.
+	for field, name := range map[string]string{
+		"auth.absent_error":    r.Auth.AbsentError,
+		"auth.malformed_error": r.Auth.MalformedError,
+		"auth.rejected_error":  r.Auth.RejectedError,
+	} {
+		if name == "" {
+			continue
+		}
+
+		if _, ok := r.Errors[name]; !ok {
+			add("%s names %q, which is not in errors", field, name)
+		}
+
+		if r.Auth.Scheme == "" || r.Auth.Scheme == "none" {
+			add("%s only applies to a Recipe that checks a credential", field)
+		}
+	}
+
 	r.validateResources(add)
 	r.validateRoutes(add)
 	for i, c := range r.Conformance {

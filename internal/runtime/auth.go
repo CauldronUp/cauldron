@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/CauldronUp/cauldron/internal/recipe"
 )
 
 // missingHeader reports the first required header a request does not carry.
@@ -33,14 +35,25 @@ func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok b
 	return "", "", true
 }
 
-// authorised checks the credential according to the Recipe's auth scheme.
-func (s *Sandbox) authorised(r *http.Request) bool {
+// credential checks the credential according to the Recipe's auth scheme, and
+// says which way it failed.
+//
+// The three failing verdicts exist so a Recipe can serve a provider's own
+// distinct sentences. Most providers have only one, and for those every
+// verdict resolves to the same error; see Auth.ErrorFor.
+//
+// What counts as absent is the carrier, not the value: the header or query
+// parameter is not on the request at all. "Bearer " with nothing after it was
+// sent by somebody, so it is malformed rather than absent, which is the line
+// the providers themselves draw -- Make answers a bare missing header with
+// "User is not logged in." and a broken one with "Invalid token header."
+func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 	auth := s.recipe.Auth
 
 	// A Recipe that declares no keys accepts anything, so an author can model
 	// routes first and tighten auth later.
 	if auth.Scheme == "" || auth.Scheme == "none" || (len(auth.Keys) == 0 && auth.Pattern == "") {
-		return true
+		return recipe.Accepted
 	}
 
 	var presented string
@@ -63,15 +76,30 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 		}
 
 		presented = r.Header.Get(header)
+
+		if presented == "" {
+			return recipe.Absent
+		}
 	case "query":
 		// The credential travels in the URL. Reproducing that exactly is the
 		// point: a header-based fake would hide the fact that the secret ends
 		// up in access logs and browser history.
 		presented = r.URL.Query().Get(auth.Param)
+
+		if presented == "" {
+			return recipe.Absent
+		}
 	case "basic":
 		user, password, ok := r.BasicAuth()
 		if !ok {
-			return false
+			// No Authorization header at all is absent. One that is there and
+			// will not parse -- some other scheme, or base64 that is not --
+			// was sent by somebody who tried, and is malformed.
+			if r.Header.Get("Authorization") == "" {
+				return recipe.Absent
+			}
+
+			return recipe.Malformed
 		}
 
 		// Providers disagree about which half carries the secret. Twilio puts
@@ -95,12 +123,12 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 		// a one-line change, with no test that would fail. Failing closed is
 		// the only safe direction for a branch whose whole job is to be
 		// unreachable.
-		return false
+		return recipe.Rejected
 	}
 
 	if auth.Prefix != "" {
 		if !strings.HasPrefix(presented, auth.Prefix) {
-			return false
+			return recipe.Malformed
 		}
 
 		presented = strings.TrimPrefix(presented, auth.Prefix)
@@ -115,8 +143,15 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 	// verify the signature.
 	if auth.Pattern != "" {
 		matched, err := regexp.MatchString(auth.Pattern, presented)
+		if err == nil && matched {
+			return recipe.Accepted
+		}
 
-		return err == nil && matched
+		// A pattern describes the shape, so failing it is a shape failure.
+		// Recipes using a pattern because the credential is computed per
+		// request -- AWS signs every call -- have no fixed value to be wrong
+		// about, so malformed is the only honest verdict available to them.
+		return recipe.Malformed
 	}
 
 	for _, key := range auth.Keys {
@@ -126,9 +161,9 @@ func (s *Sandbox) authorised(r *http.Request) bool {
 		// leaks its answer byte by byte is not the pattern to hand somebody
 		// who is about to go and write the real thing.
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(key)) == 1 {
-			return true
+			return recipe.Accepted
 		}
 	}
 
-	return false
+	return recipe.Rejected
 }

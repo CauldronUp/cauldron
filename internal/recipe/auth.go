@@ -146,6 +146,94 @@ type Auth struct {
 	// Recipe header has to say plainly that a wrongly signed request is
 	// accepted. Silence about that would be worse than the gap.
 	Pattern string `yaml:"pattern"`
+	// AbsentError names the errors entry raised when a request carries no
+	// credential at all -- no header, no query parameter, nothing.
+	//
+	// Most providers answer the same way whether you sent nothing or sent
+	// rubbish, and for those this stays empty and one message covers both.
+	// A dozen Recipes here had to write a header comment apologising for
+	// discarding the other half of a provider's answer, which is what a
+	// missing feature looks like from the outside.
+	//
+	// The distinction is not cosmetic. Pipedream answers an absent credential
+	// with 404 "record not found" -- describing the caller's own account as
+	// missing -- and a junk one with a plain 401, so the more complete mistake
+	// gets the better diagnosis. Turso reports an absent header as a malformed
+	// token, "invalid number of segments" for a credential nobody sent.
+	AbsentError string `yaml:"absent_error"`
+	// MalformedError names the errors entry raised when a credential is
+	// present but cannot be the right shape: the declared prefix is missing,
+	// or a declared pattern does not match.
+	//
+	// Separate from AbsentError because several providers really do answer in
+	// three tiers rather than two. Make: "User is not logged in." for no
+	// header, "Invalid token header." for a malformed one, "Not authorized."
+	// for a well-formed token it does not know. SingleStore: "Unauthorized",
+	// then a hex-decoding complaint naming the offending byte, then a length
+	// complaint. Collapsing those to one message loses the middle answer,
+	// which is the one that tells a caller their credential never left the
+	// keyboard intact.
+	MalformedError string `yaml:"malformed_error"`
+	// RejectedError names the errors entry raised when a credential is the
+	// right shape and is not one this Recipe holds.
+	//
+	// This is the verdict a real integration actually hits -- a key that was
+	// rotated, or copied from the wrong environment -- and the reason it needs
+	// naming as much as the other two is FireHydrant, whose sentences run the
+	// other way round. "This endpoint requires you to be authenticated." is
+	// what an absent credential gets, which is also the generic wording, and
+	// "The bearer token you provided is invalid or expired." is reserved for a
+	// token that was genuinely presented. Without this field the interesting
+	// half of that pair is the half that cannot be served.
+	RejectedError string `yaml:"rejected_error"`
+}
+
+// Verdict is what a credential check concluded, beyond accepted or not.
+//
+// A bool was enough while every rejection produced the same 401. It stopped
+// being enough the moment a Recipe wanted to say which of a provider's two
+// sentences applied, and returning the reason costs nothing: a Recipe that
+// declares neither error still gets one message for all three verdicts, byte
+// for byte what it got before.
+type Verdict int
+
+// The verdicts a credential check can reach.
+const (
+	// Accepted: the credential is one this Recipe holds.
+	Accepted Verdict = iota
+	// Absent: nothing was presented. Not an empty string -- the header or
+	// query parameter carrying the credential is not there at all.
+	Absent
+	// Malformed: something was presented and it cannot be a credential,
+	// because the declared prefix or pattern rules it out.
+	Malformed
+	// Rejected: the right shape, and not a credential this Recipe holds.
+	Rejected
+)
+
+// ErrorFor names the errors entry a verdict raises.
+//
+// Falling back to authentication_error for every verdict is what keeps this
+// backward compatible: a Recipe declaring neither field cannot tell the three
+// apart, which is exactly how every Recipe behaved before the fields existed.
+func (a Auth) ErrorFor(v Verdict) string {
+	switch v {
+	case Absent:
+		if a.AbsentError != "" {
+			return a.AbsentError
+		}
+	case Malformed:
+		if a.MalformedError != "" {
+			return a.MalformedError
+		}
+	case Rejected:
+		if a.RejectedError != "" {
+			return a.RejectedError
+		}
+	case Accepted:
+	}
+
+	return "authentication_error"
 }
 
 // ValidAuthSchemes returns the credential schemes a Recipe may declare.
