@@ -1,0 +1,669 @@
+# Turso Platform API Recipe for Cauldron
+#
+# Checked live, with no account and no credential, against api.turso.tech --
+# and the first thing worth knowing is what "no credential" and "wrong
+# credential" answer, because they are not always the same sentence.
+#
+# Send no Authorization header at all and the answer is
+# {"error":"token contains an invalid number of segments"}, 401. Send
+# Authorization: Bearer junkjunkjunk -- a string with no dots in it at all --
+# and the answer is byte-for-byte identical. Turso's tokens are JWTs, and a
+# request with no bearer token and a request whose bearer token cannot be
+# split into three dot-separated segments hit the same check and report the
+# same fact: no error handling anywhere distinguishes "you sent nothing" from
+# "you sent a single opaque word".
+#
+# But send something that merely *looks* like a JWT -- three base64 segments
+# joined by dots, header and payload well-formed, signature fake -- and the
+# sentence changes: {"error":"could not parse jwt id"}, still 401. So there
+# are two failures here, not one, and the line between them is not "present
+# vs absent" the way Checkly's Recipe in this collection needed and not
+# "any wrong value is one sentence" the way Temporal Cloud's is either. It is
+# shape: whatever gets past the segment count is parsed further and fails on
+# the next thing that is wrong with it. Both cases are pinned below with the
+# exact values sent.
+#
+# A malformed path answers differently again, and in a way neither auth
+# failure resembles: {"code":"route_not_found","error":"no such route",
+# "hint":"see https://docs.turso.tech/api-reference or
+# https://turso.tech/openapi.json for available endpoints"}, 404 -- a
+# three-field envelope where every other failure on this host is a bare
+# {"error": "..."}. And a wrong method on a real path -- PUT or DELETE where
+# only GET is registered -- answers the *identical* route_not_found body.
+# There is no 405 anywhere on this host that was findable without a
+# credential: a mistyped path and a mistyped method are the same failure,
+# which is worth having pinned because SingleStore's Recipe in this
+# collection was checked against the identical question and answers it the
+# opposite way -- a real 405, with an Allow header naming what would have
+# worked.
+#
+# One more asymmetry, this time in what a route sends rather than how it
+# fails: GET /v1/organizations answers a bare JSON array, no wrapper at all.
+# GET /v1/organizations/{slug} -- the same resource, one of it -- answers
+# {"organization": {...}}, wrapped. The plural is bare and the singular is
+# wrapped, which is backwards from the shape most APIs in this collection
+# default to, and is pinned below rather than assumed.
+#
+# The finding this Recipe was actually sent to find, in the body of the
+# published OpenAPI description at turso.tech/openapi.json rather than
+# observed (no account exists to create a database with):
+#
+# Creating a database answers 200 -- not 201 -- with
+# {"database": {"Name": ..., "DbId": ..., "Hostname": ...}}. Three fields.
+# The full record a GET on the same database answers with carries eight:
+# those three plus block_reads, block_writes, regions, primaryRegion, group
+# and delete_protection. The create response does not merely omit a status
+# field the way Temporal Cloud's Recipe in this collection found -- Turso's
+# Database schema has no state, status or phase field anywhere in the
+# published description for a caller to have been denied. What it withholds
+# instead is block_reads and block_writes, the two fields that would say
+# whether the database can actually be read from or written to right now,
+# and group, the one field the create *request* was required to name and the
+# create *response* does not echo back. A caller who creates a database and
+# reads the create response cannot tell which group it landed in without a
+# second request, and has no field to poll for readiness even if it wanted
+# to -- not because the field is still settling, the way Neon's
+# current_state is, but because no such field exists on this resource at
+# all. That is a different shape of the same finding Temporal Cloud's Recipe
+# states, not a re-derivation of it: there, a create returns an operation
+# instead of the thing you asked for; here, a create returns the thing you
+# asked for, truncated to a projection nobody would notice was partial
+# without a second call to compare it to.
+#
+# Three more, all read from the same description:
+#
+#   1. The identifier a client would store cannot address the database, the
+#      same shape PlanetScale's Recipe in this collection already found for
+#      a deploy request. DbId is "The database universal unique identifier
+#      (UUID)" and every path takes databaseName -- the Name field -- not
+#      DbId. A client that stores DbId because it looks like the identifier
+#      gets a 404 on every lookup that uses it.
+#   2. regions ("A list of regions for the group the database belongs to",
+#      explicitly marked deprecated) and primaryRegion (current, singular)
+#      both ride on Database at once. Turso's own Group carries the same
+#      pair under different names -- locations (deprecated, plural) and
+#      primary (current, singular) -- so this is not one field that changed
+#      its mind, it is a convention the provider repeats. Neon's Recipe in
+#      this collection found default/primary disagreeing on which branch is
+#      the real one; here the deprecated field and the current field are not
+#      known to disagree, because nothing unauthenticated could create two
+#      databases to check, and that gap is stated rather than assumed away.
+#   3. Deleting a database answers {"database": "my-db"} -- the same
+#      top-level key GET and POST wrap an *object* under, here holding a
+#      bare string. Code that reads response.database.name after every
+#      write against this resource reads a property off a string on exactly
+#      one of the three writes.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no token was ever requested, guessed
+#     or used. Every 200 below is read from the published description, not
+#     observed, and carries no `verified:` date. The 401s and 404s are
+#     struck live, unauthenticated, and carry one.
+#   - Groups, instances, audit logs, invoices, members, plans and the
+#     database-scoped auth/configuration/stats/usage endpoints are all real
+#     paths in the description and none of them are modelled. This Recipe
+#     is about the two questions the task named -- how auth fails, and what
+#     a created database looks like -- not a full port of the platform.
+#   - POST and DELETE on /v1/organizations/{slug}/api-tokens, and POST on
+#     /v1/organizations itself, are real paths too. POST /v1/organizations
+#     is not one of them -- the description declares no such operation, an
+#     organization is not created through this API -- and yet an
+#     unauthenticated POST to that path answers the identical 401 a GET
+#     does, live, checked below. Whether an authenticated POST there does
+#     anything at all is not stated, because nothing unauthenticated could
+#     find out, and inventing an operation the description does not declare
+#     would be worse than leaving the question open.
+#   - block_reads and block_writes read as ordinary booleans here because
+#     that is what the schema says they are. Nothing unauthenticated could
+#     create a database to check whether they ever move, so this Recipe
+#     does not claim they do.
+#   - parent -- "the parent database identifier" and a branched_at timestamp,
+#     present only on a database created by forking another -- is real and
+#     not modelled. It is one more nested object the same way Temporal's
+#     NamespaceSpec was, and declaring it for a shape no case here exercises
+#     was judged not worth the noise.
+#
+# The token below is a fixture and belongs to no organisation.
+
+recipe: turso
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.turso.tech/api-reference
+  spec: https://turso.tech/openapi.json
+  spec_hash: c4e6778be5973f37f28208f32a77e92d094b55737757b55aedbb2150eaca3835
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely bearer, but expressed as scheme none plus fixed routes below --
+  # the same trade Checkly's and Temporal Cloud's Recipes in this collection
+  # make, for the same reason: a single scheme can answer only one way, and
+  # this host answers three, depending on the shape of what it was sent.
+  scheme: none
+
+responses:
+  list:
+    # The default every list route inherits. organisation's own list route
+    # overrides it to bare -- see the header.
+    style: wrapped
+  resource:
+    style: wrapped
+  error:
+    style: flat
+    # The wire key really is "error", not "message".
+    message_field: error
+
+resources:
+  organization:
+    collection: organizations
+    id:
+      style: opaque
+      field: slug
+    fields:
+      name:
+        type: string
+      type:
+        # "personal" or "team".
+        type: string
+        default: personal
+      overages:
+        type: boolean
+        default: false
+      require_mfa:
+        type: boolean
+        default: false
+      blocked_reads:
+        type: boolean
+        default: false
+      blocked_writes:
+        type: boolean
+        default: false
+      plan_id:
+        type: string
+      plan_timeline:
+        type: string
+      # Empty for a Turso-managed organisation. Set for one managed by a
+      # platform partner, e.g. "vercel".
+      platform:
+        type: string
+        default: ""
+
+  # /v1/auth/validate answers about whoever the credentials belong to, the
+  # same shape GitHub's /user and Slack's auth.test are -- no id in the path,
+  # nothing to scope, and the whole point of the route is that there is
+  # nothing to read one of by.
+  api_token:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # "The time of expiration ... in unix epoch seconds, or -1 if there is
+      # no expiration." Modelled as a plain integer rather than a timestamp
+      # on purpose: -1 is a sentinel, not a date, and a field typed as a
+      # timestamp would render it as a moment in 1969.
+      exp:
+        type: integer
+
+  database:
+    collection: databases
+    id:
+      # Chosen by the caller at create time -- lowercase letters, numbers and
+      # dashes -- rather than minted, which is not quite what "opaque" was
+      # named for. It is the closest style this vocabulary has to "an
+      # arbitrary string the provider does not structure", and Name is what
+      # every path actually takes.
+      style: opaque
+      field: Name
+    fields:
+      # "The database universal unique identifier (UUID)." Real, echoed, and
+      # not what any path takes -- see the header. Defaulted so a freshly
+      # created record in a case still carries one -- see the create route.
+      DbId:
+        type: string
+        default: "00000000-0000-4000-9000-000000000000"
+      Hostname:
+        type: string
+        default: new-cauldron-fixture-org.turso.io
+      block_reads:
+        type: boolean
+        default: false
+      block_writes:
+        type: boolean
+        default: false
+      # Deprecated, plural, a list of every region a replica sits in.
+      regions:
+        type: list
+      # Current, singular. See the header for why both are modelled.
+      primaryRegion:
+        type: string
+      # Required on create and never echoed by it. See the header.
+      group:
+        type: string
+      delete_protection:
+        type: boolean
+        default: false
+      # The partition lives in the path and is not repeated in the body.
+      organization:
+        type: string
+        in: "-"
+
+routes:
+  # /v1/organizations. Three shapes for the credential: the fixture reaches
+  # the resource, one specific JWT-shaped-but-invalid value gets the sentence
+  # that shape earns, and everything else -- no header, or the plain junk
+  # word this Recipe actually sent live -- falls to the plainer one. A route
+  # naming matches_header outranks the one that names none regardless of
+  # write order, the same rule Checkly's Recipe already relies on.
+  - method: GET
+    path: /v1/organizations
+    resource: organization
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    # Bare, unlike the singular route below and unlike every other listing
+    # in this Recipe. See the header.
+    list:
+      style: bare
+
+  - method: GET
+    path: /v1/organizations
+    matches_header:
+      # The exact value this Recipe sent live: a well-formed three-segment
+      # JWT shape (real header, real payload, fake signature) that is not
+      # this fixture's token.
+      Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjYXVsZHJvbiIsImlhdCI6MTIzNDU2Nzg5MH0.fakefakefakefakefakefakefakefakefakefakefakefake
+    error: unparseable_token
+
+  - method: GET
+    path: /v1/organizations
+    error: malformed_token
+
+  # An unauthenticated POST to a path the description never declares a POST
+  # for still answers the identical 401 the GET above falls back to,
+  # struck live below. What an authenticated POST there would do is not
+  # stated -- see the header.
+  - method: POST
+    path: /v1/organizations
+    error: malformed_token
+
+  - method: GET
+    path: /v1/organizations/{id}
+    resource: organization
+    operation: get
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+
+  - method: GET
+    path: /v1/organizations/{id}
+    error: malformed_token
+
+  - method: GET
+    path: /v1/auth/validate
+    resource: api_token
+    operation: get
+    id_from: auth
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    # Bare, not wrapped under "api_token" or anything else -- the body is
+    # {"exp": ...} and nothing wraps it.
+    envelope:
+      style: bare
+
+  - method: GET
+    path: /v1/auth/validate
+    error: malformed_token
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases
+    resource: database
+    operation: list
+    scope: [organization]
+    filters:
+      - param: group
+        field: group
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases
+    error: malformed_token
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases/{id}
+    resource: database
+    operation: get
+    scope: [organization]
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+
+  - method: GET
+    path: /v1/organizations/{organization}/databases/{id}
+    error: malformed_token
+
+  # Never a 201, and never the full record -- see the header for why this is
+  # not the same finding Temporal Cloud's Recipe states, only the same
+  # shape of it.
+  - method: POST
+    path: /v1/organizations/{organization}/databases
+    resource: database
+    operation: create
+    scope: [organization]
+    status: 200
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    returns: [id, DbId, Hostname]
+
+  - method: POST
+    path: /v1/organizations/{organization}/databases
+    error: malformed_token
+
+  # {"database": "name"} -- a bare string under the same key GET and POST
+  # wrap an object under. See the header.
+  - method: DELETE
+    path: /v1/organizations/{organization}/databases/{id}
+    resource: database
+    operation: delete
+    scope: [organization]
+    matches_header:
+      Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    deleted_body: id
+    deleted_key: database
+
+  - method: DELETE
+    path: /v1/organizations/{organization}/databases/{id}
+    error: malformed_token
+
+  # A wrong method on a real path. The real host answers the identical
+  # route_not_found body a wrong path gets, not a distinct 405 -- see the
+  # header and the errors table below, where both built-in names are given
+  # the same status and the same body on purpose.
+  - method: PUT
+    path: /v1/organizations
+    error: method_not_allowed
+
+  # A path that resembles the API but names nothing real.
+  - method: GET
+    path: /v1/this-is-not-a-real-endpoint
+    error: unknown_route
+
+errors:
+  # Genuinely indistinguishable on this host: no header at all, and a header
+  # whose value cannot be split into three dot-separated segments, answer the
+  # same sentence. See the header for the case that is not this one.
+  malformed_token:
+    status: 401
+    message: "token contains an invalid number of segments"
+
+  # Three segments, well-formed enough to be parsed as a JWT, and still not
+  # this fixture's token. A different failure at a later stage of the same
+  # check.
+  unparseable_token:
+    status: 401
+    message: "could not parse jwt id"
+
+  # No 405 exists on this host that was reachable without a credential --
+  # both built-in fallback names answer the identical body. status: 404 on
+  # method_not_allowed is not a typo; it is the finding.
+  unknown_route:
+    status: 404
+    code: route_not_found
+    code_field: code
+    message: "no such route"
+    fields:
+      hint: "see https://docs.turso.tech/api-reference or https://turso.tech/openapi.json for available endpoints"
+
+  method_not_allowed:
+    status: 404
+    code: route_not_found
+    code_field: code
+    message: "no such route"
+    fields:
+      hint: "see https://docs.turso.tech/api-reference or https://turso.tech/openapi.json for available endpoints"
+
+fixtures:
+  empty: {}
+
+  account:
+    organization:
+      - id: cauldron-fixture-org
+        slug: cauldron-fixture-org
+        name: Cauldron Fixture
+        type: team
+        overages: false
+        require_mfa: false
+        blocked_reads: false
+        blocked_writes: false
+        plan_id: developer
+        plan_timeline: monthly
+        platform: ""
+
+    api_token:
+      - exp: -1
+
+    database:
+      # Settled. Note there is no field here saying so -- see the header.
+      - id: shop
+        organization: cauldron-fixture-org
+        Name: shop
+        DbId: "0eb771dd-6906-4eee-8553-ea0000000001"
+        Hostname: shop-cauldron-fixture-org.turso.io
+        block_reads: false
+        block_writes: false
+        regions:
+          - aws-us-east-1
+        primaryRegion: aws-us-east-1
+        group: default
+        delete_protection: false
+
+conformance:
+  - name: no credential and a plain junk word answer the identical sentence
+    source: https://api.turso.tech/v1/organizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/organizations
+    expect:
+      status: 401
+      body:
+        error: "token contains an invalid number of segments"
+
+  - name: and the exact same check gates a different route too
+    source: https://api.turso.tech/v1/auth/validate
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/auth/validate
+    expect:
+      status: 401
+      body:
+        error: "token contains an invalid number of segments"
+
+  - name: a JWT-shaped credential fails a later, different check
+    source: https://api.turso.tech/v1/organizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/organizations
+      headers:
+        Authorization: Bearer eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjYXVsZHJvbiIsImlhdCI6MTIzNDU2Nzg5MH0.fakefakefakefakefakefakefakefakefakefakefakefake
+    expect:
+      status: 401
+      body:
+        error: "could not parse jwt id"
+
+  - name: an unmatched path is a JSON 404 with a code and a hint
+    source: https://api.turso.tech/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        code: route_not_found
+        error: "no such route"
+        hint: "see https://docs.turso.tech/api-reference or https://turso.tech/openapi.json for available endpoints"
+
+  - name: a wrong method on a real path gets the identical body, not a 405
+    source: https://api.turso.tech/v1/organizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /v1/organizations
+    expect:
+      status: 404
+      body:
+        code: route_not_found
+        error: "no such route"
+
+  - name: a POST to a path the description never declares one for still answers the same 401
+    source: https://api.turso.tech/v1/organizations
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/organizations
+    expect:
+      status: 401
+      body:
+        error: "token contains an invalid number of segments"
+
+  - name: the list of organisations is a bare array
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/organizations
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].slug": cauldron-fixture-org
+        "[0].type": team
+
+  - name: one organisation is wrapped under its own name, unlike the list of them
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/organizations/cauldron-fixture-org
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        organization.slug: cauldron-fixture-org
+        organization.name: Cauldron Fixture
+
+  - name: a token with no expiration reports a sentinel, not null
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/auth/validate
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        exp: -1
+
+  - name: databases can be narrowed to one group
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/organizations/cauldron-fixture-org/databases?group=default
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "databases[0].Name": shop
+
+  - name: creating a database answers three fields, not the record a GET would
+    # The request body here is written the way CreateDatabaseInput documents
+    # it -- lowercase name and group. Cauldron mints its own identifier for
+    # a create this Recipe cannot pin against a live account, so the new
+    # database's Name, DbId and Hostname are asserted by shape rather than
+    # by value; what this case is actually pinning is the field count.
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: POST
+      path: /v1/organizations/cauldron-fixture-org/databases
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+      json:
+        name: newdb
+        group: default
+    expect:
+      status: 200
+      matches:
+        database.Name: ".+"
+        database.DbId: ".+"
+        database.Hostname: ".+"
+      absent:
+        # None of these were withheld because the database is still
+        # settling -- there is no field on this resource that says that at
+        # all. See the header.
+        - database.block_reads
+        - database.block_writes
+        - database.regions
+        - database.primaryRegion
+        # The one field the create request was required to name.
+        - database.group
+        - database.delete_protection
+
+  - name: the full record a GET answers with carries what the create response dropped
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/organizations/cauldron-fixture-org/databases/shop
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        database.Name: shop
+        database.DbId: "0eb771dd-6906-4eee-8553-ea0000000001"
+        database.block_reads: false
+        database.block_writes: false
+        database.primaryRegion: aws-us-east-1
+        database.group: default
+
+  - name: the identifier a client would store cannot address the database
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: GET
+      path: /v1/organizations/cauldron-fixture-org/databases/0eb771dd-6906-4eee-8553-ea0000000001
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      # DbId is a real field on a real record and every path takes Name.
+      # Asking by DbId is a 404 that looks exactly like a deleted database.
+      status: 404
+
+  - name: deleting a database answers a bare string under the key a get would wrap an object in
+    source: https://turso.tech/openapi.json
+    fixture: account
+    request:
+      method: DELETE
+      path: /v1/organizations/cauldron-fixture-org/databases/shop
+      headers:
+        Authorization: Bearer cauldron-turso-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        database: shop
