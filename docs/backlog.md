@@ -287,7 +287,7 @@ the header says so.
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | Heap | Assess — events and user properties |
 | LogRocket | Assess — sessions and issues |
-| New Relic | Assess. It was in "assessed and deliberately not done" for being GraphQL-only, which stopped being a reason the day ShipHero brought GraphQL support and Linear shipped on it. NerdGraph is one endpoint whose body decides the shape, which is what `selects` is for |
+| ~~New Relic~~ | Shipped, with five cases checked against the live API and five drafted from its published description. **Its own description would generate a broken client**: the spec declares the applications list with the same schema as the single fetch, promising `{"application": {...}}` where the wire sends `{"applications": [...]}`, so generated code reads `response.application.id` and gets undefined on every list call. Also pinned: a wrong key echoed back inside the failure body, and `health_status` as the string "gray" beside `reporting` as a boolean -- two fields stating one fact in two types. NerdGraph was probed for the 200-with-errors behaviour this collection collects and does **not** do it unauthenticated: it 401s before GraphQL executes |
 
 ## Hosting, deployment and package registries
 
@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**222 more listings across 135 Recipes declare no paging at all**, and the
+**231 more listings across 143 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1290,7 +1290,7 @@ what normalisation does not fix.
 |---|---|
 | ~~Razorpay~~ | Shipped. Capture is a separate call and an uncaptured authorisation is auto-refunded, so doing nothing is a decision; amounts are in paise; the fee and tax do not exist until capture; and BAD_REQUEST_ERROR is the code on almost every failure, so reason is the only thing worth branching on |
 | ~~Paystack~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **The row's own premise is the part that could not be checked** -- every amount-bearing endpoint needs a secret key, so whether amounts really are in kobo is documented and unverified, and the Recipe models no amount field rather than claiming one. What was verified is a **negative** finding: every response carries `{status, message, data}` with a boolean beside the HTTP status, the shape that lets a body disagree with its own status line, and on the whole key-free surface the two always agree -- `true` with 200, `false` with 401, no 200 ever carrying `false`. Also pinned: a 401 whose machine-readable code is `invalid_Key`, with a capital K inside a snake_case value; an unknown country answering 200 with an empty array, indistinguishable from a real country it has no banks for and with the success flag saying `true` for both; malformed paging values (`perPage=abc`, `-1`, twenty digits) all accepted in silence; and cursor paging that exists only behind an opt-in `use_cursor=true`. Stated and not served: the nested `data.status` of `"failed"` its documentation describes on a verified transaction, which would be a third statement of one outcome and the likeliest to disagree |
-| Flutterwave | The verify endpoint is the source of truth and the redirect parameters are not, which is the whole of the fraud surface |
+| ~~Flutterwave~~ | Shipped, with four cases checked against the live API and four drafted from its SDK documentation, and meant to be read against Paystack's. **Both wrap everything in `{status, message, data}` and disagree about the first field**: Paystack sends the boolean `false`, Flutterwave the string `"error"`, so `if (!body.status)` treats every Flutterwave failure as a success. Flutterwave has no unauthenticated surface at all, where Paystack serves banks and countries to anyone. Documented and not called: the response shape changes by payment method rather than by endpoint -- a bank transfer has no `data` key at all, a Nigerian direct debit nests `meta.authorization` inside `data`, and a European one puts the same value at the top level as a sibling |
 | Mercado Pago | A payment can sit in in_process for days, and the status detail rather than the status says why |
 | dLocal | The settlement currency is not the charge currency and the rate is fixed at a moment you did not choose |
 | Rapyd | Payouts and payments have separate id namespaces that look identical |
@@ -1439,6 +1439,7 @@ than a client for its API.
 | Steam | The packages naming Steam on npm are overwhelmingly clients of **Steamworks**, the C++ game SDK, or of the community trading and market pages -- different hosts, different protocols, and in the SDK's case not an HTTP API at all. Packagist returns OpenID login helpers for signing in with Steam, which touch the auth flow and never the Web API. Offering this emulator to any of them would be wrong about the host, so it ships unmapped |
 | NOAA | Nothing on either registry reaches the NCEI access service. The clients that exist are Python and R, which neither registry indexes, and the npm results for the name reach **api.weather.gov** -- the National Weather Service, a different NOAA API that this collection already describes under its own Recipe. Mapping this one to those packages would hand somebody the wrong NOAA, so it ships unmapped |
 | Guardian | The npm packages naming the Guardian are almost all unrelated: route guards for web frameworks, which share the word and nothing else. The few genuine Open Platform clients are unmaintained and depended on by nothing. Packagist returns authorisation libraries for the same reason. A name match here is a homograph rather than a miss, so it ships unmapped |
+| New Relic | The `newrelic` package on npm is the **APM agent**, not a client of this API. It instruments an application and reports telemetry to New Relic's ingest endpoints; it never calls the v2 REST API or NerdGraph that this Recipe describes, and `@newrelic/telemetry-sdk` is the same story with a smaller surface. A project holding either is being monitored by New Relic rather than querying it, so offering this emulator would intercept nothing it actually sends. It ships unmapped and a test guards the decision |
 | Tink | A homograph rather than a gap. `tink` on npm is a next-generation runtime and package manager that shares the name and nothing else; Packagist returns unrelated packages for the same reason. The clients that genuinely reach this API are Java and Python, which neither registry indexes. Offering an open-banking emulator to a project that installed a package manager would be wrong about everything at once, so it ships unmapped and a test guards the decision |
 | Semantic Scholar | Nothing on either registry reaches the Academic Graph API. The clients that exist for it are Python, which neither npm nor Packagist indexes, and the npm results for the name are citation-formatting libraries that parse BibTeX already on disk rather than calling the service. Offering this emulator to a bibliography formatter would be wrong about the host and the protocol at once, so it ships unmapped and a test guards the decision |
 | Mercado Libre | The npm and Packagist packages that name Mercado Libre are almost all clients of **Mercado Pago**, the payments product on a different host with a different credential, which this Recipe does not describe. The few that do target the marketplace API are unmaintained wrappers with nothing depending on them. Offering this emulator to a Mercado Pago integration would be wrong about the host, the credential and the vocabulary at once, so it ships unmapped |
@@ -1483,7 +1484,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Fifty-seven Recipes send at least one identifier as a number now, and each
+Sixty-two Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
