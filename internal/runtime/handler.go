@@ -114,7 +114,26 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), rawBody(r), r.URL.Query(), r.Header)
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
-			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			// Allow belongs on a 405 and nowhere else, which is what RFC 9110
+			// requires of it and what decides this.
+			//
+			// Twenty-two Recipes say their provider has no 405 at all: Turso
+			// answers the same route_not_found a missing path gets, Koyeb
+			// answers url_not_found, ClickHouse answers Express's bare
+			// "Cannot PUT /x", Workable answers the identical 404 an unrouted
+			// path does. Each of those declares method_not_allowed with the
+			// status its provider really sends, and computing an Allow to sit
+			// beside a 404 invented a header no such response carries -- more
+			// informative than the thing being stood in for, which is the
+			// hardest kind of infidelity to notice, because nothing fails.
+			//
+			// A Recipe that declares a real 405 still gets the computed
+			// header, and wants it: Airbrake, Api2Pdf and Papertrail all send
+			// one and their cases assert its value.
+			if declared, ok := s.recipe.Errors["method_not_allowed"]; !ok || declared.Status == 0 || declared.Status == http.StatusMethodNotAllowed {
+				w.Header().Set("Allow", strings.Join(allowed, ", "))
+			}
+
 			exchange.Status = s.writeRecipeError(w, "method_not_allowed", 405, "method_not_allowed", "This method is not supported on this path.", r.Method+" "+r.URL.Path)
 
 			return
