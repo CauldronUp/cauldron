@@ -5078,6 +5078,30 @@ func providers() []provider {
 			npm:    []string{"nuvei"},
 		},
 		{
+			// nocodb-sdk, and deliberately not nocodb. Installing the latter
+			// means running NocoDB; the API this Recipe describes is called
+			// by the operator of an instance, from outside it.
+			recipe: "nocodb",
+			npm:    []string{"nocodb-sdk"},
+		},
+		{
+			recipe: "imagekit",
+			npm:    []string{"imagekit"},
+		},
+		{
+			recipe: "transloadit",
+			npm:    []string{"transloadit"},
+		},
+		{
+			recipe: "chroma",
+			npm:    []string{"chromadb"},
+		},
+		{
+			recipe: "bunny",
+			npm:    []string{"bunny-sdk"},
+			gomod:  []string{"github.com/simplesurance/bunny-go"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
