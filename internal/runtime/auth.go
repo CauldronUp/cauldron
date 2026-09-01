@@ -136,6 +136,24 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 
 	presented = strings.TrimSpace(presented)
 
+	// A scheme with nothing after it is malformed, not merely wrong. The
+	// comment on this function has said so since the verdicts were written --
+	// somebody sent "Bearer ", so it is not absent -- and the code did not:
+	// the prefix matched, the value became empty, and an empty string fell
+	// through to the key comparison and came out rejected.
+	//
+	// Bright Data is what found it. It answers "Auth method is not supported"
+	// to a bare "Bearer ", which is its malformed sentence, where this
+	// returned the verdict for a credential it had actually looked at.
+	//
+	// Providers do disagree about this one -- Fireworks answers "The API key
+	// you provided is invalid." to the same request -- and that costs nothing
+	// here, because a Recipe that does not name a malformed error falls
+	// through to the same message it always did.
+	if presented == "" {
+		return recipe.Malformed
+	}
+
 	// A pattern, for a credential computed per request. AWS signs every call,
 	// so there is no fixed value to compare and the shape is what can be
 	// checked. That catches the failure that actually happens — credentials

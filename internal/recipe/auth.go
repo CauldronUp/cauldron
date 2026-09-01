@@ -245,7 +245,10 @@ const (
 	// query parameter carrying the credential is not there at all.
 	Absent
 	// Malformed: something was presented and it cannot be a credential,
-	// because the declared prefix or pattern rules it out.
+	// because the declared prefix or pattern rules it out -- or because the
+	// prefix is all there was. A bare "Bearer " was sent by somebody, so it
+	// is not absent, and there is no value to have been wrong about, so it
+	// is not rejected.
 	Malformed
 	// Rejected: the right shape, and not a credential this Recipe holds.
 	Rejected

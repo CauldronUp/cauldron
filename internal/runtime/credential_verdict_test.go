@@ -43,6 +43,12 @@ func TestACredentialFailsInThreeDistinguishableWays(t *testing.T) {
 		{"no header at all", "", "", recipe.Absent},
 		{"the wrong prefix", "Authorization", "Token fhb-nope", recipe.Malformed},
 		{"no prefix at all", "Authorization", "fhb-nope", recipe.Malformed},
+		// A scheme with nothing after it. Somebody sent it, so it is not
+		// absent; there is no value to have been wrong about, so it is not
+		// rejected either. Bright Data answers its malformed sentence to
+		// exactly this, and this used to come out rejected because an empty
+		// string fell through to the key comparison.
+		{"a scheme and nothing else", "Authorization", r.Auth.Prefix, recipe.Malformed},
 		{"prefixed and unknown", "Authorization", r.Auth.Prefix + "fhb-nope", recipe.Rejected},
 		{"a key the Recipe holds", "Authorization", r.Auth.Prefix + r.Auth.Keys[0], recipe.Accepted},
 	}
