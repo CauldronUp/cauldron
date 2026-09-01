@@ -1,0 +1,508 @@
+# Airbyte Recipe for Cauldron
+#
+# api.airbyte.com checks the credential before it checks anything else. Not
+# "before it checks the credential is right" -- before it decides whether the
+# request means anything at all. Every one of these was struck live, on the
+# date below, with no credential of any kind:
+#
+#   GET  /v1/connections                        -> 401
+#   GET  /v1/jobs                                -> 401
+#   GET  /v1/this-is-not-a-real-resource         -> 401
+#   GET  /totally/bogus/path/xyz                 -> 401
+#   POST /v1/connections  (with a JSON body)     -> 401
+#   DELETE /v1/connections/00000000-...-000000   -> 401
+#   HEAD /v1/connections                         -> 401
+#
+# and a garbage bearer token answers the identical body on the identical
+# paths. Method, path and credential all vary above and the answer never
+# does: {"message":"Unauthorized", ...}, every time, byte for byte apart from
+# the "_links.self.href" reflecting whatever was asked for. A client cannot
+# tell a typo in the path from a typo in the token from a connector id that
+# does not exist, because none of those questions gets asked until the first
+# one is answered, and the first one is always answered the same way.
+#
+# That is worth setting beside the other three sync platforms in this
+# collection, because each checked auth in a different place:
+#
+#   - Temporal Cloud checks routing first. An unauthenticated request to a
+#     made-up path is a JSON 404 and a wrong method on a real one is a 501,
+#     both before auth is ever consulted -- only a request that names a real
+#     route and a real method reaches the 401.
+#   - Census (below) is split down the middle: a GET to any path under
+#     /api/v1/ is auth-gated even when the resource named does not exist, but
+#     a method nothing recognises (PUT, DELETE) never reaches auth at all and
+#     answers a routing 404 instead.
+#   - Airbyte does not split. Nothing before the credential exists here:
+#     wrong method, wrong path, wrong token and no token all collapse into
+#     the same 401, and the two provider-specific mechanisms the other two
+#     needed -- Temporal's scheme: none plus a public /health carve-out,
+#     Census's matches_header pairs to let a routing miss fall through
+#     auth -- are not needed here at all. Cauldron's own default order
+#     already checks the credential before it routes anything, for any
+#     Recipe that does not opt out of it, and that default is this Recipe
+#     without a single override: auth.scheme: bearer and nothing else.
+#
+# Missing and wrong are the same sentence too, joining Temporal and parting
+# from Checkly in this collection: a request with no Authorization header and
+# one with Authorization: Bearer <garbage> answer byte-identical bodies.
+# Nothing here tells an integrator "you forgot to configure a token" from
+# "the token you configured is wrong."
+#
+# One more worth stating because it very nearly was not noticed: Airbyte's
+# own published reference describes its errors in RFC 7807 form --
+# {"title", "detail", "type", "status"} -- for 400, 404, 409, 422 and 500.
+# Not one of the live 401s struck below is shaped like that. The RFC 7807
+# envelope is the inner application's, reachable only once a credential gets
+# you past the edge that answered every case above, and nothing here could
+# reach it without a real key -- so it is recorded as documentation only, in
+# its own error entry, never exercised by a conformance case, rather than
+# quietly presented as what a 401 actually looks like.
+#
+# The second half of this Recipe is the sync state machine a Job carries.
+# JobStatusEnum has six members: pending, running, incomplete, failed,
+# succeeded, cancelled. Five of those are the ordinary run of a queue.
+# "incomplete" is the one worth having, because it means Airbyte's public API
+# gives a partially-failed sync its own status rather than folding it into
+# succeeded -- unlike Hightouch's sync runs elsewhere in this collection,
+# where a run that delivered nothing still reports status: success. Airbyte
+# does not make that mistake.
+#
+# It also does not explain the word. docs.airbyte.com's own conceptual page
+# on jobs ("Workloads & Jobs") describes Pending, Running, Failed and
+# Succeeded as the sync job state machine and says nothing about a fifth or
+# sixth state; "incomplete" exists only in the machine-readable OpenAPI enum,
+# fetched from reference.airbyte.com and never in the prose a person would
+# read first. And once a job is incomplete, nothing on JobResponse says how
+# incomplete: bytesSynced and rowsSynced are the job's running totals, not a
+# split between what landed and what did not, and there is no per-stream
+# field anywhere on this object. A client that sees "incomplete" knows
+# precisely one thing: less than everything arrived.
+#
+# Creating either resource answers 200, not 201 -- an Airbyte-wide pattern
+# rather than a two-case coincidence, since the published schema says the
+# same for both routes below -- and, unlike Temporal's AsyncOperation
+# pattern elsewhere in this collection, the body really is the resource just
+# created: a POST to /v1/jobs hands back a JobResponse with its own jobId
+# and a status of pending, not a detached operation handle pointing at one.
+# Triggering a sync and reading it back are the same shape here. Whether the
+# sync that jobId names ever finishes is a different question, and this
+# Recipe does not pretend the response answers it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no token was ever requested, guessed or
+#     used. Every case below that needs a valid credential is read from
+#     reference.airbyte.com's published OpenAPI description, not observed,
+#     and carries no verified date. Only the unauthenticated 401s -- which
+#     need no credential to strike -- were actually called, and only those
+#     carry one.
+#   - The 401 body's _links.self.href echoes whatever path was requested, and
+#     the _embedded.errors array repeats the same message a second time
+#     nested one level down. Both are real -- struck live, quoted in this
+#     header -- and neither is modelled on the wire: href is a function of
+#     the exact request path and this format has no mechanism to echo one
+#     dynamically into an error body, and the nested duplicate adds no
+#     information a client reads that "message" at the top level does not
+#     already carry. Declaring a literal href on the routes below would only
+#     be right for the one path that produced it and wrong for every other
+#     path this Recipe answers 401 for, which is a worse kind of infidelity
+#     than leaving it out.
+#   - Only connections and jobs are modelled. Sources, destinations,
+#     workspaces, streams, schemas, tags and the OAuth-consent endpoints are
+#     real parts of this API and none of them are here.
+#   - Connection carries more fields than are declared: schedule,
+#     dataResidency and configurations are all in the published schema and
+#     none of them are typed here, because the reference only shows them as
+#     nested objects with no example value and a guessed shape would be a
+#     Recipe asserting something nobody checked.
+#   - No rate-limit header was ever seen on any response this Recipe struck,
+#     401 or otherwise, so none is declared. That is an absence in what was
+#     observed, not a claim that Airbyte never sends one.
+
+recipe: airbyte
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://reference.airbyte.com
+
+auth:
+  # Deliberately the plain default and nothing more. See the header: this is
+  # the one Recipe in this trio that needs no matches_header trick, because
+  # the real host really does check this before it checks anything else.
+  scheme: bearer
+  prefix: "Bearer "
+  keys:
+    - cauldron-airbyte-fixture-token-0000000000000000
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  connection:
+    collection: data
+    id:
+      style: uuid
+      field: connectionId
+    fields:
+      name:
+        type: string
+      sourceId:
+        type: string
+      destinationId:
+        type: string
+      workspaceId:
+        type: string
+      # Not enumerated: the reference names a ConnectionStatusEnum and this
+      # Recipe was never able to authenticate to see one on the wire.
+      status:
+        type: string
+
+  job:
+    collection: data
+    id:
+      style: numeric
+      type: number
+      field: jobId
+    fields:
+      # pending, running, incomplete, failed, succeeded, cancelled. See the
+      # header: incomplete is the one this Recipe exists to carry, and
+      # nothing on this object says more about it than its own name.
+      status:
+        type: string
+        default: pending
+      jobType:
+        type: string
+        default: sync
+      # Typed as a plain string because that is what the published schema
+      # types it as -- no date-time format is declared on it, unlike most
+      # newer APIs in this collection.
+      startTime:
+        type: string
+      lastUpdatedAt:
+        type: string
+        null_when_unset: true
+      # ISO 8601 duration prose, e.g. "PT8H6M12S" -- not a number of seconds,
+      # the same shape of gap Temporal's checkDuration has elsewhere here.
+      duration:
+        type: string
+        null_when_unset: true
+      bytesSynced:
+        type: integer
+      rowsSynced:
+        type: integer
+      connectionId:
+        type: string
+
+routes:
+  - method: GET
+    path: /v1/connections
+    resource: connection
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+    list:
+      style: wrapped
+      cursor_field: next
+      cursor_url: absolute
+
+  - method: GET
+    path: /v1/connections/{id}
+    resource: connection
+    operation: get
+
+  - method: POST
+    path: /v1/connections
+    resource: connection
+    operation: create
+    status: 200
+
+  - method: GET
+    path: /v1/jobs
+    resource: job
+    operation: list
+    pagination:
+      style: offset
+      limit: 20
+      max_limit: 100
+      limit_param: limit
+      cursor_param: offset
+    list:
+      style: wrapped
+      cursor_field: next
+      cursor_url: absolute
+
+  - method: GET
+    path: /v1/jobs/{id}
+    resource: job
+    operation: get
+
+  - method: POST
+    path: /v1/jobs
+    resource: job
+    operation: create
+    status: 200
+
+errors:
+  # Overrides the runtime's own default 401 wording with the one word the
+  # real edge actually sends. See the header for what is deliberately left
+  # off: the _links/_embedded scaffolding around it.
+  authentication_error:
+    status: 401
+    style: flat
+    message_field: message
+    code_field: "-"
+    message: "Unauthorized"
+
+  # Read, not struck: reaching this needs a credential this Recipe never
+  # had. Declared so the RFC 7807 shape is on record as what the inner
+  # application answers, and left unarmed by every case below, so nothing
+  # here can be mistaken for having watched it happen.
+  resource_missing:
+    status: 404
+    style: flat
+    message_field: detail
+    code_field: "-"
+    fields:
+      title: not-found
+      status: "404"
+    message: "The requested resource was not found"
+
+fixtures:
+  empty: {}
+
+  small-workspace:
+    connection:
+      - id: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        name: orders-to-snowflake
+        sourceId: 9e2c5c1c-1b2a-4b0a-9f0a-1a2b3c4d5e6f
+        destinationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        workspaceId: 11111111-2222-3333-4444-555555555555
+        status: active
+
+    job:
+      # A clean run: everything landed, and succeeded is the only status
+      # that says so.
+      - id: 100001
+        connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        status: succeeded
+        jobType: sync
+        startTime: "2026-08-30T02:00:00Z"
+        lastUpdatedAt: "2026-08-30T02:04:12Z"
+        duration: "PT4M12S"
+        bytesSynced: 10485760
+        rowsSynced: 42000
+
+      # The status nothing explains. Some of the sync's own totals moved,
+      # so something ran, and this is the whole of what a client is told
+      # about it: not succeeded, not failed, incomplete.
+      - id: 100002
+        connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        status: incomplete
+        jobType: sync
+        startTime: "2026-08-30T08:00:00Z"
+        lastUpdatedAt: "2026-08-30T08:11:47Z"
+        duration: "PT11M47S"
+        bytesSynced: 2097152
+        rowsSynced: 8000
+
+      # Failed outright: nothing synced at all, which is a different fact
+      # from incomplete's "some of it did."
+      - id: 100003
+        connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        status: failed
+        jobType: sync
+        startTime: "2026-08-29T02:00:00Z"
+        lastUpdatedAt: "2026-08-29T02:00:41Z"
+        duration: "PT41S"
+
+conformance:
+  - name: no credential at all is 401
+    source: https://api.airbyte.com/v1/connections
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/connections
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a garbage bearer token answers the identical body
+    source: https://api.airbyte.com/v1/connections
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/connections
+      headers:
+        Authorization: Bearer junk-token-not-real
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a path this Recipe never declares is still 401, not 404
+    # Auth is checked before routing is even attempted, so a typo in the
+    # path and a typo in the token look identical: both are refused before
+    # either one is examined.
+    source: https://api.airbyte.com/v1/this-is-not-a-real-resource
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-resource
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a method this Recipe never declares on a real path is still 401, not 405
+    source: https://api.airbyte.com/v1/connections/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /v1/connections/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a POST carrying a body is refused before the body is ever read
+    source: https://api.airbyte.com/v1/connections
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/connections
+      json:
+        name: does-not-matter
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: everything is inside a data envelope
+    source: https://reference.airbyte.com/reference/listconnections
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/connections
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        data[0].connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        data[0].name: orders-to-snowflake
+      absent:
+        - connectionId
+        - name
+
+  - name: creating a job answers 200 and hands back the job it started
+    # Unlike Temporal's namespace create elsewhere in this collection, this
+    # is not an operation handle: it is the same JobResponse a later GET on
+    # this id returns, carrying its own identifier from the first response.
+    source: https://reference.airbyte.com/reference/createjob
+    fixture: small-workspace
+    request:
+      method: POST
+      path: /v1/jobs
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+      json:
+        connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+        jobType: sync
+    expect:
+      status: 200
+      body:
+        status: pending
+        jobType: sync
+        connectionId: 9924bcd0-99be-453d-ba47-c2c9766f7da5
+      matches:
+        jobId: "^[0-9]+$"
+
+  - name: creating a connection answers 200 and hands back its own id
+    source: https://reference.airbyte.com/reference/createconnection
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/connections
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+      json:
+        name: leads-to-hubspot
+        sourceId: 9e2c5c1c-1b2a-4b0a-9f0a-1a2b3c4d5e6f
+        destinationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        workspaceId: 11111111-2222-3333-4444-555555555555
+    expect:
+      status: 200
+      body:
+        name: leads-to-hubspot
+      matches:
+        connectionId: "^[0-9a-f-]{36}$"
+
+  - name: incomplete sits between succeeded and failed, not beside succeeded
+    # The finding this Recipe exists to carry: a partial sync gets a status
+    # none of Airbyte's own conceptual docs explain, and gets it instead of
+    # succeeded.
+    source: https://reference.airbyte.com/reference/getjob
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/jobs/100002
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: incomplete
+        rowsSynced: 8000
+
+  - name: a job's totals are aggregate, with no per-stream breakdown anywhere on it
+    source: https://reference.airbyte.com/reference/getjob.md
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/jobs/100002
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        bytesSynced: 2097152
+        rowsSynced: 8000
+      absent:
+        - streamStatuses
+        - streamStats
+
+  - name: a failed job carries no synced total at all
+    source: https://reference.airbyte.com/reference/getjob
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /v1/jobs/100003
+      headers:
+        Authorization: Bearer cauldron-airbyte-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: failed
+      absent:
+        - bytesSynced
+        - rowsSynced
