@@ -29,6 +29,99 @@
 #      document whose id field is named something unexpected quietly decides
 #      the schema for every document after it.
 #
+# Set against the three other answers this collection already has for "is a
+# write finished when the response says so": Temporal Cloud's create hands
+# back an AsyncOperation -- a second object, built to be polled, with no
+# projection of the thing itself. Sumo Logic's search-job create answers 202
+# with an id and a link.href addressing the poll endpoint, plus a warning
+# field that pre-emptively names its own most likely failure mode. PandaDoc
+# answers 201 with the *same* resource a GET returns, under the *same* field
+# names, and the only difference between unfinished and finished is one
+# status value the provider tells you to watch. Meilisearch's task is a
+# fourth shape again: not the resource, not a projection of the resource, and
+# not even a claim about the resource -- a bare number and the word enqueued,
+# with the actual document reachable nowhere at all until a second request
+# to a second endpoint says the first one is done. Turso's create is the
+# nearest miss: a truncated projection of the row itself, three of eight
+# fields, with no state field anywhere to say the projection is incomplete.
+# Meilisearch is the only one of the four with a state field on every single
+# task, always present, defaulting to enqueued rather than defaulting to
+# looking finished.
+#
+# Two things below are read from Meilisearch's own source
+# (github.com/meilisearch/meilisearch, crates/meilisearch-types/src/error.rs
+# and crates/meilisearch/src/extractors/authentication/{mod,error}.rs) rather
+# than from a live call, because no instance this task could reach exists to
+# call. cloud.meilisearch.com is the Cloud dashboard, a Vercel-hosted
+# Next.js app (checked live, 2026-09-01) -- not an instance's own API, which
+# lives at ms-<project-id>.meilisearch.io and requires a project this task
+# was never going to create. Both are cited with source: and carry no
+# verified: date, exactly as this task's rules require for a claim read
+# rather than called:
+#
+#   1. A missing credential and a wrong one are not the same failure, and the
+#      difference is a status code, not just a sentence. extract_token_from_
+#      request returns Ok(None) when there is no Authorization header at
+#      all, which auth_token turns into AuthenticationError::
+#      MissingAuthorizationHeader -- Code::MissingAuthorizationHeader, and
+#      the Code table pins that at UNAUTHORIZED (401). A header that parses
+#      as "Bearer <token>" for a token this instance does not hold reaches
+#      auth_bearer instead, which raises Code::InvalidApiKey on failed
+#      authentication -- and InvalidApiKey is pinned at FORBIDDEN (403), not
+#      401. Both below are struck in the error registry lines 229, 386 and
+#      391 of error.rs. This Recipe's auth.rejected_error carries the
+#      distinction, which is the same device FireHydrant's and HERE's
+#      Recipes in this collection use for their own two-sentence providers --
+#      the difference here is that the two verdicts do not even share a
+#      status code.
+#   2. What Cauldron calls a malformed credential -- present, and not the
+#      declared shape -- is not one thing in Meilisearch's own source. A
+#      header that does not start with the literal string "Bearer " at all
+#      (no scheme word, or the wrong one) falls through extract_token_from_
+#      request's match to `_otherwise => Err(MissingAuthorizationHeader)` --
+#      the identical error an absent header gets. A header that is exactly
+#      "Bearer" with nothing after it -- no trailing space -- reaches a
+#      different arm, `Some("Bearer") => match type_token.next() { None =>
+#      Err(InvalidToken) }`, and InvalidToken carries Code::InvalidApiKey:
+#      the 403, not the 401. Cauldron's own prefix check cannot tell these
+#      two apart -- both are "present, does not start with the exact bytes
+#      'Bearer '" to a runtime comparing one prefix -- so this Recipe leaves
+#      auth.malformed_error unset and takes the collapse in the direction the
+#      likelier real mistake falls on: a caller who sends the wrong scheme
+#      word entirely (Basic, a raw token, nothing) outnumbers one who sends
+#      the literal seven bytes "Bearer" with the trailing space trimmed off
+#      by whatever handled the header before curl did.
+#   3. Routing runs before the credential is examined, and this is read from
+#      the request-handling architecture rather than observed: create_app
+#      (crates/meilisearch/src/lib.rs) wraps the whole App in RouteMetrics,
+#      Cors, TracingLogger and Compress, and none of the four is an auth
+#      check. GuardedData<P, D>, the type that extracts and checks a
+#      credential, is an actix-web FromRequest extractor -- a function
+#      parameter on a specific matched handler, not global middleware -- so
+#      it cannot run for a path nothing has registered. auth.after_routing
+#      carries this, with no verified: date, because no live host answered
+#      it: it is what the source says must happen, not what a response was
+#      seen to do.
+#
+# Which mode this Recipe models, stated plainly because the task asked for
+# it directly: a self-hosted instance started with no --master-key at all is
+# not a degraded version of the API below -- it is a different product.
+# Meilisearch's own specification (0119-instance-options, cited below) says
+# so without qualification: "If no master key is provided in a development
+# environment, all routes will be unprotected and publicly accessible."
+# Every route, no exceptions, no distinction between reading and writing.
+# That mode has no auth block to write down; every case in this file would
+# be wrong about it. The same specification is just as direct about the
+# mode this Recipe does model: "Providing a master key of at least 16 bytes
+# is mandatory when --env is set to production," and a production instance
+# refused one at startup is told so in as many words: "You must provide a
+# master key to secure your instance in a production environment." Meilisearch
+# Cloud instances are production instances -- nobody launches one with
+# --env development -- so ms-<id>.meilisearch.io, the host this Recipe
+# stands in for, is always the protected mode below, never the open one.
+# The two 401/403 cases above are what that protected mode answers; the wide
+# open mode is a different Recipe this task was not asked to write.
+#
 # Known fidelity gaps, stated rather than hidden:
 #
 #   - No task ever progresses. A task is enqueued, processing, succeeded or
@@ -40,6 +133,16 @@
 #     ranking rules, typo tolerance, synonyms and stop words are the part of
 #     Meilisearch this cannot reproduce and should not pretend to.
 #   - Faceting, filtering, geosearch and multi-search are not modelled.
+#   - Every real Meilisearch error carries a fourth field, "link", pointing
+#     at https://docs.meilisearch.com/errors#<code> -- confirmed in
+#     ResponseError's own Serialize derive, error.rs. Adding it would touch
+#     every error entry in this file for one field this group's question
+#     does not turn on, so it is named here rather than declared.
+#   - No fetchable OpenAPI document was found at a stable URL. Meilisearch
+#     generates one via utoipa and serves it at /scalar only when the
+#     "swagger" Cargo feature is built in, which Cloud instances behind
+#     ms-<id>.meilisearch.io were never reachable to confirm either way.
+#     upstream.spec is not recorded for that reason.
 #
 # Keys below are fixtures, not secrets.
 
@@ -57,6 +160,14 @@ auth:
   prefix: "Bearer "
   keys:
     - cauldron-meilisearch-master-key
+  # A credential that is present, prefixed and simply not held gets its own
+  # status as well as its own sentence -- 403, not 401. Read from the error
+  # registry rather than observed; see the header.
+  rejected_error: invalid_api_key
+  # GuardedData is a per-route extractor, not global middleware, so a path
+  # nothing has registered never reaches it. Read from the source rather
+  # than observed; see the header.
+  after_routing: true
 
 responses:
   list:
@@ -297,6 +408,17 @@ errors:
     type: auth
     message: "The Authorization header is missing. It must use the bearer authorization method."
 
+  # 403, not 401 -- the Code table pins InvalidApiKey at FORBIDDEN while
+  # MissingAuthorizationHeader sits at UNAUTHORIZED, two lines apart in the
+  # same registry. Read from the source; see the header for the exact lines
+  # and for the one shape of malformed header this collapses into the entry
+  # above instead.
+  invalid_api_key:
+    status: 403
+    code: invalid_api_key
+    type: auth
+    message: "The provided API key is invalid."
+
   # An index that does not exist. A search against it answers 404 while a
   # search that simply matched nothing answers 200, and both read as "no
   # results" to code that only looks at whether the list is empty.
@@ -407,8 +529,10 @@ fixtures:
 
     enqueued_task: []
 
-# Every case below is derived from Meilisearch's published documentation. None
-# has been run against a real instance. The verify report says so.
+# Every case below is derived from Meilisearch's published documentation, or,
+# for the auth and routing cases, from its published source -- both cited by
+# source: rather than by a call this task had no reachable instance to make.
+# None has been run against a real instance. The verify report says so.
 conformance:
   - name: adding a document answers with a number, not a document
     # 202, a task number and the word enqueued. No document, no document id,
@@ -663,3 +787,35 @@ conformance:
         # branches forever where one switching on the code has a switch that
         # grows.
         type: auth
+
+  - name: a wrong bearer token is a different status, not just a different sentence
+    # Read from the Code table (error.rs): InvalidApiKey is pinned at
+    # FORBIDDEN where MissingAuthorizationHeader is pinned at UNAUTHORIZED.
+    # No instance was reachable to call this against; see the header.
+    source: https://github.com/meilisearch/meilisearch/blob/main/crates/meilisearch-types/src/error.rs
+    fixture: small-instance
+    request:
+      method: GET
+      path: /tasks
+      headers:
+        Authorization: Bearer wrong-key-this-instance-never-issued
+    expect:
+      status: 403
+      body:
+        code: invalid_api_key
+        type: auth
+        message: "The provided API key is invalid."
+
+  - name: an unrecognised path is refused for the route, not the credential
+    # GuardedData is a per-route FromRequest extractor, not global
+    # middleware (create_app, lib.rs) -- a path nothing has registered
+    # cannot reach it. Read from the source; no instance was reachable to
+    # call this. Sent exactly as a request that had never held a credential
+    # would be, which is what auth.after_routing is for.
+    source: https://github.com/meilisearch/meilisearch/blob/main/crates/meilisearch/src/lib.rs
+    fixture: small-instance
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+    expect:
+      status: 404
