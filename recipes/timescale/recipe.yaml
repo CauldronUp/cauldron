@@ -1,0 +1,448 @@
+# Tiger Data (Timescale Cloud) Recipe for Cauldron
+#
+# Timescale is now Tiger Data, and the rename is not cosmetic at the DNS
+# level. console.timescale.com does not resolve at all -- NXDOMAIN, checked
+# live. api.timescale.com still has an A record, pointed at a classic AWS
+# ELB (a6404280e370c11e89ec90e05265324a-2048211696.us-east-1.elb.amazonaws.com),
+# and the TLS handshake against it fails outright: no certificate is ever
+# offered, checked live with curl's own verbose output. The old host is not
+# retired gracefully, it is simply dead at the transport layer -- the DNS
+# record survives its own backend. tigerdata.com is the live marketing
+# domain (Next.js on Vercel, confirmed by its own response headers), and the
+# product host is console.cloud.tigerdata.com, which serves both the Tiger
+# Console web app and, at one prefix, a real token-authenticated REST API:
+# https://console.cloud.tigerdata.com/public/api/v1. That base URL, the
+# auth header format, and a worked GET /auth/info example are quoted
+# verbatim from Tiger Data's own published reference at
+# tigerdata.com/docs/reference/tiger-cloud-rest, fetched and grepped from
+# the raw page HTML rather than paraphrased, to be sure nothing here is a
+# summarising model's invention.
+#
+# The credential is a bearer token, and this host draws three sentences
+# apart by shape, all sharing one status and one top-level message with the
+# distinguishing fact riding in a second field -- checked live against
+# /auth/info, 2026-09-01:
+#
+#   no Authorization header at all      -> details: "missing Authorization
+#                                           header"
+#   Authorization: junktoken12345       -> details: "invalid Authorization
+#                                           header format"
+#   Authorization: Bearer               -> details: "invalid Authorization
+#     (nothing after the prefix)           header format"
+#   Authorization: Bearer junktoken12345-> details: "Unauthorized. Invalid
+#                                           token provided."
+#
+# Every one of those four is {"code":"UNAUTHORIZED","message":"Invalid or
+# missing authentication credentials","details":"..."}, 401 -- code and
+# message constant, details the only thing that moves, which is a shape
+# none of this batch's other two Recipes share: ClickHouse Cloud's Recipe
+# in this collection has the message itself change per verdict, and
+# SingleStore's collapses to plain text with no structure at all.
+#
+# Routing order is the sharper finding, and it does not split on whether
+# the route exists, or on the method, the way this format's after_routing
+# flag or Census's and Rootly's Recipes in this collection do. It splits on
+# WHICH VERDICT. Checked live, every combination:
+#
+#   no credential,    unrouted path   -> 401 missing-header (auth wins)
+#   no credential,    wrong method    -> 401 missing-header (auth wins)
+#   malformed shape,  unrouted path   -> 401 malformed      (auth wins)
+#   well-formed junk, unrouted path   -> 404 page not found (routing wins)
+#   well-formed junk, wrong method    -> 405, Allow: GET, empty body
+#                                         (routing wins)
+#
+# A credential that is absent or the wrong shape is refused before the
+# router ever runs. A credential that is the right shape and simply wrong
+# reaches the router, and the router's own 404 and a genuine 405 -- the
+# only real 405 with an Allow header this batch's three Recipes found --
+# both fire ahead of the value check that would have refused it. This
+# format's auth.after_routing is one boolean gating all three verdicts
+# together, and cannot express a split that runs absent and malformed one
+# way and rejected the other, so it is not forced here: after_routing is
+# left at its default (false), which reproduces the far more common
+# integration bug -- a missing or malformed token hitting any path or
+# method -- exactly, live-verified below on both axes. The router-wins
+# half, for a well-formed wrong credential, is real, dated, and not asserted
+# as a conformance case, because this Recipe's declared auth would refuse
+# it before routing and fail its own build -- the identical discipline
+# Milvus's Recipe in this collection uses for the one shape its own
+# credential check cannot draw a line around.
+#
+# The finding this Recipe was sent to find, quoted verbatim from Tiger
+# Data's own POST .../services reference page (grepped from the raw page,
+# not summarised) rather than observed -- no account exists to create a
+# service:
+#
+#   "Creates a new database service within a project. This is an
+#   asynchronous operation."
+#
+# The worked response example -- real, present in the page's own
+# syntax-highlighted source, confirmed byte for byte against the raw HTML
+# rather than trusted from a paraphrase -- answers with the FULL service
+# record on create, status included, immediately pollable:
+#
+#   "service_id": "kd9w2xp4mz", "status": "QUEUED",
+#   "endpoint": {"host": "i4wmp4crev.oec7sxsza2.tsdb.cloud.timescale.com",
+#                "port": 32625},
+#   "initial_password": "a-very-secure-initial-password", ...
+#
+# Two things at once, the way SingleStore's Recipe in this collection
+# already found for its own host: a live, one-time credential in the create
+# body (initial_password, sent only here), and a real data-plane host and
+# port sitting right beside it in the same response -- endpoint.host, a
+# genuine worked example rather than a guess, and this Recipe cites it
+# exactly because it did not have to invent one: the vendor's own
+# documentation supplied a real-shaped hostname, so no per-cluster address
+# is fabricated here, the discipline this group's Milvus Recipe states for
+# its own connectAddress. The status field starts at QUEUED, not READY --
+# a create that is honest about being unfinished, the same shape ClickHouse
+# Cloud's Recipe in this collection found for its own create and the
+# opposite of what Turso's and SingleStore's Recipes in this collection
+# found for theirs, where the state field is dropped from the create
+# response entirely.
+#
+# Eleven status values are documented, quoted verbatim, and none of them is
+# called terminal or non-terminal in the source text -- checked directly
+# against the raw page after an earlier automated read of this page claimed
+# a terminal/non-terminal split that does not actually appear anywhere in
+# it, which is the reason this Recipe cites the raw HTML rather than a
+# summary of it:
+#
+#   QUEUED: the create request has been submitted and is queued
+#   CONFIGURING: the service is up but still completing configuration
+#   READY: fully configured and serving traffic
+#   UNSTABLE: the service was ready but is not currently reachable
+#   PAUSING / PAUSED / RESUMING: the pause and resume cycle
+#   UPGRADING: the service is being updated
+#   DELETING / DELETED: the deletion path
+#   OPTIMIZING: deprecated, should not be used
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Write and query -- the data plane this group's question is actually
+#     about -- are not modelled at all. They run against the per-service
+#     endpoint.host quoted above, on a service this task never created, not
+#     against console.cloud.tigerdata.com. Only the control plane's
+#     Services (list, get, create) are modelled, plus auth/info for its
+#     credential-verdict shape; a dedicated Projects listing route is real
+#     and not modelled -- see the routes table's own note on why.
+#   - No machine-readable OpenAPI/JSON description was found at any guessed
+#     URL on the docs host, and the reference pages read as generated from
+#     one internally (Fern-style "Expand Collapse" schema blocks) without
+#     exposing it. upstream.spec is not recorded for that reason -- the
+#     same gap Milvus's Recipe states for Zilliz's per-endpoint reference.
+#   - Delete's response body could not be established. Its reference page's
+#     "Returns" section renders empty in the fetched HTML (client-rendered
+#     content this task's plain fetch does not execute), so this Recipe
+#     does not model DELETE at all rather than guess a shape.
+#   - VPCs, peerings, resize, start/stop, fork, HA configuration, replica
+#     sets, logs and environment variables are real, documented paths and
+#     are not modelled. This Recipe is about the create/state/credential/
+#     routing questions this group exists to answer, not a full port of
+#     the control plane.
+#   - forked_from, connection_pooler, data_tiering, ha_replicas, metadata,
+#     metrics, read_replica_sets and both vpc_endpoint/vpcEndpoint (the
+#     latter documented as deprecated, a duplicate of the former) are real
+#     response fields and are not modelled as resource fields, the same
+#     judgement this batch's other two Recipes make about nested
+#     configuration objects a fixture here would not exercise usefully.
+#   - Every 200 below is read from Tiger Data's own reference pages and
+#     carries no verified: date. The 401s, the 404 and the 405 are struck
+#     live, unauthenticated, and each carries one.
+#
+# The token below is a fixture and belongs to no project.
+
+recipe: timescale
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.tigerdata.com/docs/reference/tiger-cloud-rest
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-tiger-data-fixture-token-000000000000
+  absent_error: missing_authorization_header
+  malformed_error: invalid_authorization_header_format
+  rejected_error: invalid_token
+  # The default. Reproduces the far more common case exactly -- an absent
+  # or malformed credential refused on every path and method -- and does
+  # not claim the router-wins half of this host's real split. See the
+  # header: that half is real, dated, and deliberately not a conformance
+  # case here.
+  after_routing: false
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+
+resources:
+  project:
+    id:
+      style: opaque
+      field: id
+    fields:
+      name:
+        type: string
+
+  service:
+    collection: services
+    id:
+      style: opaque
+      field: service_id
+    fields:
+      name:
+        type: string
+        required: true
+      region_code:
+        type: string
+      # TIMESCALEDB or POSTGRES. VECTOR is documented as deprecated.
+      service_type:
+        type: string
+        default: TIMESCALEDB
+      # QUEUED, CONFIGURING, READY, UNSTABLE, PAUSING, PAUSED, RESUMING,
+      # UPGRADING, DELETING or DELETED. OPTIMIZING is deprecated. See the
+      # header: none of these is documented as terminal.
+      status:
+        type: string
+        default: QUEUED
+      created:
+        type: datetime
+      # Defaulted to the host and port Tiger Data's own worked create
+      # example shows, quoted verbatim -- not this Recipe's invention. See
+      # the header on why a real, cited value is used here and none is
+      # used at all in ClickHouse Cloud's and Milvus's Recipes in this
+      # collection.
+      endpoint:
+        type: map
+        default:
+          host: i4wmp4crev.oec7sxsza2.tsdb.cloud.timescale.com
+          port: 32625
+      # Sent only by the create response, as a sibling of the record --
+      # see the header and the create route below.
+      initial_password:
+        type: string
+      # The partition lives in the path and is not repeated in the body.
+      project_id:
+        type: string
+        in: "-"
+
+routes:
+  # The success body is real -- an api-key-info envelope nesting a project,
+  # not a plain Project record -- but this task never independently
+  # confirmed its exact field values against the raw page the way the
+  # create-service example below was, so no 200 case asserts its shape.
+  # Reachable with the fixture credential; only its failure modes are
+  # tested.
+  - method: GET
+    path: /public/api/v1/auth/info
+    resource: project
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /public/api/v1/projects/{project_id}/services
+    resource: service
+    operation: list
+    scope: [project_id]
+
+  - method: GET
+    path: /public/api/v1/projects/{project_id}/services/{id}
+    resource: service
+    operation: get
+    scope: [project_id]
+
+  # This is an asynchronous operation, quoted from the reference page.
+  # Answers the full record, status included, immediately pollable -- see
+  # the header.
+  - method: POST
+    path: /public/api/v1/projects/{project_id}/services
+    resource: service
+    operation: create
+    scope: [project_id]
+    returns: [id, name, region_code, service_type, status, created, endpoint]
+    fields:
+      initial_password: cauldronFixtureTigerDataPassword!
+
+errors:
+  missing_authorization_header:
+    status: 401
+    code: UNAUTHORIZED
+    message: "Invalid or missing authentication credentials"
+    fields:
+      details: "missing Authorization header"
+
+  invalid_authorization_header_format:
+    status: 401
+    code: UNAUTHORIZED
+    message: "Invalid or missing authentication credentials"
+    fields:
+      details: "invalid Authorization header format"
+
+  invalid_token:
+    status: 401
+    code: UNAUTHORIZED
+    message: "Invalid or missing authentication credentials"
+    fields:
+      details: "Unauthorized. Invalid token provided."
+
+fixtures:
+  empty: {}
+
+  account:
+    project:
+      - id: cauldron-fixture-project
+        name: Cauldron Fixture
+
+    service:
+      - id: kd9w2xp4mz
+        project_id: cauldron-fixture-project
+        name: cauldron-shop
+        region_code: us-east-1
+        service_type: TIMESCALEDB
+        status: READY
+        created: "2026-01-10T09:00:00Z"
+        endpoint:
+          host: i4wmp4crev.oec7sxsza2.tsdb.cloud.timescale.com
+          port: 32625
+
+conformance:
+  - name: no credential at all names the missing header, not a generic word
+    source: https://console.cloud.tigerdata.com/public/api/v1/auth/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/api/v1/auth/info
+    expect:
+      status: 401
+      body:
+        code: UNAUTHORIZED
+        message: "Invalid or missing authentication credentials"
+        details: "missing Authorization header"
+
+  - name: a header with no Bearer prefix is a different verdict, not the same one
+    source: https://console.cloud.tigerdata.com/public/api/v1/auth/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/api/v1/auth/info
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        details: "invalid Authorization header format"
+
+  - name: Bearer with nothing after it is the identical malformed verdict
+    source: https://console.cloud.tigerdata.com/public/api/v1/auth/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/api/v1/auth/info
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        details: "invalid Authorization header format"
+
+  - name: a well-formed wrong token is told something different again
+    source: https://console.cloud.tigerdata.com/public/api/v1/auth/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/api/v1/auth/info
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        details: "Unauthorized. Invalid token provided."
+
+  - name: a missing credential is refused on an unrouted path too, before routing runs
+    source: https://console.cloud.tigerdata.com/public/api/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /public/api/v1/this-is-not-a-real-endpoint
+    expect:
+      status: 401
+      body:
+        details: "missing Authorization header"
+
+  - name: and the same is true for a wrong method on a real path
+    source: https://console.cloud.tigerdata.com/public/api/v1/auth/info
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /public/api/v1/auth/info
+    expect:
+      status: 401
+      body:
+        details: "missing Authorization header"
+
+  - name: creating a service answers the full record, status included, and a one-time password
+    source: https://www.tigerdata.com/docs/reference/tiger-cloud-rest/resources/projects/subresources/services/methods/create
+    fixture: account
+    request:
+      method: POST
+      path: /public/api/v1/projects/cauldron-fixture-project/services
+      headers:
+        Authorization: Bearer cauldron-tiger-data-fixture-token-000000000000
+      json:
+        name: cauldron-newservice
+        region_code: us-east-1
+    expect:
+      status: 200
+      body:
+        status: QUEUED
+        initial_password: cauldronFixtureTigerDataPassword!
+      matches:
+        service_id: ".+"
+        endpoint.host: ".+"
+
+  - name: only a GET shows a service settled past the status the create response started at
+    source: https://www.tigerdata.com/docs/reference/tiger-cloud-rest/resources/projects/subresources/services/methods/retrieve
+    fixture: account
+    request:
+      method: GET
+      path: /public/api/v1/projects/cauldron-fixture-project/services/kd9w2xp4mz
+      headers:
+        Authorization: Bearer cauldron-tiger-data-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        service_id: kd9w2xp4mz
+        status: READY
+        endpoint.host: i4wmp4crev.oec7sxsza2.tsdb.cloud.timescale.com
+      absent:
+        - initial_password
+
+  - name: listing services is a bare array, not wrapped
+    source: https://www.tigerdata.com/docs/reference/tiger-cloud-rest/resources/projects/subresources/services/methods/list
+    fixture: account
+    request:
+      method: GET
+      path: /public/api/v1/projects/cauldron-fixture-project/services
+      headers:
+        Authorization: Bearer cauldron-tiger-data-fixture-token-000000000000
+    expect:
+      status: 200
+      body:
+        "[0].service_id": kd9w2xp4mz
