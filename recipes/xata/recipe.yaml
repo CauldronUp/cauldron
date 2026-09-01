@@ -1,0 +1,333 @@
+# Xata Recipe for Cauldron
+#
+# Checked live, 2026-09-01: api.xata.io does not resolve. Not a timeout, not
+# a TLS failure -- NXDOMAIN, confirmed against two independent resolvers
+# (the sandbox's own and 8.8.8.8), and the same is true of docs.xata.io,
+# dashboard.xata.io and status.xata.io. The workspace-scoped host the task
+# also named, <workspace>.<region>.xata.sh, answers differently and in a way
+# worth pinning precisely: the region apex (us-east-1.xata.sh) and a
+# deliberately invented workspace subdomain under it both resolve -- Xata
+# still owns a Cloudflare-proxied wildcard there -- and both answer HTTP 530,
+# "error code: 1016" in the body, for every path tried. 1016 is Cloudflare's
+# own code for "Origin DNS error": the edge has a hostname to proxy for, and
+# nothing behind it to proxy to. The wildcard is still switched on; the
+# service it used to point at is not.
+#
+# That is because it no longer exists. Xata's own GitHub organisation still
+# has 60-odd repositories, but xataio/mdx-docs -- the source of the REST API
+# documentation this Recipe would otherwise have been written against -- is
+# gone; the GitHub API answers 404 for the repository itself, not just a
+# missing file in it. xataio/xata, the repository the client SDK's own
+# codegen config names as the source of the OpenAPI descriptions
+# (openapi/bundled/api_xata_io.yaml for the control plane,
+# openapi/bundled/xata_sh.yaml for the data plane -- read straight out of
+# openapi-codegen.config.ts, still on GitHub), no longer contains an
+# openapi/ directory at all on its main branch: it is a different product
+# now, a "branch-native Postgres platform" per its own README, and the REST
+# database API this Recipe was asked to describe is the thing that pivot
+# replaced. Xata announced the shift publicly in 2024-2025 and retired the
+# old free tier's search and file APIs on 2025-01-10, per its own blog.
+#
+# What survives, and what this Recipe is actually written against, is
+# xataio/client-ts: the generated TypeScript client, still on GitHub, still
+# on its main branch, evidently not yet deleted even though the service it
+# talks to already has been. Its generated types are exact -- literal,
+# machine-produced from the same OpenAPI descriptions the docs site would
+# have rendered -- and they answer the question this whole Recipe group
+# exists to ask more precisely than prose ever would:
+#
+#   insertRecord (POST .../tables/{table}/data) answers
+#     Responses.RecordUpdateResponse, generated as a three-way union:
+#       Schemas.XataRecord                         (the full record)
+#     | { id, xata: { version, createdAt, updatedAt } }   (id and metadata only)
+#     | { xata_id, xata_version, xata_createdat, xata_updatedat }  (same, flat keys)
+#   getRecord and deleteRecord both answer Responses.RecordResponse, which is
+#     just Schemas.XataRecord -- one shape, not a union, for either of them.
+#
+# A read and a delete on this API have exactly one documented shape. A
+# create does not: its own generated client declares three, and the two
+# narrower ones carry no field this Recipe's own submitted data could be
+# found in at all. That a create can genuinely omit the record -- not
+# might, by omission, the way Turso's does, but is typed by the vendor's own
+# codegen as one of three declared possibilities -- is pinned below as the
+# create route's answer, because it is the one shape of the union that is
+# unambiguous: id and xata.version, and nothing a caller sent back. Which of
+# the three a bare create (no columns query parameter) actually chooses
+# could not be settled from what remains reachable, and is stated as a gap
+# rather than guessed at -- see below.
+#
+# The flat xata_id / xata_version naming above is not a second create shape
+# competing with the first two. It is a second NAMING CONVENTION for
+# metadata that both read and create carry: RecordMeta itself -- the type
+# GetRecord's own RecordResponse is built from -- is generated as the same
+# nested-vs-flat union, dot-style xata.version beside underscore-style
+# xata_version, on every record this API returns. Underscored names read as
+# a Postgres-compatibility measure -- a column called xata.version is not a
+# legal Postgres identifier, an underscore is -- which lines up with the
+# pivot described above: two schema generations, addressed through what was
+# still one API. This Recipe models the nested convention only and states
+# the flat one here rather than silently picking one and letting the other
+# vanish.
+#
+# The control plane (api.xata.io) is not routed -- see the gaps for why one
+# emulator cannot also be the second host -- but its generated client
+# answers the same question about auth that the task named, and it is worth
+# recording because it is identical on both hosts. AuthError is generated
+# with a literal worked example attached, unchanged whether it comes from
+# controlPlaneResponses.ts or dataPlaneResponses.ts:
+#
+#   /**
+#    * @example {"message":"invalid API key"}
+#    */
+#   export type AuthError = { id?: string; message: string };
+#
+# BadRequestError and SimpleError share the identical {id?, message} shape
+# with no worked example attached to either. Every control-plane operation
+# this Recipe's source declares -- getUser, getWorkspacesList,
+# createWorkspace, getWorkspace and the rest -- answers exactly 400
+# (BadRequestError), 401 (AuthError) and 404 (SimpleError) and nothing else,
+# generated per-operation rather than inherited from one shared table, and
+# every one of those three status codes recurs on the data-plane operations
+# this Recipe does route. Whether a missing credential and a present-but-
+# wrong one answer different text on either host could not be established:
+# the one worked example that survives is for "wrong", and nothing found
+# says whether "absent" reads differently. Routing-vs-auth order and
+# wrong-method behaviour are the same kind of gap, for the same reason --
+# see below.
+#
+# One more asymmetry worth having in one place: on the control plane,
+# createWorkspace answers Schemas.Workspace -- the exact type getWorkspace
+# answers, full record, no union, no narrower shape available at all. The
+# one Xata operation with a documented, unconditional, unabbreviated create
+# response is the one this Recipe does not route.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - api.xata.io is not routed. Cauldron serves one address per Recipe; the
+#     task named both hosts, and the data plane -- where records, the
+#     resource this whole group is about, actually live -- is the one
+#     modelled. The control-plane findings above are prose for the same
+#     reason Convex's Recipe in this collection keeps api.convex.dev as
+#     prose and Pinecone's keeps its data plane as prose: real, checked
+#     against the source that survives, not reproduced as routes.
+#   - Nothing below carries a verified date. The service that would have
+#     been struck live no longer answers as itself -- see the header --
+#     so every case is source-only, read from xataio/client-ts, which is
+#     generated code and not documentation with worked examples in the
+#     usual sense. Where the generated types carry a literal @example
+#     (AuthError's "invalid API key" only), this Recipe uses it verbatim.
+#     Elsewhere, field presence and absence is asserted; field VALUES this
+#     Recipe did not read anywhere are not invented.
+#   - Which of the three RecordUpdateResponse shapes a bare create actually
+#     answers is not settled -- see above. This Recipe models the narrow
+#     {id, xata: {version, createdAt, updatedAt}} shape, because it is the
+#     one member of the union that is unambiguous on its own terms; the full
+#     record and the flat-key metadata convention are both real and neither
+#     is modelled.
+#   - Whether a missing credential and a wrong one answer different text,
+#     whether routing runs before or after auth, and whether a wrong method
+#     gets a real 405 or a 404 are exactly the questions this task asked
+#     that only a live probe answers -- and none of the surviving sources
+#     say. Not stating an answer is the honest one; Fauna's Recipe in this
+#     collection is in the identical position for the identical reason.
+#   - bulkInsert, query, search, vectorSearch, ask, summarize, aggregate,
+#     file attachments, migrations, branches and the whole schema/migration
+#     surface are real, declared in the same generated client, and are not
+#     modelled. Records (get, insert, delete) are the one slice this task
+#     asked about.
+#   - No spec_hash is recorded. The bundled OpenAPI description this client
+#     was generated from is named in openapi-codegen.config.ts but no
+#     longer exists at the path that config names -- see the header --
+#     so there is nothing left to fingerprint.
+#
+# The workspace, database, branch, table and record identifiers below are
+# fixtures. Nothing here points at a workspace that still exists to be
+# reached.
+
+recipe: xata
+capability: database
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://xata.io/docs/api-reference
+  provider: xata-data-plane
+
+auth:
+  # Authorization: Bearer <apiKey>, confirmed straight out of the generated
+  # client (packages/client/src/client.ts, xataio/client-ts): both the core
+  # and workspace fetchers set it identically. What a missing key answers,
+  # as opposed to a wrong one, could not be established -- see the header.
+  scheme: header
+  header: Authorization
+  keys:
+    - "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+
+resources:
+  record:
+    collection: data
+    id:
+      style: opaque
+      field: id
+    fields:
+      title:
+        type: string
+      # Nested under "xata", the convention this Recipe models -- see the
+      # header for the flat xata_version-style alternative this API's own
+      # generated types declare beside it.
+      version:
+        type: integer
+        in: xata
+        as: version
+        default: 1
+      createdAt:
+        type: datetime
+        in: xata
+        as: createdAt
+      updatedAt:
+        type: datetime
+        in: xata
+        as: updatedAt
+        null_when_unset: true
+      table:
+        type: string
+        in: xata
+        as: table
+        default: books
+
+routes:
+  - method: GET
+    path: /db/{dbBranchName}/tables/{tableName}/data/{id}
+    resource: record
+    operation: get
+    matches_header:
+      Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+
+  - method: GET
+    path: /db/{dbBranchName}/tables/{tableName}/data/{id}
+    error: authentication_error
+
+  # 200, not the full record -- id and version metadata only, one member of
+  # a three-way union this API's own generated client declares for this
+  # operation and no other. See the header for the other two.
+  - method: POST
+    path: /db/{dbBranchName}/tables/{tableName}/data
+    resource: record
+    operation: create
+    matches_header:
+      Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+    returns: [id, version, createdAt, updatedAt]
+
+  - method: POST
+    path: /db/{dbBranchName}/tables/{tableName}/data
+    error: authentication_error
+
+  # The full record, unabridged -- RecordResponse, the same type GET answers
+  # with, not the narrower shape create answers with. See the header.
+  - method: DELETE
+    path: /db/{dbBranchName}/tables/{tableName}/data/{id}
+    resource: record
+    operation: delete
+    matches_header:
+      Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+    deleted_body: record
+
+  - method: DELETE
+    path: /db/{dbBranchName}/tables/{tableName}/data/{id}
+    error: authentication_error
+
+errors:
+  # {"id"?, "message"}, no worked example for this one -- see the header.
+  # The message below is this Recipe's own reading, not a quotation, and is
+  # marked as such rather than presented as observed.
+  authentication_error:
+    status: 401
+    message: "Invalid API key"
+
+fixtures:
+  empty: {}
+
+  small-branch:
+    record:
+      - id: rec_cauldron_fixture_000001
+        title: Then and Now
+        version: 1
+        createdAt: "2026-06-01T09:00:00Z"
+        updatedAt: "2026-06-01T09:00:00Z"
+        table: books
+
+conformance:
+  - name: reading a record answers the full RecordResponse shape
+    # No worked example survives to quote field values from -- see the
+    # header. This case asserts the shape the generated client declares
+    # (id, xata.version, xata.createdAt, xata.updatedAt, plus this Recipe's
+    # own field) rather than any value read from a live call.
+    source: https://github.com/xataio/client-ts/blob/main/packages/client/src/api/dataPlaneResponses.ts
+    fixture: small-branch
+    request:
+      method: GET
+      path: /db/cauldron-fixture-db:main/tables/books/data/rec_cauldron_fixture_000001
+      headers:
+        Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        id: rec_cauldron_fixture_000001
+        title: Then and Now
+        xata.version: 1
+
+  - name: creating a record answers id and version, not the record -- one of three declared shapes
+    source: https://github.com/xataio/client-ts/blob/main/packages/client/src/api/dataPlaneResponses.ts
+    fixture: empty
+    request:
+      method: POST
+      path: /db/cauldron-fixture-db:main/tables/books/data
+      headers:
+        Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+      json:
+        title: A new arrival
+    expect:
+      status: 200
+      matches:
+        id: ".+"
+        xata.version: "^[0-9]+$"
+      absent:
+        # The field the create request just sent. Present on a GET,
+        # declared absent by this member of the union on a create -- see
+        # the header for why this is asserted rather than assumed.
+        - title
+
+  - name: deleting a record answers the full record, unlike creating one
+    source: https://github.com/xataio/client-ts/blob/main/packages/client/src/api/dataPlaneComponents.ts
+    fixture: small-branch
+    request:
+      method: DELETE
+      path: /db/cauldron-fixture-db:main/tables/books/data/rec_cauldron_fixture_000001
+      headers:
+        Authorization: "Bearer cauldron-xata-fixture-key-0000000000000000000000000000"
+    expect:
+      status: 200
+      body:
+        id: rec_cauldron_fixture_000001
+        title: Then and Now
+
+  - name: a wrong or missing credential is refused with the shape this API's own generated client names, message unconfirmed
+    # AuthError is generated as { id?: string, message: string }, confirmed
+    # from source. The message text itself is this Recipe's own reading,
+    # not a quotation -- see the header and the errors block above.
+    source: https://github.com/xataio/client-ts/blob/main/packages/client/src/api/dataPlaneResponses.ts
+    fixture: empty
+    request:
+      method: GET
+      path: /db/cauldron-fixture-db:main/tables/books/data/rec_cauldron_fixture_000001
+    expect:
+      status: 401
+      body:
+        message: "Invalid API key"
