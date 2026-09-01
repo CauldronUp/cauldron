@@ -1,0 +1,1079 @@
+# Hugging Face Hub Recipe for Cauldron
+#
+# A "not found" that asks for a password.
+#
+#   GET /api/models/nonexistent-org-xyz-123/nonexistent-model-xyz-123
+#   401 {"error": "Invalid username or password."}
+#   WWW-Authenticate: Bearer realm="Authentication required", charset="UTF-8"
+#
+# Not 404. A repository that does not exist and a repository that exists but
+# is private answer identically -- 401, an authentication challenge, on a
+# public read-only catalogue endpoint that took no credentials in the first
+# place. The same body and the same WWW-Authenticate header come back for a
+# single nonsense word ("onlyoneseg") and for a fully-shaped two-segment name
+# ("nonexistent-org-xyz-123/nonexistent-model-xyz-123"). A client cannot tell
+# a typo from a repository it is not allowed to see, on an API that has no
+# login.
+#
+# Written against the live API rather than a document: every case below was
+# checked against huggingface.co on the date in its verified field, using
+# only public, unauthenticated requests.
+#
+# The Recipe's central gap follows from the same shape. A model or dataset id
+# is always exactly two segments -- "openai/gpt2", "rajpurkar/squad" -- and
+# Cauldron's router matches on an exact, fixed count of "/"-delimited path
+# segments. Two IS fixed, unlike Semantic Scholar's DOI or the Guardian's
+# content id (both unbounded), so this looked routable. It is not, for two
+# separate reasons this Recipe checked rather than assumed:
+#
+#   1. The escape hatch npm scoped packages use does not exist here. npm
+#      sends "@scope/name" URL-encoded as one segment ("@scope%2Fname") and
+#      the registry accepts it. Hugging Face refuses the same trick outright:
+#
+#        GET /api/models/openai-community%2Fgpt2
+#        400 {"error": "Invalid repo name: openai-community/gpt2 - repo name
+#             includes an url-encoded slash"}
+#
+#      And Go's net/http decodes %2F into a literal "/" in r.URL.Path before
+#      any router sees the request, so even if Hugging Face allowed it,
+#      Cauldron could not tell the encoded form from the raw one -- both
+#      arrive as two path segments.
+#
+#   2. Cauldron's scope + lookup_by mechanism -- built for exactly this
+#      shape, and how GitHub's /repos/{owner}/{repo} and AfterShip's
+#      /trackings/{carrier}/{number} are modelled -- needs a field the
+#      provider actually sends for the part after the slash. Hugging Face has
+#      none. Both "id" and "modelId" carry the full "openai-community/gpt2"
+#      string; there is no bare "gpt2" field anywhere in the response to bind
+#      a second path segment to. Inventing one would work mechanically and
+#      would be exactly the thing this project exists to refuse: an
+#      undeclared fixture field passes straight through to the wire (see
+#      shape.go's present()), so a synthetic "name" field would render in
+#      responses the real API never sends it in.
+#
+# So the two-segment address space -- where every real model and dataset
+# actually lives -- is not routed to a resource at all. It is routed to the
+# 401 above, for every two-segment path this Recipe does not otherwise name.
+# That is faithful for the overwhelming majority of such paths, because it is
+# the overwhelming majority of two-segment paths: almost every string you can
+# make up is not a real repository. It is silently wrong for the handful that
+# exist, because Cauldron has no way to special-case them without doing the
+# thing paragraph 2 above just ruled out. The full single-repository shape --
+# author, sha, lastModified, gated, config, siblings, spaces, cardData -- is
+# real, cited below from two live calls, and simply is not servable by any
+# route this Recipe declares.
+#
+# Four more things worth modelling exactly:
+#
+#   1. Two identifiers, two shapes, one record. Every listing carries both
+#      "_id" (a Mongo ObjectId: "621ffdc036468d709f174338") and "id" (the
+#      name a human types: "google-bert/bert-base-uncased"). "_id" looks
+#      exactly like the kind of key an API addresses records by. It is not:
+#      GET /api/models/621ffdc036468d709f174338 answers the same 401 as any
+#      other nonexistent name. The field named "_id" has no addressing role
+#      on the wire at all.
+#   2. The field a client would filter listings by is missing from every
+#      listing. "gated" -- boolean false, or the string "manual" for a
+#      licence-gated model -- appears on the single-repository fetch and
+#      nowhere in /api/models or /api/models?search=. A client cannot build
+#      "show me only ungated models" from search results; it has to fetch
+#      every candidate one at a time, through the very endpoint this Recipe
+#      cannot route to.
+#   3. One failure, two glyphs. An invalid sort parameter is refused with the
+#      same sentence in two channels and two different bullets:
+#      {"error": "✖ Invalid sort parameter: notarealfield"} in the JSON body
+#      (U+2716 HEAVY MULTIPLICATION X) and
+#      "X-Error-Message: * Invalid sort parameter: notarealfield" in the
+#      response header (a plain ASCII asterisk). Code that reads the header
+#      to log the failure and the body to show the user sees two different
+#      sentences for the same rejected request.
+#   4. A field that vanishes depending on what you asked for. "trendingScore"
+#      is present on every record when no "sort" parameter is given --
+#      including a filtered search -- and absent from every record the
+#      moment "sort" names an explicit field (downloads, likes, createdAt).
+#      "sort=trending" is not a valid value ("✖ Invalid sort parameter:
+#      trending"); trending is only ever the default you get by asking for
+#      nothing.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Downloads, likes and createdAt move, and the exact set of trending
+#     models changes hour to hour. The values served are the ones recorded
+#     on the date in each case's verified field.
+#   - limit is clamped rather than refused, and not to the number the field
+#     suggests. ?limit=999999, ?limit=0, ?limit=-1 and no limit at all each
+#     answered 200 with exactly 1000 records and a Link header offering more.
+#     That is recorded here rather than served, because the Recipe's
+#     fixtures are a handful of records, not a thousand.
+#   - The url-encoded-slash rejection in gap 1 above is real and cited but
+#     not modelled as a route, for the reason given there: Cauldron cannot
+#     receive the request in a form that is distinguishable from the plain
+#     two-segment one.
+#   - Only two sort values are modelled (downloads, and the default). likes
+#     and createdAt were probed and drop trendingScore the same way; they are
+#     not given their own routes.
+#   - The 404 for a three-segment path is recorded for the garbage shape this
+#     Recipe tested (/api/models/a/b/c). Real three-segment paths under a
+#     genuine repository -- tree listings, revisions -- were not probed and
+#     are not claimed.
+
+recipe: huggingface
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: hub
+  provider: huggingface
+  docs: https://huggingface.co/docs/hub/api
+
+auth:
+  # Public read. No key was requested, guessed, or used for anything in this
+  # Recipe.
+  scheme: none
+
+responses:
+  list:
+    style: bare
+    # The next page arrives as an RFC 5988 Link header carrying an opaque,
+    # base64-encoded cursor -- never a body field. Checked on every listing
+    # call below.
+    link_header: true
+  error:
+    style: flat
+    message_field: error
+
+resources:
+  model:
+    id:
+      style: opaque
+      field: id
+    fields:
+      # A Mongo ObjectId with no addressing role of its own -- see the header.
+      _id:
+        type: string
+      # Byte-identical to id on every record this Recipe observed.
+      modelId:
+        type: string
+      likes:
+        type: integer
+      # Present only when no sort parameter is given -- see the header.
+      trendingScore:
+        type: integer
+      private:
+        type: boolean
+      downloads:
+        type: integer
+      tags:
+        type: list
+      # Absent on some records entirely (see the llama-search fixture),
+      # rather than present and empty.
+      pipeline_tag:
+        type: string
+      library_name:
+        type: string
+      createdAt:
+        type: datetime
+
+  dataset:
+    id:
+      style: opaque
+      field: id
+    fields:
+      _id:
+        type: string
+      author:
+        type: string
+      disabled:
+        type: boolean
+      gated:
+        type: boolean
+      lastModified:
+        type: datetime
+      likes:
+        type: integer
+      trendingScore:
+        type: integer
+      private:
+        type: boolean
+      sha:
+        type: string
+      description:
+        type: string
+      downloads:
+        type: integer
+      tags:
+        type: list
+      createdAt:
+        type: datetime
+      # Present on every dataset this Recipe observed, and empty on all of
+      # them. Never seen holding a value.
+      key:
+        type: string
+
+routes:
+  # The default listing: no sort, no search. Ordered by a trending score the
+  # client never asked for and the response never explains.
+  - method: GET
+    path: /api/models
+    resource: model
+    operation: list
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  # A search narrows the catalogue. It does not touch the shape: trendingScore
+  # still rides along, because no sort parameter was given either.
+  - method: GET
+    path: /api/models
+    resource: model
+    operation: list
+    matches_query:
+      search: bert
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  # The same search that exposes a record with no pipeline_tag or
+  # library_name at all.
+  - method: GET
+    path: /api/models
+    resource: model
+    operation: list
+    matches_query:
+      search: meta-llama/Llama-2-7b-hf
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  # Naming an explicit sort field. trendingScore drops out of every record --
+  # not nulled, not zeroed, absent -- because it only means anything relative
+  # to the default ranking this request just overrode.
+  - method: GET
+    path: /api/models
+    resource: model
+    operation: list
+    matches_query:
+      sort: downloads
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  # A sort value the API does not recognise.
+  - method: GET
+    path: /api/models
+    error: invalid_sort
+    matches_query:
+      sort: notarealfield
+
+  # A cursor that will not parse as the base64 it is supposed to be.
+  - method: GET
+    path: /api/models
+    error: bad_cursor
+    matches_query:
+      cursor: garbage_not_valid
+
+  # A canonical model minted before namespaces existed. The bare name still
+  # resolves, by redirecting to the two-segment form -- the one mechanism in
+  # this whole id shape a single {id} placeholder CAN express, because it
+  # only ever reads one segment.
+  - method: GET
+    path: /api/models/gpt2
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: "Temporary Redirect. Redirecting to /api/models/openai-community/gpt2"
+    status: 307
+    headers:
+      Location: /api/models/openai-community/gpt2
+
+  # Any other single segment: a nonsense word, or the Mongo _id from a
+  # listing above -- both answer the same authentication challenge as a
+  # genuinely absent two-segment name.
+  - method: GET
+    path: /api/models/{id}
+    error: invalid_credentials
+
+  # The two-segment address space itself. See the header: this is faithful
+  # for a name nobody has taken and wrong for one that exists, and Cauldron
+  # has no way to tell the two apart without inventing a field Hugging Face
+  # does not send.
+  - method: GET
+    path: /api/models/{author}/{name}
+    error: invalid_credentials
+
+  # Three or more segments under /api/models, of the shape this Recipe
+  # tested: garbage all the way down, not a real repository's sub-resource.
+  - method: GET
+    path: /api/models/{a}/{b}/{c}
+    error: too_many_segments
+
+  # Datasets repeat the same shapes as models, on their own path.
+  - method: GET
+    path: /api/datasets
+    resource: dataset
+    operation: list
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/datasets
+    resource: dataset
+    operation: list
+    matches_query:
+      search: bert
+    pagination:
+      style: cursor
+      limit: 1000
+      limit_param: limit
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/datasets/squad
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: "Temporary Redirect. Redirecting to /api/datasets/rajpurkar/squad"
+    status: 307
+    headers:
+      Location: /api/datasets/rajpurkar/squad
+
+  - method: GET
+    path: /api/datasets/{id}
+    error: invalid_credentials
+
+  - method: GET
+    path: /api/datasets/{author}/{name}
+    error: invalid_credentials
+
+  - method: GET
+    path: /api/datasets/{a}/{b}/{c}
+    error: too_many_segments
+
+errors:
+  # The authentication challenge a public, keyless catalogue answers a
+  # missing repository with. Body and header carry the same sentence this
+  # time -- contrast invalid_sort below, where they do not.
+  invalid_credentials:
+    status: 401
+    message: Invalid username or password.
+    headers:
+      X-Error-Message: Invalid username or password.
+      WWW-Authenticate: 'Bearer realm="Authentication required", charset="UTF-8"'
+
+  # Two spellings of one sentence: U+2716 in the body, a plain asterisk in
+  # the header. See the header's third numbered finding.
+  invalid_sort:
+    status: 400
+    message: "✖ Invalid sort parameter: notarealfield"
+    headers:
+      X-Error-Message: "* Invalid sort parameter: notarealfield"
+
+  bad_cursor:
+    status: 400
+    message: Error parsing pagination cursor
+    headers:
+      X-Error-Message: Error parsing pagination cursor
+
+  too_many_segments:
+    status: 404
+    message: Sorry, we can't find the page you are looking for.
+    headers:
+      X-Error-Message: Sorry, we can't find the page you are looking for.
+
+fixtures:
+  empty: {}
+
+  trending-models:
+    model:
+      - _id: 6a8bffdb39eb84b2b2755a6e
+        id: Qwen/Qwen3.8-Flash-Next
+        likes: 4530
+        trendingScore: 4306
+        private: false
+        downloads: 158598
+        tags:
+          - transformers
+          - safetensors
+          - qwen4_exp
+          - image-text-to-text
+          - conversational
+          - license:other
+          - eval-results
+          - endpoints_compatible
+          - region:us
+        pipeline_tag: image-text-to-text
+        library_name: transformers
+        createdAt: "2026-08-24T08:24:59.000Z"
+        modelId: Qwen/Qwen3.8-Flash-Next
+      - _id: 6a8d39822a943ad8a2f2ea50
+        id: zai-org/GLM-5.3-Flash
+        likes: 1816
+        trendingScore: 1710
+        private: false
+        downloads: 379271
+        tags:
+          - transformers
+          - safetensors
+          - glm5_next
+          - image-text-to-text
+          - conversational
+          - en
+          - zh
+          - arxiv:2602.15763
+          - license:mit
+          - eval-results
+          - endpoints_compatible
+          - fp8
+          - region:us
+        pipeline_tag: image-text-to-text
+        library_name: transformers
+        createdAt: "2026-08-25T06:43:14.000Z"
+        modelId: zai-org/GLM-5.3-Flash
+      - _id: 6a8d396a6f0233a6c0d8c4f2
+        id: zai-org/GLM-5.3
+        likes: 1420
+        trendingScore: 1360
+        private: false
+        downloads: 66195
+        tags:
+          - transformers
+          - safetensors
+          - glm_moe_dsa
+          - text-generation
+          - conversational
+          - en
+          - zh
+          - arxiv:2602.15763
+          - license:other
+          - eval-results
+          - endpoints_compatible
+          - fp8
+          - region:us
+        pipeline_tag: text-generation
+        library_name: transformers
+        createdAt: "2026-08-25T06:42:50.000Z"
+        modelId: zai-org/GLM-5.3
+      - _id: 6a72f2e302294c7d32dd278e
+        id: Qwen/Qwen3.8-27B
+        likes: 13481
+        trendingScore: 714
+        private: false
+        downloads: 4720763
+        tags:
+          - transformers
+          - safetensors
+          - qwen3_5
+          - image-text-to-text
+          - conversational
+          - license:apache-2.0
+          - eval-results
+          - endpoints_compatible
+          - deploy:azure
+          - deploy:sagemaker
+          - region:us
+        pipeline_tag: image-text-to-text
+        library_name: transformers
+        createdAt: "2024-08-05T08:22:59.000Z"
+        modelId: Qwen/Qwen3.8-27B
+
+  bert-models:
+    model:
+      - _id: 621ffdc036468d709f174338
+        id: google-bert/bert-base-uncased
+        likes: 2816
+        trendingScore: 73
+        private: false
+        downloads: 73085822
+        tags:
+          - transformers
+          - pytorch
+          - tf
+          - jax
+          - rust
+          - coreml
+          - onnx
+          - safetensors
+          - bert
+          - fill-mask
+          - exbert
+          - en
+          - dataset:bookcorpus
+          - dataset:wikipedia
+          - arxiv:1810.04805
+          - license:apache-2.0
+          - endpoints_compatible
+          - deploy:sagemaker
+          - deploy:azure
+          - region:us
+        pipeline_tag: fill-mask
+        library_name: transformers
+        createdAt: "2022-03-02T23:29:04.000Z"
+        modelId: google-bert/bert-base-uncased
+      - _id: 621ffdc136468d709f17e629
+        id: neuralmind/bert-base-portuguese-cased
+        likes: 234
+        trendingScore: 2
+        private: false
+        downloads: 217642
+        tags:
+          - transformers
+          - pytorch
+          - tf
+          - jax
+          - bert
+          - fill-mask
+          - pt
+          - dataset:brWaC
+          - license:mit
+          - endpoints_compatible
+          - region:us
+          - deploy:azure
+        pipeline_tag: fill-mask
+        library_name: transformers
+        createdAt: "2022-03-02T23:29:05.000Z"
+        modelId: neuralmind/bert-base-portuguese-cased
+
+  downloads-models:
+    model:
+      # No trendingScore on either record -- sort=downloads was given.
+      - _id: 621ffdc136468d709f180294
+        id: sentence-transformers/all-MiniLM-L6-v2
+        likes: 5338
+        private: false
+        downloads: 253520473
+        tags:
+          - sentence-transformers
+          - pytorch
+          - tf
+          - rust
+          - onnx
+          - safetensors
+          - openvino
+          - bert
+          - feature-extraction
+          - sentence-similarity
+          - transformers
+          - en
+          - dataset:s2orc
+          - dataset:flax-sentence-embeddings/stackexchange_xml
+          - dataset:ms_marco
+          - dataset:gooaq
+          - dataset:yahoo_answers_topics
+          - dataset:code_search_net
+          - dataset:search_qa
+          - dataset:eli5
+          - dataset:snli
+          - dataset:multi_nli
+          - dataset:wikihow
+          - dataset:natural_questions
+          - dataset:trivia_qa
+          - dataset:embedding-data/sentence-compression
+          - dataset:embedding-data/flickr30k-captions
+          - dataset:embedding-data/altlex
+          - dataset:embedding-data/simple-wiki
+          - dataset:embedding-data/QQP
+          - dataset:embedding-data/SPECTER
+          - dataset:embedding-data/PAQ_pairs
+          - dataset:embedding-data/WikiAnswers
+          - arxiv:1904.06472
+          - arxiv:2102.07033
+          - arxiv:2104.08727
+          - arxiv:1704.05179
+          - arxiv:1810.09305
+          - base_model:nreimers/MiniLM-L6-H384-uncased
+          - base_model:quantized:nreimers/MiniLM-L6-H384-uncased
+          - license:apache-2.0
+          - eval-results
+          - text-embeddings-inference
+          - endpoints_compatible
+          - region:us
+          - deploy:sagemaker
+          - deploy:azure
+        pipeline_tag: sentence-similarity
+        library_name: sentence-transformers
+        createdAt: "2022-03-02T23:29:05.000Z"
+        modelId: sentence-transformers/all-MiniLM-L6-v2
+      - _id: 621ffdc136468d709f17a20e
+        id: cross-encoder/ms-marco-MiniLM-L6-v2
+        likes: 308
+        private: false
+        downloads: 86404649
+        tags:
+          - sentence-transformers
+          - pytorch
+          - jax
+          - onnx
+          - safetensors
+          - openvino
+          - bert
+          - text-classification
+          - transformers
+          - text-ranking
+          - en
+          - dataset:sentence-transformers/msmarco
+          - base_model:cross-encoder/ms-marco-MiniLM-L12-v2
+          - base_model:quantized:cross-encoder/ms-marco-MiniLM-L12-v2
+          - license:apache-2.0
+          - text-embeddings-inference
+          - endpoints_compatible
+          - region:us
+        pipeline_tag: text-ranking
+        library_name: sentence-transformers
+        createdAt: "2022-03-02T23:29:05.000Z"
+        modelId: cross-encoder/ms-marco-MiniLM-L6-v2
+
+  llama-search-models:
+    model:
+      - _id: 64b0234d53bd91402e6ad49c
+        id: meta-llama/Llama-2-7b-hf
+        likes: 2378
+        trendingScore: 6
+        private: false
+        downloads: 799192
+        tags:
+          - transformers
+          - pytorch
+          - safetensors
+          - llama
+          - text-generation
+          - facebook
+          - meta
+          - llama-2
+          - en
+          - arxiv:2307.09288
+          - license:llama2
+          - text-generation-inference
+          - endpoints_compatible
+          - region:us
+          - deploy:sagemaker
+        pipeline_tag: text-generation
+        library_name: transformers
+        createdAt: "2023-07-13T16:16:13.000Z"
+        modelId: meta-llama/Llama-2-7b-hf
+      # No pipeline_tag and no library_name at all -- not empty strings,
+      # absent -- on a model the same search surfaced right beside one that
+      # has both.
+      - _id: 650c4aff5085c0ce1ffd52fd
+        id: mindchain/META-LLAMA-LLAMA-2-7B-HF-GGUF
+        likes: 2
+        trendingScore: 0
+        private: false
+        downloads: 0
+        tags:
+          - arxiv:1910.09700
+          - region:us
+        createdAt: "2023-09-21T13:54:07.000Z"
+        modelId: mindchain/META-LLAMA-LLAMA-2-7B-HF-GGUF
+
+  trending-datasets:
+    dataset:
+      - _id: 6a88290bf198e93508a91ba2
+        id: markov-ai/cad-1000-hours
+        author: markov-ai
+        disabled: false
+        gated: false
+        lastModified: "2026-08-21T12:26:29.000Z"
+        likes: 265
+        trendingScore: 158
+        private: false
+        sha: b1bd4711343017fc40dfa6fe40a6cd338b7edaf6
+        description: "\n\n\t\n\t\t\n\t\n\t\n\t\tCAD 1000 Hours\n\t\n\nCAD 1000 Hours is a computer-use dataset containing 1,021.64 hours of recorded work across 597 workflows and 10 CAD, BIM, structural-analysis, and visualization applications. The tables below summarize its software coverage.\n\n\t\n\t\t\n\t\n\t\n\t\tCategory distribution\n\t\n\n\n\t\n\t\t\nCategory\nIncluded software\nWorkflows\nHours\nShare of hours\n\n\n\t\t\nDrafting and general CAD\nAutoCAD\n238\n501.99\n49.14%\n\n\nMechanical and product CAD\nSOLIDWORKS, CATIA, Siemens NX\n282\n305.27\n29.88%… See the full description on the dataset page: https://huggingface.co/datasets/markov-ai/cad-1000-hours."
+        downloads: 77965
+        tags:
+          - modality:video
+          - region:us
+          - cad
+          - computer-use
+          - screen-recording
+          - video
+        createdAt: "2026-08-21T10:31:39.000Z"
+        key: ""
+      - _id: 621ffdd236468d709f181f95
+        id: rajpurkar/squad
+        author: rajpurkar
+        disabled: false
+        gated: false
+        lastModified: "2024-03-04T13:54:37.000Z"
+        likes: 534
+        trendingScore: 71
+        private: false
+        sha: 7b6d24c440a36b6815f21b70d25016731768db1f
+        description: "\n\t\n\t\t\n\t\tDataset Card for SQuAD\n\t\n\n\n\t\n\t\t\n\t\tDataset Summary\n\t\n\nStanford Question Answering Dataset (SQuAD) is a reading comprehension dataset, consisting of questions posed by crowdworkers on a set of Wikipedia articles, where the answer to every question is a segment of text, or span, from the corresponding reading passage, or the question might be unanswerable.\nSQuAD 1.1 contains 100,000+ question-answer pairs on 500+ articles.\n\n\t\n\t\t\n\t\tSupported Tasks and Leaderboards\n\t\n\nQuestion Answering.… See the full description on the dataset page: https://huggingface.co/datasets/rajpurkar/squad."
+        downloads: 214523
+        tags:
+          - task_categories:question-answering
+          - task_ids:extractive-qa
+          - annotations_creators:crowdsourced
+          - language_creators:crowdsourced
+          - language_creators:found
+          - multilinguality:monolingual
+          - source_datasets:extended|wikipedia
+          - language:en
+          - license:cc-by-sa-4.0
+          - size_categories:10K<n<100K
+          - format:parquet
+          - modality:text
+          - library:datasets
+          - library:pandas
+          - library:mlcroissant
+          - library:polars
+          - arxiv:1606.05250
+          - region:us
+        createdAt: "2022-03-02T23:29:22.000Z"
+        key: ""
+
+  bert-datasets:
+    dataset:
+      - _id: 6639f34b77409b5de5f275ab
+        id: hon9kon9ize/commonvoice_16_1_bert_vits2
+        author: hon9kon9ize
+        disabled: false
+        gated: false
+        lastModified: "2024-05-12T18:34:10.000Z"
+        likes: 3
+        trendingScore: 1
+        private: false
+        sha: 00d2d93efedca183fc034bdbf3e24ce2c211ccfd
+        description: "\n\t\n\t\t\n\t\n\t\n\t\tCantonese Common Voice 16.1 for Bert-VITS2 fine tuning format\n\t\n\nThis dataset contains 14.5 hours of validated speech data in Cantonese (yue and zh-hk) from the Common Voice project, but with some cleansing and fixing of common Chinese characters, and used facebook/seamless-m4t-v2-large to cross check the data. The dataset is in the format required for fine-tuning the Bert-VITS2.\nFor more detail of cleansing, fixing and filtering, please refer to the notebook.\n\n\t\n\t\t\n\t\n\t\n\t\tData… See the full description on the dataset page: https://huggingface.co/datasets/hon9kon9ize/commonvoice_16_1_bert_vits2."
+        downloads: 274
+        tags:
+          - language:yue
+          - license:cc0-1.0
+          - size_categories:10K<n<100K
+          - format:audiofolder
+          - modality:audio
+          - library:datasets
+          - library:mlcroissant
+          - region:us
+        createdAt: "2024-05-07T09:24:27.000Z"
+        key: ""
+      - _id: 67eeec970e2841bdea9004df
+        id: hon9kon9ize/yue-wiki-pl-bert
+        author: hon9kon9ize
+        disabled: false
+        gated: false
+        lastModified: "2025-04-04T12:55:20.000Z"
+        likes: 1
+        trendingScore: 1
+        private: false
+        sha: d9465ee6e259e4064b3a2ea09142b54b7e05f6f1
+        description: "\n\t\n\t\t\n\t\tYue-Wiki-PL-BERT Dataset\n\t\n\n\n\t\n\t\t\n\t\tOverview\n\t\n\nThis dataset contains processed text data from Cantonese Wikipedia articles, specifically formatted for training or fine-tuning BERT-like models for Cantonese language processing. The dataset is created by hon9kon9ize and contains approximately 176,177 rows of training data.\n\n\t\n\t\t\n\t\tDescription\n\t\n\nThe Yue-Wiki-PL-BERT dataset is a structured collection of Cantonese text data extracted from Wikipedia, with each entry containing:\n\nid: A… See the full description on the dataset page: https://huggingface.co/datasets/hon9kon9ize/yue-wiki-pl-bert."
+        downloads: 38
+        tags:
+          - size_categories:100K<n<1M
+          - format:parquet
+          - modality:text
+          - library:datasets
+          - library:pandas
+          - library:mlcroissant
+          - library:polars
+          - region:us
+        createdAt: "2025-04-03T20:16:23.000Z"
+        key: ""
+
+conformance:
+  - name: the default listing carries a trending score nobody asked for
+    source: https://huggingface.co/api/models?limit=2
+    verified: "2026-08-31"
+    fixture: trending-models
+    request:
+      method: GET
+      path: /api/models
+      query:
+        limit: "2"
+    expect:
+      status: 200
+      body:
+        "[0]._id": 6a8bffdb39eb84b2b2755a6e
+        "[0].id": Qwen/Qwen3.8-Flash-Next
+        "[0].modelId": Qwen/Qwen3.8-Flash-Next
+        "[0].trendingScore": 4306
+        "[0].downloads": 158598
+        "[1].id": zai-org/GLM-5.3-Flash
+        "[1].trendingScore": 1710
+      headers:
+        # An RFC 5988 Link header, never a body field, carrying the next
+        # page's cursor.
+        Link: 'rel="next"'
+
+  - name: and the whole set has four records in this exact order
+    source: https://huggingface.co/api/models?limit=2 and its Link header, followed
+    verified: "2026-08-31"
+    fixture: trending-models
+    request:
+      method: GET
+      path: /api/models
+      query:
+        limit: "4"
+    expect:
+      status: 200
+      body:
+        "[0].id": Qwen/Qwen3.8-Flash-Next
+        "[1].id": zai-org/GLM-5.3-Flash
+        "[2].id": zai-org/GLM-5.3
+        "[2].trendingScore": 1360
+        "[3].id": Qwen/Qwen3.8-27B
+        "[3].downloads": 4720763
+
+  - name: a search narrows the catalogue without changing its shape
+    source: https://huggingface.co/api/models?search=bert&limit=2
+    verified: "2026-08-31"
+    fixture: bert-models
+    request:
+      method: GET
+      path: /api/models
+      query:
+        search: bert
+    expect:
+      status: 200
+      body:
+        "[0].id": google-bert/bert-base-uncased
+        "[0].downloads": 73085822
+        # trendingScore survives a search -- only an explicit sort removes
+        # it, and none was given here.
+        "[0].trendingScore": 73
+        "[1].id": neuralmind/bert-base-portuguese-cased
+        "[1].trendingScore": 2
+
+  - name: naming a sort field drops trendingScore from every record
+    source: https://huggingface.co/api/models?sort=downloads&direction=-1&limit=2
+    verified: "2026-08-31"
+    fixture: downloads-models
+    request:
+      method: GET
+      path: /api/models
+      query:
+        sort: downloads
+        direction: "-1"
+    expect:
+      status: 200
+      body:
+        "[0].id": sentence-transformers/all-MiniLM-L6-v2
+        "[0].downloads": 253520473
+        "[1].id": cross-encoder/ms-marco-MiniLM-L6-v2
+        "[1].downloads": 86404649
+      absent:
+        - "[0].trendingScore"
+        - "[1].trendingScore"
+
+  - name: some models carry no pipeline or library at all
+    source: "https://huggingface.co/api/models?search=meta-llama%2FLlama-2-7b-hf&limit=3"
+    verified: "2026-08-31"
+    fixture: llama-search-models
+    request:
+      method: GET
+      path: /api/models
+      query:
+        search: meta-llama/Llama-2-7b-hf
+    expect:
+      status: 200
+      body:
+        "[0].id": meta-llama/Llama-2-7b-hf
+        "[0].pipeline_tag": text-generation
+        "[1].id": mindchain/META-LLAMA-LLAMA-2-7B-HF-GGUF
+        "[1].downloads": 0
+      absent:
+        # Not empty strings. Not present.
+        - "[1].pipeline_tag"
+        - "[1].library_name"
+
+  - name: an unrecognised sort value is refused, in two different scripts
+    source: https://huggingface.co/api/models?sort=notarealfield&limit=2
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models
+      query:
+        sort: notarealfield
+    expect:
+      status: 400
+      body:
+        # U+2716 HEAVY MULTIPLICATION X in the body.
+        error: "✖ Invalid sort parameter: notarealfield"
+      headers:
+        # A plain ASCII asterisk in the header -- the same sentence, spelled
+        # two different ways in two different channels of the same response.
+        X-Error-Message: "* Invalid sort parameter: notarealfield"
+
+  - name: a cursor that will not parse is refused before any lookup
+    source: "https://huggingface.co/api/models?limit=2&cursor=garbage_not_valid"
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models
+      query:
+        cursor: garbage_not_valid
+    expect:
+      status: 400
+      body:
+        error: Error parsing pagination cursor
+
+  - name: a canonical bare name redirects to its two-segment form
+    source: https://huggingface.co/api/models/gpt2
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models/gpt2
+    expect:
+      status: 307
+      headers:
+        Location: /api/models/openai-community/gpt2
+        Content-Type: text/plain
+      body_matches: "^Temporary Redirect\\. Redirecting to /api/models/openai-community/gpt2$"
+
+  - name: a single nonsense segment asks for a password
+    source: https://huggingface.co/api/models/onlyoneseg
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models/onlyoneseg
+    expect:
+      status: 401
+      body:
+        error: Invalid username or password.
+      headers:
+        WWW-Authenticate: 'Bearer realm="Authentication required"'
+
+  - name: and so does the Mongo _id a listing just handed back
+    source: https://huggingface.co/api/models/621ffdc036468d709f17434d
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models/621ffdc036468d709f17434d
+    expect:
+      status: 401
+      body:
+        error: Invalid username or password.
+
+  - name: a well-formed two-segment name that nobody has taken
+    source: https://huggingface.co/api/models/nonexistent-org-xyz-123/nonexistent-model-xyz-123
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models/nonexistent-org-xyz-123/nonexistent-model-xyz-123
+    expect:
+      # The same 401 a single nonsense segment gets -- and the same one a
+      # real, existing model would NOT get. See the header: this is the gap.
+      status: 401
+      body:
+        error: Invalid username or password.
+      headers:
+        WWW-Authenticate: 'Bearer realm="Authentication required"'
+
+  - name: three garbage segments is a different failure entirely
+    source: https://huggingface.co/api/models/a/b/c
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/models/a/b/c
+    expect:
+      status: 404
+      body:
+        error: Sorry, we can't find the page you are looking for.
+      headers:
+        # Body and header agree here, unlike the sort error above.
+        X-Error-Message: Sorry, we can't find the page you are looking for.
+
+  - name: datasets carry the same two identifiers and an always-empty key
+    source: https://huggingface.co/api/datasets?limit=2
+    verified: "2026-08-31"
+    fixture: trending-datasets
+    request:
+      method: GET
+      path: /api/datasets
+    expect:
+      status: 200
+      body:
+        "[0]._id": 6a88290bf198e93508a91ba2
+        "[0].id": markov-ai/cad-1000-hours
+        "[0].author": markov-ai
+        "[0].gated": false
+        "[0].trendingScore": 158
+        "[0].key": ""
+        "[1].id": rajpurkar/squad
+        "[1].author": rajpurkar
+        "[1].sha": 7b6d24c440a36b6815f21b70d25016731768db1f
+        "[1].key": ""
+
+  - name: a dataset search behaves the same way a model search does
+    source: https://huggingface.co/api/datasets?search=bert&limit=2
+    verified: "2026-08-31"
+    fixture: bert-datasets
+    request:
+      method: GET
+      path: /api/datasets
+      query:
+        search: bert
+    expect:
+      status: 200
+      body:
+        "[0].id": hon9kon9ize/commonvoice_16_1_bert_vits2
+        "[0].author": hon9kon9ize
+        "[0].downloads": 274
+        "[1].id": hon9kon9ize/yue-wiki-pl-bert
+        "[1].downloads": 38
+
+  - name: a dataset's bare legacy name redirects the same way a model's does
+    source: https://huggingface.co/api/datasets/squad
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/datasets/squad
+    expect:
+      status: 307
+      headers:
+        Location: /api/datasets/rajpurkar/squad
+      body_matches: "^Temporary Redirect\\. Redirecting to /api/datasets/rajpurkar/squad$"
+
+  - name: a dataset name nobody has taken asks for a password too
+    source: https://huggingface.co/api/datasets/nonexistent-org-xyz-123/nonexistent-ds-xyz-123
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/datasets/nonexistent-org-xyz-123/nonexistent-ds-xyz-123
+    expect:
+      status: 401
+      body:
+        error: Invalid username or password.
+
+  - name: and a single nonsense dataset segment fails the same way
+    source: https://huggingface.co/api/datasets/onlyonesegxyz123
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/datasets/onlyonesegxyz123
+    expect:
+      status: 401
+      body:
+        error: Invalid username or password.
+
+  - name: three garbage segments under datasets fails the same way models do
+    source: https://huggingface.co/api/datasets/a/b/c
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/datasets/a/b/c
+    expect:
+      status: 404
+      body:
+        error: Sorry, we can't find the page you are looking for.
