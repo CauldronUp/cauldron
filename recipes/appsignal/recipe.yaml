@@ -1,0 +1,554 @@
+# AppSignal Recipe for Cauldron
+#
+# AppSignal also splits across two hosts and two credentials, the same shape
+# Bugsnag's Notify/Data split has and Raygun's Recipe describes a second time.
+# Reading data back -- markers, samples -- goes through appsignal.com/api/
+# {app_id}/... with a personal API token as a URL query parameter, sitting on
+# top of what is otherwise an ordinary cookie-session Rails application:
+# every response, pass or fail, carries a Set-Cookie for _session_id. Sending
+# data in -- check-ins, heartbeats, custom markers posted without a personal
+# token -- goes to appsignal-endpoint.net with an app-level API key instead.
+# This Recipe models the appsignal.com/api read/management surface only, for
+# the reason Bugsnag's Recipe gives for making the same choice about its own
+# Notify API: different host, different credential, and no route here can
+# carry two auth schemes at once.
+#
+# Probed live on 2026-09-01, unauthenticated, with a junk token, and against
+# a path that does not exist:
+#
+#   1. GET /api/{app}/markers.json and GET /api/{app}/samples.json both
+#      answer 401 for a missing token and 401 for a wrong one, and the body
+#      is identical either way: Content-Type: application/json and exactly
+#      zero bytes. Not {}, not an empty array -- nothing. response.json()
+#      throws before a client's error handling ever gets to read the status
+#      code. Missing and wrong are indistinguishable on this surface, the
+#      same finding Raygun's Recipe records about both of its own surfaces.
+#      The zero bytes are recorded here rather than served: Cauldron's own
+#      credential check falls back to a fixed sentence of its own whenever a
+#      Recipe's declared message is blank, so this Recipe's emulated 401
+#      carries a body where the real one carries none. Status and
+#      Content-Type are asserted below; the empty body is not, because this
+#      Recipe cannot actually produce it.
+#   2. The check-ins ingestion surface, at the other host with the other
+#      credential and not modelled here, answers the opposite way -- and
+#      answers it consistently, reproduced four times. POST
+#      appsignal-endpoint.net/check_ins/heartbeats with no api_key parameter
+#      at all is 422 Unprocessable Entity; the same request with api_key
+#      present and wrong, or present and empty, is 401 Unauthorized. Whether
+#      the parameter was sent decides the status; what it held, if it was
+#      sent, does not. That is worth recording because it is the one surface
+#      in either Recipe pair -- Raygun's two, this one's two -- where missing
+#      and wrong turn out not to collapse into the same answer.
+#   3. A path appsignal.com/api has no route for answers with the site's own
+#      branded HTML 404 page -- text/html, not JSON, a real page meant for a
+#      browser with a link back to the homepage and a support email address.
+#      Every other appsignal.com/api response in this Recipe is JSON;
+#      whatever is not a recognised route is not treated as part of the API
+#      at all.
+#
+# Occurrence versus item, the distinction Rollbar's Recipe draws and Bugsnag's
+# and Raygun's each draw their own way: AppSignal's public REST surface does
+# not draw it, because there is no grouped side to draw it against. Nothing
+# here plays the part of Bugsnag's Error, Rollbar's Item or Raygun's
+# error-group. The closest thing, Samples (docs.appsignal.com/api/
+# samples.html, read rather than called -- every sample it could return
+# belongs to a real account), is already occurrence-level throughout: every
+# record is one HTTP request, is_exception says whether it happened to raise,
+# and the nested exception object is empty when it did not. There is no
+# endpoint anywhere in this API that answers "how many times has
+# NoMethodError happened" as a number. The samples reference says as much in
+# its own last line, pointing anyone who wants grouped or tag-searched data
+# at a separate GraphQL API this Recipe does not reach either.
+#
+# Markers and Samples share one distinctive envelope not seen elsewhere in
+# this collection: {"count": N, "<name>": [...]}, the count sitting beside
+# the array rather than wrapping it. Marker index, read with
+# ?count_only=true, collapses the same endpoint to {"count": N} with the
+# array dropped entirely -- a second shape for one route depending on a
+# query flag, stated below rather than modelled, because answering it
+# faithfully would mean inventing which of the two shapes a fixture
+# demonstrates for a flag no case here sets.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The check-ins/heartbeats ingestion surface (appsignal-endpoint.net) is
+#     not modelled, for the reason given above. What was learned about it
+#     lives in this header.
+#   - Custom and notification markers are real, documented "kind" values
+#     alongside deploy -- and the reference's own JSON examples show "id" on
+#     a deploy marker and omit it on both of the others, in the same
+#     response, for records marker show/update/delete otherwise addresses by
+#     id the same way regardless of kind. That is either a real difference or
+#     a documentation inconsistency, and nothing reachable without a token
+#     settles which, so this Recipe models the deploy shape only and leaves
+#     the other two as a stated gap rather than guessing at an id that may
+#     not be there.
+#   - Samples' "show" response (GET /samples/{id}.json) is a materially
+#     different, richer shape than the list entry -- and disagrees with it
+#     about the type of one field: status is a JSON number in the list
+#     ("status": 200) and a JSON string from show ("status": "200"), per the
+#     reference's own two examples. This Recipe models the list shape only.
+#     Reaching one sample by id also needs its id sanitised first -- the
+#     reference's own instruction is to replace "#" with "-hash-" before it
+#     can appear in a path -- which is a transform on the value between
+#     reading it and addressing it that nothing in this format expresses, so
+#     the show route is not modelled either.
+#   - count_only on the marker index and the samples/performance.json and
+#     samples/errors.json variants are documented, real, and not modelled,
+#     for the same reason as the two points above: each answers a shape this
+#     Recipe would otherwise have to invent evidence for.
+
+recipe: appsignal
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://docs.appsignal.com/api.html
+
+auth:
+  scheme: query
+  param: token
+  keys:
+    - cauldron00000000000000000000000000000000
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  marker:
+    id:
+      style: hex
+      length: 24
+    collection: markers
+    fields:
+      # The scope partition. Never appears in any documented marker body --
+      # it is only ever in the path -- so it is hidden and exists only so
+      # routes can scope against it.
+      app_id:
+        type: string
+        in: "-"
+      # This Recipe models the deploy shape only; see the header. Left
+      # settable rather than a constant because the real create payload
+      # names it explicitly.
+      kind:
+        type: string
+        default: deploy
+      created_at:
+        type: datetime
+      # Present and null until a later deploy closes this one out, per the
+      # reference's own example.
+      closed_at:
+        type: datetime
+        null_when_unset: true
+      live_for:
+        type: integer
+        null_when_unset: true
+      live_for_in_words:
+        type: string
+        null_when_unset: true
+      gem_version:
+        type: string
+        null_when_unset: true
+      repository:
+        type: string
+        required: true
+      revision:
+        type: string
+        required: true
+      short_revision:
+        type: string
+      git_compare_url:
+        type: string
+      user:
+        type: string
+        required: true
+      exception_count:
+        type: integer
+        null_when_unset: true
+      exception_rate:
+        type: number
+        null_when_unset: true
+
+  sample:
+    id:
+      style: opaque
+    collection: log_entries
+    fields:
+      app_id:
+        type: string
+        in: "-"
+      action:
+        type: string
+        required: true
+      path:
+        type: string
+      # A float in the reference's own example (3182.545407); null on a
+      # sample that was not timed the same way, per its second example.
+      duration:
+        type: number
+        null_when_unset: true
+      status:
+        type: integer
+        null_when_unset: true
+      time:
+        type: timestamp
+        required: true
+      is_exception:
+        type: boolean
+        default: false
+      exception_name:
+        type: string
+        in: exception
+        as: name
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/{app_id}/markers.json
+    resource: marker
+    operation: list
+    scope: [app_id]
+    filters:
+      - param: kind
+        field: kind
+    pagination:
+      limit_param: limit
+
+  - method: GET
+    path: /api/{app_id}/markers/{id}.json
+    resource: marker
+    operation: get
+    scope: [app_id]
+
+  - method: POST
+    path: /api/{app_id}/markers.json
+    resource: marker
+    operation: create
+    scope: [app_id]
+
+  - method: PUT
+    path: /api/{app_id}/markers/{id}.json
+    resource: marker
+    operation: update
+    scope: [app_id]
+
+  - method: DELETE
+    path: /api/{app_id}/markers/{id}.json
+    resource: marker
+    operation: delete
+    scope: [app_id]
+    # "The response body of this request is empty." The reference does not
+    # say which status accompanies it -- "the status code will return if it
+    # was successful or not" is all it commits to -- so no deleted_body
+    # override is declared here and this Recipe answers with Cauldron's own
+    # default for an unstated delete, 204, rather than a status this Recipe
+    # can say it confirmed against AppSignal specifically.
+
+  - method: GET
+    path: /api/{app_id}/samples.json
+    resource: sample
+    operation: list
+    scope: [app_id]
+    filters:
+      - param: action_id
+        field: action
+      - param: exception
+        field: exception_name
+    pagination:
+      limit: 10
+      limit_param: limit
+
+errors:
+  # Observed live, on both routes this Recipe declares, for a missing token
+  # and for a wrong one alike: 401, Content-Type: application/json, and a
+  # body of exactly zero bytes. style: text is the nearest thing this format
+  # has to a non-JSON body, and the Content-Type is set explicitly because
+  # the runtime's own default for a text-style failure is text/plain, where
+  # the real response claims JSON it never actually sends. The zero bytes
+  # themselves do not carry through, though: an empty message here reads to
+  # the runtime as unset rather than deliberately blank, so it falls back to
+  # Cauldron's own built-in wording for a failed credential check instead of
+  # writing nothing. The status and the header are faithful; the body is a
+  # stand-in, and no case below claims otherwise.
+  authentication_error:
+    status: 401
+    style: text
+    headers:
+      Content-Type: application/json
+
+  # A path appsignal.com/api has no route for. Observed live: the site's own
+  # branded 404 page, byte for byte, served as text/html rather than as a
+  # JSON error -- so a client written to expect JSON from every
+  # appsignal.com/api/* path gets a page meant for a browser instead.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: |
+      <!doctype html>
+      <html>
+        <head>
+          <title>404 - Looks like our signals got crossed :(</title>
+          <link
+            href="https://d201zbfblqcbtj.cloudfront.net/public.css"
+            media="all"
+            rel="stylesheet"
+            type="text/css"
+          />
+        </head>
+
+        <body>
+          <!-- This file lives in public/404.html -->
+          <a href="https://www.appsignal.com" title="Return to homepage"
+            ><img alt="AppSignal Logo" src="/images/logo-appsignal.svg"
+          /></a>
+          <section>
+            <h1>404 - Page has not been found :(</h1>
+            <p>
+              We were not able to find this page on our servers. Return to the <a href="/">homepage</a> or
+              contact us if you followed this link from somewhere else (so we can get it fixed).
+            </p>
+            <footer>
+              <a href="mailto:support@appsignal.com">Email us</a>
+              or
+              <a href="https://x.com/appsignal" target="_blank" rel="noopener noreferrer"
+                >reach out to us on X</a
+              >
+            </footer>
+          </section>
+        </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+  small-account:
+    marker:
+      # The reference's own deploy-marker example, reused verbatim: a real
+      # documented payload rather than an invented one.
+      - id: 50a61f1b660cd3677775ccb0
+        app_id: cauldron-app-000000000000000000000001
+        kind: deploy
+        created_at: "2015-07-21T15:06:31.737+02:00"
+        closed_at: null
+        live_for: 107413
+        live_for_in_words: "1d"
+        repository: "git@github.com:company/repository.git"
+        revision: fe001015311af4769a4dad76bdbce4c8f5d022af
+        short_revision: fe00101
+        git_compare_url: "https://github.com/company/repository/compare/aaa...bbb"
+        user: user
+        exception_count: 200
+        exception_rate: 8.81
+      # A second, still-open deploy: closed_at and the two derived live_for
+      # fields stay null until a later deploy closes this one out.
+      - id: 6f1e9a3c8b7d2e4f5a6b7c8d
+        app_id: cauldron-app-000000000000000000000001
+        kind: deploy
+        created_at: "2026-08-30T09:12:00.000+00:00"
+        repository: "git@github.com:company/repository.git"
+        revision: a1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c
+        short_revision: a1b2c3d
+        user: ci-bot
+
+    sample:
+      # The reference's own two log_entries examples: a slow, non-exception
+      # request and an exception. duration and status are set on the first
+      # and left out of the fixture on the second, which is what renders
+      # them null rather than absent -- matching the reference's own
+      # "duration": null, "status": null on its error example.
+      - id: 51f29e7b183d700800150358_SlowController#show_1476962400
+        app_id: cauldron-app-000000000000000000000001
+        action: "SlowController#show"
+        path: /slow-request
+        duration: 3182.545407
+        status: 200
+        time: 1476962400
+        is_exception: false
+      - id: 57f653fa16b7e24cb0dc9e2b_ErrorController#trigger_1475761080
+        app_id: cauldron-app-000000000000000000000001
+        action: "ErrorController#trigger"
+        path: /error-request
+        time: 1475761080
+        is_exception: true
+        exception_name: "ActionView::Template::Error"
+
+conformance:
+  - name: a missing token is a 401 with a JSON content-type
+    source: https://appsignal.com/api/some-app-id/markers.json
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/markers.json
+    expect:
+      # The live body was zero bytes; see the note on errors.
+      # authentication_error for why that specific claim is not asserted.
+      status: 401
+      headers:
+        Content-Type: application/json
+
+  - name: and a wrong token answers exactly the same way
+    source: https://appsignal.com/api/some-app-id/markers.json?token=junk000000
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/markers.json
+      query:
+        token: junk-not-a-real-token-000000
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+
+  - name: samples.json refuses a missing token the same way markers.json does
+    source: https://appsignal.com/api/some-app-id/samples.json
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/samples.json
+    expect:
+      status: 401
+
+  - name: a path this API has no route for is the site's own 404 page, not JSON
+    source: https://appsignal.com/api/this-does-not-exist-xyz.json
+    verified: "2026-09-01"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/this-does-not-exist-xyz.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: '404 - Page has not been found'
+
+  - name: markers and samples share one envelope, count beside the array
+    source: https://docs.appsignal.com/api/markers.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/markers.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        count: 2
+        markers[0].kind: deploy
+        markers[0].revision: fe001015311af4769a4dad76bdbce4c8f5d022af
+
+  - name: a deploy marker still open has no live_for yet
+    source: https://docs.appsignal.com/api/markers.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/markers/6f1e9a3c8b7d2e4f5a6b7c8d.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        id: 6f1e9a3c8b7d2e4f5a6b7c8d
+        revision: a1b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c
+        closed_at: null
+        live_for: null
+
+  - name: deleting a marker answers with nothing, whatever the status turns out to be
+    source: https://docs.appsignal.com/api/markers.html
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /api/cauldron-app-000000000000000000000001/markers/50a61f1b660cd3677775ccb0.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 204
+      no_body: true
+
+  - name: a sample is one request, not a group -- is_exception decides which
+    source: https://docs.appsignal.com/api/samples.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/samples.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        count: 2
+        log_entries[0].is_exception: false
+        log_entries[0].duration: 3182.545407
+        log_entries[1].is_exception: true
+        log_entries[1].exception.name: "ActionView::Template::Error"
+      # No group, no count of occurrences, no identifier for "this kind of
+      # exception" separate from this one request. Every field here is about
+      # the one sample.
+      absent:
+        - log_entries[1].occurrences
+        - log_entries[1].error_id
+
+  - name: a sample that did not raise carries an exception object with a null name
+    source: https://docs.appsignal.com/api/samples.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/samples.json
+      query:
+        token: cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        # The reference's own point: exception is present on every sample,
+        # not only the ones that raised, and its name is null rather than
+        # the key being left out.
+        log_entries[0].exception.name: null
+
+  - name: filtering by action_id and exception are real query parameters
+    source: https://docs.appsignal.com/api/samples.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/samples.json
+      query:
+        token: cauldron00000000000000000000000000000000
+        # The reference says a real caller sends this escaped --
+        # ErrorController-hash-trigger, with "#" replaced before it ever
+        # reaches the query string. This Recipe stores and filters on the
+        # unescaped action name, so the escaping step itself is not
+        # reproduced; the fixture and the filter agree with each other
+        # rather than with what a real request would literally contain.
+        action_id: "ErrorController#trigger"
+        exception: "ActionView::Template::Error"
+    expect:
+      status: 200
+      body:
+        count: 1
+        log_entries[0].action: "ErrorController#trigger"
+
+  - name: markers.json can be filtered down to one kind
+    source: https://docs.appsignal.com/api/markers.html
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/cauldron-app-000000000000000000000001/markers.json
+      query:
+        token: cauldron00000000000000000000000000000000
+        kind: deploy
+    expect:
+      status: 200
+      body:
+        count: 2
