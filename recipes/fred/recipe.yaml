@@ -1,0 +1,475 @@
+# FRED (Federal Reserve Economic Data) Recipe for Cauldron
+#
+# A missing credential and a malformed one are not the same failure, and FRED
+# says so in words rather than in status codes.
+#
+#   ?series_id=GNPCA&file_type=json                    -> 400 "Variable api_key is not set."
+#   ?series_id=GNPCA&file_type=json&api_key=short       -> 400 "...is not a 32 character alpha-numeric lower-case string."
+#   ?series_id=GNPCA&file_type=json&api_key=<32 chars>  -> 400 "...is not registered."
+#
+# Three sentences, three different mistakes, one status code. A client
+# checking response.ok learns nothing; a client checking the message learns
+# whether it forgot the parameter, mistyped it, or copied a key that was
+# never issued -- and code written to catch the first sentence does not
+# recognise the second or third, because none of the three is a substring of
+# either other one.
+#
+# **The default response format is XML, and this Recipe verified it rather
+# than taking the documentation's word for it.** The same request with
+# `file_type` left out, or set to anything other than the literal string
+# "json", answers the same failure in a different envelope:
+#
+#   <?xml version="1.0" encoding="utf-8" ?>
+#   <error code="400" message="Bad Request.  Variable api_key is not set. ..." />
+#
+# FRED's own docs state "the default value of file_type is xml" on both the
+# series and the series/observations pages, and a client written against the
+# JSON examples elsewhere in the same documentation gets Content-Type text/xml
+# on the very first call it makes without that one parameter. This is not
+# specific to the api_key failure: a request to a path that does not exist at
+# all answers the identical pattern, JSON when file_type=json rode along on
+# the URL and XML otherwise --
+#
+#   /fred/series?file_type=json&...   -> 404 {"error_code":404,"error_message":"Not Found"}
+#   /fred/nonexistent                 -> 404 <error code="404" message="Not Found" />
+#
+# -- which is the tell that this is a content-negotiation default applied
+# uniformly by whatever sits in front of every endpoint, not a per-route
+# decision. A client written and tested against the JSON examples in FRED's
+# own documentation, and never explicitly setting file_type itself, receives
+# XML for every mistake it makes.
+#
+# **The credential check runs before anything else, including whether the
+# thing you asked for exists.** ?series_id=NOTASERIESXYZ with no api_key
+# answers the exact "Variable api_key is not set" sentence, byte for byte,
+# rather than anything about the series. So does leaving series_id out
+# entirely. A caller cannot learn their series_id is wrong until their
+# api_key is right, which means every integration test written with a
+# placeholder key exercises exactly one failure, however many other mistakes
+# it also contains.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.stlouisfed.org on the date in its verified field.
+#
+# One more the Recipe pins:
+#
+#   FRED calls a list of one series "seriess". /fred/series?series_id=GNPCA
+#   answers {"realtime_start": ..., "realtime_end": ..., "seriess": [{...}]}
+#   -- the envelope name is the plural of "series" formed the regular way,
+#   which is not a word, because "series" is already plural in form. A
+#   client that assumes the usual `resource + s` convention and reads
+#   `response.series` finds nothing; the one it wants is spelled with a
+#   second s.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful call was ever reachable. FRED issues no public
+#     demonstration key of the kind Alpha Vantage publishes; its own
+#     documentation examples use a placeholder ('abcdefghijklmnopqrstuvwxyz
+#     123456', stated on the page to be non-functional and "for
+#     demonstration purposes only") that this Recipe never called, live or
+#     otherwise. Every unauthenticated or wrongly-authenticated request this
+#     Recipe could actually make answered one of the errors above -- which is
+#     to say, every request this Recipe could actually make is represented
+#     below with a verified date. The two GET routes that answer with data
+#     serve the exact worked examples FRED's own documentation prints, cited
+#     to the page rather than to a transcript, and carry no verified field
+#     for that reason.
+#   - Only GNPCA is served, and only a handful of its observations, the same
+#     three FRED's own series/observations documentation page happens to
+#     print (1929, 1930, 1931). series_id is read from the query string for
+#     routing but nothing here validates it against a real registry: ask for
+#     a different series on the routes that succeed and this Recipe answers
+#     GNPCA's data anyway, which the real API would not.
+#   - Vintages are described and not served, which is the important one.
+#     FRED's own documentation never prints two different values for the
+#     same observation date side by side, so there is no worked example to
+#     copy a second figure from, and no key exists here to fetch one. A
+#     second snapshot was drafted with an invented number and then removed:
+#     a Recipe is a mock somebody develops against, and a comment saying a
+#     value is invented does not reach the client, while the value does.
+#     What is real, and documented on FRED's Real-Time Periods page, is the
+#     mechanism itself: "Sources, releases, and series can change their
+#     names, and observation data values can be revised," every observation
+#     is stamped with the realtime_start/realtime_end period during which
+#     that value was the answer, and the default period is always today --
+#     so a client that never sets these two parameters only ever sees the
+#     latest re-estimate and has no way to know a series it depends on has
+#     ever been revised at all.
+
+recipe: fred
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: fred
+  docs: https://fred.stlouisfed.org/docs/api/fred/
+
+auth:
+  # api_key is a query parameter every real call carries, but FRED answers a
+  # missing or wrong one with 400 and a sentence naming which of three
+  # mistakes was made -- never the 401 Cauldron's built-in query scheme would
+  # serve, and never the same sentence twice. Modelling it by hand through
+  # routes and errors is what keeps those three sentences distinct.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: observations
+    count_field: count
+  error:
+    # {"error_code": 400, "error_message": "..."}. error_code is always the
+    # HTTP status repeated in the body, not a separate provider code, so it
+    # is declared as status_field rather than code_field.
+    style: flat
+    message_field: error_message
+    status_field: error_code
+    code_field: "-"
+
+resources:
+  series_info:
+    # The envelope's own plural, "seriess" -- see the header.
+    collection: seriess
+    id:
+      style: opaque
+      field: id
+    fields:
+      id:
+        type: string
+      realtime_start:
+        type: string
+      realtime_end:
+        type: string
+      title:
+        type: string
+      observation_start:
+        type: string
+      observation_end:
+        type: string
+      frequency:
+        type: string
+      frequency_short:
+        type: string
+      units:
+        type: string
+      units_short:
+        type: string
+      seasonal_adjustment:
+        type: string
+      seasonal_adjustment_short:
+        type: string
+      # "2013-07-31 09:26:16-05" -- not RFC 3339 (a space rather than a T,
+      # and a two-digit UTC offset with no minutes), so it is a string here
+      # rather than a datetime this Recipe cannot parse either.
+      last_updated:
+        type: string
+      popularity:
+        type: integer
+      notes:
+        type: string
+
+  observation:
+    id:
+      style: opaque
+      field: date
+    fields:
+      # The period during which this value was the answer. See the header:
+      # this is the field the whole vintages story rests on.
+      realtime_start:
+        type: string
+      realtime_end:
+        type: string
+      date:
+        type: string
+      # A number, quoted. FRED joins EPSS, Bank of Canada Valet and Alpha
+      # Vantage in this collection in sending a figure a caller almost
+      # certainly wants arithmetic on as a string.
+      value:
+        type: string
+
+routes:
+  # The real path. No unauthenticated or wrongly-authenticated call to it
+  # ever answers this -- every one this Recipe could actually make is one of
+  # the errors below instead. What is served here is FRED's own documentation
+  # example for series_id=GNPCA, verbatim, uncalled. See the header.
+  - method: GET
+    path: /fred/series
+    resource: series_info
+    operation: get
+    id_from: query:series_id
+    envelope:
+      style: wrapped
+      array: true
+    fields:
+      realtime_start: "2013-08-14"
+      realtime_end: "2013-08-14"
+
+  # The first of the two vintage snapshots: the real-time period FRED's own
+  # documentation prints its GNPCA example under.
+  - method: GET
+    path: /fred/series/observations
+    resource: observation
+    operation: list
+    fields:
+      realtime_start: "2013-08-14"
+      realtime_end: "2013-08-14"
+      observation_start: "1776-07-04"
+      observation_end: "9999-12-31"
+      units: lin
+      output_type: 1
+      order_by: observation_date
+      sort_order: asc
+      offset: 0
+      limit: 100000
+
+
+  # Verified: the real path, file_type=json, no api_key at all.
+  - method: GET
+    path: /fred/series-missing-key
+    error: missing_api_key
+
+  # Verified: file_type=json, a series_id that does not exist, still no
+  # api_key. The credential check answers first -- see the header.
+  - method: GET
+    path: /fred/series-missing-key-bad-series
+    error: missing_api_key
+
+  # Verified: file_type=json, no series_id at all, still no api_key.
+  - method: GET
+    path: /fred/series-missing-key-no-series
+    error: missing_api_key
+
+  # Verified: file_type=json, a key that is not 32 lower-case alphanumeric
+  # characters.
+  - method: GET
+    path: /fred/series-malformed-key
+    error: malformed_api_key
+
+  # Verified: file_type=json, a key of the right shape that was never
+  # registered.
+  - method: GET
+    path: /fred/series-unregistered-key
+    error: unregistered_api_key
+
+  # Verified: the default format. No file_type at all (and, separately,
+  # file_type set to any value other than the literal string "json") answers
+  # the missing-key failure as XML rather than JSON. One representative body
+  # is recorded rather than one per error above -- see the header's note on
+  # what this confirms.
+  - method: GET
+    path: /fred/series-xml-default
+    status: 400
+    raw:
+      content_type: "text/xml; charset=UTF-8"
+      text: "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<error code=\"400\" message=\"Bad Request.  Variable api_key is not set.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information.\" />"
+
+  # Verified: a path that does not exist, with no file_type on the URL at
+  # all, still answers XML -- proof this is a content-negotiation default and
+  # not something tied to the api_key failure specifically.
+  - method: GET
+    path: /fred/malformed-path-xml
+    status: 404
+    raw:
+      content_type: "text/xml; charset=UTF-8"
+      text: "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<error code=\"404\" message=\"Not Found\" />"
+
+errors:
+  missing_api_key:
+    status: 400
+    message: "Bad Request.  Variable api_key is not set.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  malformed_api_key:
+    status: 400
+    message: "Bad Request.  The value for variable api_key is not a 32 character alpha-numeric lower-case string.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  unregistered_api_key:
+    status: 400
+    message: "Bad Request.  The value for variable api_key is not registered.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  # Overrides the runtime's own default text for an unrecognised path, so a
+  # genuinely unmatched URL with file_type=json on it answers exactly what
+  # FRED answers rather than an invented sentence.
+  unknown_route:
+    status: 404
+    message: "Not Found"
+
+fixtures:
+  gnpca:
+    series_info:
+      - id: GNPCA
+        realtime_start: "2013-08-14"
+        realtime_end: "2013-08-14"
+        title: "Real Gross National Product"
+        observation_start: "1929-01-01"
+        observation_end: "2012-01-01"
+        frequency: Annual
+        frequency_short: "A"
+        units: "Billions of Chained 2009 Dollars"
+        units_short: "Bil. of Chn. 2009 $"
+        seasonal_adjustment: "Not Seasonally Adjusted"
+        seasonal_adjustment_short: NSA
+        last_updated: "2013-07-31 09:26:16-05"
+        popularity: 39
+        notes: "BEA Account Code: A001RX1"
+
+    observation:
+      - id: "1929-01-01"
+        realtime_start: "2013-08-14"
+        realtime_end: "2013-08-14"
+        date: "1929-01-01"
+        value: "1065.9"
+      - id: "1930-01-01"
+        realtime_start: "2013-08-14"
+        realtime_end: "2013-08-14"
+        date: "1930-01-01"
+        value: "975.5"
+      - id: "1931-01-01"
+        realtime_start: "2013-08-14"
+        realtime_end: "2013-08-14"
+        date: "1931-01-01"
+        value: "912.1"
+
+
+conformance:
+  - name: a missing credential and a malformed one are different sentences
+    source: https://api.stlouisfed.org/fred/series?series_id=GNPCA&file_type=json
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-missing-key
+    expect:
+      status: 400
+      body:
+        error_code: 400
+        error_message: "Bad Request.  Variable api_key is not set.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  - name: and a third sentence for a key that is merely the wrong shape
+    source: "https://api.stlouisfed.org/fred/series?series_id=GNPCA&file_type=json&api_key=junkkeyabc123junkkeyabc123junk1"
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-malformed-key
+    expect:
+      status: 400
+      body:
+        error_code: 400
+        error_message: "Bad Request.  The value for variable api_key is not a 32 character alpha-numeric lower-case string.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  - name: and a fourth for a key of the right shape nobody registered
+    source: "https://api.stlouisfed.org/fred/series?series_id=GNPCA&file_type=json&api_key=0000000000000000000000000000abcd"
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-unregistered-key
+    expect:
+      status: 400
+      body:
+        error_code: 400
+        error_message: "Bad Request.  The value for variable api_key is not registered.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  - name: none of the three ever mentions the series, right or wrong
+    source: https://api.stlouisfed.org/fred/series?series_id=NOTASERIESXYZ&file_type=json
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-missing-key-bad-series
+    expect:
+      status: 400
+      body:
+        # The identical missing-key sentence, for a request whose actual
+        # mistake was a series that does not exist.
+        error_message: "Bad Request.  Variable api_key is not set.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  - name: nor when the series is left out rather than misspelled
+    source: https://api.stlouisfed.org/fred/series?file_type=json
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-missing-key-no-series
+    expect:
+      status: 400
+      body:
+        error_message: "Bad Request.  Variable api_key is not set.  Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+
+  - name: the default response format is XML, verified rather than assumed
+    source: https://api.stlouisfed.org/fred/series?series_id=GNPCA
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/series-xml-default
+    expect:
+      status: 400
+      headers:
+        Content-Type: "text/xml; charset=UTF-8"
+      body_matches: '<error code="400" message="Bad Request\.  Variable api_key is not set\.'
+
+  - name: and the XML default applies to a 404 just as much as a 400
+    source: https://api.stlouisfed.org/fred/nonexistent
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/malformed-path-xml
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/xml; charset=UTF-8"
+      body_matches: '<error code="404" message="Not Found" />'
+
+  - name: a malformed path with file_type=json still answers JSON
+    source: https://api.stlouisfed.org/fred/seriesXYZ?series_id=GNPCA&file_type=json
+    verified: "2026-09-01"
+    request:
+      method: GET
+      path: /fred/no-such-route?file_type=json
+    expect:
+      status: 404
+      body:
+        error_code: 404
+        error_message: "Not Found"
+
+  - name: the documented shape of one series, never actually called
+    source: https://fred.stlouisfed.org/docs/api/fred/series.html
+    fixture: gnpca
+    request:
+      method: GET
+      path: /fred/series
+      query:
+        series_id: GNPCA
+        file_type: json
+    expect:
+      status: 200
+      body:
+        realtime_start: "2013-08-14"
+        realtime_end: "2013-08-14"
+        # The envelope's own plural -- see the header.
+        "seriess[0].id": GNPCA
+        "seriess[0].title": "Real Gross National Product"
+        "seriess[0].units": "Billions of Chained 2009 Dollars"
+        "seriess[0].seasonal_adjustment": "Not Seasonally Adjusted"
+        "seriess[0].last_updated": "2013-07-31 09:26:16-05"
+      absent:
+        - series
+
+  - name: the documented shape of its observations, never actually called
+    source: https://fred.stlouisfed.org/docs/api/fred/series_observations.html
+    fixture: gnpca
+    request:
+      method: GET
+      path: /fred/series/observations
+      query:
+        series_id: GNPCA
+        file_type: json
+    expect:
+      status: 200
+      body:
+        count: 3
+        "observations[0].date": "1929-01-01"
+        "observations[0].value": "1065.9"
+        "observations[0].realtime_start": "2013-08-14"
+        "observations[0].realtime_end": "2013-08-14"
+        "observations[1].date": "1930-01-01"
+        "observations[1].value": "975.5"
+
