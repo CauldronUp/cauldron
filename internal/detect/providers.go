@@ -5012,6 +5012,58 @@ func providers() []provider {
 			npm:    []string{"@what3words/api"},
 		},
 		{
+			recipe: "frontegg",
+			npm:    []string{"@frontegg/client", "@frontegg/rest-api"},
+		},
+		{
+			// @kinde/management-api-js, and deliberately not
+			// @kinde-oss/kinde-nodejs-sdk. The latter is Express middleware
+			// for the end-user OAuth flow; this Recipe describes the
+			// Management API, which is what the former is generated against.
+			recipe: "kinde",
+			npm:    []string{"@kinde/management-api-js"},
+		},
+		{
+			recipe: "propelauth",
+			npm:    []string{"@propelauth/node"},
+		},
+		{
+			recipe: "convex",
+			npm:    []string{"convex"},
+		},
+		{
+			recipe: "xata",
+			npm:    []string{"@xata.io/client"},
+		},
+		{
+			// The driver this Recipe was read from, since the hosted service
+			// it describes no longer resolves. A project holding it is
+			// pointed at something that is not answering.
+			recipe: "fauna",
+			npm:    []string{"fauna"},
+			gomod:  []string{"github.com/fauna/fauna-go/v3"},
+		},
+		{
+			recipe: "papertrail",
+			npm:    []string{"papertrail"},
+		},
+		{
+			recipe: "pandadoc",
+			npm:    []string{"pandadoc-node-client"},
+		},
+		{
+			recipe: "signnow",
+			npm:    []string{"@signnow/api-client"},
+		},
+		{
+			recipe: "anvil",
+			npm:    []string{"@anvilco/anvil"},
+		},
+		{
+			recipe: "together",
+			npm:    []string{"together-ai"},
+		},
+		{
 			recipe: "fly",
 			gomod:  []string{"github.com/superfly/fly-go"},
 		},
