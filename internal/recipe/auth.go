@@ -186,6 +186,27 @@ type Auth struct {
 	// token that was genuinely presented. Without this field the interesting
 	// half of that pair is the half that cannot be served.
 	RejectedError string `yaml:"rejected_error"`
+	// AfterRouting checks the credential only once the request has matched a
+	// route, so a path the provider does not have answers 404 and a method it
+	// does not support answers 405, whether or not a credential was sent.
+	//
+	// The default is false, which checks first and refuses everything
+	// unauthenticated -- the behaviour every Recipe was written against, and
+	// the commoner arrangement.
+	//
+	// Providers genuinely disagree about this and eighteen Recipes here have
+	// had to say so in prose. Airbyte checks the credential first, always, and
+	// answered a byte-identical 401 to every path real or invented. Fireworks
+	// resolves the route and the method first, so an unrouted path 404s and a
+	// wrong method 405s with nothing sent at all. Temporal routes first;
+	// Mezmo's two hosts do opposite things to each other.
+	//
+	// Two arrangements this still cannot express, both recorded rather than
+	// approximated: Census splits on the HTTP method, reaching the gate on a
+	// GET and not on a DELETE, and Rootly splits on whether the route exists
+	// -- credential first for every path it has, router first for every path
+	// it does not, which is not something a caller can know in advance.
+	AfterRouting bool `yaml:"after_routing"`
 }
 
 // Verdict is what a credential check concluded, beyond accepted or not.

@@ -72,24 +72,43 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if verdict := s.credential(r); verdict != recipe.Accepted {
+	// Whether the credential is examined before or after the route is a fact
+	// about the provider, not about this runtime, and Recipes disagree. See
+	// Auth.AfterRouting: checking first is the default and the commoner
+	// arrangement, and a provider that answers 404 to an unrouted path with no
+	// credential at all needs the other one.
+	refuse := func() bool {
+		verdict := s.credential(r)
+		if verdict == recipe.Accepted {
+			return false
+		}
+
 		// Which of the provider's sentences applies depends on how the
 		// credential failed. A Recipe that declares only one gets that one for
 		// every verdict, which is how every Recipe behaved before the
 		// distinction existed.
 		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), 401, "authentication_required", "Invalid API key provided.")
 
+		return true
+	}
+
+	if !s.recipe.Auth.AfterRouting && refuse() {
 		return
 	}
 
 	// A header the provider insists on is part of the contract. Forgetting
 	// Notion-Version is the classic Notion integration bug, and a fake that
 	// waves it through lets code ship that fails on its first real call.
-	if header, name, ok := s.missingHeader(r); !ok {
-		exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
-			"The "+header+" header is required.", header)
+	//
+	// Checked with the credential rather than after the router, because it is
+	// the same kind of claim: something the caller had to send and did not.
+	if !s.recipe.Auth.AfterRouting {
+		if header, name, ok := s.missingHeader(r); !ok {
+			exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
+				"The "+header+" header is required.", header)
 
-		return
+			return
+		}
 	}
 
 	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), rawBody(r), r.URL.Query(), r.Header)
@@ -104,6 +123,22 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		exchange.Status = s.writeRecipeError(w, "unknown_route", 404, "unknown_route", "Unrecognised request URL.", r.URL.Path)
 
 		return
+	}
+
+	// The deferred half of the pipeline, for a Recipe that routes first. By
+	// here the request has matched a real route, so a refusal is about the
+	// credential rather than about the path.
+	if s.recipe.Auth.AfterRouting {
+		if refuse() {
+			return
+		}
+
+		if header, name, ok := s.missingHeader(r); !ok {
+			exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
+				"The "+header+" header is required.", header)
+
+			return
+		}
 	}
 
 	exchange.Resource = matched.spec.Resource
