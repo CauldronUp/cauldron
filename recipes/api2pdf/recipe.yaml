@@ -1,0 +1,327 @@
+# Api2Pdf Recipe for Cauldron
+#
+# Api2Pdf bills per call and never hands back the bytes at all: every
+# conversion endpoint (chromeHtmlToPdf, wkUrlToPdf, libreOfficeAnyToPdf, the
+# PDFSharp merge/bookmark/password tools, and their image and Office-format
+# siblings) answers a JSON envelope naming a FileUrl on Api2Pdf's own
+# storage, quoted directly from the official PHP client's own response
+# parser (Api2PdfResult::createFromResponse, github.com/Api2Pdf/api2pdf.php)
+# rather than paraphrased: {"Success":true,"FileUrl":"...","ResponseId":
+# "...","Seconds":...,"MbOut":...,"Cost":...}, one shape for every
+# conversion this provider offers. There is no draft, no pending, no
+# generating -- a call either answers with a URL to the finished file in
+# the same response or it does not answer at all, the same synchronous
+# shape Anvil's Fill PDF endpoint has in this collection, but returning a
+# URL rather than the bytes Anvil's documentation says its own endpoint
+# sends inline. That URL is not permanent. Api2Pdf's own FAQ names the
+# question and answers it with a number: "How long are PDFs stored on
+# Api2Pdf.com?" -- "Your privacy and security is important to us. After
+# generating a PDF via the API, you are provided with a link to the file.
+# This link will hold the PDF for only 24 hours. If you wish to keep your
+# PDF long term, download the file to your local cache." Twenty-four hours,
+# not PDFMonkey's one -- both providers in this task's group that answer
+# with a URL rather than a resource to poll state a specific lifetime for
+# it in writing, and the numbers are not the same number. A DELETE
+# /file/{responseId} endpoint is real (present in the same client's source)
+# for removing a file before that window closes on its own; this Recipe
+# does not model it, for the same reason it does not model a success case
+# at all -- see below.
+#
+# What this Recipe does not do, on purpose: generate a document, or claim a
+# specific cost, byte count or FileUrl for one. No 200 from any conversion
+# endpoint is modelled. Api2Pdf's own published OpenAPI description --
+# fetched live from v2.api2pdf.com/swagger/v2/swagger.json, found only
+# after following a chain from the documentation site's redirect to its
+# Swagger UI to the config script naming the actual spec path -- declares
+# POST /chrome/pdf/html's 200 response as {"description": "OK"} and nothing
+# else: no schema, no example, not even a field list. The official PHP
+# client's own source is the only place this task found the response
+# shape's field names at all, and it names them without giving a single
+# worked value for Seconds, MbOut, Cost or FileUrl on a real conversion.
+# Between that and this task's own rule against generating a document,
+# there was nothing honest to route a 200 to.
+#
+# Auth and routing, struck live against v2.api2pdf.com, unauthenticated and
+# with credentials this task invented to be wrong, no account, no signup:
+#
+#   1. The credential is the bare header value, no scheme word at all --
+#      confirmed against the client source (`'Authorization: '.$this->apiKey`,
+#      no "Bearer", no "Basic") and against the OpenAPI description's own
+#      security scheme, whose description reads literally: "API Key needed
+#      to access the endpoints. Example: \"Authorization: abc123\"". A
+#      "Bearer junk..." header is not read as a scheme plus a token; it is
+#      read as the literal credential "Bearer junk...", which is simply
+#      wrong the same way a bare wrong key is, and Api2Pdf's own answer to
+#      both is byte-identical: {"Success":false,"Error":"Invalid API key",
+#      "FileUrl":null,...}. There is no prefix here to be malformed about.
+#      A second scheme exists too -- ?apiKey=... in the query string, per
+#      the same description -- and answers the identical error for a wrong
+#      value; this Recipe models the header form, which is what the
+#      official client sends.
+#   2. Absent and wrong are two different sentences in the identical
+#      envelope, not two different envelopes. No Authorization header at
+#      all: {"Success":false,"Error":"Missing or empty Authorization Header
+#      or API Key",...}. An empty header (Authorization: with nothing after
+#      the colon) answers the identical sentence, which is why the message
+#      names both cases at once rather than picking one. Anything present
+#      and simply wrong: {"Success":false,"Error":"Invalid API key",...}.
+#      One shared envelope, ResponseId included, on every failure this task
+#      struck -- Api2Pdf assigns a fresh id to a request whether or not it
+#      is going to be honoured.
+#   3. Routing and the method both resolve before the credential is looked
+#      at, and this host answers exactly what that ordering predicts, with
+#      no credential sent at all. A path this host does not register
+#      answers 404 with an empty body -- zero bytes, not even the failure
+#      envelope every credential problem gets. A wrong method on a real
+#      path (GET, PATCH, OPTIONS all checked live) answers a real 405, with
+#      an Allow: POST header and an empty body again -- not Api2Pdf's own
+#      JSON shape either. Checked with no credential and with a wrong one:
+#      identical either way, which is what a router refusing the request
+#      before anything asks who is calling looks like. `auth.after_routing`
+#      is exactly this shape and is declared below, the same device
+#      Fireworks' Recipe in this collection uses for an identical ordering.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested,
+#     guessed or used. Every 401, 404 and 405 below was struck live and
+#     carries a `verified:` date. The response field names for a successful
+#     conversion are read from the official PHP client's source and the
+#     provider's own OpenAPI description, and no 200 is modelled -- see
+#     above for why.
+#   - Every conversion endpoint this provider offers -- wkhtmltopdf and
+#     Headless Chrome HTML/URL/Markdown to PDF or image, LibreOffice
+#     any-to-pdf/thumbnail/html-to-docx/html-to-xlsx, PDFSharp
+#     merge/bookmarks/password, markitdown, opendataloader -- shares one
+#     request and response shape per the OpenAPI description, and none of
+#     them is routed, for the reason above. This Recipe therefore has no
+#     route answering a document-generation call at all; what it models is
+#     the credential and routing behaviour every one of those endpoints
+#     shares, struck against the one this task's questions are actually
+#     about.
+#   - DELETE /file/{responseId} (deleting a stored file before its 24-hour
+#     window closes) is real, named in the client source, and not modelled.
+#   - GET /status, a genuine unauthenticated health check answering 200
+#     "OK" in plain text, was checked live and is not modelled as a route:
+#     it answers nothing this task's questions turn on, and modelling it
+#     honestly would need a second, public credential tier this Recipe's
+#     single gated endpoint has no other reason to declare. Worth naming
+#     because it is the one path on this host that asks nothing of a
+#     caller at all.
+#   - ResponseId is a fresh identifier Api2Pdf mints per request, confirmed
+#     by three different live values across this task's own probes. This
+#     Recipe serves one fixed value on every failure rather than a new one
+#     per call, matching this project's own rule against unseeded
+#     randomness in a Recipe.
+#   - Rate limiting is not documented for this host and was never triggered
+#     live.
+
+recipe: api2pdf
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.api2pdf.com/documentation/v2
+  spec: https://v2.api2pdf.com/swagger/v2/swagger.json
+  spec_hash: 349f96f13e387f8ca32da3ab12f0dbd4d26b6abf77c13465eca1d9af744fc74f
+  spec_seen: "2026-09-01"
+  provider: Api2Pdf
+
+auth:
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldron-api2pdf-fixture-key-000000000000
+  # "Missing or empty" is one sentence for one verdict: an absent header and
+  # a present-but-empty one answer identically, confirmed live -- see the
+  # header. Nothing here is malformed in Cauldron's sense, because there is
+  # no declared prefix or pattern to fail: any non-empty value that is not
+  # the key is simply wrong, the Recipe-wide default this file leaves
+  # unnamed on purpose.
+  absent_error: missing_or_empty_key
+  # The route and the method are resolved before the credential is looked
+  # at, confirmed live both ways with no Authorization header sent at all:
+  # an unrouted path 404s and a wrong method 405s with an Allow header,
+  # neither one examining the credential. The same device Fireworks' Recipe
+  # in this collection uses for an identical ordering.
+  after_routing: true
+
+responses:
+  error:
+    style: flat
+    message_field: Error
+    fields:
+      Success: false
+      FileUrl: null
+      MbOut: 0.0
+      Cost: 0.0
+      Seconds: 0.0
+      # A fixed fixture value -- see the header's last fidelity note.
+      ResponseId: "00000000-0000-0000-0000-000000000000"
+
+routes:
+  # No success case is routed -- see the header for why. This route exists
+  # so the path and method are registered at all (which is what lets a
+  # wrong method on it answer a real 405 with Allow: POST rather than a
+  # bare 404, and what every conformance case below actually exercises);
+  # what a correctly authenticated call to it answers is not modelled,
+  # because this task never held a working key to observe one and no
+  # worked example exists to cite instead. A request that got this far
+  # with the fixture credential would reach this fallback too, and it says
+  # so rather than fabricating a FileUrl, a cost or a byte count.
+  - method: POST
+    path: /chrome/pdf/html
+    error: no_success_modeled
+
+errors:
+  # Reached only if a request ever carried the fixture credential, which no
+  # conformance case below does -- see the route comment above.
+  no_success_modeled:
+    status: 501
+    message: This Recipe does not model a successful conversion. See the header.
+
+  missing_or_empty_key:
+    status: 401
+    headers:
+      Content-Type: application/json; charset=utf-8
+    message: Missing or empty Authorization Header or API Key
+
+  # The Recipe-wide default for any verdict not named above -- a credential
+  # that was present and simply wrong. See the header's first finding for
+  # why there is no separate malformed tier: a "Bearer ..." value is read
+  # as the literal (wrong) credential, not as a recognised scheme with a
+  # bad token inside it.
+  authentication_error:
+    status: 401
+    headers:
+      Content-Type: application/json; charset=utf-8
+    message: Invalid API key
+
+  # Struck live with no credential sent at all -- zero bytes, not this
+  # provider's own failure envelope. See the header's third finding.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html
+    message: ""
+
+  # The real Allow header this host sends is supplied by Cauldron's own
+  # routing (computed from the routes this Recipe declares), not hardcoded
+  # here. Empty body, exactly like the 404 above -- struck live.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: text/html
+    message: ""
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no Authorization header at all names both absence and emptiness in one sentence
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /chrome/pdf/html
+      json:
+        html: "<p>probe</p>"
+    expect:
+      status: 401
+      headers:
+        content-type: application/json; charset=utf-8
+      body:
+        Success: false
+        Error: Missing or empty Authorization Header or API Key
+        FileUrl: null
+
+  - name: a present but wrong credential is a different sentence in the identical envelope
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /chrome/pdf/html
+      headers:
+        Authorization: junktoken12345
+      json:
+        html: "<p>probe</p>"
+    expect:
+      status: 401
+      body:
+        Success: false
+        Error: Invalid API key
+
+  - name: a Bearer-shaped header is not read as a scheme at all, just a wrong literal value
+    # Api2Pdf's own client sends the raw key with no prefix, and the wire
+    # confirms it: this answers byte-identical to a bare wrong key, not a
+    # third, malformed-shaped sentence. See the header's first finding.
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /chrome/pdf/html
+      headers:
+        Authorization: Bearer junktoken12345
+      json:
+        html: "<p>probe</p>"
+    expect:
+      status: 401
+      body:
+        Error: Invalid API key
+
+  - name: a path this host never registered is empty, not this provider's own failure envelope
+    source: https://v2.api2pdf.com/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        content-type: text/html
+
+  - name: a wrong method on a real path is a real 405 with the real Allow header, and no credential is examined
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /chrome/pdf/html
+    expect:
+      status: 405
+      headers:
+        allow: POST
+        content-type: text/html
+
+  - name: and PATCH on the same real path is the identical 405, checked as its own case rather than assumed from GET
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /chrome/pdf/html
+    expect:
+      status: 405
+      headers:
+        allow: POST
+
+  - name: a wrong credential on that same wrong method changes nothing, because routing never lets the credential be examined
+    source: https://v2.api2pdf.com/chrome/pdf/html
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /chrome/pdf/html
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 405
+      headers:
+        allow: POST
