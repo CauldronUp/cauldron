@@ -1,0 +1,521 @@
+# Swell Recipe for Cauldron
+#
+# Swell keeps a cart and the order it becomes as two separate records in two
+# separate collections, and points each one at the other. Swell's own field
+# reference for the order object says it in one line: "cart_id -- ID of the
+# cart that converted to this order, if applicable." The cart object carries
+# the return trip -- "order_id -- ID of the the converted order, if
+# applicable" (the doubled "the" is the provider's own typo, not this
+# Recipe's) -- plus a second field, target_order_id, described as "When a
+# cart is converted to an order, this field represents the corresponding
+# order_id," which reads as a duplicate of order_id rather than a distinct
+# fact; both are modelled below because both are what the reference states,
+# and neither is asserted to mean something the other does not.
+#
+# So: two records, not one with a status. A cart never becomes an order in
+# the sense of a row changing its own type -- conversion mints a *second*
+# row, in a *different* collection, with its *own* id, and stitches the two
+# together by reference. The cart is not deleted and not frozen: its status
+# field moves to "converted" (one of four values Swell's reference gives in
+# full -- "active, converted, abandoned, or recovered" -- and the reference
+# lists Update and Delete endpoints for a cart with no exception carved out
+# for a converted one, so nothing in the documentation says a converted cart
+# stops accepting writes; this Recipe does not claim it does, and does not
+# claim it does not -- see the gaps below). "Cart 123" and "order 456" are
+# never the same thing under two names here: they are two things, and the
+# only way to learn they are related is to follow the field that says so.
+#
+# Compare Commerce Layer, probed and written the same day and living two
+# directories over: one order record, one id, a status attribute that moves
+# from draft through placed to approved, and no second collection anywhere.
+# Swell and Commerce Layer answer this Recipe group's organising question --
+# does a cart keep its own id once it becomes an order -- with opposite
+# architectures, and both answers are real.
+#
+# Two identifiers on a Swell cart are not the Mongo-style id: checkout_id is,
+# in the reference's words, the "Customer-facing unique identifier for the
+# cart used in URLs and for abandoned cart recovery," and number is a
+# "Unique incremental cart number" that (per the Querying Records reference)
+# doubles as the cart's secondary_field -- a value a request may address the
+# record by instead of id, a distinction orders share (their own secondary_
+# field is also number) and most other Swell models do not.
+#
+# Every fact about cart and order fields above, and every field value in the
+# fixtures below, is read from Swell's published field reference at
+# developers.swell.is/backend-api/carts and /backend-api/orders and carries
+# no verified date: no key exists here to call either endpoint's success
+# path with, and this Recipe was written with no account and no credential.
+# What was called live, repeatedly and today, is the failure surface, which
+# needed no key to reach.
+#
+# **Basic auth, and the two halves are not symmetric.** Swell's own words:
+# "authenticate with basic auth using your store ID as the username and a
+# secret key as the password." The username identifies which store; the
+# password is the actual credential, so this Recipe checks the password half
+# (auth.credential: password) the way FastSpring's does and Greenhouse's does
+# not. Four requests, struck live against api.swell.store with no account
+# and no key ever created:
+#
+#   no Authorization header at all         -> 401 "Unauthorized"
+#                                              Www-Authenticate: Basic realm="Schema"
+#   Authorization: Bearer <anything>       -> byte-identical to the above
+#   Authorization: Basic <bad base64>      -> byte-identical to the above
+#   -u 'store:'  (empty password)          -> byte-identical to the above
+#   -u 'store:<nonempty wrong password>'   -> 401 "Invalid credentials for 'store'"
+#                                              no Www-Authenticate header
+#
+# Four different ways of failing to present a real Basic credential all land
+# on the identical "Unauthorized," and the fifth -- a password that is
+# present, non-empty, and simply wrong -- gets a different sentence that
+# names the username back and drops the challenge header. That is Cauldron's
+# own Absent/Malformed split falling out of the runtime for free: a Basic
+# header that fails to parse, or parses to an empty checked half, is
+# Malformed; this Recipe leaves auth.malformed_error unset because the live
+# wording for it already equals the generic one, and unset is how this
+# format says two verdicts share a sentence rather than that the difference
+# was not tested. Only Rejected -- a password that made it to the comparison
+# and lost -- gets its own error, invalid_credentials, and this Recipe's own
+# fixture username, cauldron-shop, is what was actually sent to get the
+# verified case below: Swell's message is a constant it composes at request
+# time by echoing the username back, and a Recipe's error bodies are
+# constants it cannot compose at all, so the case sends the one username
+# whose echo this file has on file. Sending a different bad username live
+# would get a different sentence with a different name inside it, which is
+# the honest limit of that comparison here.
+#
+# **Auth is checked before routing is even attempted, unconditionally.** A
+# path that does not exist and a real path with a method Swell's own error
+# table calls out by name (405, "Endpoint doesn't support that HTTP method")
+# both answered 401 "Unauthorized" with no credential sent at all -- neither
+# ever got as far as the router. That is Cauldron's own default ordering
+# exactly, so auth.after_routing is not declared: declaring it here would
+# make the unrouted-path and wrong-method cases 404 and 405 in the emulator,
+# which is not what api.swell.store did to either request. It also means
+# this Recipe cannot demonstrate what an authenticated 404 or 405 looks
+# like: reaching one needs a credential this Recipe was never issued, and
+# Swell's own error reference states the status codes (400, 402, 403, 404,
+# 405, 429) without a worked body for any of them, so no case below claims
+# to know that shape. Left out rather than guessed.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Whether a converted cart still accepts writes is not modelled either
+#     way -- see above. Neither answer is in the reference.
+#   - Swell's list envelope reports a "pages" object mapping each page
+#     number to its start/end record range -- {"1": {"start": 1, "end": 15},
+#     ...} -- alongside count, results, page, limit and page_count. This
+#     format has no field for a map keyed by page number, so pages is
+#     absent from every list case below; count, page_count, page and limit
+#     are all modelled.
+#   - The where parameter's MongoDB-style query operators ($gte, $regex,
+#     $elemMatch and the rest) are not modelled. Every route below is an
+#     unfiltered GET.
+#   - The validation error shape Swell's Errors reference shows --
+#     {"errors": {"<field>": {"code", "message"}}}, keyed by field rather
+#     than a list -- is not declared. No route in this Recipe can trigger
+#     it: every route is a read, and the shape is documented for a write
+#     this Recipe never sends.
+#   - 403 ("Credentials aren't authorized for that resource") and 429 are
+#     named in Swell's status table and not modelled: no worked body exists
+#     for either, and this Recipe was never rate-limited to observe one.
+#   - checkout_id, number and the fixture ids below are this Recipe's own
+#     placeholders, shaped like Swell's real ones (a 24-character hex id,
+#     the pattern every value on this host actually uses) but not values
+#     Swell ever returned to a request this Recipe sent.
+#   - Products, accounts, subscriptions, coupons, gift cards and every other
+#     Swell model are absent. Carts and orders only.
+#   - No upstream.spec is recorded. developers.swell.is/openapi.json and
+#     /swagger.json both 404, and api.swell.store publishes no discovery
+#     endpoint reachable without a key -- no single machine-readable
+#     document was found to fingerprint.
+#
+# The credentials below are fixtures, not secrets. They belong to no store.
+
+recipe: swell
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: backend
+  docs: https://developers.swell.is/backend-api/introduction
+
+auth:
+  scheme: basic
+  # The secret key, not the store id, is the half that is actually checked.
+  #
+  # The fixture value below deliberately imitates nobody. It carried a
+  # Stripe-shaped "sk_test_" prefix when this Recipe was written, which was
+  # wrong twice: Swell does not mint keys in that form, and a string shaped
+  # like a real vendor's test key is a string secret scanners are right to
+  # stop -- GitHub's push protection did, and it was correct to.
+  credential: password
+  keys:
+    - cauldron-swell-fixture-secret-key
+  # Left unset on purpose: the live wording for a header that fails to parse
+  # as Basic, or parses with an empty checked half, already equals the
+  # generic authentication_error below -- see the header.
+  # malformed_error: (unset)
+  rejected_error: invalid_credentials
+
+responses:
+  list:
+    style: wrapped
+    key: results
+    # The whole matching set, not the page in front of you -- Swell's own
+    # words for this one are "total matching records."
+    count_field: count
+    # How many pages the whole set makes at this page size, a different
+    # number from count and named apart from it the way commercetools names
+    # its own pair apart.
+    pages_field: page_count
+    page_field: page
+    limit_field: limit
+  resource:
+    # No wrapper. A cart's or order's fields sit directly on the response,
+    # the way FireHydrant's do and Medusa's do not.
+    style: bare
+  error:
+    # Only reached by the validation shape this Recipe never triggers -- see
+    # the gaps. Every error actually served below overrides style to text, so
+    # this default envelope is never exercised by any case here and its field
+    # names are left undeclared rather than asserted against nothing.
+    style: flat
+
+resources:
+  cart:
+    id:
+      # Swell's own field type for this is "objectId" -- 24 lowercase hex
+      # characters, Mongo's shape, which every id on this host actually
+      # uses.
+      style: hex
+      length: 24
+    fields:
+      # Customer-facing, and different from id: "used in URLs and for
+      # abandoned cart recovery."
+      checkout_id:
+        type: string
+      # A secondary_field per the Querying Records reference: a value this
+      # cart may also be addressed by, alongside id. Not modelled as its own
+      # route below -- see the gaps -- but real.
+      number:
+        type: integer
+      # active, converted, abandoned, or recovered -- the reference's own
+      # four words, in that order.
+      status:
+        type: string
+        default: active
+      abandoned:
+        type: boolean
+        default: false
+      # Set only once this cart has become an order. Both fields exist on
+      # the real record and both point at the same order; see the header
+      # for why neither is treated as more authoritative than the other.
+      order_id:
+        type: string
+      target_order_id:
+        type: string
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+
+  order:
+    id:
+      style: hex
+      length: 24
+    fields:
+      number:
+        type: integer
+      # pending (default), draft, payment_pending, delivery_pending, hold,
+      # complete, or canceled -- the order reference's own seven words.
+      status:
+        type: string
+        default: pending
+      # Draft orders double as the dashboard's cart-editing entries -- see
+      # the order reference -- which is a second, narrower sense of "cart"
+      # this Recipe does not model as a route of its own.
+      draft:
+        type: boolean
+        default: false
+      # The trip back: which cart became this order, if any. "if applicable"
+      # is the reference's own qualifier -- an order created without going
+      # through a cart would carry none.
+      cart_id:
+        type: string
+      date_created:
+        type: datetime
+      date_updated:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /carts
+    resource: cart
+    operation: list
+    pagination:
+      style: page
+      # 15 is the documented default; 1000 is the documented ceiling on
+      # limit itself, both from the Querying Records reference.
+      limit: 15
+      max_limit: 1000
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /carts/{id}
+    resource: cart
+    operation: get
+
+  - method: GET
+    path: /orders
+    resource: order
+    operation: list
+    pagination:
+      style: page
+      limit: 15
+      max_limit: 1000
+      limit_param: limit
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  # The shared sentence -- see the header. Absent, a wrong scheme, base64
+  # that will not parse, and a Basic credential with an empty checked half
+  # all land here, byte for byte, verified live.
+  authentication_error:
+    status: 401
+    style: text
+    headers:
+      Content-Type: text/plain
+      Www-Authenticate: Basic realm="Schema"
+    message: Unauthorized
+
+  # A password that is present, non-empty, and simply wrong. No challenge
+  # header on this one -- verified live, and see the header for why the
+  # username inside the sentence is this Recipe's own fixture rather than a
+  # template.
+  invalid_credentials:
+    status: 401
+    style: text
+    headers:
+      Content-Type: text/plain
+    message: Invalid credentials for 'cauldron-shop'
+
+fixtures:
+  empty: {}
+
+  storefront:
+    cart:
+      # Still a cart. Nobody has checked out, so neither order_id nor
+      # target_order_id exists on this record at all -- not null, absent --
+      # and status has never moved off its default.
+      - id: 5f1b2c3d4e5f6a7b8c9d0e1f
+        checkout_id: e4a1c9b6d3f0827160593a4bc71de92
+        number: 1041
+        status: active
+        abandoned: false
+        date_created: "2026-08-20T14:05:00.000Z"
+        date_updated: "2026-08-20T14:05:00.000Z"
+
+      # This one converted. Both reference fields point at the same order
+      # below, and status says so in the one word the reference reserves
+      # for exactly this.
+      - id: 5f1b2c3d4e5f6a7b8c9d0e20
+        checkout_id: 9c02f47b1e6d4a8395c0271bfa4e60d1
+        number: 1042
+        status: converted
+        abandoned: false
+        order_id: 6a2c3d4e5f6a7b8c9d0e1f21
+        target_order_id: 6a2c3d4e5f6a7b8c9d0e1f21
+        date_created: "2026-08-18T09:30:00.000Z"
+        date_updated: "2026-08-18T09:47:12.000Z"
+
+    order:
+      # The order the cart above became. Its own id, in its own collection --
+      # cart_id is the only thing connecting the two records, in either
+      # direction.
+      - id: 6a2c3d4e5f6a7b8c9d0e1f21
+        number: 2201
+        status: payment_pending
+        draft: false
+        cart_id: 5f1b2c3d4e5f6a7b8c9d0e20
+        date_created: "2026-08-18T09:47:12.000Z"
+        date_updated: "2026-08-18T09:47:12.000Z"
+
+conformance:
+  - name: no credential at all gets Unauthorized
+    source: https://api.swell.store/products
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain
+        Www-Authenticate: Basic realm="Schema"
+      body_matches: "^Unauthorized$"
+
+  - name: a Bearer-scheme header gets the identical sentence
+    # Not Basic at all, so it never reaches the comparison -- see the header.
+    # Byte-identical to no header, verified live.
+    source: https://api.swell.store/products
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts
+      headers:
+        Authorization: Bearer junk-not-a-swell-key
+    expect:
+      status: 401
+      headers:
+        Www-Authenticate: Basic realm="Schema"
+      body_matches: "^Unauthorized$"
+
+  - name: a Basic credential with an empty password gets the same sentence too
+    # -u 'cauldronstore:' -- a well-formed Basic header whose checked half
+    # (the password) is empty. Not a wrong credential; no credential was
+    # ever compared, which is why this lands beside the absent case rather
+    # than beside the rejected one below. Verified live.
+    source: https://api.swell.store/products
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts
+      headers:
+        Authorization: Basic Y2F1bGRyb25zdG9yZTo=
+    expect:
+      status: 401
+      headers:
+        Www-Authenticate: Basic realm="Schema"
+      body_matches: "^Unauthorized$"
+
+  - name: a present, non-empty, wrong password names the username back
+    # -u 'cauldron-shop:wrongkey-not-a-swell-key' -- verified live, with
+    # this Recipe's own fixture username. See the header for why the
+    # username inside the sentence is not a template.
+    source: https://api.swell.store/products
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts
+      headers:
+        Authorization: Basic Y2F1bGRyb24tc2hvcDp3cm9uZ2tleS1ub3QtYS1zd2VsbC1rZXk=
+    expect:
+      status: 401
+      body_matches: "^Invalid credentials for 'cauldron-shop'$"
+      absent_headers:
+        - Www-Authenticate
+
+  - name: a path Swell does not route still gets refused for its credentials, not its path
+    # Live, with no credential at all. 401, not 404 -- the router is never
+    # consulted. See the header for why auth.after_routing is not declared.
+    source: https://api.swell.store/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /no-such-route-xyz
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: and so does a method Swell's own error table calls a real 405
+    # Live, no credential. Swell's Errors reference names 405 explicitly
+    # ("Endpoint doesn't support that HTTP method") and this request never
+    # reaches whatever produces it.
+    source: https://api.swell.store/products
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: PATCH
+      path: /carts
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: a cart that has not converted carries neither reference field
+    source: https://developers.swell.is/backend-api/carts
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts/5f1b2c3d4e5f6a7b8c9d0e1f
+      headers:
+        Authorization: Basic Y2F1bGRyb24tc2hvcDpjYXVsZHJvbi1zd2VsbC1maXh0dXJlLXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        id: 5f1b2c3d4e5f6a7b8c9d0e1f
+        status: active
+        checkout_id: e4a1c9b6d3f0827160593a4bc71de92
+      absent:
+        # Not null -- absent. Nothing has happened yet for either field to
+        # describe.
+        - order_id
+        - target_order_id
+
+  - name: a converted cart points at the order it became, by id
+    source: https://developers.swell.is/backend-api/carts
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts/5f1b2c3d4e5f6a7b8c9d0e20
+      headers:
+        Authorization: Basic Y2F1bGRyb24tc2hvcDpjYXVsZHJvbi1zd2VsbC1maXh0dXJlLXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        id: 5f1b2c3d4e5f6a7b8c9d0e20
+        status: converted
+        order_id: 6a2c3d4e5f6a7b8c9d0e1f21
+        target_order_id: 6a2c3d4e5f6a7b8c9d0e1f21
+
+  - name: the order carries the cart's id back, and neither id is the other
+    # The point of this whole Recipe group. Two records, two collections,
+    # two different ids, connected only by the field that says so.
+    source: https://developers.swell.is/backend-api/orders
+    fixture: storefront
+    request:
+      method: GET
+      path: /orders/6a2c3d4e5f6a7b8c9d0e1f21
+      headers:
+        Authorization: Basic Y2F1bGRyb24tc2hvcDpjYXVsZHJvbi1zd2VsbC1maXh0dXJlLXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        id: 6a2c3d4e5f6a7b8c9d0e1f21
+        cart_id: 5f1b2c3d4e5f6a7b8c9d0e20
+        status: payment_pending
+      absent:
+        - order_id
+
+  - name: a listing reports the whole matching set beside the page you asked for
+    source: https://developers.swell.is/backend-api/querying
+    fixture: storefront
+    request:
+      method: GET
+      path: /carts
+      headers:
+        Authorization: Basic Y2F1bGRyb24tc2hvcDpjYXVsZHJvbi1zd2VsbC1maXh0dXJlLXNlY3JldC1rZXk=
+    expect:
+      status: 200
+      body:
+        count: 2
+        page: 1
+        limit: 15
+        page_count: 1
+        results[0].id: 5f1b2c3d4e5f6a7b8c9d0e1f
+      absent:
+        # Not modelled -- see the gaps. A map keyed by page number has no
+        # field in this format to land in.
+        - pages

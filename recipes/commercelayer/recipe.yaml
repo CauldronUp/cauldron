@@ -1,0 +1,620 @@
+# Commerce Layer Recipe for Cauldron
+#
+# Commerce Layer has no cart resource at all. Its own data-model page says
+# so in one sentence: "The shopping cart is a *draft* order." Not becomes,
+# not is represented by -- is. A cart and the order it turns into are one
+# row, one id, one collection, from the first item added to the last
+# shipment fulfilled. Compare Swell, probed and written the same day and
+# living one directory over: two collections, two ids, a cart_id/order_id
+# pair connecting two different rows. Commerce Layer and Swell answer this
+# Recipe group's organising question -- does a cart keep its own id once it
+# becomes an order -- with opposite architectures, and both are real.
+#
+# The lifecycle is a single documented sentence each step, from
+# data-model/orders/anatomy-of-an-order:
+#
+#   "The shopping cart is a *draft* order."
+#   "Draft orders are labeled *pending* when the customer adds their email
+#    address."
+#   "...the order is momentarily put in *placing*."      (async placement only)
+#   "The order can be cancelled before it is *captured*."
+#   "...placed orders can still be moved to *editing* status..."
+#   "The order is *approved* and the customer's payment is captured."
+#
+# and the order object's own field reference confirms it as an enum on one
+# field of one resource: attributes.status, "One of 'draft' (default),
+# 'pending', 'editing', 'placing', 'placed', 'approved', or 'cancelled'."
+# Nothing about id changes anywhere in that list. There is a second word
+# "cart" survives as on this record -- cart_url, "The cart url on your
+# site," and attributes.token, "A unique token that can be shared more
+# securely instead of the order's id" -- but neither is an identifier for a
+# second record. They are a link and an alias for the one record there is.
+#
+# So: read a cart that has already become an order? Trivially -- it was
+# never anything else. GET /api/orders/{id} answers the same id whether
+# status is draft or approved, and the question "is cart 123 the same thing
+# as order 456" does not parse here: there is no order 456, there is order
+# 123, in whichever status it currently holds.
+#
+# **What a cart looks like once it stops being one is a documented field,
+# not an inference.** attributes.editable -- "Indicates if the order can be
+# edited" -- is a boolean the reference states plainly rather than leaving
+# to be derived from status. The lifecycle prose narrows when it is true:
+# "Draft and pending orders are always editable... Once an order is placed
+# but not yet approved, it can be moved to editing status... When an order
+# is in editing, it can be updated." A draft order (this Recipe's one
+# documented example) carries editable: true; nothing in either reference
+# gives a worked value for any other status, so no other value is asserted
+# below -- see the gaps.
+#
+# **This is Lemon Squeezy's JSON:API shape, not Rootly's.** Two JSON:API
+# Recipes exist in this collection already, and they disagree about where a
+# nested value lives: Rootly's severity is a second, complete JSON:API
+# document sitting as the *value* of one attribute
+# (attributes.severity.data.attributes...), four levels deep. Commerce
+# Layer's own worked example -- core-api-reference/orders/list.md -- is
+# flat throughout: id and type outside attributes as Lemon Squeezy's are,
+# every business field a direct child of attributes, relationships holding
+# only links (no embedded data), and meta carrying
+# mode/organization_id/trace_id beside the record rather than inside it.
+# Lemon Squeezy's shape, not Rootly's -- nothing here nests twice.
+#
+# **The failure envelope is not one shape wearing two content types. It is
+# two shapes, and which one a request gets depends on what kind of failure
+# it is, not which host answered.** Four requests, struck live against a
+# syntactically valid but nonexistent organisation subdomain, with no
+# account and no key ever created:
+#
+#   GET /api/orders            no credential  -> 401, array:
+#     {"errors":[{"title":"Invalid token","detail":"The access token you
+#       provided is invalid.","code":"INVALID_TOKEN","status":"401"}]}
+#     Content-Type: application/vnd.api+json; charset=utf-8
+#   GET /api/orders            Bearer junk    -> byte-identical to the above
+#   GET /api/no-such-route-xyz no credential  -> 404, a bare object, not an
+#       array, still keyed "errors":
+#     {"errors":{"title":"Record Not Found","detail":"The requested
+#       resource was not not found. Please double-check the resource id.",
+#       "code":"RECORD_NOT_FOUND","status":404}}
+#     Content-Type: application/json; charset=utf-8
+#   PATCH /api/orders          no credential  -> byte-identical 404 to the
+#       one above -- see the ordering paragraph below
+#
+# A credential failure is a JSON:API errors *array*, status quoted as the
+# *string* "401", served as application/vnd.api+json. A routing failure --
+# an unrouted path, a method nothing is registered for -- is a *singular
+# object* under the same "errors" key, status sent as the *number* 404,
+# served as plain application/json. The key name promises a list every
+# time; only one of the two failure kinds actually sends one. And the
+# routing failure's own sentence contains a doubled word in Commerce
+# Layer's own live text -- "was not not found" -- quoted here exactly
+# because it is exactly what api.commercelayer.io sent, not a typo
+# introduced by this Recipe.
+#
+# **Routing resolves before the credential, and the credential is never
+# reached for an id-scoped route at all.** No credential, live: an unrouted
+# path 404s, PATCH and DELETE on the real /api/orders collection (neither
+# is a registered collection-level action; only GET and POST are) 404
+# identically, and GET /api/orders/{any id} 404s with the object shape
+# above too. Sent again with a syntactically fine but wrong bearer token:
+# every one of those still 404s, byte-identical, credential or no
+# credential -- the wrong-token case for an id-scoped path never reaches
+# the 401 an authenticated collection request gets. auth.after_routing:
+# true is declared, and it earns its keep for the collection-level cases:
+# GET/POST /api/orders (both are registered) still check the credential
+# first once routed, 401 as above, and PATCH/DELETE (never registered at
+# the collection level) 404 before any credential is examined, both
+# matched live. What it cannot also do is the id-scoped exception: with
+# after_routing declared, this Recipe's own GET /orders/{id} route checks
+# the credential immediately after matching, before an id lookup ever
+# happens -- the reverse of what api.commercelayer.io actually does, which
+# resolves the id (or fails to) first and only reaches a credential check
+# after that.
+#
+# **NocoDB's line, in this format's own words: "splits on whether the
+# route names an identifier"** (internal/recipe/auth.go) -- and Commerce
+# Layer draws it in the same place NocoDB does, one of the five orderings
+# the single boolean cannot express at once with a collection route's own
+# ordering. This Recipe keeps after_routing for the more general, more
+# testable half (an unrouted path, a method nothing serves) and states the
+# id-scoped exception here rather than asserting a GET /orders/{id} case
+# this Recipe cannot make the emulator answer the way the live host did:
+# doing so would need a credential-blind id lookup this format has no way
+# to declare, per the six orderings auth.go already lists as recorded in
+# prose rather than forced.
+#
+# **The OAuth token host is a different product wearing the same JSON:API
+# error shape, and is not routed here.** auth.commercelayer.io mints
+# access tokens by client_credentials grant; api.commercelayer.io's <org>
+# subdomain spends them. Cauldron authenticates one scheme per Recipe, and
+# the scheme that protects every order route below is Bearer -- a
+# credential-issuing endpoint that takes a client id and secret in a JSON
+# body is not a resource guarded by the credential it mints, the same
+# reason ingestion and management/export are two unrelated schemes in one
+# Mezmo account and only one is wired in that Recipe. What was checked live
+# against auth.commercelayer.io, with no account and no client ever
+# created:
+#
+#   POST /oauth/token   no Content-Type, no body
+#     -> 400 {"errors":[{"status":400,"title":"Bad request","detail":
+#        "The Content-type header was not correctly set to
+#        application/json.","code":"BAD_REQUEST","meta":{"trace_id":null}}]}
+#   POST /oauth/token   Content-Type: application/json,
+#                       {"grant_type":"client_credentials",
+#                        "client_id":"junk","client_secret":"junk"}
+#     -> 401, WWW-Authenticate: Bearer realm="Commerce Layer",
+#        error="invalid_client", error_description="Client authentication
+#        failed due to unknown client, no client authentication included,
+#        or unsupported authentication method."
+#        {"errors":[{"status":401,"title":"invalid_client","detail":
+#        "<the same sentence>","code":"UNAUTHORIZED",
+#        "meta":{"trace_id":"<hex>"}}]}
+#   POST /oauth/token   Content-Type: application/json, {}
+#     -> 400, WWW-Authenticate: ...error="invalid_request", error_description=
+#        "Missing required parameter: grant_type."
+#        {"errors":[{"status":400,"title":"Generic Error","detail":
+#        "Missing required parameter: grant_type.","code":"BAD_REQUEST",
+#        "meta":{"trace_id":"<hex>"}}]}
+#   GET  /oauth/token  (wrong method, whatever body)
+#     -> 404, the same array-of-one-object shape as api.commercelayer.io's
+#        own unrouted-path case, but with a "meta.trace_id" present on it,
+#        which the resource host's own object-shaped 404 above does not
+#        carry: {"errors":[{"status":404,"title":"Not found","detail":
+#        "The resource requested cannot be found.","code":"NOT_FOUND",
+#        "meta":{"trace_id":"<hex>"}}]}
+#
+# Every one of those is a JSON:API errors array, RFC 6749's error/
+# error_description surfacing a second time inside WWW-Authenticate for the
+# two OAuth-specific failures, and none of it reachable through a route
+# this Recipe's single Bearer scheme could check correctly.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Whether editable is true or false for any status other than draft is
+#     not modelled -- see above. The reference states the field and states
+#     the prose around it; no worked example gives it a value for pending,
+#     placed, editing, approved or cancelled.
+#   - Of roughly 140 documented order attributes this Recipe declares
+#     eighteen. Every payment-source, shipment, tax, discount, promotion,
+#     subscription and address relationship is present on the real record
+#     as a links-only relationship and is absent from resources.order.fields
+#     below; relationships (link-only, no embedded data) are not modelled at
+#     all, matching this Recipe's own flat-attributes claim above.
+#   - X-Ratelimit-Interval / -Limit / -Remaining were present, live, on
+#     every response from both hosts, and Remaining decremented on every
+#     call. Not modelled: a fixture cannot track a counter that moves on
+#     every request, the same reason Rootly's own rate-limit headers are
+#     recorded rather than served exactly.
+#   - Create, update, and every other write (_place, _approve, _cancel and
+#     the rest of the trigger-attribute vocabulary the order object
+#     documents) are not modelled. Every route below is a GET.
+#   - No upstream.spec is recorded. Commerce Layer's reference is published
+#     as GitBook pages with a machine-readable .md export per page
+#     (docs.commercelayer.io/<path>.md) rather than one fetchable OpenAPI
+#     document for the whole API, so there is no single URL to fingerprint.
+#   - auth.commercelayer.io is evidence in this header, not a route -- see
+#     above.
+#
+# The credential below is a fixture, not a secret. It belongs to no
+# organisation.
+
+recipe: commercelayer
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: core
+  docs: https://docs.commercelayer.io/core-api-reference/orders
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_commercelayer_fixture_access_token_00000000000000
+  # Absent, a wrong scheme, and a syntactically fine but wrong token all
+  # answered the identical body live -- see the header. One message covers
+  # all three verdicts, which is the honest default rather than an
+  # oversight.
+  # The routing failures below -- an unrouted path, a method nothing
+  # serves -- are checked before the credential at all, live, for every
+  # collection-level request. after_routing does not also reach the
+  # id-scoped exception; see the header for exactly why.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    count_field: meta.record_count
+    pages_field: meta.page_count
+    page_field: meta.page_number
+    limit_field: meta.page_size
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # The credential-failure shape: a JSON:API array. The routing-failure
+    # shape (resource_missing below) overrides this per entry -- see the
+    # header for why the two are not the same envelope.
+    style: list
+    key: errors
+    message_field: title
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  order:
+    collection: data
+    id:
+      # "XAyRWNUzyN" is Commerce Layer's own worked example -- ten
+      # characters, mixed case, no fixed format documented beyond "The
+      # order unique identifier."
+      style: opaque
+    fields:
+      number:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # draft (default), pending, editing, placing, placed, approved, or
+      # cancelled -- the reference's own seven words, and see the header
+      # for the one-sentence lifecycle each transition is documented with.
+      status:
+        type: string
+        default: draft
+        in: attributes
+      # unpaid (default), authorized, partially_authorized, paid,
+      # partially_paid, voided, partially_voided, refunded,
+      # partially_refunded, or free.
+      payment_status:
+        type: string
+        default: unpaid
+        in: attributes
+      # unfulfilled (default), in_progress, fulfilled, or not_required.
+      fulfillment_status:
+        type: string
+        default: unfulfilled
+        in: attributes
+      # "Indicates if the order can be edited." A documented field, not a
+      # derived one -- see the header for the one status it is asserted
+      # for below.
+      editable:
+        type: boolean
+        in: attributes
+      guest:
+        type: boolean
+        null_when_unset: true
+        in: attributes
+      customer_email:
+        type: string
+        null_when_unset: true
+        in: attributes
+      currency_code:
+        type: string
+        null_when_unset: true
+        in: attributes
+      subtotal_amount_cents:
+        type: integer
+        null_when_unset: true
+        in: attributes
+      total_amount_cents:
+        type: integer
+        null_when_unset: true
+        in: attributes
+      # "A unique token that can be shared more securely instead of the
+      # order's id." An alias, not a second identifier for a second record
+      # -- see the header.
+      token:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # "The cart url on your site." The one place the word "cart" survives
+      # on this record, and it is a URL to the merchant's own storefront,
+      # not an id.
+      cart_url:
+        type: string
+        null_when_unset: true
+        in: attributes
+      checkout_url:
+        type: string
+        null_when_unset: true
+        in: attributes
+      placed_at:
+        type: string
+        null_when_unset: true
+        in: attributes
+      approved_at:
+        type: string
+        null_when_unset: true
+        in: attributes
+      cancelled_at:
+        type: string
+        null_when_unset: true
+        in: attributes
+      created_at:
+        type: string
+        null_when_unset: true
+        in: attributes
+      updated_at:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # test or live -- beside the record rather than inside attributes,
+      # the same arrangement the list envelope's own meta uses one level
+      # up.
+      mode:
+        type: string
+        in: meta
+      organization_id:
+        type: string
+        null_when_unset: true
+        in: meta
+    constants:
+      type: orders
+
+routes:
+  - method: GET
+    path: /api/orders
+    resource: order
+    operation: list
+    pagination:
+      style: page
+      # 10 is the documented default page size, from the same worked
+      # example that gives page_count: 14 for record_count: 140.
+      limit: 10
+      limit_param: "page[size]"
+      cursor_param: "page[number]"
+      first_page: 1
+
+  - method: GET
+    path: /api/orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  # Absent, wrong-scheme and rejected all land here identically -- see the
+  # header. Verified live, both as no header at all and as a syntactically
+  # fine but wrong Bearer token.
+  authentication_error:
+    status: 401
+    message: Invalid token
+    headers:
+      Content-Type: application/vnd.api+json; charset=utf-8
+    fields:
+      detail: The access token you provided is invalid.
+      code: INVALID_TOKEN
+      # A quoted string, not the JSON number -- Rootly's own error envelope
+      # makes the identical choice for the identical reason: this runtime's
+      # own status_field always writes a number, and Commerce Layer's own
+      # auth failure never does.
+      status: "401"
+
+  # The routing-failure shape: a bare object under "errors", not an array,
+  # and a number rather than a quoted string for status. style: flat plus a
+  # dotted message_field is what actually lands these fields under "errors"
+  # -- style: nested puts a per-error fields: map beside the nested key
+  # rather than inside it, which is not this shape.
+  #
+  # Declared three times over (here, and again as unknown_route and
+  # method_not_allowed below) rather than left to Cauldron's own
+  # borrow-a-shape fallback: borrowing carries a lender's status only when
+  # the borrower's own default already matches it, and method_not_allowed's
+  # own default is a real 405 -- so the auto-fallback would answer this
+  # 405, correctly declining to borrow a 404 for it, and Commerce Layer's
+  # live 404 would never get served. Naming the failure directly, three
+  # times, is what actually reproduces "no 405 anywhere" rather than
+  # asserting it and quietly relying on borrowed status to fake it.
+  resource_missing: &commercelayer_routing_failure
+    status: 404
+    style: flat
+    message_field: errors.title
+    code_field: "-"
+    message: Record Not Found
+    headers:
+      Content-Type: application/json; charset=utf-8
+    fields:
+      # "was not not found" is Commerce Layer's own doubled word, live --
+      # not this Recipe's typo.
+      errors.detail: The requested resource was not not found. Please double-check the resource id.
+      errors.code: RECORD_NOT_FOUND
+      errors.status: 404
+
+  # An unrouted path, live-verified -- see the header. Same body as
+  # resource_missing; declared by name rather than left to fall back, for
+  # the reason above.
+  unknown_route: *commercelayer_routing_failure
+
+  # A method the collection route does not register, live-verified: 404,
+  # not a real 405 -- see the header for the PATCH/DELETE probe against
+  # /api/orders. Same body as resource_missing, same reason for declaring
+  # it directly.
+  method_not_allowed: *commercelayer_routing_failure
+
+fixtures:
+  empty: {}
+
+  # Commerce Layer's own worked example from
+  # core-api-reference/orders/list.md, trimmed to the fields this Recipe
+  # declares. Every value below is read from that document; none is
+  # observed, because no key exists here to call the endpoint that returns
+  # it.
+  one-organization:
+    order:
+      - id: XAyRWNUzyN
+        number: "1234"
+        status: draft
+        payment_status: unpaid
+        fulfillment_status: unfulfilled
+        editable: true
+        guest: true
+        customer_email: john@example.com
+        currency_code: EUR
+        subtotal_amount_cents: 5000
+        total_amount_cents: 5700
+        token: 1c0994cc4e996e8c6ee56a2198f66f3c
+        cart_url: https://yourdomain.com/cart
+        checkout_url: https://yourdomain.commercelayer.io/checkout/1c0994cc4e996e8c6ee56a2198f66f3c
+        placed_at: "2018-01-01T12:00:00.000Z"
+        approved_at: "2018-01-01T12:00:00.000Z"
+        cancelled_at: "2018-01-01T12:00:00.000Z"
+        created_at: "2018-01-01T12:00:00.000Z"
+        updated_at: "2018-01-01T12:00:00.000Z"
+        mode: test
+        organization_id: xRRkjDFafe
+
+conformance:
+  - name: a missing credential is a JSON:API errors array, status quoted as a string
+    source: https://api.commercelayer.io/api/orders
+    verified: "2026-09-01"
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/vnd.api+json; charset=utf-8
+      body:
+        errors[0].title: Invalid token
+        errors[0].detail: The access token you provided is invalid.
+        errors[0].code: INVALID_TOKEN
+        errors[0].status: "401"
+
+  - name: and a syntactically fine but wrong token answers the identical body
+    source: https://api.commercelayer.io/api/orders
+    verified: "2026-09-01"
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors[0].title: Invalid token
+        errors[0].status: "401"
+
+  - name: an unrouted path 404s before any credential is examined
+    # Live, no credential at all. after_routing carries this -- see the
+    # header.
+    source: https://api.commercelayer.io/api/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/no-such-route-xyz
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        errors.title: Record Not Found
+        errors.detail: The requested resource was not not found. Please double-check the resource id.
+        errors.code: RECORD_NOT_FOUND
+        errors.status: 404
+      absent:
+        # A bare object, not an array -- unlike the credential failure
+        # above, which is. See the header.
+        - errors[0]
+
+  - name: a method the collection route does not register 404s the same way, still with no credential
+    # Live: PATCH /api/orders is not a registered collection-level action
+    # (only GET and POST are), so it never reaches whatever checks a
+    # credential -- byte-identical to the unrouted case above.
+    source: https://api.commercelayer.io/api/orders
+    verified: "2026-09-01"
+    fixture: one-organization
+    request:
+      method: PATCH
+      path: /api/orders
+    expect:
+      status: 404
+      body:
+        errors.title: Record Not Found
+        errors.code: RECORD_NOT_FOUND
+
+  - name: the shopping cart is a draft order -- same id, one boolean says it is still open
+    source: https://docs.commercelayer.io/data-model/orders/anatomy-of-an-order
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders/XAyRWNUzyN
+      headers:
+        Authorization: Bearer cauldron_commercelayer_fixture_access_token_00000000000000
+    expect:
+      status: 200
+      body:
+        data.id: XAyRWNUzyN
+        data.type: orders
+        # "The shopping cart is a *draft* order." Not a second record under
+        # a second id -- this one, in this status.
+        data.attributes.status: draft
+        # "Draft and pending orders are always editable" -- the one status
+        # this Recipe has a worked value for.
+        data.attributes.editable: true
+        data.attributes.payment_status: unpaid
+        data.attributes.fulfillment_status: unfulfilled
+      absent:
+        # Nowhere on this record, in either direction. There is no second
+        # id for this to be.
+        - data.attributes.cart_id
+        - data.attributes.order_id
+
+  - name: cart survives only as a link and an alias, never as a second id
+    source: https://docs.commercelayer.io/core-api-reference/orders/object.md
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders/XAyRWNUzyN
+      headers:
+        Authorization: Bearer cauldron_commercelayer_fixture_access_token_00000000000000
+    expect:
+      status: 200
+      body:
+        # A URL to the merchant's own storefront.
+        data.attributes.cart_url: https://yourdomain.com/cart
+        # "A unique token that can be shared more securely instead of the
+        # order's id" -- an alias for this id, not a second one.
+        data.attributes.token: 1c0994cc4e996e8c6ee56a2198f66f3c
+        data.id: XAyRWNUzyN
+
+  - name: attributes are flat -- Lemon Squeezy's shape, not Rootly's
+    source: https://docs.commercelayer.io/core-api-reference/orders/list.md
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders/XAyRWNUzyN
+      headers:
+        Authorization: Bearer cauldron_commercelayer_fixture_access_token_00000000000000
+    expect:
+      status: 200
+      body:
+        data.attributes.currency_code: EUR
+        data.attributes.subtotal_amount_cents: 5000
+        data.attributes.total_amount_cents: 5700
+        # Beside the record, JSON:API's own convention -- and beside it a
+        # second time in the list envelope, one level up.
+        data.meta.mode: test
+        data.meta.organization_id: xRRkjDFafe
+      absent:
+        # No second JSON:API document nested inside one attribute. Compare
+        # Rootly's severity, which is exactly that.
+        - data.attributes.currency_code.data
+        - data.relationships.line_items.data
+
+  - name: a listing echoes the page it served beside the whole set
+    source: https://docs.commercelayer.io/core-api-reference/orders/list.md
+    fixture: one-organization
+    request:
+      method: GET
+      path: /api/orders
+      headers:
+        Authorization: Bearer cauldron_commercelayer_fixture_access_token_00000000000000
+    expect:
+      status: 200
+      body:
+        data[0].id: XAyRWNUzyN
+        data[0].type: orders
+        meta.record_count: 1
+        meta.page_count: 1
+        meta.page_size: 10
+        meta.page_number: 1

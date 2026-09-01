@@ -1,0 +1,575 @@
+# Snipcart Recipe for Cauldron
+#
+# Snipcart is not a commerce backend. It is a front-end widget --
+# JavaScript dropped into any static site -- and the REST API this Recipe
+# describes exists to read what the widget did, on a server, after the
+# fact. That framing turns out to answer this Recipe group's own question
+# more precisely than any of the other two providers in it: a cart becomes
+# an order at exactly one moment, and Snipcart's API is split across that
+# moment into two route families that do not overlap.
+#
+# **The order can never be created through this API, only read and
+# updated.** The Orders API reference states its own scope in one sentence:
+# "The Orders API allows you to search orders, retrieve a specific order,
+# update order information, and update many orders' statuses at once."
+# GET, GET, PUT, PATCH -- four documented verbs, and POST /orders is not
+# among them anywhere in the reference. An order comes into existence only
+# by the widget completing a real checkout in a browser; the server-side
+# API this Recipe emulates has no route that manufactures one. That is a
+# finding, not a gap this Recipe failed to cover -- see Known fidelity gaps
+# for the two write verbs (PUT, PATCH) that do exist and are not modelled,
+# which is a different thing from a create route that does not exist at
+# all.
+#
+# **A cart and an order are two records in two route families, and the
+# moment of conversion is the one thing the API is built to hide.** GET
+# /orders "retrieve[s] all completed orders" -- its own words -- and the
+# separate Abandoned Carts API "lets you retrieve carts that customers
+# started but never completed (status InProgress)." Those are not two
+# views onto one table. The Abandoned Carts reference says exactly what
+# happens at the boundary: "GET /carts/abandoned/{token} ... Returns a
+# single abandoned cart by its token. The cart must still be abandoned
+# (status InProgress); requesting a token that has since been completed
+# returns 404 Not Found." The instant a cart completes, its own endpoint
+# stops finding it -- not by changing its status field, by removing it
+# from what that route can return at all. The same token that 404s there
+# succeeds on GET /orders/{token} from that moment on. Two routes, one
+# identifier, and the identifier is the only thing that survives the
+# handoff -- which is what the two example payloads this Recipe cites
+# verbatim both show: an abandoned cart's own "id" and "token" fields carry
+# the identical GUID ("id": "5e6e8393-...", "token": "5e6e8393-...", the
+# reference's own worked example), and that is the value GET /orders/{id}
+# is later addressed by, once the cart is gone from its own endpoint.
+#
+# **Basic auth, secret key as username, password left empty -- confirmed
+# for both route families in the same sentence each reference uses:**
+# "Requests are authenticated with your secret API key, sent as the HTTP
+# Basic username with an empty password. With curl: -u {API_KEY}:." Every
+# request this Recipe's routes take carries Accept: application/json,
+# documented as required ("Must always be set. The API only supports
+# JSON.") and unobservable as a distinct failure: see below.
+#
+# Four requests, struck live against app.snipcart.com with no account and
+# no key ever created:
+#
+#   GET /api/orders   no credential                     -> 401, 0 bytes
+#   GET /api/orders   -u 'junkkey:'  (Basic, empty pw)   -> byte-identical
+#   GET /api/orders   Authorization: Bearer junktoken... -> byte-identical
+#   GET /api/orders   no Accept header at all            -> byte-identical
+#
+# Zero bytes, not an empty JSON object and not a sentence -- Content-Length:
+# 0, no Content-Type header at all. Three different ways of failing to
+# authenticate (nothing, a well-formed empty-password Basic credential, a
+# whole different scheme) and one documented-but-untestable header
+# requirement all land on the identical empty body. That is the honest
+# default this format already has: no absent/malformed/rejected split is
+# declared, because none was observed to declare.
+#
+# **Routing resolves before the credential for a path Snipcart does not
+# have; the credential is checked before the method for a path it does.**
+# Two different orderings, on two different axes, both live-verified with
+# no credential sent at all:
+#
+#   GET /api/no-such-route-xyz   -> 404, a legacy ASP.NET default error
+#     page (Content-Type: text/html; charset=utf-8, "Server Error in '/'
+#     Application.", "The resource you are looking for ... Requested URL:
+#     /api/no-such-route-xyz") -- the framework's own routing failure,
+#     reached before Snipcart's own auth check ever runs.
+#   PATCH /api/orders            -> 401, the identical empty body above --
+#     not a 405. Snipcart registers no PATCH action on this exact path (the
+#     documented batch-update PATCH takes the same path, so this is not an
+#     unregistered method so much as a same-path action this Recipe does
+#     not model as a write -- see the gaps), and the credential is checked
+#     before that distinction is ever reached. DELETE answered identically.
+#
+# auth.after_routing: true carries the first ordering -- a truly unrouted
+# path 404s with nothing sent -- and method_not_allowed is declared
+# separately from Cauldron's own 405 default, matching what
+# api.snipcart.com actually answered: 401, byte-identical to the ordinary
+# credential failure, not a 405 with an Allow header. Two live orderings,
+# reproduced with the one flag plus one overridden error name, rather than
+# approximated with either alone.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - PUT /orders/{token} and PATCH /orders (the batch status-update
+#     endpoint) are documented -- both with worked request and response
+#     bodies -- and neither is modelled. Every route below is a GET; see
+#     the header's opening paragraph for why a write is a different kind
+#     of gap here than a genuinely absent create endpoint.
+#   - GET /orders/{token}/digital is documented, with a worked example, and
+#     is not modelled. Digital-goods delivery is a third route family this
+#     Recipe leaves out entirely rather than half-model.
+#   - The 400 validation shape from the Errors reference --
+#     {"message", "errors": {"<param>": ["..."]}, "reason"} -- is
+#     documented and not declared: no route below can trigger it, since
+#     every route is an unfiltered read and no worked example ties the
+#     shape to a specific request this Recipe could reproduce.
+#   - Query filters on GET /orders (status, paymentStatus, campaignId, the
+#     billing/shipping address matchers and the rest) and on GET
+#     /carts/abandoned (timeRange, minimalValue, productId, campaignId) are
+#     documented and not modelled. Every route below ignores its own query
+#     parameters and returns the whole fixture.
+#   - Of the abandoned-cart object's documented fields (billingAddress,
+#     shippingAddress, shippingInformation, discounts, refunds,
+#     customFields and the per-item dimensions/alternatePrices/duplicatable
+#     detail) this Recipe declares a subset; the two largest sub-objects
+#     this Recipe keeps -- summary and items -- are trimmed to the fields
+#     the worked example actually shows values for.
+#   - No upstream.spec is recorded. Snipcart's reference is Mintlify-style
+#     per-page documentation with no single fetchable OpenAPI document
+#     found for the whole v3 API.
+#
+# The credential below is a fixture, not a secret. It belongs to no store.
+
+recipe: snipcart
+capability: commerce
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://docs.snipcart.com/v3/api-reference/orders
+
+auth:
+  scheme: basic
+  # The secret key is the Basic username; the password is always empty and
+  # is not the credential -- Snipcart's own words, quoted in the header.
+  # Default credential (username) is correct here, unlike Swell's.
+  keys:
+    - cauldron_snipcart_fixture_secret_key_000000000000
+  # Absent, a well-formed empty-password Basic credential, and a whole
+  # different scheme (Bearer) all answered the identical zero-byte 401
+  # live -- see the header. No absent/malformed/rejected split is declared
+  # because none was observed.
+  #
+  # A truly unrouted path 404s before any credential is examined, live,
+  # with nothing sent at all -- carried by this flag. It does not also
+  # cover the method_not_allowed case below, which is declared with its
+  # own live-observed status instead of Cauldron's 405 default.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: items
+  resource:
+    # No wrapper on either resource -- an order or an abandoned cart's
+    # fields sit directly on the response.
+    style: bare
+  error:
+    # Never actually reached: every error this Recipe serves overrides its
+    # own shape below to style: text, and no route can trigger the
+    # documented validation shape -- see the gaps. Left undeclared beyond
+    # style so no field name is asserted against nothing.
+    style: flat
+
+resources:
+  order:
+    id:
+      # A GUID, and the only identifying field this record has -- there is
+      # no separate "id" property on an order at all. Compare the
+      # abandoned cart below, which carries both "id" and "token" as the
+      # identical value.
+      style: uuid
+      field: token
+    fields:
+      invoiceNumber:
+        type: string
+        null_when_unset: true
+      # InProgress, Processed, Disputed, Shipped, Delivered, Pending, or
+      # Cancelled -- the reference's own seven values, documented on the
+      # status query filter and on PUT's status body parameter alike.
+      status:
+        type: string
+        default: Processed
+      paymentMethod:
+        type: string
+        null_when_unset: true
+      email:
+        type: string
+        null_when_unset: true
+      creationDate:
+        type: string
+        null_when_unset: true
+      trackingNumber:
+        type: string
+        null_when_unset: true
+      trackingUrl:
+        type: string
+        null_when_unset: true
+      items:
+        type: list
+        null_when_unset: true
+      taxes:
+        type: list
+        null_when_unset: true
+
+  abandoned_cart:
+    id:
+      style: uuid
+      field: token
+    fields:
+      # Carries the same GUID as token -- the reference's own worked
+      # example shows both on one record. See the header for why this
+      # redundancy is the one thing that survives into the order it
+      # becomes. Stored under a different key than the wire name (the
+      # fixture's own "id:" is reserved for the record's identifying
+      # field, which is token here, not this one) and renamed back to
+      # "id" with `as`.
+      record_id:
+        type: string
+        as: id
+      mode:
+        type: string
+        default: Test
+      email:
+        type: string
+        null_when_unset: true
+      # Always InProgress on this route -- GET /carts/abandoned only ever
+      # answers carts in that one status. See the header for what happens
+      # to this record's own token once that stops being true.
+      status:
+        type: string
+        default: InProgress
+      creationDate:
+        type: string
+        null_when_unset: true
+      modificationDate:
+        type: string
+        null_when_unset: true
+      # Documented as present and null on the worked example. Not
+      # null_when_unset: this Recipe asserts the value explicitly below,
+      # because a cart this route can still answer has -- by definition,
+      # per the header's 404-on-completion finding -- never completed, so
+      # nothing else this field could hold is reachable through this route
+      # at all.
+      completionDate:
+        type: string
+        null_when_unset: true
+      summary:
+        type: map
+        null_when_unset: true
+      items:
+        type: list
+        null_when_unset: true
+      currency:
+        type: string
+        null_when_unset: true
+      total:
+        type: number
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/orders
+    resource: order
+    operation: list
+    pagination:
+      style: offset
+      # Documented defaults: "Number of results to fetch. Default: 20."
+      # and "Number of results to skip. Default: 0."
+      limit: 20
+      limit_param: limit
+      cursor_param: offset
+      first_page: 0
+    list:
+      count_field: totalItems
+      limit_field: limit
+      page_field: offset
+
+  - method: GET
+    path: /api/orders/{id}
+    resource: order
+    operation: get
+
+  - method: GET
+    path: /api/carts/abandoned
+    resource: abandoned_cart
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+      limit_param: limit
+      cursor_param: continuationToken
+    list:
+      cursor_field: continuationToken
+      has_more_field: hasMoreResults
+
+  - method: GET
+    path: /api/carts/abandoned/{id}
+    resource: abandoned_cart
+    operation: get
+
+errors:
+  # Zero bytes, no Content-Type at all -- verified live for three different
+  # ways of failing to authenticate. style: text is the closest match this
+  # format has for a body that is not JSON, but an empty message here does
+  # not reach the wire empty: the runtime falls back to its own built-in
+  # wording ("Invalid API key provided.") whenever a Recipe's declared
+  # message is blank, on the theory that blank means unset rather than
+  # deliberately empty -- the same gap the Raygun Recipe in this collection
+  # documents for its own zero-byte 404. So the status is faithful and the
+  # body is not; no case below asserts the body, because asserting one
+  # would not be true of what this Recipe actually serves.
+  authentication_error:
+    status: 401
+    style: text
+
+  # The framework's own routing failure, reached before Snipcart's auth
+  # check runs at all -- verified live, with nothing sent. Trimmed to two
+  # verbatim sentences from a much longer legacy ASP.NET default error
+  # page; see the gaps for why the full page is not reproduced (the same
+  # choice Together's Recipe makes for its own unrouted-path HTML).
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: "Server Error in '/' Application. The resource you are looking for (or one of its dependencies) could have been removed, had its name changed, or is temporarily unavailable. Requested URL: {detail}"
+
+  # A method Snipcart does not register on this exact path -- verified
+  # live as 401, byte-identical to the ordinary credential failure, not a
+  # real 405. Declared directly, matching authentication_error's own
+  # shape and its own same unassertable-body gap, rather than left to
+  # Cauldron's 405 default.
+  method_not_allowed:
+    status: 401
+    style: text
+
+fixtures:
+  empty: {}
+
+  # Every field value below is read from Snipcart's own worked examples at
+  # docs.snipcart.com/v3/api-reference/orders and /abandoned-carts, and
+  # carries no verified date: no key exists here to call either endpoint's
+  # success path with. What was called live, repeatedly and today, is the
+  # failure surface, which needed no key to reach.
+  storefront:
+    order:
+      # From the Orders API's GET /orders example. The worked JSON is
+      # truncated after email ("..."), so items and taxes are not set for
+      # this record -- they were never shown for it.
+      - id: d16e2f60-39f1-4a4c-b1c3-8a2e166d3f70
+        creationDate: "2013-10-21T20:36:26.46Z"
+        status: Processed
+        paymentMethod: CreditCard
+        invoiceNumber: SNIP-0001
+        email: geeks@snipcart.com
+
+      # From the GET /orders/{token} example. Truncated after taxes, so
+      # email and creationDate are not set for this one -- the inverse
+      # gap from the record above, because a different example showed it.
+      - id: 93c4604e-35ac-4db7-b3f1-2871476e9e6a
+        status: Processed
+        invoiceNumber: SNIP-1427
+        items:
+          - id: "1"
+            name: Un poster
+            price: 300
+            quantity: 1
+        taxes:
+          - taxName: TPS
+            taxRate: 0.05
+            amount: 12.5
+          - taxName: TVQ
+            taxRate: 0.09975
+            amount: 24.94
+
+    abandoned_cart:
+      # From the GET /carts/abandoned/{token} example. id and token are the
+      # identical GUID on the live record -- see the header.
+      - id: 35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+        record_id: 35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+        mode: Test
+        email: customer@example.com
+        status: InProgress
+        creationDate: "2016-11-08T17:40:00Z"
+        modificationDate: "2016-11-08T17:48:23Z"
+        completionDate: null
+        summary:
+          subtotal: 20
+          taxableTotal: 20
+          total: 30
+          payableNow: 30
+          paymentMethod: null
+        items:
+          - uniqueId: 27ab2f3e-1a03-4b23-9407-65d940b182ea
+            id: "42"
+            name: The Geek Shirt
+            price: 20
+            quantity: 1
+            unitPrice: 20
+            totalPrice: 20
+        currency: cad
+        total: 30
+
+conformance:
+  - name: no credential at all is a zero-byte 401
+    # Live: 401, Content-Length 0, no Content-Type header at all. The
+    # status is what this case asserts; the body itself is not, because
+    # Cauldron's error mechanism cannot emit one with zero bytes -- see
+    # the comment on authentication_error above.
+    source: https://app.snipcart.com/api/orders
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders
+    expect:
+      status: 401
+
+  - name: a well-formed empty-password Basic credential answers the identical body
+    # -u 'junkkey:' -- present, parses as Basic, and the checked half is
+    # simply wrong. Byte-identical to no credential at all, verified live.
+    source: https://app.snipcart.com/api/orders
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders
+      headers:
+        Authorization: Basic anVua2tleTo=
+    expect:
+      status: 401
+
+  - name: a whole different scheme answers the same body too
+    source: https://app.snipcart.com/api/orders
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+
+  - name: an unrouted path 404s before any credential is examined
+    # Live, no credential at all. after_routing carries this -- see the
+    # header.
+    source: https://app.snipcart.com/api/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/no-such-route-xyz
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: "Requested URL: /api/no-such-route-xyz"
+
+  - name: a method this path does not register is refused for its credential, not with a 405
+    # Live, no credential. PATCH on the real /api/orders path -- 401,
+    # byte-identical to the ordinary auth failure, never a 405.
+    source: https://app.snipcart.com/api/orders
+    verified: "2026-09-01"
+    fixture: storefront
+    request:
+      method: PATCH
+      path: /api/orders
+    expect:
+      status: 401
+
+  - name: only completed orders come back from this route, and an order has no separate id
+    source: https://docs.snipcart.com/v3/api-reference/orders
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders/d16e2f60-39f1-4a4c-b1c3-8a2e166d3f70
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 200
+      body:
+        token: d16e2f60-39f1-4a4c-b1c3-8a2e166d3f70
+        status: Processed
+        invoiceNumber: SNIP-0001
+        email: geeks@snipcart.com
+      absent:
+        - id
+
+  - name: a listing echoes offset and limit beside the whole count
+    source: https://docs.snipcart.com/v3/api-reference/orders
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 200
+      body:
+        totalItems: 2
+        offset: 0
+        limit: 20
+        items[0].token: d16e2f60-39f1-4a4c-b1c3-8a2e166d3f70
+
+  - name: an abandoned cart carries the same value as both id and token
+    source: https://docs.snipcart.com/v3/api-reference/abandoned-carts
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/carts/abandoned/35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 200
+      body:
+        id: 35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+        token: 35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+        status: InProgress
+        # Present and null, by construction: nothing this route can answer
+        # has ever completed -- see the header.
+        completionDate: null
+        summary.total: 30
+
+  - name: a listing pages by continuationToken and hasMoreResults, not offset
+    source: https://docs.snipcart.com/v3/api-reference/abandoned-carts
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/carts/abandoned
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 200
+      body:
+        items[0].id: 35cb24c1-00d5-4b26-a16d-4a99bcde8ea3
+      absent:
+        # No offset parameter on this route at all -- the reference says
+        # so explicitly: "There is no offset parameter."
+        - offset
+        - totalItems
+
+  - name: a cart that has since completed is gone from its own endpoint
+    # The mechanism this Recipe group's question turns on. This id exists
+    # in the order fixture and does not exist in the abandoned_cart one --
+    # exactly the state the reference describes for a completed cart's own
+    # token.
+    source: https://docs.snipcart.com/v3/api-reference/abandoned-carts
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/carts/abandoned/93c4604e-35ac-4db7-b3f1-2871476e9e6a
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 404
+
+  - name: and the identical token succeeds on the route it moved to
+    source: https://docs.snipcart.com/v3/api-reference/orders
+    fixture: storefront
+    request:
+      method: GET
+      path: /api/orders/93c4604e-35ac-4db7-b3f1-2871476e9e6a
+      headers:
+        Authorization: Basic Y2F1bGRyb25fc25pcGNhcnRfZml4dHVyZV9zZWNyZXRfa2V5XzAwMDAwMDAwMDAwMDo=
+    expect:
+      status: 200
+      body:
+        token: 93c4604e-35ac-4db7-b3f1-2871476e9e6a
+        invoiceNumber: SNIP-1427
+        items[0].name: Un poster
+        taxes[0].taxName: TPS
+        taxes[1].taxName: TVQ

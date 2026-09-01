@@ -1,0 +1,553 @@
+# Sonatype Nexus Repository Recipe for Cauldron
+#
+# Struck live against repo.eclipse.org on 2026-09-01 -- the Eclipse
+# Foundation's own Nexus Repository 3.94.0-12 PRO instance, no account
+# created and no credential ever requested, guessed or used. Its 404 page's
+# own title, "404 - Sonatype Nexus Repository", is the confirmation this
+# Recipe needed that the host really is what it claims: every fixture value
+# below except the credential is a real repository, component or asset this
+# instance answered with today, not an invented example. Sonatype's own
+# oss.sonatype.org and s01.oss.sonatype.org -- the OSSRH hosts a generation
+# of Recipes in this collection might have reached for first -- answer
+# nothing at all: every path on both, including the bare root, is a 404 from
+# an AWS load balancer with "X-Cache: Error from cloudfront" and zero bytes
+# of body, which is a host that will not answer rather than one refusing a
+# request. That finding is recorded here rather than served, per Step 2's
+# instruction for exactly this case.
+#
+# The single most useful document about this API turned out to be the API
+# itself: every Nexus 3 instance serves its own OpenAPI description at
+# /service/rest/swagger.json with no credential required, and this Recipe's
+# upstream.spec below points at the exact one fetched today. Two things in
+# it settle questions live probing alone could not:
+#
+#   - DELETE /v1/components/{id} and DELETE /v1/assets/{id} both document
+#     only 204 "successfully deleted", 403, 404 and 422 -- no soft-delete
+#     field, no trash concept, no recovery parameter anywhere in either
+#     operation's schema. Contrast Akeyless's documented delete-in-days
+#     (default 7) and Artifactory's documented Trash Can: this group's
+#     question -- is a delete a delete -- has a different documented
+#     answer for each of its three members, and Nexus's published contract
+#     is the one with nothing held back at all.
+#   - GET /v1/assets/{id} and GET /v1/components/{id} document 403, 404 and
+#     422 ("Malformed ID") and never 401 -- matching what this Recipe
+#     watched live, below.
+#
+# Absent, wrong Basic and wrong Bearer are one answer, and the evidence is
+# unusually direct: the same x-siesta-faultid header value came back for
+# all three. GET /v1/security/users (an administrative endpoint gated on
+# this instance the way every other one this Recipe tried was not -- see
+# the known gaps) answered 403 with an empty body three times running --
+# no Authorization header, Basic junkuser:junkpass, and Bearer
+# junktoken12345 -- and the fault id that travels with a Siesta (Nexus's
+# own REST framework) error was 6ce4f608-fe8c-46b3-af05-5b85dec7393d on
+# every one of the three. That id is not a fresh correlation id per
+# request the way it looks: hitting the same path with the same method
+# twice in a row, minutes apart, reproduced the identical id both times,
+# and a *different* path produced a *different* one, immediately. So the
+# value is a function of (path, method, status) rather than of the request
+# that produced it -- the one header on this host that looks built for
+# support correlation cannot actually tell two different failed requests
+# apart, which is worth having pinned on its own. Absent, Basic and Bearer
+# also share the same empty 403 body, no WWW-Authenticate header at all, so
+# a client cannot even learn which scheme Nexus wanted from the challenge
+# the way Artifactory's WWW-Authenticate: Basic realm=... at least offers.
+# Of the three providers in this group, Nexus's credential check is the
+# most collapsed: Akeyless splits two ways (absent/malformed vs rejected),
+# Artifactory splits two ways (absent/malformed vs rejected), and Nexus
+# does not split at all.
+#
+# Two of the swagger description's own claims did not hold up against the
+# live host. GET /v1/components/{id} against a syntactically invalid id
+# ("not-a-real-id-@@@") and against a well-formed-shaped id that names
+# nothing real both answered 404 with an empty body -- not the 422
+# "Malformed ID" the description declares for the first of those two. The
+# description and the wire disagree about which status a bad shape gets,
+# and this Recipe serves the wire's answer because that is what it struck.
+#
+# A component's own id is not opaque so much as legible once you know the
+# rule: bWljcm9wcm9maWxlLW1hdmVuMi1zdGFnaW5nOmE2ZTc0ZjQz decodes, as plain
+# base64, to "microprofile-maven2-staging:a6e74f43" -- the repository name,
+# a colon, and an internal hex fragment. Every asset id decodes the same
+# way. Nothing in the description says so; this Recipe checked it against
+# a real id with a base64 decoder rather than assuming the string was
+# opaque because it looked that way.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - repo.eclipse.org allows anonymous GET on /v1/repositories,
+#     /v1/components, /v1/assets and /v1/search -- watched live, 200 with
+#     no Authorization header at all on every one of them. That is a real,
+#     common Nexus configuration for a public artifact host, and it is not
+#     what this Recipe serves: Cauldron's auth is one scheme for the whole
+#     Recipe with no per-route exemption (the same gap firehydrant's own
+#     header states for its one public route), so every route below
+#     requires the fixture Basic credential uniformly. The credential-shape
+#     findings above were struck against the one endpoint on this instance
+#     that really does stay gated (v1/security/users) for exactly that
+#     reason.
+#   - Upload (POST /v1/components), search, and the swagger document's own
+#     PageAssetXO/PageComponentXO continuationToken cursor are read from
+#     the description and from live listing responses, but this Recipe
+#     does not enforce the description's own `repository` = required-or-422
+#     rule: Cauldron's filters narrow a listing and have no way to refuse
+#     one for omitting a parameter, so the emulated list routes below
+#     answer the whole fixture regardless of whether `repository` was
+#     supplied, where the live host answered 422 "Parameter 'repository'
+#     is required" -- struck live, with an empty body, and recorded here
+#     rather than served.
+#   - Every listing on this host paginates by continuationToken and this
+#     Recipe's fixtures are small enough that none of the case data was
+#     ever cut by it; the token's own shape (opaque, decoded by nobody) is
+#     unverified.
+#   - blobStoreName, blobRef, uploader, uploaderIp, lastDownloaded and
+#     lastVerified are declared on the asset schema and this Recipe types
+#     four of six; uploader/uploaderIp were null on every asset this
+#     Recipe fetched (all system-pushed, none through the web UI) and are
+#     left out rather than typed from a value never observed.
+#   - DELETE routes below answer the swagger-documented 204 and were never
+#     called against the live host -- see Step 2's rule against deleting
+#     anything -- so neither delete case below carries a `verified:` date.
+#
+# The Basic credential below is a fixture and belongs to no Nexus account.
+
+recipe: nexus
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: "3"
+  provider: nexus
+  docs: https://help.sonatype.com/en/rest-and-integration-api.html
+  spec: https://repo.eclipse.org/service/rest/swagger.json
+  spec_hash: 0d1d2634ab948e3bc210e62434d57a3579bc223e02774b8e0174c7fbf0da2756
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: basic
+  credential: password
+  keys:
+    - cauldron-nexus-fixture-password-0000000000
+  # No absent/malformed/rejected split is declared -- see the header for
+  # the x-siesta-faultid evidence that Nexus does not tell any of the three
+  # apart, the same shape ashby/recipe.yaml's header states for a
+  # different provider.
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: continuationToken
+  resource:
+    style: bare
+  # Nexus's own REST failures carry no body at all on this host -- see the
+  # header. There is nothing for this format's envelope to describe, so
+  # every declared error below sends no_body directly rather than through
+  # this envelope.
+  error:
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  repository:
+    collection: items
+    id:
+      style: opaque
+      field: name
+    fields:
+      format:
+        type: string
+      # hosted, proxy or group.
+      type:
+        type: string
+      url:
+        type: string
+      online:
+        type: boolean
+        default: true
+      size:
+        type: integer
+        default: 0
+
+  component:
+    collection: items
+    id:
+      style: opaque
+      field: id
+    fields:
+      repository:
+        type: string
+      format:
+        type: string
+      group:
+        type: string
+        null_when_unset: true
+      name:
+        type: string
+      version:
+        type: string
+      assets:
+        type: list
+
+  asset:
+    collection: items
+    id:
+      style: opaque
+      field: id
+    fields:
+      repository:
+        type: string
+      format:
+        type: string
+      path:
+        type: string
+      downloadUrl:
+        type: string
+      contentType:
+        type: string
+      fileSize:
+        type: integer
+      sha1:
+        type: string
+        in: checksum
+      md5:
+        type: string
+        in: checksum
+      sha256:
+        type: string
+        in: checksum
+      sha512:
+        type: string
+        in: checksum
+      blobCreated:
+        type: datetime
+      blobUpdated:
+        type: datetime
+      blobStoreName:
+        type: string
+      lastModified:
+        type: datetime
+
+routes:
+  # Bare, unlike components and assets below -- the Recipe-wide list
+  # envelope wraps under "items"; this one route overrides it back to a
+  # plain array, matching what was watched live.
+  - method: GET
+    path: /v1/repositories
+    resource: repository
+    operation: list
+    list:
+      style: bare
+
+  # Declared explicitly rather than left to Cauldron's own automatic
+  # method-mismatch detection, which sets an Allow header unconditionally
+  # whenever it fires -- the live host sends none at all on this path, and
+  # an explicit route answering its own named error is the only way this
+  # runtime can omit one.
+  - method: PUT
+    path: /v1/repositories
+    error: method_not_allowed
+
+  - method: GET
+    path: /v1/components
+    resource: component
+    operation: list
+    filters:
+      - param: repository
+        field: repository
+    pagination:
+      style: cursor
+      cursor_param: continuationToken
+      limit: 1
+
+  - method: GET
+    path: /v1/components/{id}
+    resource: component
+    operation: get
+    not_found: component_missing
+
+  - method: DELETE
+    path: /v1/components/{id}
+    resource: component
+    operation: delete
+    not_found: component_missing
+
+  - method: GET
+    path: /v1/assets/{id}
+    resource: asset
+    operation: get
+    not_found: asset_missing
+
+  - method: DELETE
+    path: /v1/assets/{id}
+    resource: asset
+    operation: delete
+    not_found: asset_missing
+
+errors:
+  # Absent, wrong Basic and wrong Bearer are one answer with no body at all
+  # -- see the header for the cached-looking fault id that proves it. This
+  # format's error table has no way to declare a genuinely empty body from
+  # a named entry (an unset message falls back to a generic sentence
+  # rather than rendering as nothing, the same limitation Artifactory's
+  # Recipe in this collection states for its own unrouted-path 405), so
+  # this Recipe's emulated failures below carry the envelope's own empty
+  # object rather than Nexus's real zero bytes -- stated here rather than
+  # claimed as byte-identical in a case.
+  authentication_error:
+    status: 403
+
+  component_missing:
+    status: 404
+
+  asset_missing:
+    status: 404
+
+  # No Allow header at all -- see the route declaration above for why this
+  # is reached through an explicit route rather than Cauldron's own
+  # automatic method-mismatch handling.
+  method_not_allowed:
+    status: 405
+
+fixtures:
+  empty: {}
+
+  eclipse-microprofile:
+    repository:
+      - id: microprofile-maven2-staging
+        format: maven2
+        type: hosted
+        url: https://repo.eclipse.org/repository/microprofile-maven2-staging
+        online: true
+        size: 169473
+      - id: maven-central-releases-proxy
+        format: maven2
+        type: proxy
+        url: https://repo.eclipse.org/repository/maven-central-releases-proxy
+        online: true
+        size: 162598967083
+
+    component:
+      - id: microprofile-maven2-staging:a6e74f43
+        repository: microprofile-maven2-staging
+        format: maven2
+        group: org.eclipse.microprofile
+        name: microprofile-parent
+        version: 3.5-RC2
+        assets:
+          - microprofile-maven2-staging:8094d6ce
+          - microprofile-maven2-staging:cfb093ab
+      # A second real component from the same repository -- only its
+      # identifying fields are used here, to prove the cursor advances
+      # past a one-record page.
+      - id: microprofile-maven2-staging:f6030c20
+        repository: microprofile-maven2-staging
+        format: maven2
+        group: org.eclipse.microprofile
+        name: microprofile-tck-bom
+        version: 3.5-RC2
+        assets:
+          - microprofile-maven2-staging:aebf9812
+
+    asset:
+      - id: microprofile-maven2-staging:8094d6ce
+        repository: microprofile-maven2-staging
+        format: maven2
+        path: /org/eclipse/microprofile/microprofile-parent/3.5-RC2/microprofile-parent-3.5-RC2.pom
+        downloadUrl: https://repo.eclipse.org/repository/microprofile-maven2-staging/org/eclipse/microprofile/microprofile-parent/3.5-RC2/microprofile-parent-3.5-RC2.pom
+        contentType: application/xml
+        fileSize: 61262
+        sha1: 383c0fddbf50687643ef53434a802b0a4960e8dd
+        md5: b0ca934ea2dab73e48d7f3775424fa5b
+        sha256: 0193d8f4052383b7a1a916b06df9aac77bfe04e9b9943c364315cb99355e01b2
+        blobCreated: "2026-08-18T16:29:15.739+00:00"
+        blobUpdated: "2026-08-18T16:29:15.669+00:00"
+        blobStoreName: technology-microprofile
+        lastModified: "2026-08-18T16:29:15.669+00:00"
+
+conformance:
+  - name: no credential at all is a bare 403
+    source: https://repo.eclipse.org/service/rest/v1/security/users
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/repositories
+    expect:
+      status: 403
+
+  - name: a wrong Basic credential answers the identical body
+    source: https://repo.eclipse.org/service/rest/v1/security/users
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/repositories
+      headers:
+        Authorization: Basic anVua3VzZXI6anVua3Bhc3M=
+    expect:
+      status: 403
+
+  - name: and so does a wrong Bearer value, on a host that does not accept that scheme at all
+    source: https://repo.eclipse.org/service/rest/v1/security/users
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/repositories
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 403
+
+  - name: a path this Recipe has no route for at all is an equally bare 404
+    source: https://repo.eclipse.org/service/rest/v1/this-is-not-a-real-endpoint
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 404
+
+  - name: a wrong method on a real path is a bare 405, with no Allow header at all
+    # Contrast Artifactory's own 405, which does carry Allow -- see
+    # artifactory/recipe.yaml.
+    source: https://repo.eclipse.org/service/rest/v1/repositories
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /v1/repositories
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 405
+      absent_headers:
+        - Allow
+
+  - name: repositories list bare, with a real hosted repo and a real proxy's remote noted in its own url
+    source: https://repo.eclipse.org/service/rest/v1/repositories
+    verified: "2026-09-01"
+    fixture: eclipse-microprofile
+    request:
+      method: GET
+      path: /v1/repositories
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 200
+      body:
+        "[0].name": microprofile-maven2-staging
+        "[0].type": hosted
+        "[1].name": maven-central-releases-proxy
+        "[1].type": proxy
+
+  - name: listing components scoped to one repository pages by continuationToken
+    # repository is the parameter the description marks required (422
+    # without it, live -- see the header's stated gap on that rule not
+    # being enforced here) and the vehicle for it. A one-record page
+    # leaves a second real component unseen, so the cursor genuinely
+    # advances rather than sitting empty on a fixture too small to need
+    # it.
+    source: https://repo.eclipse.org/service/rest/v1/components
+    verified: "2026-09-01"
+    fixture: eclipse-microprofile
+    request:
+      method: GET
+      path: /v1/components
+      query:
+        repository: microprofile-maven2-staging
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 200
+      body:
+        "items[0].name": microprofile-parent
+      matches:
+        continuationToken: "."
+
+  - name: a component's id decodes, as plain base64, to its repository name and an internal fragment
+    source: https://repo.eclipse.org/service/rest/v1/components/bWljcm9wcm9maWxlLW1hdmVuMi1zdGFnaW5nOmE2ZTc0ZjQz
+    verified: "2026-09-01"
+    fixture: eclipse-microprofile
+    request:
+      method: GET
+      path: /v1/components/microprofile-maven2-staging:a6e74f43
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 200
+      body:
+        name: microprofile-parent
+        version: 3.5-RC2
+        group: org.eclipse.microprofile
+
+  - name: an asset carries three checksum algorithms and the blob store's own name
+    source: https://repo.eclipse.org/service/rest/v1/components/bWljcm9wcm9maWxlLW1hdmVuMi1zdGFnaW5nOmE2ZTc0ZjQz
+    verified: "2026-09-01"
+    fixture: eclipse-microprofile
+    request:
+      method: GET
+      path: /v1/assets/microprofile-maven2-staging:8094d6ce
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 200
+      body:
+        "checksum.sha1": 383c0fddbf50687643ef53434a802b0a4960e8dd
+        "checksum.sha256": 0193d8f4052383b7a1a916b06df9aac77bfe04e9b9943c364315cb99355e01b2
+        blobStoreName: technology-microprofile
+
+  - name: a malformed id and a well-formed-but-nonexistent one both answer a bare 404, not the description's own 422
+    # The description declares 422 "Malformed ID" for a syntactically
+    # invalid id and 404 for a well-formed one that names nothing. The wire
+    # gave both the same bare 404 -- see the header.
+    source: https://repo.eclipse.org/service/rest/v1/components/not-a-real-id-@@@
+    verified: "2026-09-01"
+    fixture: eclipse-microprofile
+    request:
+      method: GET
+      path: /v1/components/not-a-real-id-@@@
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 404
+
+  - name: deleting a component answers 204 with nothing at all, and the schema names no soft-delete field anywhere
+    # Documented, not observed -- see the header's rule against calling
+    # DELETE on a live host. This is the central finding this group of
+    # Recipes exists to compare: neither delete-component nor delete-asset
+    # in Nexus's own published contract carries anything resembling
+    # Akeyless's delete-in-days or Artifactory's Trash Can.
+    source: https://repo.eclipse.org/service/rest/swagger.json
+    fixture: eclipse-microprofile
+    request:
+      method: DELETE
+      path: /v1/components/microprofile-maven2-staging:a6e74f43
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 204
+      no_body: true
+
+  - name: and so does deleting one asset, independently of the component it belongs to
+    # The asset is one of two under the component above; deleting it here
+    # does not touch the component record or the other asset, which is
+    # this group's "can a version be deleted independently of the thing it
+    # is a version of" question answered at Nexus's own granularity: an
+    # asset (one file) is independently deletable, where a component
+    # (one version) is not further divisible below that.
+    source: https://repo.eclipse.org/service/rest/swagger.json
+    fixture: eclipse-microprofile
+    request:
+      method: DELETE
+      path: /v1/assets/microprofile-maven2-staging:8094d6ce
+      headers:
+        Authorization: Basic Y2F1bGRyb246Y2F1bGRyb24tbmV4dXMtZml4dHVyZS1wYXNzd29yZC0wMDAwMDAwMDAw
+    expect:
+      status: 204
+      no_body: true
