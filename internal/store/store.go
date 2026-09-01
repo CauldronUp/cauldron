@@ -15,6 +15,8 @@ package store
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"sync"
 )
 
@@ -181,7 +183,14 @@ func (s *Store) Create(resource string, record Record) (Record, error) {
 
 	stored := record.Clone()
 
-	id, _ := stored["id"].(string)
+	// A pinned identifier may be written as a number. YAML gives an
+	// unquoted 76 as an int, and a string assertion alone read that as
+	// nothing at all -- so the record was handed a freshly minted id and
+	// the one the Recipe pinned was discarded in silence. Ten shipped
+	// Recipes pin numeric ids; Paystack's bank list pinned 1, 7, 9, 18,
+	// 21, 31 and 76 and served 1 through 7, with every conformance case
+	// passing because none of them asserted an id.
+	id := pinnedID(stored["id"])
 	if id == "" {
 		// Skip anything the collection already holds. A numeric counter starts
 		// at zero and fixtures routinely pin id "1", so the first record the
@@ -622,4 +631,33 @@ func (s *Store) Import(in Export) error {
 	s.ids.Restore(in.Drawn)
 
 	return nil
+}
+
+// pinnedID is the identifier a record arrived with, as a string.
+//
+// Numbers are accepted because a Recipe writing an identifier the way the
+// provider sends it -- unquoted, because the provider sends a JSON number --
+// is writing it correctly, and a format that quietly ignored those would be
+// punishing fidelity.
+//
+// A fraction is refused. Nobody pins 1.5 as an identifier on purpose, and both
+// readings of it -- "1.5" and "2" -- are guesses, so minting is the honest
+// answer.
+func pinnedID(value any) string {
+	switch id := value.(type) {
+	case string:
+		return id
+	case int:
+		return strconv.Itoa(id)
+	case int64:
+		return strconv.FormatInt(id, 10)
+	case float64:
+		if id != math.Trunc(id) {
+			return ""
+		}
+
+		return strconv.FormatInt(int64(id), 10)
+	}
+
+	return ""
 }
