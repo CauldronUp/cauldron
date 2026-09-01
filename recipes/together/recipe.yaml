@@ -1,0 +1,301 @@
+# Together AI Recipe for Cauldron
+#
+# Together tells you to point an OpenAI client at it -- its own compatibility
+# page says so, with worked Python and TypeScript that changes two lines --
+# and then answers the first request such a client makes in a shape OpenAI
+# has never used.
+#
+# GET /v1/models returns a bare JSON array. OpenAI's returns
+# {"object": "list", "data": [...]}. That is not an inference from the shape
+# of a response nobody here could see; it is Together's own published
+# description, where the 200 for /models is ModelInfoList and ModelInfoList
+# is "type: array" with no wrapper of any kind. So a client that reaches for
+# response.data on the endpoint the compatibility page points it at reads
+# undefined, on the very first call, before any inference happens.
+#
+# The chat completion is genuinely OpenAI-shaped and this Recipe does not
+# model it -- see the gaps below. What is modelled is the part where the
+# compatibility claim stops being true, which is the part an integration
+# discovers in production.
+#
+# Four things were checked against api.together.xyz directly, with no account
+# and no key ever created:
+#
+#   GET /v1/models       no header at all   -> 401 text/plain "Missing API key"
+#   GET /v1/models       Bearer junk        -> 401 application/json
+#                                             {"error":{"message":"Unauthorized"}}
+#   GET /v1/models       Authorization: junk-> 401 text/plain "Missing API key"
+#   DELETE /v1/models    Bearer junk        -> 401 application/json (not 405)
+#   GET /v1/nosuchroute  with or without    -> 404, and an HTML page
+#
+# Read those in pairs, because each pair says something the other does not.
+#
+# **Absent and wrong are different failures, and they are not even the same
+# media type.** No header at all answers fifteen bytes of plain text under
+# Content-Type: text/plain -- "Missing API key", no braces, no quotes. A
+# bearer token that is merely wrong answers JSON. Raygun's Recipe in this
+# collection records a provider announcing application/json and sending
+# prose; Together does the honest version of the same split, labelling the
+# prose as prose, and the result is still that one endpoint answers two
+# incompatible media types to two spellings of the same mistake. A client
+# with one error path has to sniff.
+#
+# **A header that is present and unprefixed is reported as missing.**
+# "Authorization: junk", with no "Bearer ", gets the text/plain "Missing API
+# key" -- the same answer as sending no header at all. So Together draws its
+# absent/malformed line at the prefix and calls everything on the wrong side
+# of it absent. The Fireworks Recipe written alongside this one answers the
+# byte-identical request with "The API key you provided is invalid." Two
+# OpenAI-compatible APIs, the same malformed header, and one says you sent
+# nothing while the other says what you sent is wrong.
+#
+# **The published description promises an error field the live API omits.**
+# ErrorData declares message and type as required and param and code as
+# nullable-with-defaults. The observed body is {"error":{"message":
+# "Unauthorized"}} and nothing else: no type, no param, no code. A client
+# switching on error.type -- which is what OpenAI's own SDK does -- has
+# nothing to switch on.
+#
+# **The API and the website are one deployment.** A path Together does not
+# route answers 404 with a Next.js HTML document, credential or not, and
+# every response on this host carries "vary: rsc, next-router-state-tree,
+# next-router-prefetch, next-router-segment-prefetch". Those are Next.js
+# app-router headers. So the 404 an integration gets for a typo is the
+# marketing site's, not the API's, and it is HTML where every other failure
+# is text or JSON -- a third media type on the same host.
+#
+# **Auth is resolved before the method and after the route.** DELETE on a
+# real path answers 401, not 405, so the credential is checked before the
+# method is considered. A path that does not exist answers 404 whether or
+# not a credential was sent, so the route is resolved before the credential.
+# That order -- route, then credential, then method -- is the reverse of
+# Fireworks', which resolves the route, then the method, then the credential,
+# and answers a real 405 naming both. Same category, same week, opposite
+# pipelines, and the Mezmo Recipe records a vendor whose own two surfaces
+# disagree about this within one product.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The text/plain absent-credential body cannot be served with its real
+#     media type. auth.absent_error names an errors entry, and an errors
+#     entry is rendered through this Recipe's error envelope as JSON. So the
+#     absent case here serves Together's wording under the wrong
+#     Content-Type, which is precisely the confusion the finding is about.
+#     The wording is right, the framing is not, and the case below says so
+#     rather than claiming a verified match.
+#   - The unrouted-path HTML is not served either. Together sends a full
+#     Next.js document, which is a page rather than a payload, and pinning
+#     several kilobytes of framework markup would be pinning Together's
+#     website rather than its API.
+#   - No chat completion, no embedding, no image generation. Those are the
+#     OpenAI-compatible half, they are already modelled four times over in
+#     this collection -- Mistral, xAI, Groq and Perplexity -- and a fifth
+#     copy would add a fixture rather than a finding. This Recipe exists for
+#     the half where the compatibility claim breaks.
+#   - The model list's field values are the examples in Together's own
+#     published description, cited and not observed, so that case carries no
+#     verified date. Nothing here is invented: every value below appears as
+#     an "example:" in the document fingerprinted under upstream.spec.
+
+recipe: together
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.together.ai/docs/inference/openai-compatibility
+  spec: https://docs.together.ai/openapi.yaml
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron0000000000000000000000000000000000000000000000000000000000
+  # Together tells absent from wrong, and puts the more prominent mistake on
+  # the less informative answer. A header with no Bearer prefix lands here
+  # too, which is Together's own classification rather than this runtime's:
+  # the live API calls that missing as well.
+  absent_error: missing_key
+  malformed_error: missing_key
+
+responses:
+  # A bare array. Not {"object": "list", "data": [...]}, which is what the
+  # compatibility page's own OpenAI client expects, and what every other
+  # OpenAI-compatible Recipe here serves.
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Nested under "error", and thinner than the description promises. See the
+  # header: type, param and code are all declared and none of them arrived.
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  model:
+    id:
+      # "Austism/chronos-hermes-13b" -- an organisation and a name joined by
+      # a slash, which is how Hugging Face addresses a repository too. Every
+      # value here is the example in Together's own description.
+      style: opaque
+    constants:
+      object: model
+    fields:
+      created:
+        type: timestamp
+      type:
+        type: string
+      display_name:
+        type: string
+      organization:
+        type: string
+      license:
+        type: string
+      context_length:
+        type: integer
+      pricing:
+        type: map
+
+routes:
+  - method: GET
+    path: /v1/models
+    resource: model
+    operation: list
+
+errors:
+  # What a bearer token that is present, prefixed and wrong gets. One field,
+  # where the description declares four. Observed live.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+  # What no credential gets, and also what a credential with no Bearer
+  # prefix gets. The live wording, served through this Recipe's JSON
+  # envelope rather than the text/plain the real API uses -- see the header's
+  # first fidelity gap.
+  missing_key:
+    status: 401
+    message: Missing API key
+
+fixtures:
+  empty: {}
+
+  catalogue:
+    model:
+      # Every value is an "example:" in Together's published ModelInfo and
+      # Pricing schemas. Cited, not observed: no key exists here to call
+      # /v1/models with.
+      - id: Austism/chronos-hermes-13b
+        created: 1692896905
+        type: chat
+        display_name: Chronos Hermes (13B)
+        organization: Austism
+        license: other
+        context_length: 2048
+        pricing:
+          base: 0
+          finetune: 0
+          hourly: 0
+          input: 0.3
+          output: 0.3
+          cached_input: 0.2
+
+conformance:
+  - name: the model list is a bare array, which OpenAI's client cannot read
+    # The finding this Recipe exists for. Together's compatibility page tells
+    # you to point an OpenAI client at this host; OpenAI's /v1/models answers
+    # {"object": "list", "data": [...]} and this one answers the array
+    # itself. Taken from Together's own description -- ModelInfoList is
+    # "type: array" -- and from the ModelInfo and Pricing examples in the
+    # same document, so no verified date: no key was ever held.
+    source: https://docs.together.ai/openapi.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": Austism/chronos-hermes-13b
+        "[0].object": model
+        "[0].created": 1692896905
+        "[0].type": chat
+        "[0].display_name": Chronos Hermes (13B)
+        "[0].organization": Austism
+        "[0].context_length": 2048
+        "[0].pricing.input": 0.3
+        "[0].pricing.cached_input": 0.2
+
+  - name: a wrong bearer token gets one field where four were promised
+    # Live. The description's ErrorData declares message and type required,
+    # param and code nullable with defaults; the wire carries message alone.
+    source: https://api.together.xyz/v1/models
+    verified: "2026-09-01"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: Bearer junk
+    expect:
+      status: 401
+      body:
+        error.message: Unauthorized
+
+  - name: and no credential at all is told something different
+    # Live, and the real answer is fifteen bytes of text/plain rather than
+    # this JSON -- see the header's first fidelity gap. The wording is
+    # Together's own, the framing is this Recipe's, and that is the honest
+    # description of what is being served.
+    source: https://api.together.xyz/v1/models
+    verified: "2026-09-01"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+    expect:
+      status: 401
+      body:
+        error.message: Missing API key
+
+  - name: a header with no Bearer prefix is called missing, not wrong
+    # Live, and the pair to the Fireworks case of the same name: the
+    # byte-identical request there answers "The API key you provided is
+    # invalid." Together draws the line at the prefix and calls everything
+    # past it absent.
+    source: https://api.together.xyz/v1/models
+    verified: "2026-09-01"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        Authorization: junk
+    expect:
+      status: 401
+      body:
+        error.message: Missing API key
+
+  - name: a wrong method on a real path is refused for its credential first
+    # Live: DELETE /v1/models with a junk bearer answers 401, not 405, so
+    # the credential is examined before the method. Fireworks answers the
+    # same request with a real 405 naming both the method and the path.
+    source: https://api.together.xyz/v1/models
+    verified: "2026-09-01"
+    fixture: catalogue
+    request:
+      method: DELETE
+      path: /v1/models
+      headers:
+        Authorization: Bearer junk
+    expect:
+      status: 401
+      body:
+        error.message: Unauthorized
