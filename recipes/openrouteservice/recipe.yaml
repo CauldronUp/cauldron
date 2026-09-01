@@ -1,0 +1,481 @@
+# OpenRouteService Directions v2 Recipe for Cauldron
+#
+# The task that started this Recipe named one response --
+# {"error": "Authorization field missing"} -- and the live probes found it is
+# only half the picture behind a Tyk API gateway that answers before the
+# routing service behind it ever sees a request:
+#
+#   POST /v2/directions/driving-car, no Authorization header at all  -> 401 {"error": "Authorization field missing"}
+#   POST /v2/directions/driving-car, Authorization: junkapikey12345  -> 403 {"error": "Access to this API has been disallowed"}
+#
+# Missing and wrong are not the same failure here, and the difference is not
+# subtle: a different status code (401 against 403) as well as a different
+# sentence. That held across every variation this project tried without a
+# real key -- a nonexistent profile (bogus-profile), a GET where the API only
+# accepts POST, coordinates nowhere near the road network ([[999,999],
+# [999,999]]), a body that is not valid JSON at all, and an empty body --
+# every one of them answered with whichever of the two messages above matched
+# whether Authorization was present, and never with anything about the
+# profile, the method, or the coordinates. **The gateway is checked before
+# routing, and routing is checked before the body is ever read.** The one
+# exception: a path the gateway's own routing table does not recognise at all
+# answers 404 from nginx before Tyk is reached, regardless of Authorization --
+# so route existence is decided ahead of auth, and everything else about the
+# request is decided behind it.
+#
+# **The GeoJSON trap the task asked about is real here too, confirmed two
+# ways.** ORS's own integration test suite sends coordinates as
+# [8.681495, 49.41461] -- longitude before latitude, the same order Mapbox
+# uses -- and its own JSONBoundingBox class fixes the wire order of a route's
+# bbox with `@JsonPropertyOrder({"minLon", "minLat", "maxLon", "maxLat"})`.
+# Both are read from source rather than a live 200, because a live 200 needs
+# a key this project does not have. And ORS's own generated API documentation
+# gets its own convention backwards in one place: the @Schema example on
+# GeoJSONRouteResponse.java shows a bbox of
+# `[49.414057, 8.680894, 49.420514, 8.690123]` -- latitude first -- which
+# contradicts the very serialisation annotation four lines below it in the
+# same file family. If the maintainers' own doc-comment gets this backwards,
+# an integration copying that example by eye will too.
+#
+# **And the default JSON response is not GeoJSON at all**, which is worth
+# saying plainly because the task's premise -- "both return GeoJSON" -- is
+# only true of one of ORS's two response formats. POST /v2/directions/{profile}
+# answers routes[].geometry as a string, Google's polyline algorithm applied
+# to the coordinates, not an array of them; only
+# POST /v2/directions/{profile}/geojson answers a FeatureCollection with a
+# real geometry.coordinates array inside it. A client written against the
+# GeoJSON shape and pointed at the plain JSON path reads a route's geometry
+# as a nine-character string and finds no coordinates anywhere in it.
+#
+# Does the FeatureCollection nesting fit this format's resource vocabulary?
+# Less cleanly than Mapbox's does, and the reason is worth naming rather than
+# smoothing over: ORS's collection carries `bbox` and `metadata` as siblings
+# of `features` inside the same envelope, and both are computed per request
+# -- a different bbox for every route, a different `metadata.query` echoing
+# whatever was asked. `list.fields` exists for constants a provider repeats
+# unchanged (Slack's ok: true, Notion's object: "list"), and declaring a
+# per-request bbox that way would be exactly the Algolia mistake this
+# project's own code comments warn against: a fixed value standing in for one
+# that actually varies. There is no other envelope hook for an arbitrary
+# named sibling of the collection the way there is for a cursor or a count.
+# So this Recipe does not model either response as a `list` operation at all
+# -- it models each as a single bare resource (`operation: create`, the same
+# shape TaxJar's stateless POST /v2/taxes already uses in this project for a
+# computed, non-persisted answer) whose fields happen to include one that is
+# itself a list. That sidesteps the mismatch honestly: `routes` and `features`
+# are ordinary fields on that one resource, declared with a default the same
+# way TaxJar's own amount_to_collect and has_nexus are, and nothing is
+# declared constant that is not.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's own auth check (internal/runtime/auth.go: authorised())
+#     is a single yes/no gate and cannot itself distinguish an absent
+#     credential from a present, wrong one -- both simply fail the same
+#     membership test. The naturally-reachable shape is the "wrong" one
+#     (authentication_error, 403); the "missing" one (no_authorization, 401)
+#     is declared as its own named error and reached with `arm` in every case
+#     below that needs it, the same accommodation Mapbox's Recipe makes for
+#     the identical gap.
+#   - The backend's own error envelope -- {"error": {"code", "message"},
+#     "info": {"engine", "timestamp"}} -- is read from
+#     CommonResponseEntityExceptionHandler.java, not observed: it sits behind
+#     the same auth gate as everything else, and no request this project is
+#     permitted to make ever reaches it. It is a completely different shape
+#     from the gateway's flat {"error": "a string"}, which is the nested
+#     Notion/Airtable trap and the flat GitHub trap on either side of one
+#     provider's name. This Recipe models both shapes but cannot claim either
+#     `info` object's exact keys beyond `engine` and `timestamp`, because
+#     AppInfo.getEngineInfo()'s own return shape was not read.
+#   - No concrete example response -- a real distance, a real duration, a
+#     real bbox -- is published anywhere this project could reach without a
+#     key: not in the backend documentation, not in the retired /v2/api-docs
+#     endpoint (404 on the public instance; a CI test in the ORS repository
+#     confirms the production image deliberately excludes the OpenAPI
+#     document and Swagger UI), and not on giscience.github.io. The field
+#     defaults below use ORS's own documented test coordinates where a real
+#     one is citable, and clearly-illustrative numbers everywhere else,
+#     called out as such rather than presented as recorded.
+#   - Cauldron's `create` operation stores the request body plus each field's
+#     declared default (internal/runtime/handler.go), and never computes a
+#     real route or looks one up by what was submitted -- there is no routing
+#     engine behind this Recipe. So every request to either route answers
+#     with the same recorded example regardless of which coordinates it
+#     actually sent, including the coordinates inside `metadata.query`, which
+#     a real ORS response would echo back and this one cannot. Stated here
+#     rather than left for a conformance case to discover by accident, the
+#     same way Nominatim states its gazetteer is served rather than searched.
+#   - Only the Directions endpoint is modelled, as scoped by the task.
+#     Isochrones, Matrix, Snapping, POI, Elevation and the built-in Geocoder
+#     are separate ORS endpoints with their own shapes and are not covered
+#     here.
+
+recipe: openrouteservice
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://giscience.github.io/openrouteservice/api-reference/endpoints/directions/requests-and-return-types
+
+auth:
+  # A raw key in the Authorization header, with no "Bearer " prefix -- sending
+  # "Authorization: junkapikey12345" directly is what the live probes did,
+  # and it is evaluated (403) rather than rejected for its shape.
+  scheme: header
+  header: Authorization
+  keys:
+    - cauldron_openrouteservice_fixture_key
+
+responses:
+  # The gateway's own shape: a flat object with a bare string, not an object,
+  # under "error". Confirmed on both live failures.
+  error:
+    style: flat
+    message_field: error
+
+resources:
+  directions:
+    id:
+      # No route here ever echoes an identifier for a computed route -- the
+      # same absence Marqeta's balance token declares.
+      style: opaque
+      field: "-"
+    fields:
+      # [minLon, minLat, maxLon, maxLat] -- ORS's own JSONBoundingBox.java
+      # fixes this order with @JsonPropertyOrder, contradicting the
+      # lat-first example the same codebase's @Schema annotation shows.
+      #
+      # A default rather than something read from a fixture by id: Cauldron's
+      # `create` operation stores exactly what the request declares plus each
+      # field's default (internal/runtime/handler.go's create()), and never
+      # looks a record up by what was submitted. There is no routing engine
+      # behind this Recipe, so every request receives this same recorded
+      # example regardless of which coordinates it actually sent -- stated
+      # here rather than left for a case to discover by accident, the same
+      # way Nominatim says its gazetteer is served rather than searched.
+      bbox:
+        type: list
+        default: [8.681495, 49.41461, 8.687872, 49.420318]
+      # Each entry is {summary: {distance, duration}, way_points, geometry,
+      # segments, bbox} -- geometry is a string here (an encoded polyline),
+      # not an array, which is the whole reason this format is not GeoJSON.
+      # The internal shape is visible only in the default below, the same as
+      # Open-Meteo's hourly field.
+      routes:
+        type: list
+        default:
+          - summary:
+              # Illustrative, not a recorded value -- see Known fidelity gaps.
+              distance: 1245.6
+              duration: 187.3
+            # An encoded polyline (Google's algorithm) -- the canonical
+            # example string from that algorithm's own published
+            # description, used here only to show the shape: a string, not a
+            # coordinate array.
+            geometry: "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+            way_points: [0, 1]
+      # query, engine and id/timestamp fields describing the request itself,
+      # per ORS's own documentation. Not asserted here beyond its presence,
+      # because no concrete example was ever observed, and because create()
+      # cannot echo the caller's own submitted coordinates into it -- see
+      # Known fidelity gaps.
+      metadata:
+        type: map
+        default:
+          query:
+            coordinates:
+              - [8.681495, 49.41461]
+              - [8.687872, 49.420318]
+            profile: driving-car
+
+  directions_geojson:
+    id:
+      style: opaque
+      field: "-"
+    constants:
+      type: FeatureCollection
+    fields:
+      bbox:
+        type: list
+        default: [8.681495, 49.41461, 8.687872, 49.420318]
+      # Each entry is {type: "Feature", geometry: {type: "LineString",
+      # coordinates: [[lon, lat], ...]}, properties: {summary, segments,
+      # way_points}} -- the coordinates array this format's default JSON
+      # response never has.
+      features:
+        type: list
+        default:
+          - type: Feature
+            geometry:
+              type: LineString
+              # [longitude, latitude] pairs -- the same order the request
+              # itself is sent in.
+              coordinates:
+                - [8.681495, 49.41461]
+                - [8.687872, 49.420318]
+            properties:
+              summary:
+                distance: 1245.6
+                duration: 187.3
+              way_points: [0, 1]
+      metadata:
+        type: map
+        default:
+          query:
+            coordinates:
+              - [8.681495, 49.41461]
+              - [8.687872, 49.420318]
+            profile: driving-car
+
+routes:
+  - method: POST
+    path: /v2/directions/{profile}
+    resource: directions
+    operation: create
+    status: 200
+
+  - method: POST
+    path: /v2/directions/{profile}/geojson
+    resource: directions_geojson
+    operation: create
+    status: 200
+
+errors:
+  # The naturally-reachable shape: a credential that is present and wrong.
+  # Cauldron's own auth check treats this and "absent" identically, and this
+  # is the one it produces on its own.
+  authentication_error:
+    status: 403
+    message: "Access to this API has been disallowed"
+
+  # The other real shape: no Authorization header at all. Not reached by the
+  # runtime's own auth check, so every case below that needs it arms it
+  # explicitly.
+  no_authorization:
+    status: 401
+    message: "Authorization field missing"
+
+  # Documented from the backend's own source rather than observed: a
+  # completely different envelope from the gateway's, nested under "error" as
+  # an object with a numeric code, sitting behind the same auth gate that
+  # keeps this project from ever reaching it live.
+  point_not_found:
+    status: 404
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    code: "2010"
+    message: "Could not find routable point within a radius of 350.0 meters of specified coordinate."
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no Authorization header at all is refused for exactly that reason
+    source: https://api.openrouteservice.org/v2/directions/driving-car
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_authorization
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 401
+      body:
+        error: "Authorization field missing"
+
+  - name: a present but wrong Authorization answers differently than none at all
+    source: https://api.openrouteservice.org/v2/directions/driving-car
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: junkapikey12345
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 403
+      body:
+        error: "Access to this API has been disallowed"
+
+  - name: a profile that does not exist never gets its own error, because the gateway checks auth first
+    source: https://api.openrouteservice.org/v2/directions/bogus-profile
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/bogus-profile
+      headers:
+        Content-Type: application/json
+        Authorization: junkapikey12345
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 403
+      body:
+        error: "Access to this API has been disallowed"
+
+  - name: a GET where only POST is accepted never gets its own error either
+    source: https://api.openrouteservice.org/v2/directions/driving-car
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/directions/driving-car
+      headers:
+        Authorization: junkapikey12345
+    expect:
+      status: 403
+      body:
+        error: "Access to this API has been disallowed"
+
+  - name: coordinates nowhere near a road never get their own error either
+    source: https://api.openrouteservice.org/v2/directions/driving-car
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: junkapikey12345
+      json:
+        coordinates:
+          - [999, 999]
+          - [999, 999]
+    expect:
+      status: 403
+      body:
+        error: "Access to this API has been disallowed"
+
+  - name: a body that is not JSON at all is masked the same way an absent header is
+    source: https://api.openrouteservice.org/v2/directions/driving-car
+    verified: "2026-09-01"
+    fixture: empty
+    arm: no_authorization
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+    expect:
+      status: 401
+      body:
+        error: "Authorization field missing"
+
+  - name: request coordinates travel as longitude before latitude
+    source: https://github.com/GIScience/openrouteservice/blob/main/ors-api/src/test/java/org/heigit/ors/apitests/routing/ParamsTest.java
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: cauldron_openrouteservice_fixture_key
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 200
+      body:
+        "metadata.query.coordinates[0][0]": 8.681495
+        "metadata.query.coordinates[0][1]": 49.41461
+
+  - name: the default JSON format's geometry is an encoded string, not a coordinate array
+    source: https://giscience.github.io/openrouteservice/api-reference/endpoints/directions/requests-and-return-types
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: cauldron_openrouteservice_fixture_key
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 200
+      body:
+        "routes[0].geometry": "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+
+  - name: a route's bounding box travels as minLon, minLat, maxLon, maxLat
+    source: https://github.com/GIScience/openrouteservice/blob/main/ors-api/src/main/java/org/heigit/ors/api/responses/routing/json/JSONBoundingBox.java
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: cauldron_openrouteservice_fixture_key
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 200
+      body:
+        "bbox[0]": 8.681495
+        "bbox[1]": 49.41461
+        "bbox[2]": 8.687872
+        "bbox[3]": 49.420318
+
+  - name: only the geojson path nests coordinates inside a feature's geometry
+    source: https://giscience.github.io/openrouteservice/api-reference/endpoints/directions/requests-and-return-types
+    fixture: empty
+    request:
+      method: POST
+      path: /v2/directions/driving-car/geojson
+      headers:
+        Content-Type: application/json
+        Authorization: cauldron_openrouteservice_fixture_key
+      json:
+        coordinates:
+          - [8.681495, 49.41461]
+          - [8.687872, 49.420318]
+    expect:
+      status: 200
+      body:
+        type: FeatureCollection
+        "features[0].type": Feature
+        "features[0].geometry.type": LineString
+        "features[0].geometry.coordinates[0][0]": 8.681495
+        "features[0].geometry.coordinates[0][1]": 49.41461
+        "features[0].geometry.coordinates[1][0]": 8.687872
+        "features[0].geometry.coordinates[1][1]": 49.420318
+
+  - name: the backend's own error shape nests a numeric code where the gateway sends a bare string
+    source: https://github.com/GIScience/openrouteservice/blob/main/ors-api/src/main/java/org/heigit/ors/api/errors/CommonResponseEntityExceptionHandler.java
+    fixture: empty
+    arm: point_not_found
+    request:
+      method: POST
+      path: /v2/directions/driving-car
+      headers:
+        Content-Type: application/json
+        Authorization: cauldron_openrouteservice_fixture_key
+      json:
+        coordinates:
+          - [8.689585, 49.399733]
+          - [8.686495, 49.40349]
+    expect:
+      status: 404
+      body:
+        "error.code": 2010
+        "error.message": "Could not find routable point within a radius of 350.0 meters of specified coordinate."
