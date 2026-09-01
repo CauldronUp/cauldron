@@ -1,0 +1,534 @@
+# Honeycomb Recipe for Cauldron
+#
+# Ask for /1/auth with no key and Honeycomb answers:
+#
+#   {"status":401,"type":"https://api.honeycomb.io/problems/unauthenticated",
+#    "title":"Unknown API key","error":"Unknown API key"}
+#
+# Content-Type: application/problem+json. That is RFC 7807 -- a status
+# repeated inside the body, a type naming the failure as a dereferenceable
+# URI, and a title -- and it is checked against the live endpoint on the date
+# below, not read out of a document.
+#
+# It is also, on this API, the exception. Every other V1 endpoint answers the
+# identical failure -- no key, or the wrong one -- as a plain object with one
+# field:
+#
+#   {"error":"unknown API key - check your credentials, region, and API URL"}
+#
+# Checked live against /1/boards, /1/datasets, /1/columns/{dataset},
+# /1/triggers/{dataset}, /1/markers/{dataset} and POST /1/events/{dataset} on
+# the same date: six endpoints, one shape, and none of it problem+json. Code
+# written against .error, which works everywhere else on this API, reads
+# "Unknown API key" as a string on /1/auth same as anywhere -- the field
+# survived, mirroring .title exactly -- so the trap is not that the auth
+# endpoint breaks a client. It is that a client who only ever tested against
+# /1/auth, because that is the endpoint documentation leads with for
+# confirming a key works, ships code built against a shape no other endpoint
+# on the API sends.
+#
+# And it runs the other way too. Honeycomb's own rate-limit documentation
+# gives the 429 body for "V1 Endpoints" as problem+json --
+#
+#   {"status":429,"type":"https://api.honeycomb.io/problems/rate-limited",
+#    "title":"You have exceeded your rate limit.",
+#    "error":"You have exceeded your rate limit.",
+#    "detail":"Please try again after 2025-02-01T15:23:12Z."}
+#
+# -- which means the envelope a given endpoint uses depends on which failure
+# it is having, not just which endpoint it is. /1/datasets fails auth as a
+# plain object and fails a rate limit as problem+json, on the same path, and
+# a client that learned the plain shape from a 401 and never saw a 429 in
+# testing finds out the hard way that .error was never the general case.
+#
+# One header divides the 429s further, and Honeycomb's own words are exact
+# about which side of it ingestion sits on: "The Events, Batch Events, and
+# Query Data APIs do not include a Retry-After header in their 429
+# responses" -- everything else does. A generic backoff client that reads
+# Retry-After to know how long to wait works against the API it tested on and
+# silently free-runs against the endpoint carrying the most traffic.
+#
+# Does problem+json fit this format's error vocabulary? Yes, as "flat":
+# message_field for title, code_field left unset (there is no code in a
+# problem detail), and the remaining RFC 7807 members -- type, status, and
+# Honeycomb's own back-compat error -- declared as constants in the error's
+# own fields, exactly as VTEX's Recipe already does for its RFC 9110 problem
+# detail. detail did not appear on /1/auth's own failure and does appear on
+# the rate-limit one, which is who Honeycomb is: the member set is not fixed
+# even within one provider's use of the same content type.
+#
+# Two things worth pinning beside the envelope itself:
+#
+#   1. An API key describes less of itself than its shape suggests. The
+#      auth-check response carries api_key_access, a map of named
+#      permissions -- and an ingest key's map has exactly one entry
+#      (createDatasets) where a configuration key's has ten. Code reading
+#      api_key_access.events off an ingest key does not read false. It reads
+#      undefined, because the key would misunderstand the question.
+#   2. A Honeycomb Classic key answers with an environment of two empty
+#      strings, not an absent field -- documented in so many words: "a
+#      Honeycomb Classic API key will return an empty string for both of the
+#      environment values." Absent and empty are different claims, and only
+#      one of them is what Classic sends.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cauldron's auth check runs once, Recipe-wide, before any route is
+#     matched, so it can wire exactly one shape as the automatic answer to a
+#     missing or wrong key. The plain-object shape is the one wired here,
+#     because it is what six of the seven endpoints checked send; /1/auth's
+#     own problem+json failure is declared and reachable with `cauldron
+#     fault`, not automatic, for the same reason VTEX's RFC 9110 envelope
+#     is armed rather than wired. Both rate-limit shapes are armed for the
+#     same reason: Cauldron does not fail requests by volume.
+#   - V2 endpoints exist and answer a third envelope entirely -- JSON:API,
+#     with a top-level "errors" array of {id, code, title, detail} -- per the
+#     same rate-limit document. Not modelled: this Recipe is V1 only, and
+#     nothing here should be read as a claim about V2.
+#   - No OpenAPI description could be found published for this API --
+#     api-docs.honeycomb.io/openapi.json and the obvious neighbours either
+#     404 or redirect to the interactive docs site rather than a machine-
+#     readable file -- so there is no upstream.spec and no drift record.
+#     Every documented (unverified) case below cites the human-readable
+#     reference page it came from instead.
+#   - An unmatched path (GET /1/nonexistent) answers 404 with plain text
+#     "404 page not found", Go's default mux response -- observed live, not
+#     modelled as a route or error here, because it is the framework's
+#     behaviour rather than a designed shape of Honeycomb's own API.
+#   - Batch ingestion (POST /1/batch/{dataset}) answers per-event, an array
+#     of {status, error?} where one failed event does not fail the request --
+#     documented and not modelled, to keep this Recipe to single-event
+#     ingest.
+#   - The rate-limit document also names Ratelimit and RateLimit-Policy
+#     headers on successful responses, and says plainly that "not all
+#     endpoints return" them and that coverage is decided per endpoint's own
+#     reference page. No single endpoint's page was found stating it
+#     definitely carries them, so neither header is declared on a route here
+#     rather than guessed onto one.
+#
+# The key below is a fixture and belongs to no team.
+
+recipe: honeycomb
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.honeycomb.io/api/
+
+auth:
+  scheme: header
+  header: X-Honeycomb-Team
+  keys:
+    - cauldron-fixture-honeycomb-key-000000000000
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # The common shape: one field, no envelope, no code, no type. Flat with
+    # nothing else set already omits code and type -- unlike the nested
+    # style, flat does not invent either when left empty -- so this alone is
+    # {"error": "..."}.
+    style: flat
+    message_field: error
+
+resources:
+  # What /1/auth answers about the key that called it. Not a listable
+  # resource -- there is exactly one of these per key, and the route below
+  # asks for it the same way Backblaze's b2_authorize_account does.
+  key:
+    id:
+      style: opaque
+      field: id
+    fields:
+      # "configuration" or "ingest". An ingest key's api_key_access is not
+      # the same shape as a configuration key's -- see below -- and this is
+      # the field that says which one a client is holding.
+      type:
+        type: string
+        default: configuration
+      # A map of named permissions, and the two kinds of key do not carry
+      # the same set of names. Declared as a map rather than fixed booleans
+      # because the field list itself is the finding.
+      api_key_access:
+        type: map
+      # {name, slug}. Both empty strings on a Classic key -- present and
+      # blank, not missing.
+      environment:
+        type: map
+      team:
+        type: map
+
+  dataset:
+    id:
+      style: opaque
+      field: slug
+    fields:
+      name:
+        type: string
+      description:
+        type: string
+      expand_json_depth:
+        type: integer
+        default: 0
+      created_at:
+        type: datetime
+      last_written_at:
+        type: datetime
+      regular_columns_count:
+        type: integer
+
+  # A single ingested span. Honeycomb does not hand back an id, a
+  # timestamp or anything else for one -- the route below answers 202 and
+  # empty, and these fields exist so the resource can validate the request
+  # body rather than the response.
+  event:
+    id:
+      style: opaque
+    fields:
+      data:
+        type: map
+      time:
+        type: datetime
+      samplerate:
+        type: integer
+        default: 1
+
+routes:
+  - method: GET
+    path: /1/auth
+    resource: key
+    operation: get
+    # There is no id in the path -- there is exactly one of these per calling
+    # key, which is what id_from: auth models.
+    id_from: auth
+
+  - method: GET
+    path: /1/datasets
+    resource: dataset
+    operation: list
+
+  - method: POST
+    path: /1/events/{dataset}
+    resource: event
+    operation: create
+    # "An empty 202 response indicates that the event has been queued for
+    # processing." Not an id, not an echo of the body, nothing.
+    status: 202
+    empty_body: true
+
+errors:
+  # The wired default: what a missing or wrong key answers on every route
+  # except /1/auth's own. Verified against six endpoints on one date.
+  authentication_error:
+    status: 401
+    message: "unknown API key - check your credentials, region, and API URL"
+
+  # /1/auth's own failure. Armed rather than wired -- see the fidelity note
+  # above -- and this is the one actually reachable at the live URL in the
+  # first conformance case below.
+  unauthenticated_problem:
+    status: 401
+    message_field: title
+    message: Unknown API key
+    headers:
+      Content-Type: application/problem+json
+    fields:
+      type: https://api.honeycomb.io/problems/unauthenticated
+      status: 401
+      # The back-compat field, mirroring title exactly. A client written
+      # against every other endpoint's .error reads the same sentence here
+      # too -- this one detail did not break when the shape around it
+      # changed.
+      error: Unknown API key
+
+  # A V1 429, on an endpoint whose own auth failures are the plain shape.
+  # Retry-After present, which the document says is true everywhere except
+  # ingestion.
+  rate_limited:
+    status: 429
+    message_field: title
+    message: You have exceeded your rate limit.
+    headers:
+      Content-Type: application/problem+json
+      Retry-After: "Fri, 22 Mar 2024 18:37:53 GMT"
+    fields:
+      type: https://api.honeycomb.io/problems/rate-limited
+      status: 429
+      error: You have exceeded your rate limit.
+      detail: "Please try again after 2025-02-01T15:23:12Z."
+
+  # The same body, on the endpoint the document names by name as the
+  # exception: no Retry-After at all.
+  rate_limited_ingest:
+    status: 429
+    message_field: title
+    message: You have exceeded your rate limit.
+    headers:
+      Content-Type: application/problem+json
+    fields:
+      type: https://api.honeycomb.io/problems/rate-limited
+      status: 429
+      error: You have exceeded your rate limit.
+      detail: "Please try again after 2025-02-01T15:23:12Z."
+
+fixtures:
+  empty: {}
+
+  # A configuration key with the full access map, and a real environment.
+  environment-key:
+    key:
+      - id: FL_xMM5LapLC
+        type: configuration
+        api_key_access:
+          events: true
+          markers: true
+          triggers: false
+          boards: false
+          queries: false
+          columns: false
+          createDatasets: true
+          slos: false
+          recipients: false
+          privateBoards: false
+        environment:
+          name: Production
+          slug: production
+        team:
+          name: Honeycomb Docs
+          slug: honeycomb-docs
+
+  # A Classic key: the same ten-entry access map, and an environment of two
+  # empty strings rather than no environment at all.
+  classic-key:
+    key:
+      - id: A3jatwoWSxA
+        type: configuration
+        api_key_access:
+          events: true
+          markers: true
+          triggers: false
+          boards: false
+          queries: false
+          columns: false
+          createDatasets: false
+          slos: false
+          recipients: false
+          privateBoards: false
+        environment:
+          name: ""
+          slug: ""
+        team:
+          name: Honeycomb Docs
+          slug: honeycomb-docs
+
+  # An ingest key: one entry in api_key_access, not ten.
+  ingest-key:
+    key:
+      - id: hcxik_01j1824es7n4evcmv81cn392jb
+        type: ingest
+        api_key_access:
+          createDatasets: true
+        environment:
+          name: Production
+          slug: production
+        team:
+          name: Honeycomb Docs
+          slug: honeycomb-docs
+
+  docs-team:
+    dataset:
+      # The name has a "!" and the slug does not -- and the trailing
+      # character the "!" left behind is a hyphen, not a truncation. id
+      # rather than slug here: id.field only renames the wire key, and a
+      # fixture always supplies the value under the canonical id property.
+      - id: my-dataset-
+        name: "my dataset!"
+        description: "my dataset described!"
+        expand_json_depth: 2
+        created_at: "2022-07-21T18:39:23Z"
+        last_written_at: "2022-07-22T19:52:00Z"
+        regular_columns_count: 12
+      - id: another-dataset
+        name: another dataset
+        description: ""
+        expand_json_depth: 0
+        created_at: "2022-07-21T18:39:23Z"
+        last_written_at: "2022-07-22T19:52:00Z"
+        regular_columns_count: 98
+
+conformance:
+  - name: the auth-check endpoint's own failure is RFC 7807 problem+json
+    source: https://api.honeycomb.io/1/auth
+    verified: "2026-08-31"
+    arm: unauthenticated_problem
+    fixture: empty
+    request:
+      method: GET
+      path: /1/auth
+      headers:
+        X-Honeycomb-Team: wrong-key
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/problem+json
+      body:
+        status: 401
+        type: https://api.honeycomb.io/problems/unauthenticated
+        title: Unknown API key
+        # The field every other endpoint's failure also carries, holding the
+        # same sentence as title.
+        error: Unknown API key
+
+  - name: every other endpoint answers the identical failure as one plain field
+    source: https://api.honeycomb.io/1/datasets
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /1/datasets
+      headers:
+        X-Honeycomb-Team: wrong-key
+    expect:
+      status: 401
+      body:
+        error: "unknown API key - check your credentials, region, and API URL"
+      absent:
+        - type
+        - title
+        - status
+
+  - name: ingestion sends the same plain shape, not problem+json either
+    source: https://api.honeycomb.io/1/events/cauldron-probe
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: POST
+      path: /1/events/cauldron-probe
+      headers:
+        X-Honeycomb-Team: wrong-key
+      json: {}
+    expect:
+      status: 401
+      body:
+        error: "unknown API key - check your credentials, region, and API URL"
+
+  - name: an api key describes less of itself than its shape suggests
+    source: https://docs.honeycomb.io/api/auth/list-authorizations
+    fixture: environment-key
+    request:
+      method: GET
+      path: /1/auth
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+    expect:
+      status: 200
+      body:
+        id: FL_xMM5LapLC
+        type: configuration
+        team.slug: honeycomb-docs
+        environment.slug: production
+        api_key_access.events: true
+        api_key_access.createDatasets: true
+
+  - name: an ingest key's access map has one entry, not ten
+    source: https://docs.honeycomb.io/api/auth/list-authorizations
+    fixture: ingest-key
+    request:
+      method: GET
+      path: /1/auth
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+    expect:
+      status: 200
+      body:
+        id: hcxik_01j1824es7n4evcmv81cn392jb
+        type: ingest
+        api_key_access.createDatasets: true
+      absent:
+        # Not false. Not present at all.
+        - api_key_access.events
+        - api_key_access.boards
+        - api_key_access.triggers
+
+  - name: a classic key's environment is two empty strings, not an absent field
+    source: https://docs.honeycomb.io/api/auth/list-authorizations
+    fixture: classic-key
+    request:
+      method: GET
+      path: /1/auth
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+    expect:
+      status: 200
+      body:
+        environment.name: ""
+        environment.slug: ""
+        team.slug: honeycomb-docs
+
+  - name: a dataset's slug is not its name lowercased
+    source: https://docs.honeycomb.io/api/datasets
+    fixture: docs-team
+    request:
+      method: GET
+      path: /1/datasets
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+    expect:
+      status: 200
+      body:
+        "[0].name": "my dataset!"
+        "[0].slug": my-dataset-
+        "[1].description": ""
+
+  - name: sending an event answers 202 with nothing at all
+    source: https://docs.honeycomb.io/api/events
+    fixture: empty
+    request:
+      method: POST
+      path: /1/events/my-dataset-
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+      json:
+        message: checkout failed
+    expect:
+      status: 202
+      no_body: true
+
+  - name: a rate limit is problem+json on an endpoint whose auth failures are not
+    source: https://docs.honeycomb.io/api/rate-limit
+    arm: rate_limited
+    fixture: empty
+    request:
+      method: GET
+      path: /1/datasets
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+    expect:
+      status: 429
+      body:
+        type: https://api.honeycomb.io/problems/rate-limited
+        title: You have exceeded your rate limit.
+        detail: "Please try again after 2025-02-01T15:23:12Z."
+      headers:
+        Retry-After: "Fri, 22 Mar 2024 18:37:53 GMT"
+
+  - name: and ingestion sends the same body with no Retry-After at all
+    source: https://docs.honeycomb.io/api/rate-limit
+    arm: rate_limited_ingest
+    fixture: empty
+    request:
+      method: POST
+      path: /1/events/my-dataset-
+      headers:
+        X-Honeycomb-Team: cauldron-fixture-honeycomb-key-000000000000
+      json: {}
+    expect:
+      status: 429
+      body:
+        type: https://api.honeycomb.io/problems/rate-limited
+      absent_headers:
+        - Retry-After
