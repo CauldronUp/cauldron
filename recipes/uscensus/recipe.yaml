@@ -1,0 +1,566 @@
+# US Census Bureau Data API Recipe for Cauldron
+#
+# Every data query answers a redirect now, key or no key.
+#
+#   GET /data/2021/acs/acs1?get=NAME,B01001_001E&for=state:*
+#   ->  302, Location: https://api.census.gov/data/missing_key.html
+#       X-DataWebAPI-KeyError: 1
+#       (empty body)
+#
+# The Census API's own documentation, and every tutorial written against it,
+# says a key is only needed above a request threshold -- the first few hundred
+# calls a day are free. That is not what this API does any more. Checked live
+# on 2026-08-31, across eight different datasets, six different vintages and
+# every kind of malformed request tried, not one request that carried a
+# non-empty `get` parameter got past this gate without a key: not a single
+# state, not a bad variable name, not a bad geography, not a year that does
+# not exist, not a dataset that does not exist. The redirect fires before any
+# of those would have been checked, which means the gate is not "your query
+# failed for a reason", it is "you may not ask at all" -- and a client that
+# retries a typo'd variable name forever gets the identical redirect a
+# correctly-spelled one would have gotten, with nothing to tell the two apart.
+# This Recipe never requested, guessed at or used a key, so the emulator below
+# can serve only what is true of every request that has none: the gate, and
+# the small set of metadata endpoints the gate does not apply to at all.
+#
+# **And the shape underneath the gate cannot be modelled honestly at all.**
+# Census's own current documentation --
+# census.gov/data/developers/guidance/api-user-guide.Core_Concepts.html --
+# says outright: "The Census uses a nonstandard version of JSON that is
+# streamlined: Data are represented in a two-dimensional array", and gives
+# this as its own example, verbatim, for
+# api.census.gov/data/2014/pep/natstprc?get=STNAME,POP&DATE_=7&for=state:*:
+#
+#   [["STNAME","POP","DATE_","state"],
+#    ["Alabama","4849377","7","01"],
+#    ["Alaska","736732","7","02"],
+#    ["Arizona","6731484","7","04"], …
+#
+# Row zero is not a record, it is the column names, as strings, in the order
+# the caller's own `get` asked for them -- and every dataset, every year and
+# every combination of up to fifty variables a caller can request produces a
+# different header row and a different column count. There is no fixed set of
+# named fields to declare as a Cauldron resource, because the columns are not
+# the provider's to name: they are the caller's, chosen fresh on every
+# request. Row one onward are the matching records, and they are not objects
+# either -- POP is "4849377", quoted, addressed only by knowing it is column
+# two, the same as the geography's own FIPS code in the last column and the
+# DATE_ predicate that was never even in the caller's `get` list. Nothing in
+# this format's vocabulary reaches that: envelope and wrapped both assume a
+# wrapper key around something, and there is none; bare and map both assume
+# the collection is made of JSON objects with names on their fields, and every
+# row here is a bare array of strings with no names anywhere; and tuple, the
+# closest of the five, is built for a fixed number of positions each with its
+# own declared meaning, the way World Bank's [pageInfo, records] is -- not for
+# one header position plus an unbounded, per-request-shaped run of positions
+# that are all the identical shape as the header and none of them a resource
+# Cauldron's Resource type could describe: it always sends a field's name on
+# the wire, and this format never sends any. That is examined at length below,
+# and this Recipe does not attempt it: forcing "bare" onto this would silently
+# turn the fake into an array of named objects the real API has never once
+# sent, on the exact axis this project exists to catch.
+#
+# What can be modelled honestly is the ground beside the gate: the metadata
+# endpoints, which the key requirement never reaches at all, because they
+# describe a dataset rather than querying it.
+#
+#   1. The bulk variable list and the single-variable lookup are the same
+#      data, in two shapes that disagree about which fields exist.
+#      /variables.json answers a variable keyed by its own code, with group
+#      and attributes on it and no name and no predicateOnly; the identical
+#      variable fetched from /variables/{code}.json answers name and
+#      predicateOnly and no group and no attributes. Checked against
+#      B01001_001E, an ordinary data variable that is not predicate-only by
+#      any definition the list itself uses: the single-fetch endpoint says
+#      "predicateOnly": true about it anyway. It says the same about every
+#      variable checked, including the two -- for and B01001_001E -- that the
+#      bulk list itself calls out as opposites on that exact property.
+#   2. NAME is not a variable, as far as the catalogue is concerned. NAME
+#      appears in every documented example query and is not a key in
+#      /data/2021/acs/acs1/variables.json at all -- not once among its 36,428
+#      entries. It surfaces only as the value of GEO_ID's own "attributes"
+#      field. Fetch it anyway, at /variables/NAME.json, and it resolves: 200,
+#      with a "concept" field 113,332 characters long, the concatenation of
+#      1,389 semicolon-joined table concepts that have nothing to do with a
+#      geography's name. Fetch /variables/GEO_ID.json next to it and the two
+#      concept strings are identical, character for character -- the same
+#      113,332 bytes, proven by parsing both as JSON and comparing the
+#      decoded strings rather than the escaped text. Whatever answers a
+#      lookup for an "attribute" field resolves it by returning its parent's
+#      own metadata, unedited, under the attribute's own name.
+#   3. An unrecognised variable code is the underlying Java application
+#      server's own page, not Census's. GET
+#      /data/2021/acs/acs1/variables/BOGUSVAR.json is a 404 whose body is
+#      <!doctype html><html lang="en"><head><title>HTTP Status 404 – Not
+#      Found</title>... -- generic Tomcat-shaped boilerplate, the same
+#      Content-Type: text/html;charset=utf-8 default-error-page shape this
+#      collection has already seen from Homebrew. A client calling .json() on
+#      it throws, and the message it would have shown for a typo'd variable
+#      name is nowhere in the response at all.
+#
+# Written against the live API rather than a document, except where a case
+# says otherwise: every conformance case with a `verified` date was checked
+# against api.census.gov on that date, with no key ever sent, requested or
+# guessed at. The cases with no `verified` date rest on Census's own
+# documentation page instead, cited by URL, because the data shape they
+# describe cannot be requested at all without breaking that rule.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The array-of-arrays data response is not served, for the reasons above.
+#     Nothing under `get=` and `for=` for an actual dataset query is modelled;
+#     this Recipe only reaches the metadata surface the key gate does not
+#     cover, plus the gate's own failure shape.
+#   - The key gate is not modelled as this Recipe's `auth`. Cauldron checks
+#     auth.scheme against every route uniformly, and the real gate is not
+#     uniform: it applies only to a request that carries a non-empty `get`,
+#     never to the metadata endpoints below, which is not a distinction
+#     auth.scheme can express. The gate is instead two routes that always
+#     answer their one failure, the same way epss's own missing-parameter
+#     case is a route rather than a parameter rule.
+#   - The 302's body is not truly empty here. The real response has
+#     Content-Length: 0; Cauldron's text-style error writes a fallback
+#     sentence when a Recipe leaves an error's message empty, and nothing in
+#     the runtime lets a route clear that. The conformance case below asserts
+#     the status and the two headers, which are exactly faithful, and does
+#     not assert the body.
+#   - Whether a real key changes any of this is not stated anywhere in this
+#     file, because it was never tested: doing so would mean requesting or
+#     guessing at a credential, which this research never did.
+#   - Only one dataset (2021/acs/acs1) is used for every example. The
+#     redirect was independently confirmed against seven others -- 2019/cbp,
+#     2021/pep/population, 2000/dec/sf1, 2010/dec/sf1, 2020/dec/pl,
+#     timeseries/poverty/saipe and timeseries/eits/mtis -- but only the one
+#     dataset's metadata is modelled as fixtures.
+#   - The variable fixtures are trimmed. B01001_001E's real
+#     /variables.json entry and NAME/GEO_ID's shared concept string are
+#     reproduced exactly up to the point marked in each; the concept string
+#     shared by NAME and GEO_ID is cut to its first 176 characters rather than
+#     carrying the real 113,332, and that real length is a fact recorded in
+#     this file's prose rather than a value any case asserts.
+#   - The dataset-discovery document (GET on a dataset path with no query
+#     string at all, or the top-level /data.json) is observed and not
+#     modelled. It answers 200 with a DCAT catalogue -- confirmed at both
+#     /data.json and /data/2021/acs/acs1 -- and is a real, key-free part of
+#     the surface, but it is a different shape again and outside what this
+#     Recipe covers.
+
+recipe: uscensus
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  # Census versions by dataset and vintage rather than by one API number.
+  # This Recipe targets the 2021 American Community Survey 1-Year dataset's
+  # metadata surface specifically; the gate itself was confirmed across many
+  # others, per the fidelity gap above.
+  api: 2021/acs/acs1
+  docs: https://www.census.gov/data/developers/guidance/api-user-guide.Core_Concepts.html
+
+auth:
+  # Not modelled as a scheme -- see "Known fidelity gaps" above. The real
+  # requirement is real, current and confirmed live, and it is also not a
+  # blanket credential check Cauldron's uniform auth.scheme could apply to
+  # every route without also gating the metadata endpoints below, which the
+  # real API never does. The gate is the key_required error instead.
+  scheme: none
+
+responses:
+  list:
+    # An object keyed by the variable's own code, not an array -- confirmed
+    # against /data/2021/acs/acs1/variables.json, which answers
+    # {"variables": {"B01001_001E": {...}, "for": {...}, ...}}.
+    style: map
+    key: variables
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  variable:
+    id:
+      style: opaque
+      # Left at the default ("id", not hidden, not renamed) rather than set to
+      # "-" or carried_by here, on purpose: the list below is map-style and
+      # needs the identifier to survive internally as far as the map-keying
+      # step, which only the default does. The single-variable fetch renames
+      # it to "name" on that route alone, with id_as, below.
+    fields:
+      label:
+        type: string
+      concept:
+        type: string
+      predicateType:
+        type: string
+      # "N/A" for the two geography predicates in the fixture below, a real
+      # table number for an ordinary data variable, and absent entirely from
+      # the single-variable fetch -- never all three states in one place.
+      group:
+        type: string
+      limit:
+        type: integer
+      # True for "for" and "in" in the list, absent for an ordinary data
+      # variable in the list, and true for everything -- checked on three
+      # different variables -- once fetched singly.
+      predicateOnly:
+        type: boolean
+      # A comma-separated string, not a JSON array, naming the margin-of-error
+      # companions this variable has. Only on the list; never on the single
+      # fetch.
+      attributes:
+        type: string
+
+routes:
+  - method: GET
+    path: /data/2021/acs/acs1/variables.json
+    resource: variable
+    operation: list
+    # "id" has to survive the trim for the map style to find anything to key
+    # its entries by. The map style then strips it back out of each entry's
+    # own body before serialising, which is what keeps an identifier out of a
+    # list entry's own object -- it is never on the wire here at all, in
+    # either its "id" or its "name" spelling.
+    returns:
+      - id
+      - label
+      - concept
+      - predicateType
+      - group
+      - limit
+      - predicateOnly
+      - attributes
+    # The real endpoint is not paginated at all -- it answers the whole
+    # catalogue in one response, all 36,428 entries of it for this dataset,
+    # and takes no size parameter. limit_param: "-" says the second half; the
+    # limit here is set well above that real count so this Recipe's own tiny
+    # fixture is never the thing that truncates it.
+    pagination:
+      limit: 50000
+      limit_param: "-"
+
+  - method: GET
+    path: /data/2021/acs/acs1/variables/{id}.json
+    resource: variable
+    operation: get
+    # Named "name" here and nowhere else -- the list above never sends an
+    # identifier at all, so the rename only has to apply to this one route.
+    id_as: name
+    # group and attributes never appear here, on any variable checked.
+    returns:
+      - id
+      - label
+      - concept
+      - predicateType
+      - limit
+    fields:
+      # Stamped on every answer this route gives, regardless of what the
+      # fixture record itself says -- because the real endpoint does exactly
+      # that, on variables the list itself does not call predicate-only.
+      predicateOnly: true
+    not_found: variable_not_found
+
+  # The real path is /data/2021/acs/acs1 with a query string, and Cauldron
+  # routes on the path alone -- it cannot answer one literal path two ways
+  # depending on whether `get` is present. This is that path, for the request
+  # shape checked eight different ways: a well-formed query, an unknown
+  # variable, an invalid geography, a year that does not exist and a dataset
+  # that does not exist all land here identically.
+  - method: GET
+    path: /data/2021/acs/acs1
+    error: key_required
+
+  # Synthetic, the same way epss's own /data/v1/epss-no-cve is: the real API
+  # has no such path, and Cauldron has no other way to select "this exact
+  # dataset path, asked without a get parameter at all" alongside the route
+  # above that answers the same real path with one.
+  - method: GET
+    path: /data/2021/acs/acs1-without-get
+    error: missing_get
+
+errors:
+  key_required:
+    status: 302
+    headers:
+      Location: https://api.census.gov/data/missing_key.html
+      X-DataWebAPI-KeyError: "1"
+
+  missing_get:
+    status: 400
+    message: "error: the 'get' argument must be a comma separated list of variable names"
+    headers:
+      Content-Type: "text/plain;charset=utf-8"
+
+  variable_not_found:
+    status: 404
+    headers:
+      Content-Type: "text/html;charset=utf-8"
+      Content-Language: en
+    message: |-
+      <!doctype html><html lang="en"><head><title>HTTP Status 404 – Not Found</title><style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b {color:white;background-color:#525D76;} h1 {font-size:22px;} h2 {font-size:16px;} h3 {font-size:14px;} p {font-size:12px;} a {color:black;} .line {height:1px;background-color:#525D76;border:none;}</style></head><body><h1>HTTP Status 404 – Not Found</h1></body></html>
+
+fixtures:
+  empty: {}
+
+  acs2021:
+    variable:
+      # An ordinary data variable: a real table number in group, a real
+      # margin-of-error companion list in attributes, and no predicateOnly at
+      # all -- the list does not call this one predicate-only.
+      - id: B01001_001E
+        label: "Estimate!!Total:"
+        concept: SEX BY AGE
+        predicateType: int
+        group: B01001
+        limit: 0
+        attributes: "B01001_001EA,B01001_001M,B01001_001MA"
+      # A geography predicate rather than a data variable: group is the
+      # literal string "N/A", predicateOnly is true, and there is no
+      # attributes at all.
+      - id: "for"
+        label: "Census API FIPS 'for' clause"
+        concept: Census API Geography Specification
+        predicateType: fips-for
+        group: "N/A"
+        limit: 0
+        predicateOnly: true
+
+  # Separate from the fixture above because NAME does not coexist with these
+  # two in the real /variables.json: it is not a key in that document at all,
+  # so no case built from this fixture can be a listing.
+  geo_alias:
+    variable:
+      - id: GEO_ID
+        label: Geography
+        # The real value is 113,332 characters: 1,389 semicolon-joined table
+        # concepts concatenated. Cut here to its first 176, which is still an
+        # exact prefix of what the API actually sent -- see the fidelity gap
+        # above.
+        concept: "SEX BY INDUSTRY FOR THE FULL-TIME, YEAR-ROUND CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER;INDUSTRY BY MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS)"
+        predicateType: string
+        limit: 0
+      # Not a key anywhere in /variables.json. Fetched on its own anyway, and
+      # answered with GEO_ID's own concept, unedited -- same prefix, same
+      # real length, same 1,389 concepts, none of them about a geography's
+      # name.
+      - id: NAME
+        label: Geographic Area Name
+        concept: "SEX BY INDUSTRY FOR THE FULL-TIME, YEAR-ROUND CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER;INDUSTRY BY MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS)"
+        predicateType: string
+        limit: 0
+
+conformance:
+  - name: every data query is redirected to a missing-key page, key or no key
+    source: https://api.census.gov/data/2021/acs/acs1?get=NAME,B01001_001E&for=state:*
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1
+    expect:
+      # Not 401, not 403: a redirect, to a static HTML page, with the failure
+      # named only in a custom header. No key was sent, requested or guessed
+      # at in producing this case.
+      status: 302
+      headers:
+        Location: https://api.census.gov/data/missing_key.html
+        X-DataWebAPI-KeyError: "1"
+
+  - name: and the gate fires before an unknown variable would be checked
+    source: https://api.census.gov/data/2021/acs/acs1?get=NAME,BOGUSVAR&for=state:01
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1
+    expect:
+      # Identical to the well-formed query above: same status, same
+      # location, same header. A typo and a correct spelling are not
+      # distinguished, because neither ever reaches the check that would.
+      status: 302
+      headers:
+        Location: https://api.census.gov/data/missing_key.html
+        X-DataWebAPI-KeyError: "1"
+
+  - name: before an invalid geography would be
+    source: https://api.census.gov/data/2021/acs/acs1?get=NAME&for=bogus:01
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1
+    expect:
+      status: 302
+      headers:
+        Location: https://api.census.gov/data/missing_key.html
+
+  - name: and before a year or a dataset that does not exist would be
+    source: https://api.census.gov/data/2099/acs/acs1?get=NAME&for=state:01
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1
+    expect:
+      # A dataset that has never existed (2021/acs/nonexistentdataset) and a
+      # vintage that has never existed (2099/acs/acs1) both answered this
+      # same redirect on the same date -- the check that would 404 on either
+      # never runs.
+      status: 302
+      headers:
+        Location: https://api.census.gov/data/missing_key.html
+
+  - name: leaving get out entirely is the one thing checked before the key
+    source: https://api.census.gov/data/2021/acs/acs1?for=state:01
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1-without-get
+    expect:
+      # Plain text, not JSON: a client calling .json() on this throws instead
+      # of reporting the sentence. 74 bytes, confirmed against the real
+      # Content-Length, with no trailing newline.
+      status: 400
+      headers:
+        Content-Type: "text/plain;charset=utf-8"
+      body_matches: "^error: the 'get' argument must be a comma separated list of variable names$"
+
+  - name: the list keys a variable by its own code and never restates it inside
+    source: https://api.census.gov/data/2021/acs/acs1/variables.json
+    verified: "2026-08-31"
+    fixture: acs2021
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables.json
+    expect:
+      status: 200
+      body:
+        "variables.B01001_001E.label": "Estimate!!Total:"
+        "variables.B01001_001E.concept": SEX BY AGE
+        "variables.B01001_001E.predicateType": int
+        "variables.B01001_001E.group": B01001
+        "variables.B01001_001E.attributes": "B01001_001EA,B01001_001M,B01001_001MA"
+      absent:
+        # The identifier is the key "B01001_001E" sits under. Nothing inside
+        # the object repeats it, and this ordinary data variable is not
+        # called predicate-only here.
+        - "variables.B01001_001E.name"
+        - "variables.B01001_001E.predicateOnly"
+
+  - name: a geography predicate is the one the list does call predicate-only
+    source: https://api.census.gov/data/2021/acs/acs1/variables.json
+    verified: "2026-08-31"
+    fixture: acs2021
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables.json
+    expect:
+      status: 200
+      body:
+        "variables.for.label": "Census API FIPS 'for' clause"
+        "variables.for.group": "N/A"
+        "variables.for.predicateOnly": true
+      absent:
+        # No margin-of-error companions on a geography clause.
+        - "variables.for.attributes"
+
+  - name: the same variable fetched on its own gains a field and loses two
+    source: https://api.census.gov/data/2021/acs/acs1/variables/B01001_001E.json
+    verified: "2026-08-31"
+    fixture: acs2021
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables/B01001_001E.json
+    expect:
+      status: 200
+      body:
+        name: B01001_001E
+        label: "Estimate!!Total:"
+        concept: SEX BY AGE
+        predicateType: int
+        limit: 0
+        # The list would not call this one predicate-only -- see the case
+        # above. Fetched on its own, it is, unconditionally.
+        predicateOnly: true
+      absent:
+        # Present in the list entry for this same variable, and gone here.
+        - group
+        - attributes
+
+  - name: and a variable the list itself calls predicate-only loses a field too
+    source: https://api.census.gov/data/2021/acs/acs1/variables/for.json
+    verified: "2026-08-31"
+    fixture: acs2021
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables/for.json
+    expect:
+      status: 200
+      body:
+        name: "for"
+        predicateType: fips-for
+        predicateOnly: true
+      absent:
+        # The list said "N/A" here. The single fetch says nothing at all,
+        # not even the literal string the list used for "not applicable".
+        - group
+
+  - name: NAME is not a key in the list its own documentation examples use
+    source: https://api.census.gov/data/2021/acs/acs1/variables.json
+    verified: "2026-08-31"
+    fixture: acs2021
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables.json
+    expect:
+      status: 200
+      absent:
+        # NAME appears in the example query on every page of this API's own
+        # documentation and is not one of this dataset's 36,428 variable
+        # entries.
+        - variables.NAME
+
+  - name: fetched on its own, NAME answers with GEO_ID's metadata, not its own
+    source: https://api.census.gov/data/2021/acs/acs1/variables/NAME.json
+    verified: "2026-08-31"
+    fixture: geo_alias
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables/NAME.json
+    expect:
+      status: 200
+      body:
+        name: NAME
+        label: Geographic Area Name
+        # An exact prefix of the real 113,332-character value, which is
+        # about 1,389 unrelated table concepts and not about a geography's
+        # name at all.
+        concept: "SEX BY INDUSTRY FOR THE FULL-TIME, YEAR-ROUND CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER;INDUSTRY BY MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS)"
+
+  - name: and GEO_ID answers with the identical string, character for character
+    source: https://api.census.gov/data/2021/acs/acs1/variables/GEO_ID.json
+    verified: "2026-08-31"
+    fixture: geo_alias
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables/GEO_ID.json
+    expect:
+      status: 200
+      body:
+        name: GEO_ID
+        label: Geography
+        # Confirmed equal to NAME's own concept by parsing both responses as
+        # JSON and comparing the decoded strings, not the escaped text.
+        concept: "SEX BY INDUSTRY FOR THE FULL-TIME, YEAR-ROUND CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER;INDUSTRY BY MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS)"
+
+  - name: an unrecognised variable code is the application server's own page
+    source: https://api.census.gov/data/2021/acs/acs1/variables/BOGUSVAR.json
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /data/2021/acs/acs1/variables/BOGUSVAR.json
+    expect:
+      # Generic Java-application-server boilerplate, not a Census-branded
+      # page and not JSON: a client calling .json() on it throws, and the
+      # variable name that was wrong is nowhere in the response.
+      status: 404
+      headers:
+        Content-Type: "text/html;charset=utf-8"
+        Content-Language: en
+      body_matches: "HTTP Status 404"
