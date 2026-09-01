@@ -451,7 +451,7 @@ the header says so.
 | Mastodon | Assess — pagination is Link-header based and instance behaviour varies, which is itself the interesting part |
 | Telegram Bot API | Assess — every method is both GET and POST, errors come back with HTTP 200 in some client libraries, and updates arrive by long polling or webhook but never both |
 | Buffer | Assess — profiles, updates, scheduling |
-| Spotify | Assess — the token expires in an hour and the refresh path is the whole integration |
+| ~~Spotify~~ | Shipped. **The body cannot tell two failures apart and the header can** -- a missing and a bogus token give identical JSON naming three possible causes at once, while `WWW-Authenticate` carries `missing_token` against `invalid_token`, so the diagnosis exists one layer above where anyone reading JSON looks. An unknown path answers **410 Gone**, a status meaning the resource existed and was removed, for one that never existed. Its description marks two endpoints deprecated while the wire sends no `Deprecation` or `Sunset` header at all. The token-refresh path this row asked about needs an account and is not modelled |
 | Strava | Assess — activities, webhooks, the rate limit counted in two windows at once |
 
 ## Identity verification and risk
@@ -469,7 +469,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Duffel | Assess — offers expire, and an offer that was valid when you displayed it is gone when the customer presses book. That gap is the entire domain |
+| ~~Duffel~~ | Shipped, and this row's premise is confirmed and unmodelled. **Offers do expire**, typically within thirty minutes, after which they answer 422 `offer_expired` -- and there is no way to expire an identifier on a clock here, so one fixture offer always answers expired and the real timer is described rather than simulated. What was verified instead: Duffel **refuses you for not naming a version before it checks who you are**, with distinct codes separating not saying from saying something retired |
 | Amadeus | Assess — self-service against enterprise APIs, and the test environment carrying different inventory from production |
 | Hotelbeds | Assess — availability, rates, the rate that changes between check and book |
 
@@ -1315,7 +1315,7 @@ what normalisation does not fix.
 | ~~Cohere~~ | Shipped. billed_units and tokens do not agree and pricing from the wrong one is wrong on every request; a finish reason is not an error and MAX_TOKENS is a 200 with a truncated body; an embedding carries nothing but its position |
 | ~~Mistral~~ | Shipped, with four cases checked against the live API and five drafted from Mistral's own description and carrying no verified date -- the split is in the file. **It is offered as an OpenAI-compatible surface, and this Recipe marks where that stops**: the error envelope is flat `detail` where OpenAI nests under `error{}`, so `err.error.message` is undefined; completion ids are prefixed `cmpl-` rather than `chatcmpl-`; `AssistantMessage` has no `refusal` field at all, absent from the schema rather than null, so the sibling-field pattern OpenAI's own Recipe documents does not exist here; and `finish_reason` carries `model_length` and `error`, two values OpenAI has no equivalent for. Its unauthenticated failure does not distinguish a missing credential from a wrong one, answering byte-identically to both, and a malformed path answers a gateway's words rather than the API's -- `{"message": "no Route matched with those values"}`, with no `detail` key anywhere. `cauldron check` against its own description reports nothing contradicted |
 | Together AI | Model names change and a retired model answers 404 rather than falling back |
-| Groq | Rate limits are on tokens per minute as well as requests, and the headers report both |
+| ~~Groq~~ | Shipped. The rate-limit headers this row asked about could not be reached without a key and are not modelled. What was verified: **the wrong verb and the wrong path are the same failure** -- a POST to a real GET-only path answers the identical 404 a path nobody defined answers, with the method folded into the sentence and no 405 anywhere. Routes also resolve before the credential, the opposite order from Scaleway's. No `upstream.spec`: Groq's description is embedded in a documentation page's client-side payload rather than served at a URL, so a fingerprint would be one drift could never recompute |
 | ~~Meilisearch~~ | Shipped. A write answers 202 with a number and the word enqueued, the document is in neither the document listing nor the index until the task runs, and the task can fail after the 202 that accepted it |
 | Hugging Face Inference | A cold model answers 503 with an estimated_time, and the correct behaviour is to wait rather than retry |
 | ~~Langfuse~~ | Shipped. Traces are ingested asynchronously and are not readable immediately after being written |
@@ -1339,7 +1339,7 @@ what normalisation does not fix.
 | ~~Opsgenie~~ | Shipped. An alert and an incident have separate ids, lifecycles and close endpoints, so closing one leaves the other open; a create answers 202 with a request id that is not the alert; and a flapping monitor is one alert with a count rather than many alerts |
 | Checkly | A check run has assertions, and a passing run containing a failed assertion is possible |
 | Rev.ai | A job is asynchronous and the transcript is a separate fetch with its own content types, so the job being done is not the transcript being readable |
-| Perplexity | Citations are a separate array whose indices point into the text, so dropping either half makes the other meaningless |
+| ~~Perplexity~~ | Shipped. The citations this row asked about are recorded from the description and not called: they arrive as a top-level sibling of `choices`, with no home in OpenAI's schema, so a client typed against it drops them silently. What was verified: **one route is versioned and the other is not** -- `POST /chat/completions` is a 401 and `POST /v1/chat/completions` is a 404 with zero bytes -- and `/v1/models` describes an unrelated product, so a client listing models to choose one for chat is reading the wrong catalogue |
 
 ### Auth, one more time
 
