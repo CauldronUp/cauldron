@@ -1,0 +1,547 @@
+# TMDB Recipe for Cauldron
+#
+# The failure carries its own numeric status, separate from the HTTP one.
+#
+#   GET /3/movie/550          (no key)
+#   ->  401  {"status_code":7,"status_message":"Invalid API key: You must be
+#             granted a valid key.","success":false}
+#
+# status_code is not the HTTP status restated: TMDB's own error reference
+# (https://developer.themoviedb.org/docs/errors) lists 47 of them against a
+# handful of HTTP statuses, and twelve different status_codes -- 3, 7, 10, 14,
+# 16, 17, 30, 31, 32, 33, 35, 36, 38, 39 -- all answer 401. A client that
+# switches on the HTTP status alone cannot tell "no key", "suspended key",
+# "expired token" and "email not verified" apart; it has to read the body.
+#
+# **And every failure this project could reach without a key is the identical
+# body.** Checked against api.themoviedb.org on 2026-08-31: no key at all, a
+# fake key, a fake key on a movie id that does not exist, a Bearer token that
+# is not real, a POST instead of a GET, and a path that does not exist under
+# /3 or /4 -- six different kinds of wrong request, one status_code, one
+# sentence, byte for byte:
+#
+#   {"status_code":7,"status_message":"Invalid API key: You must be granted a
+#    valid key.","success":false}
+#
+# 103 bytes every time. TMDB checks the key before it looks at anything else
+# about the request, so a bad path and a bad id and a bad key all fail for the
+# same reason as far as an unauthenticated caller can tell.
+#
+# **Except when the path is not TMDB's at all.** GET /xyz -- outside /3 and
+# /4 entirely -- never reaches the application: it is a 404 from the edge
+# (openresty), Content-Type text/html with no charset, a 150-byte HTML page,
+# not the JSON error above. That is a real, different, verified behaviour and
+# this Recipe cannot reproduce it: Cauldron checks a Recipe's auth scheme
+# before it ever attempts to match a route (see internal/runtime/handler.go),
+# so there is no way to serve "wrong or missing key" for versioned paths and
+# "not this application's problem" for everything else. Stated rather than
+# forced.
+#
+# No rate-limit header of any kind appears on api.themoviedb.org, on any of
+# the probes above. (developer.themoviedb.org, the documentation site, sends
+# x-ratelimit-* headers of its own -- that is ReadMe's docs platform limiting
+# requests to the docs page, and has nothing to do with the API being
+# described.)
+#
+# Two more the Recipe pins, both from the provider's own OpenAPI description
+# (https://developer.themoviedb.org/openapi/tmdb-api.json), served as JSON and
+# read rather than called -- nothing below this point was reachable without a
+# key:
+#
+#   1. A movie is two different shapes depending on how you got to it. The
+#      full record from /3/movie/{id} carries budget, revenue, runtime,
+#      tagline, homepage, imdb_id and genres as {id, name} objects -- 25
+#      fields. A hit from /3/search/movie carries 14: none of the above, and
+#      genre_ids as a bare array of integers instead. One provider, one
+#      concept, two wire shapes, distinguished only by which endpoint sent it.
+#   2. Two list envelopes coexist on the same host. /3/search/movie wraps its
+#      array in {page, results, total_pages, total_results}; /3/genre/movie/list
+#      answers {"genres": [...]} and none of the other three keys exist at
+#      all. A client that reads total_results off the second finds nothing.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - language and region are real query parameters (see the OpenAPI
+#     description: language defaults to "en-US" on most routes) and are widely
+#     reported, outside TMDB's own docs, to return empty strings rather than
+#     null for a field with no localised value in the requested language. That
+#     claim is not in TMDB's own OpenAPI description or its errors reference,
+#     and there is no way to call the real API and check it without a key, so
+#     it is deliberately not modelled here. The one hint in the evidence this
+#     Recipe does have: the OpenAPI description's own worked example for
+#     /3/genre/movie/list -- not a case this Recipe wrote, the provider's own
+#     documentation sample -- comes back in German ("Komödie", not "Comedy")
+#     for reasons the description never states. Suggestive, not confirmed, and
+#     not retestable here.
+#   - No 404 is documented anywhere in TMDB's own OpenAPI description, for any
+#     route. status_code 6 ("Invalid id") and 34 ("The resource you requested
+#     could not be found") both come from the separate errors reference page
+#     rather than from the machine-readable description, and neither has been
+#     called against the real API: there is no way to reach a 404 without a
+#     key that TMDB accepts.
+#   - Two records are served, of the real catalogue. The movie and both search
+#     hits below are the OpenAPI description's own worked examples, not this
+#     Recipe's invention -- but they were read from the description, not
+#     fetched from /3/movie/11 or /3/search/movie by this project, so they
+#     carry no verified date either.
+
+recipe: tmdb
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developer.themoviedb.org/reference/intro/getting-started
+  spec: https://developer.themoviedb.org/openapi/tmdb-api.json
+  spec_hash: cb0306d6f44d297f00b2f53c4de37a70f4621408d8ba50df9c84b23288a7f953
+  spec_seen: "2026-08-31"
+
+auth:
+  # Query, not a header: TMDB v3 takes api_key on the URL, and a key sent as
+  # a query parameter belongs in logs and browser history the way this
+  # emulator reproduces.
+  scheme: query
+  param: api_key
+  keys:
+    - cauldron-tmdb-fixture-key-000000000000
+
+responses:
+  list:
+    # /3/search/movie's own envelope. /3/genre/movie/list is none of this,
+    # and says so on its own route below.
+    style: wrapped
+    key: results
+    count_field: total_results
+    pages_field: total_pages
+    page_field: page
+  resource:
+    style: bare
+  error:
+    # The message and the code are two different fields, and the code is a
+    # number restated in words nowhere else in the body.
+    style: flat
+    message_field: status_message
+    code_field: status_code
+    code_type: number
+    fields:
+      success: false
+
+resources:
+  # The full record from /3/movie/{movie_id}. 25 fields, and none of them
+  # is what /3/search/movie sends for the same movie -- see search_result.
+  movie:
+    id:
+      style: numeric
+      type: number
+    fields:
+      adult:
+        type: boolean
+      backdrop_path:
+        type: string
+      belongs_to_collection:
+        type: map
+      budget:
+        type: integer
+      genres:
+        type: list
+      homepage:
+        type: string
+      imdb_id:
+        type: string
+      origin_country:
+        type: list
+      original_language:
+        type: string
+      original_title:
+        type: string
+      overview:
+        type: string
+      popularity:
+        type: number
+      poster_path:
+        type: string
+      production_companies:
+        type: list
+      production_countries:
+        type: list
+      release_date:
+        type: string
+      revenue:
+        type: integer
+      runtime:
+        type: integer
+      spoken_languages:
+        type: list
+      status:
+        type: string
+      tagline:
+        type: string
+      title:
+        type: string
+      video:
+        type: boolean
+      vote_average:
+        type: number
+      vote_count:
+        type: integer
+
+  # A hit from /3/search/movie. 14 fields: genre_ids rather than genres, and
+  # none of budget, revenue, runtime, tagline, homepage, imdb_id or the rest.
+  search_result:
+    id:
+      style: numeric
+      type: number
+    fields:
+      adult:
+        type: boolean
+      backdrop_path:
+        type: string
+      genre_ids:
+        type: list
+      original_language:
+        type: string
+      original_title:
+        type: string
+      overview:
+        type: string
+      popularity:
+        type: number
+      poster_path:
+        type: string
+      release_date:
+        type: string
+      title:
+        type: string
+      video:
+        type: boolean
+      vote_average:
+        type: number
+      vote_count:
+        type: integer
+
+  # /3/genre/movie/list's entries. No envelope fields beside them -- see the
+  # route below.
+  genre:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+
+routes:
+  - method: GET
+    path: /3/movie/{id}
+    resource: movie
+    operation: get
+    # status_code 6, not 34: TMDB's errors reference gives a bad id its own
+    # code, separate from the generic "resource not found" a bad path gets.
+    not_found: invalid_id
+
+  - method: GET
+    path: /3/search/movie
+    resource: search_result
+    operation: list
+    pagination:
+      style: page
+      limit: 20
+      # TMDB fixes the page at 20 and takes no size parameter at all --
+      # "-" says so rather than leaving the runtime to guess "limit".
+      limit_param: "-"
+      cursor_param: page
+
+  - method: GET
+    path: /3/genre/movie/list
+    resource: genre
+    operation: list
+    list:
+      # A bare {"genres": [...]}. None of the search envelope's other three
+      # keys exist on this route at all.
+      key: genres
+      count_field: "-"
+      pages_field: "-"
+      page_field: "-"
+    pagination:
+      # The OpenAPI description gives this route one parameter, language, and
+      # no page or size of any kind: TMDB always answers with the whole
+      # list. "-" on both names says so explicitly, rather than leaving the
+      # runtime to default to a page of ten read from "limit", which TMDB
+      # does not accept here either.
+      style: page
+      limit_param: "-"
+      cursor_param: "-"
+
+errors:
+  # Verified: this is the one body every unauthenticated probe answered with,
+  # whatever was wrong about the request.
+  authentication_error:
+    status: 401
+    code: "7"
+    message: "Invalid API key: You must be granted a valid key."
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  # Documented only (developer.themoviedb.org/docs/errors), and not callable
+  # here: reaching it needs a key TMDB accepts.
+  invalid_id:
+    status: 404
+    code: "6"
+    message: "Invalid id: The pre-requisite id is invalid or not found."
+
+  # Overrides the runtime's own unknown_route default, so an authenticated
+  # request for a path TMDB does not have gets TMDB's shape rather than a
+  # generic one. Documented only, same caveat as invalid_id above.
+  unknown_route:
+    status: 404
+    code: "34"
+    message: "The resource you requested could not be found."
+
+fixtures:
+  empty: {}
+
+  # The OpenAPI description's own worked examples, read rather than called --
+  # see the header for why none of this carries a verified date.
+  catalogue:
+    movie:
+      - id: "11"
+        adult: false
+        backdrop_path: /2w4xG178RpB4MDAIfTkqAuSJzec.jpg
+        belongs_to_collection:
+          id: 10
+          name: Star Wars Collection
+          poster_path: /pWVLFh4OuejTpUaDQbB1C4zoS2p.jpg
+          backdrop_path: /iY2ujEY2m68OTTlPFTiHub9joHS.jpg
+        budget: 11000000
+        genres:
+          - id: 12
+            name: Adventure
+          - id: 28
+            name: Action
+          - id: 878
+            name: Science Fiction
+        homepage: http://www.starwars.com/films/star-wars-episode-iv-a-new-hope
+        imdb_id: tt0076759
+        origin_country:
+          - US
+        original_language: en
+        original_title: Star Wars
+        overview: Princess Leia is captured and held hostage by the evil Imperial forces in their effort to take over the galactic Empire. Venturesome Luke Skywalker and dashing captain Han Solo team together with the loveable robot duo R2-D2 and C-3PO to rescue the beautiful princess and restore peace and justice in the Empire.
+        popularity: 20.6912
+        poster_path: /6FfCtAuVAW8XJjZ7eWeLibRLWTw.jpg
+        production_companies:
+          - id: 1
+            logo_path: /tlVSws0RvvtPBwViUyOFAO0vcQS.png
+            name: Lucasfilm Ltd.
+            origin_country: US
+          - id: 25
+            logo_path: /qZCc1lty5FzX30aOCVRBLzaVmcp.png
+            name: 20th Century Fox
+            origin_country: US
+        production_countries:
+          - iso_3166_1: US
+            name: United States of America
+        release_date: "1977-05-25"
+        revenue: 775398007
+        runtime: 121
+        spoken_languages:
+          - english_name: English
+            iso_639_1: en
+            name: English
+        status: Released
+        tagline: A long time ago in a galaxy far, far away...
+        title: Star Wars
+        video: false
+        vote_average: 8.2
+        vote_count: 22061
+
+    search_result:
+      - id: "550"
+        adult: false
+        backdrop_path: /hZkgoQYus5vegHoetLkCJzb17zJ.jpg
+        genre_ids: [18, 53, 35]
+        original_language: en
+        original_title: Fight Club
+        overview: A ticking-time-bomb insomniac and a slippery soap salesman channel primal male aggression into a shocking new form of therapy. Their concept catches on, with underground "fight clubs" forming in every town, until an eccentric gets in the way and ignites an out-of-control spiral toward oblivion.
+        popularity: 73.433
+        poster_path: /pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg
+        release_date: "1999-10-15"
+        title: Fight Club
+        video: false
+        vote_average: 8.433
+        vote_count: 26279
+
+      - id: "289732"
+        adult: false
+        backdrop_path: /1VqE5z4VIOcNcajJuHLk4fDkY9G.jpg
+        genre_ids: [28, 27]
+        original_language: zh
+        original_title: 屍城
+        overview: It's the end of the century at a corner of the city in a building riddled with crime - Everyone in the building has turned into zombies. After Jenny's boyfriend is killed in a zombie attack, she faces the challenge of surviving in the face of adversity. In order to stay alive, she struggles with Andy to flee danger.
+        popularity: 15.263
+        poster_path: /u8u3KVq0qfJYmNDsaTVOXy4So6f.jpg
+        release_date: "2014-10-23"
+        title: Zombie Fight Club
+        video: false
+        vote_average: 4.721
+        vote_count: 52
+
+    # The description's own worked example for this route -- not modelled to
+    # be German, just read that way. See the header.
+    genre:
+      - id: "28"
+        name: Action
+      - id: "35"
+        name: Komödie
+      - id: "878"
+        name: Science Fiction
+
+conformance:
+  - name: the body carries its own status_code, separate from the HTTP status
+    source: https://api.themoviedb.org/3/movie/550
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/movie/550
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        status_code: 7
+        status_message: "Invalid API key: You must be granted a valid key."
+        success: false
+
+  - name: a key that is simply wrong answers with the identical body
+    source: https://api.themoviedb.org/3/movie/999999999?api_key=malformed_test_key_not_real
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/movie/999999999
+      query:
+        api_key: malformed_test_key_not_real
+    expect:
+      # A bad key and a bad id at once, and the answer is the same 103 bytes
+      # as a bare missing key: TMDB never got far enough to notice the id.
+      status: 401
+      body:
+        status_code: 7
+        status_message: "Invalid API key: You must be granted a valid key."
+
+  - name: a path outside every version prefix does not change this either
+    source: https://api.themoviedb.org/3/nonexistentendpoint
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/nonexistentendpoint
+    expect:
+      # Still the key error, not a routing one: TMDB checks the key before
+      # it checks the path, for any path this Recipe's engine can reach.
+      status: 401
+      body:
+        status_code: 7
+
+  - name: with a key, an unrouted path gets TMDB's own 404 instead
+    source: https://developer.themoviedb.org/docs/errors
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/nonexistentendpoint
+      query:
+        api_key: cauldron-tmdb-fixture-key-000000000000
+    expect:
+      # Only reachable with a key this emulator accepts, which is why this
+      # case has no verified date: nobody has a TMDB key to call it for
+      # real. Documented, not observed.
+      status: 404
+      body:
+        status_code: 34
+        status_message: "The resource you requested could not be found."
+
+  - name: a movie id that is not a movie gets its own status_code
+    source: https://developer.themoviedb.org/docs/errors
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/movie/999999999
+      query:
+        api_key: cauldron-tmdb-fixture-key-000000000000
+    expect:
+      status: 404
+      body:
+        status_code: 6
+        status_message: "Invalid id: The pre-requisite id is invalid or not found."
+
+  - name: the full record carries budget, revenue and genres as objects
+    source: https://developer.themoviedb.org/openapi/tmdb-api.json
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/movie/11
+      query:
+        api_key: cauldron-tmdb-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        id: 11
+        title: Star Wars
+        budget: 11000000
+        revenue: 775398007
+        runtime: 121
+        tagline: A long time ago in a galaxy far, far away...
+        imdb_id: tt0076759
+        "genres[0].id": 12
+        "genres[0].name": Adventure
+        "belongs_to_collection.name": Star Wars Collection
+
+  - name: a search hit carries none of that, and genre_ids instead
+    source: https://developer.themoviedb.org/openapi/tmdb-api.json
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/search/movie
+      query:
+        api_key: cauldron-tmdb-fixture-key-000000000000
+        query: fight club
+    expect:
+      status: 200
+      body:
+        # Two records here against the description's own 39: the emulator
+        # counts what its fixture holds, the same as this project's other
+        # Recipes do when a real listing is bigger than what is seeded.
+        page: 1
+        total_pages: 1
+        total_results: 2
+        "results[0].id": 550
+        "results[0].title": Fight Club
+        "results[0].genre_ids[0]": 18
+        "results[1].id": 289732
+        "results[1].title": Zombie Fight Club
+      absent:
+        # None of the full record's fields leaked into the search shape.
+        - "results[0].budget"
+        - "results[0].genres"
+        - "results[0].tagline"
+
+  - name: the genre list is bare, with none of the search envelope's fields
+    source: https://developer.themoviedb.org/openapi/tmdb-api.json
+    fixture: catalogue
+    request:
+      method: GET
+      path: /3/genre/movie/list
+      query:
+        api_key: cauldron-tmdb-fixture-key-000000000000
+    expect:
+      status: 200
+      body:
+        "genres[0].id": 28
+        "genres[0].name": Action
+        # The provider's own example, not this Recipe's: read in German for
+        # reasons the description never explains.
+        "genres[1].name": Komödie
+      absent:
+        - page
+        - total_pages
+        - total_results

@@ -283,11 +283,11 @@ the header says so.
 | ~~Bugsnag~~ | Shipped. An error is not its occurrences, and the counts are on the error |
 | Honeybadger | Assess — faults and notices |
 | Grafana Cloud | Assess — the stack-management API, which is a second surface on top of the one that now ships. **The Grafana HTTP API is shipped** as `grafana`, written against `api-merged.json` in `grafana/grafana`: two unique identifiers for one dashboard, and the one called `id` is the one you cannot use. A save's required fields are `["status", "title", "version", "id", "uid", "url"]` and the two identifiers carry the same sentence -- "The unique identifier (id)" and "The unique identifier (uid)" -- for an int64 and a string, while the only path that fetches a dashboard is `/api/dashboards/uid/{uid}`. So the integer is required in every save response and can address nothing; it is the instance's row number, and a deploy that stored it stored the identifier that will not survive the move. The document says the same about folders outright: `folderId` is "Deprecated: use FolderUID instead", beside `folderUid`. Also pinned: a field called `title` whose description is **"Slug The slug of the dashboard."** with the example "my-dashboard" -- a struct comment one field out of place, on the field a UI shows back to the user; the `version` that guards the next save living in `meta` rather than on the dashboard, which is free-form JSON, with a **412** declared on the save; five permission booleans (`canAdmin`, `canDelete`, `canEdit`, `canSave`, `canStar`) and a sixth field, `provisioned`, that none of them accounts for; and a search that answers with a bare array, no envelope and no count, whose hits can be dashboards already in the bin. Detection is the thinnest in the collection and the reason is the finding: eighteen npm results for "grafana" and not one calls this API -- the whole `@grafana/` scope is plugin tooling, and the biggest Packagist numbers are Loki, a different product from the same vendor |
-| Honeycomb | Assess — datasets, triggers, query results |
+| ~~Honeycomb~~ | Shipped. **One endpoint answers `problem+json` and six do not** -- `/1/auth` sends RFC 7807 while boards, datasets, columns, triggers, markers and the events ingest answer the same credential failure as a plain `{"error": ...}`. Written partly to find out whether RFC 7807 needed a new error style: it did not, a flat style with the message under `title` reproduces it exactly |
 | Better Stack | Assess — logs, uptime monitors, incidents |
 | Heap | Assess — events and user properties |
 | LogRocket | Assess — sessions and issues |
-| New Relic | Assess. It was in "assessed and deliberately not done" for being GraphQL-only, which stopped being a reason the day ShipHero brought GraphQL support and Linear shipped on it. NerdGraph is one endpoint whose body decides the shape, which is what `selects` is for |
+| ~~New Relic~~ | Shipped, with five cases checked against the live API and five drafted from its published description. **Its own description would generate a broken client**: the spec declares the applications list with the same schema as the single fetch, promising `{"application": {...}}` where the wire sends `{"applications": [...]}`, so generated code reads `response.application.id` and gets undefined on every list call. Also pinned: a wrong key echoed back inside the failure body, and `health_status` as the string "gray" beside `reporting` as a boolean -- two fields stating one fact in two types. NerdGraph was probed for the 200-with-errors behaviour this collection collects and does **not** do it unauthenticated: it 401s before GraphQL executes |
 
 ## Hosting, deployment and package registries
 
@@ -446,12 +446,12 @@ the header says so.
 | Provider | Why |
 |---|---|
 | Reddit | Assess — listings page by fullname rather than offset, and a deleted comment is still in the tree with its body replaced by a marker |
-| Twitch | Assess — Helix pagination cursors, token scopes, the EventSub subscription lifecycle |
+| ~~Twitch~~ | Shipped. **It needs two credentials and checks one of them first** -- a correct `Client-Id` with no token answers byte-identically to sending nothing at all, so getting half of it right earns no acknowledgement. The last page of a listing carries `pagination` as an empty object rather than omitting it or nulling the cursor, so a client testing for the key loops forever and one testing the cursor does not |
 | Bluesky | Assess — the AT Protocol is its own model with DIDs and records rather than REST resources, so it may belong in the not-done table |
 | Mastodon | Assess — pagination is Link-header based and instance behaviour varies, which is itself the interesting part |
 | Telegram Bot API | Assess — every method is both GET and POST, errors come back with HTTP 200 in some client libraries, and updates arrive by long polling or webhook but never both |
 | Buffer | Assess — profiles, updates, scheduling |
-| Spotify | Assess — the token expires in an hour and the refresh path is the whole integration |
+| ~~Spotify~~ | Shipped. **The body cannot tell two failures apart and the header can** -- a missing and a bogus token give identical JSON naming three possible causes at once, while `WWW-Authenticate` carries `missing_token` against `invalid_token`, so the diagnosis exists one layer above where anyone reading JSON looks. An unknown path answers **410 Gone**, a status meaning the resource existed and was removed, for one that never existed. Its description marks two endpoints deprecated while the wire sends no `Deprecation` or `Sunset` header at all. The token-refresh path this row asked about needs an account and is not modelled |
 | Strava | Assess — activities, webhooks, the rate limit counted in two windows at once |
 
 ## Identity verification and risk
@@ -469,7 +469,7 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Duffel | Assess — offers expire, and an offer that was valid when you displayed it is gone when the customer presses book. That gap is the entire domain |
+| ~~Duffel~~ | Shipped, and this row's premise is confirmed and unmodelled. **Offers do expire**, typically within thirty minutes, after which they answer 422 `offer_expired` -- and there is no way to expire an identifier on a clock here, so one fixture offer always answers expired and the real timer is described rather than simulated. What was verified instead: Duffel **refuses you for not naming a version before it checks who you are**, with distinct codes separating not saying from saying something retired |
 | Amadeus | Assess — self-service against enterprise APIs, and the test environment carrying different inventory from production |
 | Hotelbeds | Assess — availability, rates, the rate that changes between check and book |
 
@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**222 more listings across 135 Recipes declare no paging at all**, and the
+**231 more listings across 143 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1290,7 +1290,7 @@ what normalisation does not fix.
 |---|---|
 | ~~Razorpay~~ | Shipped. Capture is a separate call and an uncaptured authorisation is auto-refunded, so doing nothing is a decision; amounts are in paise; the fee and tax do not exist until capture; and BAD_REQUEST_ERROR is the code on almost every failure, so reason is the only thing worth branching on |
 | ~~Paystack~~ | Shipped, and written entirely from live responses: no credential, no account, every case dated. **The row's own premise is the part that could not be checked** -- every amount-bearing endpoint needs a secret key, so whether amounts really are in kobo is documented and unverified, and the Recipe models no amount field rather than claiming one. What was verified is a **negative** finding: every response carries `{status, message, data}` with a boolean beside the HTTP status, the shape that lets a body disagree with its own status line, and on the whole key-free surface the two always agree -- `true` with 200, `false` with 401, no 200 ever carrying `false`. Also pinned: a 401 whose machine-readable code is `invalid_Key`, with a capital K inside a snake_case value; an unknown country answering 200 with an empty array, indistinguishable from a real country it has no banks for and with the success flag saying `true` for both; malformed paging values (`perPage=abc`, `-1`, twenty digits) all accepted in silence; and cursor paging that exists only behind an opt-in `use_cursor=true`. Stated and not served: the nested `data.status` of `"failed"` its documentation describes on a verified transaction, which would be a third statement of one outcome and the likeliest to disagree |
-| Flutterwave | The verify endpoint is the source of truth and the redirect parameters are not, which is the whole of the fraud surface |
+| ~~Flutterwave~~ | Shipped, with four cases checked against the live API and four drafted from its SDK documentation, and meant to be read against Paystack's. **Both wrap everything in `{status, message, data}` and disagree about the first field**: Paystack sends the boolean `false`, Flutterwave the string `"error"`, so `if (!body.status)` treats every Flutterwave failure as a success. Flutterwave has no unauthenticated surface at all, where Paystack serves banks and countries to anyone. Documented and not called: the response shape changes by payment method rather than by endpoint -- a bank transfer has no `data` key at all, a Nigerian direct debit nests `meta.authorization` inside `data`, and a European one puts the same value at the top level as a sibling |
 | Mercado Pago | A payment can sit in in_process for days, and the status detail rather than the status says why |
 | dLocal | The settlement currency is not the charge currency and the rate is fixed at a moment you did not choose |
 | Rapyd | Payouts and payments have separate id namespaces that look identical |
@@ -1315,7 +1315,7 @@ what normalisation does not fix.
 | ~~Cohere~~ | Shipped. billed_units and tokens do not agree and pricing from the wrong one is wrong on every request; a finish reason is not an error and MAX_TOKENS is a 200 with a truncated body; an embedding carries nothing but its position |
 | ~~Mistral~~ | Shipped, with four cases checked against the live API and five drafted from Mistral's own description and carrying no verified date -- the split is in the file. **It is offered as an OpenAI-compatible surface, and this Recipe marks where that stops**: the error envelope is flat `detail` where OpenAI nests under `error{}`, so `err.error.message` is undefined; completion ids are prefixed `cmpl-` rather than `chatcmpl-`; `AssistantMessage` has no `refusal` field at all, absent from the schema rather than null, so the sibling-field pattern OpenAI's own Recipe documents does not exist here; and `finish_reason` carries `model_length` and `error`, two values OpenAI has no equivalent for. Its unauthenticated failure does not distinguish a missing credential from a wrong one, answering byte-identically to both, and a malformed path answers a gateway's words rather than the API's -- `{"message": "no Route matched with those values"}`, with no `detail` key anywhere. `cauldron check` against its own description reports nothing contradicted |
 | Together AI | Model names change and a retired model answers 404 rather than falling back |
-| Groq | Rate limits are on tokens per minute as well as requests, and the headers report both |
+| ~~Groq~~ | Shipped. The rate-limit headers this row asked about could not be reached without a key and are not modelled. What was verified: **the wrong verb and the wrong path are the same failure** -- a POST to a real GET-only path answers the identical 404 a path nobody defined answers, with the method folded into the sentence and no 405 anywhere. Routes also resolve before the credential, the opposite order from Scaleway's. No `upstream.spec`: Groq's description is embedded in a documentation page's client-side payload rather than served at a URL, so a fingerprint would be one drift could never recompute |
 | ~~Meilisearch~~ | Shipped. A write answers 202 with a number and the word enqueued, the document is in neither the document listing nor the index until the task runs, and the task can fail after the 202 that accepted it |
 | Hugging Face Inference | A cold model answers 503 with an estimated_time, and the correct behaviour is to wait rather than retry |
 | ~~Langfuse~~ | Shipped. Traces are ingested asynchronously and are not readable immediately after being written |
@@ -1339,7 +1339,7 @@ what normalisation does not fix.
 | ~~Opsgenie~~ | Shipped. An alert and an incident have separate ids, lifecycles and close endpoints, so closing one leaves the other open; a create answers 202 with a request id that is not the alert; and a flapping monitor is one alert with a count rather than many alerts |
 | Checkly | A check run has assertions, and a passing run containing a failed assertion is possible |
 | Rev.ai | A job is asynchronous and the transcript is a separate fetch with its own content types, so the job being done is not the transcript being readable |
-| Perplexity | Citations are a separate array whose indices point into the text, so dropping either half makes the other meaningless |
+| ~~Perplexity~~ | Shipped. The citations this row asked about are recorded from the description and not called: they arrive as a top-level sibling of `choices`, with no home in OpenAI's schema, so a client typed against it drops them silently. What was verified: **one route is versioned and the other is not** -- `POST /chat/completions` is a 401 and `POST /v1/chat/completions` is a 404 with zero bytes -- and `/v1/models` describes an unrelated product, so a client listing models to choose one for chat is reading the wrong catalogue |
 
 ### Auth, one more time
 
@@ -1439,6 +1439,7 @@ than a client for its API.
 | Steam | The packages naming Steam on npm are overwhelmingly clients of **Steamworks**, the C++ game SDK, or of the community trading and market pages -- different hosts, different protocols, and in the SDK's case not an HTTP API at all. Packagist returns OpenID login helpers for signing in with Steam, which touch the auth flow and never the Web API. Offering this emulator to any of them would be wrong about the host, so it ships unmapped |
 | NOAA | Nothing on either registry reaches the NCEI access service. The clients that exist are Python and R, which neither registry indexes, and the npm results for the name reach **api.weather.gov** -- the National Weather Service, a different NOAA API that this collection already describes under its own Recipe. Mapping this one to those packages would hand somebody the wrong NOAA, so it ships unmapped |
 | Guardian | The npm packages naming the Guardian are almost all unrelated: route guards for web frameworks, which share the word and nothing else. The few genuine Open Platform clients are unmaintained and depended on by nothing. Packagist returns authorisation libraries for the same reason. A name match here is a homograph rather than a miss, so it ships unmapped |
+| New Relic | The `newrelic` package on npm is the **APM agent**, not a client of this API. It instruments an application and reports telemetry to New Relic's ingest endpoints; it never calls the v2 REST API or NerdGraph that this Recipe describes, and `@newrelic/telemetry-sdk` is the same story with a smaller surface. A project holding either is being monitored by New Relic rather than querying it, so offering this emulator would intercept nothing it actually sends. It ships unmapped and a test guards the decision |
 | Tink | A homograph rather than a gap. `tink` on npm is a next-generation runtime and package manager that shares the name and nothing else; Packagist returns unrelated packages for the same reason. The clients that genuinely reach this API are Java and Python, which neither registry indexes. Offering an open-banking emulator to a project that installed a package manager would be wrong about everything at once, so it ships unmapped and a test guards the decision |
 | Semantic Scholar | Nothing on either registry reaches the Academic Graph API. The clients that exist for it are Python, which neither npm nor Packagist indexes, and the npm results for the name are citation-formatting libraries that parse BibTeX already on disk rather than calling the service. Offering this emulator to a bibliography formatter would be wrong about the host and the protocol at once, so it ships unmapped and a test guards the decision |
 | Mercado Libre | The npm and Packagist packages that name Mercado Libre are almost all clients of **Mercado Pago**, the payments product on a different host with a different credential, which this Recipe does not describe. The few that do target the marketplace API are unmaintained wrappers with nothing depending on them. Offering this emulator to a Mercado Pago integration would be wrong about the host, the credential and the vocabulary at once, so it ships unmapped |
@@ -1483,7 +1484,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Fifty-seven Recipes send at least one identifier as a number now, and each
+Sixty-two Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

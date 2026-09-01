@@ -126,7 +126,8 @@ var words = map[string]int{
 	"Forty-eight": 48, "Forty-nine": 49, "Fifty": 50,
 	"Fifty-one": 51, "Fifty-two": 52, "Fifty-three": 53,
 	"Fifty-four": 54, "Fifty-five": 55, "Fifty-six": 56,
-	"Fifty-seven": 57,
+	"Fifty-seven": 57, "Fifty-eight": 58, "Fifty-nine": 59,
+	"Sixty": 60, "Sixty-one": 61, "Sixty-two": 62,
 }
 
 // The backlog states how many routes still page by a parameter nobody named.
@@ -243,6 +244,7 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 		"Stripe Tax":             "a specialised extension of Stripe, as the row itself says",
 		"UPS":                    "the parcel carrier, which merely spells the first three letters of Upstash",
 		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
+		"Wise Business":          "the business banking product, where wise is the transfers API",
 	}
 
 	raw, err := os.ReadFile(backlogPath)

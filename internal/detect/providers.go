@@ -4106,6 +4106,65 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// A third-party client; Wise publishes no JavaScript SDK.
+			recipe: "wise",
+			npm:    []string{"transferwise"},
+		},
+		{
+			// The vendor's own Node library.
+			recipe: "flutterwave",
+			npm:    []string{"flutterwave-node-v3"},
+		},
+		{
+			// The vendor's own TypeScript SDK, and the long-standing community
+			// wrapper that predates it.
+			recipe: "spotify",
+			npm:    []string{"@spotify/web-api-ts-sdk", "spotify-web-api-node"},
+		},
+		{
+			// The vendor's own JavaScript client.
+			recipe: "duffel",
+			npm:    []string{"@duffel/api"},
+		},
+		{
+			// Twurple is the maintained client; twitch-api-v5 speaks the older
+			// surface and is listed because projects still hold it.
+			recipe: "twitch",
+			npm:    []string{"@twurple/api", "twitch-api-v5"},
+		},
+		{
+			// A long-standing third-party client; TMDB ships no JavaScript SDK.
+			recipe: "tmdb",
+			npm:    []string{"moviedb-promise"},
+		},
+		{
+			// A third-party wrapper; RAWG ships no SDK of its own.
+			recipe: "rawg",
+			npm:    []string{"rawg"},
+		},
+		{
+			// The vendor's own TypeScript library, still pre-release.
+			recipe: "flightaware",
+			npm:    []string{"flightaware"},
+		},
+		{
+			// libhoney is the vendor's own event library, and it posts to
+			// /1/events, which this Recipe models. It does not touch the
+			// configuration endpoints, so the match is partial and real.
+			recipe: "honeycomb",
+			npm:    []string{"libhoney"},
+		},
+		{
+			// The vendor's own TypeScript library.
+			recipe: "groq",
+			npm:    []string{"groq-sdk"},
+		},
+		{
+			// The vendor's own TypeScript library.
+			recipe: "perplexity",
+			npm:    []string{"@perplexity-ai/perplexity_ai"},
+		},
+		{
 			// A real client of this API. Note that tink on npm is a package
 			// manager sharing the name and nothing else, which is why Tink
 			// itself is in the backlog rather than here.

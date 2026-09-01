@@ -1,0 +1,568 @@
+# Spotify Web API Recipe for Cauldron
+#
+# One message covers two different failures, and a header the body never
+# mentions is the only place they still disagree.
+#
+# Checked live against api.spotify.com on 2026-08-31, with no account, no
+# app and no token ever sent:
+#
+#   no Authorization header at all      -> 401 {"error":{"status":401,
+#                                                  "message":"Missing/invalid/expired access token"}}
+#   Authorization: Bearer <bogus>       -> 401 -- byte-identical body
+#
+# The body cannot be told apart. Both are the same status, the same nested
+# object, the same forty-word sentence. What differs is a header neither
+# case's body says anything about:
+#
+#   no token:    WWW-Authenticate: Bearer realm="spotify", error="missing_token",
+#                error_description="No token provided"
+#   bad token:   WWW-Authenticate: Bearer realm="spotify", error="invalid_token",
+#                error_description="Invalid access token"
+#
+# So the one place Spotify actually distinguishes "you sent nothing" from
+# "you sent something wrong" is a header most clients never parse, and the
+# body everybody does read says the same forty words either way. This
+# Recipe's single auth gate (see errors.authentication_error) can only carry
+# one WWW-Authenticate value regardless of which real cause produced the
+# failure, so it serves the no-token wording and states the other in prose
+# rather than in a case that would have to pick a side the emulator cannot
+# actually take.
+#
+# **An unrecognised path is 410 Gone, not 404, and the message is empty
+# rather than absent:**
+#
+#   GET /v1/nosuchpath           -> 410 {"error":{"status":410,"message":""}}
+#   GET /v1/completely-fake-xyz  -> 410, identical shape
+#   GET /v2/browse/new-releases  -> 410, identical shape (there is no v2)
+#   GET /                        -> 301 to developer.spotify.com
+#
+# All three checked with no Authorization header at all, which is the other
+# half of the finding: routing decides the path does not exist before
+# anything about credentials is asked. This format checks the opposite order
+# unconditionally -- auth ahead of routing, for every request -- so the
+# conformance case below reaches the 410 with the fixture's own accepted
+# token rather than with none, and says so. The empty string in the message
+# needed the same workaround Twitch's identical finding did: an error's
+# `message` field is only ever written to the body when it is non-empty,
+# which refuses to distinguish "blank on purpose" from "author left it
+# unset." A `fields:` override, applied after that guard, can still plant a
+# literal "" -- confirmed with `cauldron verify` against a scratch Recipe
+# before it was trusted here. See errors.unknown_route.
+#
+# **/v1/browse/new-releases is the endpoint this Recipe was asked to probe,
+# and Spotify's own OpenAPI description marks it `deprecated: true`.** So is
+# `GET /v1/tracks` (Get Several Tracks, the comma-separated batch form) --
+# `GET /v1/tracks/{id}`, the single-track lookup, is not. None of the three
+# carried a `Deprecation` or `Sunset` response header on any call actually
+# made above: the deprecation is a fact in the schema and not a signal on
+# the wire, which this Recipe states because a client watching headers for
+# it would watch forever.
+#
+# **A track carries no documented 404 at all.** The schema's own responses
+# list for Get Track names 401, 403 and 429 and stops -- no 400, no 404 --
+# while the neighbouring Get an Audiobook and Get an Album both document a
+# 404 with the shared NotFound shape. What a request for a well-formed but
+# nonexistent track id actually answers is therefore not stated anywhere
+# this Recipe could read, and every live call this project sent to
+# /v1/tracks/{id} was refused for its missing token before any id was
+# looked up (see the observed case below) -- so resource_missing is not
+# declared for this resource at all rather than guessed at.
+#
+# **Market restriction is a real, named, openly unstable enum.** The schema's
+# own words for TrackRestrictionObject's reason: "market" (not available in
+# the given market), "product" (not available for the subscription), or
+# "explicit" (blocked by the account's content setting) -- followed by "
+# Additional reasons may be added in the future. **Note**: If you use this
+# field, make sure that your application safely handles unknown values." A
+# provider telling its own clients not to trust its own enum's closedness is
+# worth quoting rather than paraphrasing. The market parameter's own
+# description supplies the trigger: "If neither market or user country are
+# provided, the content is considered unavailable for the client" -- so an
+# app-only token with no market asked for is the ordinary case this
+# restriction fires on, not an edge case.
+#
+# **A null entry inside the tracks array, for an id that will not resolve,
+# is the one claim in this Recipe's brief that could not be substantiated.**
+# It is widely reported by integrators and is not stated by Spotify's own
+# reference page for Get Several Tracks (fetched while writing this Recipe:
+# the page's own example response shows only fully-populated entries and
+# says nothing about gaps), nor by the community-maintained
+# sonallux/spotify-web-api "fixed" OpenAPI description, which corrects
+# several of Spotify's own schema mistakes and does not mark this array's
+# items nullable either. Confirming it firsthand needs a real access token
+# and a real removed-track id, which this project will not obtain. It is
+# left out of this Recipe rather than served on the strength of a claim this
+# project could not read anywhere and was not positioned to test.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Every 200 in this Recipe is read from developer.spotify.com's own
+#     OpenAPI description rather than called. No request in this project's
+#     history ever carried a token Spotify would accept.
+#   - The WWW-Authenticate split (missing_token vs invalid_token) cannot be
+#     served: one auth gate, one declared failure, one header value. See the
+#     header above.
+#   - A malformed path is 410 on real Spotify whatever the credentials --
+#     checked with none at all, three times, identically. This format checks
+#     auth ahead of routing for every request, so the conformance case for
+#     the 410 below authenticates first to reach the route, which
+#     demonstrates the body faithfully and cannot demonstrate that real
+#     Spotify reaches it with no credentials at all.
+#   - The null-track-in-array claim is not modelled. See above.
+#   - href, inside the new-releases envelope, is a documented required field
+#     this Recipe cannot emit under a wrapped list style: it is meant to echo
+#     the exact request URL, and the mechanism this format has for that
+#     (list.url) only reaches the default envelope shape, not a nested
+#     wrapped key. Left out rather than hardcoded to a value that would be
+#     wrong for every request but the one it was copied from.
+#   - previous, the companion link to next, has no second slot in this
+#     format's cursor mechanism: one field carries the forward pointer and
+#     there is no equivalent for backward. Left undeclared rather than
+#     modelled as always null, which would be true on every fixture this
+#     Recipe holds and false on Spotify's real second page.
+#   - available_markets is deprecated in Spotify's own schema on both the
+#     album and the track and is still declared here, because the schema
+#     still describes it being sent and this project observed no
+#     replacement.
+#   - Only three routes are modelled: new releases, get one track, and get
+#     several tracks. Search, playlists, albums, artists, shows, episodes,
+#     audiobooks, the player and everything under /me are absent.
+
+recipe: spotify
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.spotify.com/documentation/web-api
+  spec: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+  spec_hash: d077567734d35f49c51dcc4134e5fb1938b82c65f2d93723d691508a9e6a2b87
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldronspotifyaccesstoken0000000000000000
+
+responses:
+  resource:
+    style: bare
+  error:
+    # {"error": {"status": 401, "message": "..."}}. The schema's own
+    # ErrorObject has exactly these two properties and nothing else -- no
+    # code, no category -- which ruled out both by name rather than by
+    # omission.
+    style: nested
+    key: error
+    message_field: message
+    status_field: status
+    type_field: "-"
+    code_field: "-"
+
+resources:
+  album:
+    id:
+      style: opaque
+    fields:
+      album_type:
+        type: string
+      total_tracks:
+        type: integer
+      available_markets:
+        type: list
+      external_urls:
+        type: map
+      images:
+        type: list
+      name:
+        type: string
+      # A plain string, deliberately not datetime: release_date_precision
+      # says whether this is a full date, a year-month, or a bare year, and
+      # "1981" is not a valid RFC 3339 timestamp. Declaring it as one of this
+      # format's time types would parse for most albums and throw for the
+      # ones Spotify itself only knows the year of.
+      release_date:
+        type: string
+      release_date_precision:
+        type: string
+      artists:
+        type: list
+      uri:
+        type: string
+    constants:
+      type: album
+
+  track:
+    id:
+      style: opaque
+    fields:
+      album:
+        type: map
+      artists:
+        type: list
+      available_markets:
+        type: list
+      disc_number:
+        type: integer
+      duration_ms:
+        type: integer
+      explicit:
+        type: boolean
+      external_ids:
+        type: map
+      external_urls:
+        type: map
+      name:
+        type: string
+      popularity:
+        type: integer
+      preview_url:
+        type: string
+        null_when_unset: true
+      track_number:
+        type: integer
+      uri:
+        type: string
+      is_local:
+        type: boolean
+      # Present only when Track Relinking applies -- which, per the market
+      # parameter's own description, includes the ordinary case of an
+      # app-only token asking for nothing in particular: "If neither market
+      # or user country are provided, the content is considered unavailable
+      # for the client." Left off the plain fixture record and present on
+      # the restricted one below.
+      is_playable:
+        type: boolean
+      restrictions:
+        type: map
+    constants:
+      type: track
+
+routes:
+  - method: GET
+    path: /v1/browse/new-releases
+    resource: album
+    operation: list
+    list:
+      style: wrapped
+      key: albums.items
+      count_field: albums.total
+      limit_field: albums.limit
+      page_field: albums.offset
+      cursor_field: albums.next
+      cursor_url: absolute
+      cursor_null: true
+    pagination:
+      style: offset
+      cursor_param: offset
+      limit_param: limit
+      limit: 20
+      max_limit: 50
+      first_page: 0
+
+  - method: GET
+    path: /v1/tracks/{id}
+    resource: track
+    operation: get
+
+  # Deprecated in Spotify's own schema (see the header) and still live.
+  - method: GET
+    path: /v1/tracks
+    resource: track
+    operation: list
+    list:
+      style: wrapped
+      key: tracks
+
+  - method: GET
+    path: /v1/nosuchpath
+    error: unknown_route
+
+errors:
+  authentication_error:
+    status: 401
+    # The identical sentence a missing token and a present-but-wrong one both
+    # draw. See the header: this is the one Spotify failure this format
+    # reproduces without a gap, because the real body never told the two
+    # apart either. The WWW-Authenticate value is the no-token wording; the
+    # bad-token wording is real, observed, and stated in prose rather than
+    # served, because one gate cannot carry both.
+    message: "Missing/invalid/expired access token"
+    headers:
+      WWW-Authenticate: 'Bearer realm="spotify", error="missing_token", error_description="No token provided"'
+
+  unknown_route:
+    status: 410
+    # The empty string is the real message. See the header for the fields:
+    # override this needed.
+    fields:
+      error:
+        message: ""
+
+fixtures:
+  empty: {}
+
+  new_releases:
+    album:
+      - id: "2up3OPMp9Tb4dAKM2erWXQ"
+        album_type: album
+        total_tracks: 9
+        available_markets: ["CA", "US", "GB"]
+        external_urls:
+          spotify: "https://open.spotify.com/album/2up3OPMp9Tb4dAKM2erWXQ"
+        images:
+          - url: "https://i.scdn.co/image/ab67616d0000b2732up3opmp9tb4dakm2erwxq"
+            height: 640
+            width: 640
+        name: Cauldron Sessions
+        release_date: "2026"
+        release_date_precision: year
+        artists:
+          - id: 0k17h0D3J5VfsdmQ1iZtE9
+            name: Cauldron Fixtures
+            type: artist
+        uri: "spotify:album:2up3OPMp9Tb4dAKM2erWXQ"
+
+      - id: "6vDGVLDbBmQuk6QsUEfFik"
+        album_type: single
+        total_tracks: 1
+        available_markets: ["CA", "US"]
+        external_urls:
+          spotify: "https://open.spotify.com/album/6vDGVLDbBmQuk6QsUEfFik"
+        images:
+          - url: "https://i.scdn.co/image/ab67616d0000b2736vdgvldbbmquk6qsueffik"
+            height: 640
+            width: 640
+        name: Boiling Point
+        release_date: "2026-03-14"
+        release_date_precision: day
+        artists:
+          - id: 0k17h0D3J5VfsdmQ1iZtE9
+            name: Cauldron Fixtures
+            type: artist
+        uri: "spotify:album:6vDGVLDbBmQuk6QsUEfFik"
+
+  catalogue:
+    track:
+      - id: "11dFghVXANMlKmJXsNCbNl"
+        album:
+          id: "2up3OPMp9Tb4dAKM2erWXQ"
+          name: Cauldron Sessions
+        artists:
+          - id: 0k17h0D3J5VfsdmQ1iZtE9
+            name: Cauldron Fixtures
+            type: artist
+        available_markets: ["CA", "US"]
+        disc_number: 1
+        duration_ms: 210000
+        explicit: false
+        external_ids:
+          isrc: USUG12000001
+        external_urls:
+          spotify: "https://open.spotify.com/track/11dFghVXANMlKmJXsNCbNl"
+        name: Cauldron Anthem
+        popularity: 55
+        track_number: 3
+        uri: "spotify:track:11dFghVXANMlKmJXsNCbNl"
+        is_local: false
+
+      # Present in the same market-less request and refused for it, per the
+      # market parameter's own words quoted in the header.
+      - id: "7restrictedCauldronTrk"
+        album:
+          id: "6vDGVLDbBmQuk6QsUEfFik"
+          name: Boiling Point
+        artists:
+          - id: 0k17h0D3J5VfsdmQ1iZtE9
+            name: Cauldron Fixtures
+            type: artist
+        available_markets: []
+        disc_number: 1
+        duration_ms: 198000
+        explicit: false
+        external_ids:
+          isrc: USUG12000002
+        external_urls:
+          spotify: "https://open.spotify.com/track/7restrictedCauldronTrk"
+        name: Cauldron Anthem (Restricted Mix)
+        popularity: 10
+        track_number: 1
+        uri: "spotify:track:7restrictedCauldronTrk"
+        is_local: false
+        is_playable: false
+        restrictions:
+          reason: market
+
+conformance:
+  # Observed. No Authorization header at all.
+  - name: no token is a 401 naming the token, in an object
+    source: https://api.spotify.com/v1/browse/new-releases
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/browse/new-releases
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'error="missing_token"'
+      body:
+        error.status: 401
+        error.message: "Missing/invalid/expired access token"
+
+  # Observed. A bogus bearer token draws the byte-identical body -- the
+  # finding the header above is about.
+  - name: a bogus token draws the identical body, not a different one
+    source: https://api.spotify.com/v1/browse/new-releases
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/browse/new-releases
+      headers:
+        Authorization: Bearer bogustoken1234567890
+    expect:
+      status: 401
+      body:
+        error.status: 401
+        error.message: "Missing/invalid/expired access token"
+
+  # Observed. No Authorization header, and the id in the path is never
+  # reached: auth is refused before it is read.
+  - name: a track lookup with no token never gets as far as the id
+    source: https://api.spotify.com/v1/tracks/not-a-real-id
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/tracks/not-a-real-id
+    expect:
+      status: 401
+      body:
+        error.message: "Missing/invalid/expired access token"
+
+  # Observed shape, credentialed request -- see the header's fidelity gap.
+  # Real Spotify answers this 410 with no Authorization header at all;
+  # this format checks auth ahead of routing unconditionally, so the
+  # fixture's own accepted token is used to reach the route at all.
+  - name: an unrecognised path is a 410 with a genuinely empty message
+    source: https://api.spotify.com/v1/nosuchpath
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /v1/nosuchpath
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 410
+      body:
+        error.status: 410
+        error.message: ""
+
+  # Documented, not observed. The full fixture in one page: the envelope's
+  # next is null, matching the schema's own "( null if none)".
+  - name: new releases wrap under albums, with limit and total beside it
+    source: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+    fixture: new_releases
+    request:
+      method: GET
+      path: /v1/browse/new-releases
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 200
+      body:
+        "albums.items[0].id": "2up3OPMp9Tb4dAKM2erWXQ"
+        "albums.items[0].album_type": album
+        "albums.items[0].release_date": "2026"
+        "albums.items[1].id": "6vDGVLDbBmQuk6QsUEfFik"
+        "albums.items[1].release_date": "2026-03-14"
+        "albums.total": 2
+        "albums.limit": 20
+        "albums.offset": 0
+        "albums.next": null
+
+  # Documented, not observed. Asking for one at a time leaves a second album
+  # behind and next stops being null.
+  - name: a page with more behind it carries a next url instead of null
+    source: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+    fixture: new_releases
+    request:
+      method: GET
+      path: /v1/browse/new-releases
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 200
+      body:
+        "albums.items[0].id": "2up3OPMp9Tb4dAKM2erWXQ"
+        "albums.limit": 1
+        "albums.offset": 0
+      matches:
+        "albums.next": "offset=1"
+      absent:
+        - albums.items[1]
+
+  # Documented, not observed. A single track is bare -- no wrapper, unlike
+  # the batch and listing routes beside it.
+  - name: one track answers bare, with no envelope at all
+    source: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/tracks/11dFghVXANMlKmJXsNCbNl
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 200
+      body:
+        id: "11dFghVXANMlKmJXsNCbNl"
+        name: Cauldron Anthem
+        type: track
+        duration_ms: 210000
+        "external_ids.isrc": USUG12000001
+      absent:
+        - is_playable
+        - restrictions
+
+  # Documented, not observed. The deprecated batch form wraps under
+  # "tracks" and carries no paging at all -- a fixed-size fetch, not a
+  # listing with a cursor.
+  - name: several tracks wrap under tracks with no pagination fields at all
+    source: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/tracks
+      query:
+        ids: "11dFghVXANMlKmJXsNCbNl,7restrictedCauldronTrk"
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 200
+      body:
+        "tracks[0].id": "11dFghVXANMlKmJXsNCbNl"
+        "tracks[1].id": "7restrictedCauldronTrk"
+      absent:
+        - total
+        - limit
+        - offset
+
+  # Documented, not observed. A market-restricted track carries a named,
+  # openly-unstable reason and is_playable: false, exactly the shape the
+  # schema's own note warns a client to handle defensively.
+  - name: a market-restricted track names the reason and says it cannot play
+    source: https://developer.spotify.com/reference/web-api/open-api-schema.yaml
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/tracks/7restrictedCauldronTrk
+      headers:
+        Authorization: Bearer cauldronspotifyaccesstoken0000000000000000
+    expect:
+      status: 200
+      body:
+        id: "7restrictedCauldronTrk"
+        is_playable: false
+        restrictions.reason: market
