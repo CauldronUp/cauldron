@@ -1,0 +1,584 @@
+# n8n Recipe for Cauldron
+#
+# n8n is open source, and app.n8n.cloud turns out to be two different things
+# wearing one name. The bare hostname is n8n Cloud's own account/provisioning
+# console -- a Nuxt single-page app whose backend is a separate host,
+# api.n8n.cloud -- and every path this Recipe cares about answers there with
+# the SPA's index.html, 200, regardless of what was asked for. A real n8n
+# instance lives on its own subdomain instead, and demo.app.n8n.cloud turns
+# out to be exactly that: a live, reachable, real n8n Public REST API,
+# answering genuine requests with no account needed to strike the parts that
+# refuse. Everything below marked verified was struck against that host on
+# the date given. Everything marked source-only was read from n8n's own
+# public-api OpenAPI description on GitHub (n8n-io/n8n, packages/cli/src/
+# public-api/v1), because reaching an actual record needs an API key this
+# project never requested.
+#
+# There is no route in that description, anywhere, to start a workflow
+# running. createWorkflow, activateWorkflow, deactivateWorkflow (both
+# deprecated in favour of publishWorkflow/unpublishWorkflow, and still live),
+# archiveWorkflow, transferWorkflow -- fourteen workflow-scoped path files in
+# the handler directory, and not one named run, execute, or trigger. What the
+# API offers instead is retry (POST /executions/{id}/retry) and stop, which
+# presuppose a run already exists. The actual trigger surface is a different
+# subsystem entirely, outside the versioned /api/v1 API and its X-N8N-API-KEY
+# scheme: a Webhook trigger node, reached at /webhook/{path} (the production
+# URL, live only while the owning workflow is active) or /webhook-test/{path}
+# (fires once per click of "Execute workflow" in the editor). Both were
+# struck live against a path this Recipe invented, and both refuse it with a
+# real, specific 404 rather than silently accepting it -- unlike Zapier's
+# Catch Hook in this same batch, which answers 200 "success" for a hook id
+# nobody ever registered:
+#
+#   POST /webhook/this-is-not-a-real-webhook-path-xyz
+#     -> 404 {"code":404,"message":"The requested webhook \"POST
+#        this-is-not-a-real-webhook-path-xyz\" is not registered.",
+#        "hint":"The workflow must be active for a production URL to run
+#        successfully. ... production URL calls aren't shown on the canvas
+#        (only in the executions list)"}
+#   POST /webhook-test/this-is-not-a-real-webhook-path-xyz
+#     -> 404 {"code":404,"message":"The requested webhook
+#        \"this-is-not-a-real-webhook-path-xyz\" is not registered.",
+#        "hint":"Click the 'Execute workflow' button on the canvas, then try
+#        again. (In test mode, the webhook only works for one call after you
+#        click this button)"}
+#
+# So: a call against a webhook nobody set up tells you plainly. What a call
+# against a real one answers is a different question, and n8n's own Webhook
+# node source settles it in the negative for the common case. The node's
+# `responseMode` parameter -- Immediately / When Last Node Finishes / Using
+# 'Respond to Webhook' Node -- defaults to `onReceived`, "Immediately: as
+# soon as this node executes" (packages/nodes-base/nodes/Webhook/
+# description.ts, `default: 'onReceived'`, unchanged across every node
+# version the file declares). A workflow author has to actively choose one of
+# the other two options for the HTTP response to carry anything about how the
+# run went; left alone, the caller's connection is closed the instant the
+# trigger fires, before the rest of the workflow has executed at all. That is
+# the same gap Zapier's Catch Hook has in this batch, arrived at from the
+# opposite direction: Zapier's response never meant anything to begin with,
+# and n8n's usually does not either, but only because of a default a
+# publishable workflow can turn off.
+#
+# The versioned API's own execution resource is where "did it finish" would
+# have to be answered instead, and it is honest about the vocabulary:
+# JobStatusEnum-equivalent `status` on GET /api/v1/executions/{id} is one of
+# canceled, crashed, error, new, running, success, unknown, waiting -- eight
+# values, all mutually exclusive, no ninth for "some of it landed". A
+# separate `finished: boolean` rides beside it, and the schema's own worked
+# example is `{"id": 1000, "finished": true, ...}` with no worked example of
+# `finished: true` paired with `status: error` or vice versa, so whether
+# those two fields can disagree -- Airbyte's `incomplete` question, restated
+# -- is not something this description answers either way. Left open rather
+# than guessed at; see the fidelity gaps.
+#
+# Two more things worth having pinned rather than assumed, both read from
+# execution.yml directly: `workflowId` is typed `number` and its own example
+# value is the quoted string `'1000'`; `retrySuccessId` is typed `number` and
+# its own example is `'2'`. The schema and its own worked example disagree
+# about the type on both fields, in the same document, which is exactly the
+# kind of thing this format's field declarations follow the type for and
+# this header records the contradiction for.
+#
+# Auth is where n8n stops being one API and starts being a set of routes that
+# happen to share a version prefix. Every case below was struck against
+# demo.app.n8n.cloud with no account:
+#
+#   GET  /api/v1/workflows            no header    -> 401 {"message":"Unauthorized"}
+#   GET  /api/v1/workflows            junk key     -> 401 {"message":"Unauthorized"} (byte-identical)
+#   GET  /api/v1/workflows/abc123     no header    -> 401 {"message":"Unauthorized"}
+#   PUT  /api/v1/workflows            no header    -> 405 {"message":"PUT method not allowed"}
+#   DELETE /api/v1/workflows          no header    -> 405 {"message":"DELETE method not allowed"}
+#   GET  /api/v1/this-is-not-real     no header    -> 404 {"message":"not found"}
+#   GET  /api/v1/this-is-not-real     junk key     -> 404 {"message":"not found"} (identical)
+#   GET  /api/v1/executions           no header    -> 401 {"message":"'X-N8N-API-KEY' header required"}
+#   GET  /api/v1/executions           junk key     -> 401 {"message":"unauthorized"}
+#   POST /api/v1/workflows/abc123/activate    no header -> 401 {"message":"'X-N8N-API-KEY' header required"}
+#   POST /api/v1/workflows/abc123/activate    junk key  -> 401 {"message":"unauthorized"}
+#   POST /api/v1/workflows/abc123/deactivate  no header -> 401 {"message":"'X-N8N-API-KEY' header required"}
+#   POST /api/v1/workflows/abc123/deactivate  junk key  -> 401 {"message":"unauthorized"}
+#
+# Read that as two families, and read the boundary carefully -- it is
+# narrower than "workflows vs. everything else". Only two routes on this
+# whole host answer the generic sentence for both an absent and a wrong key:
+# the bare workflows collection and a single workflow by id. Every other
+# route struck here, activate and deactivate alike, plus the entirely
+# separate executions resource, answers the more specific "header required"
+# for an absent key and the differently-cased "unauthorized" for a wrong
+# one. Activate and deactivate are the same resource, one segment apart, the
+# same shape of write -- and they agree with each other and with a resource
+# that shares nothing else with them, rather than with the plain workflow
+# lookup that is otherwise their closest relative. Whatever drew this
+# boundary drew it around "the plain collection and a single record" against
+# "everything one step past that", not around workflows against
+# not-workflows.
+#
+# Method mismatch is a real 405 with the specific method named in the
+# message ("PUT method not allowed", not a generic "Method Not Allowed"),
+# and it is checked before the credential on the two plain workflows routes
+# struck above -- no header was sent for either PUT or DELETE and neither
+# needed one to reach the 405. A path this host never registered is a
+# routing miss regardless of credential, struck both ways: "not found"
+# whether or not a key was sent. Routing beats auth for an unregistered
+# path, and auth beats routing for a wrong method on a registered one -- the
+# same split census/recipe.yaml finds along a different axis (HTTP method
+# rather than path shape) in this collection, and the same order Windmill's
+# Recipe in this batch settles on independently.
+#
+# One structural finding could not be turned into a claim about a specific
+# route, and is recorded as a gap instead of a guess. GET and POST against
+# /api/v1/workflows/abc123/zzz-not-a-real-subpath -- a path this Recipe
+# invented -- answer exactly the same shape the real activate and deactivate
+# cases above do: GET gets "header required" and POST gets "POST method not
+# allowed", both checked live. One segment past /workflows/{id}/ is
+# evidently gated by something that does not care whether the segment names
+# an operation this API actually has -- and that means an unauthenticated
+# probe cannot tell a real n8n sub-route from a typo by its response shape
+# alone. This Recipe does not declare a "run" or "execute"
+# route on the strength of getting the same answer a fake path gets; see the
+# header's opening paragraph for what the source tree says instead.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. The one 200 case below -- a single execution -- is read from
+#     execution.yml's own field-level `example` annotations, not observed,
+#     and carries no verified date. Every other case struck a route that
+#     needed no credential to refuse, and does.
+#   - Only id, finished, workflowId and retrySuccessId carry a documented
+#     worked value. status, mode, startedAt, stoppedAt, retryOf and the rest
+#     are real, typed fields on the same object and none of them has an
+#     example this Recipe could copy rather than invent, so none of them is
+#     set on the fixture below. Their absence from the fixture is not a claim
+#     that the real API omits them.
+#   - Whether `finished: true` and a non-success `status` can occur together
+#     -- this batch's Airbyte/Census question, for n8n -- is not answered by
+#     anything this Recipe could read or reach; see the header.
+#   - Workflows list, get, create, update, delete, publish/unpublish,
+#     archive/unarchive, transfer, tags, credentials, users, variables,
+#     projects, source control, data tables and every settings resource are
+#     real, documented paths and none of them is modelled beyond the auth
+#     and routing shapes above. This Recipe is scoped to the one question
+#     the task named.
+#   - api.n8n.cloud, the Cloud control plane behind the bare app.n8n.cloud
+#     hostname, is a separate product (workspace billing and provisioning,
+#     NestJS-shaped 404s: {"message":"Cannot GET /path","error":"Not
+#     Found","statusCode":404}) and is not modelled at all -- it has no
+#     bearing on how a workflow runs once a workspace exists.
+
+recipe: n8n
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: n8n
+  docs: https://docs.n8n.io/api/
+  spec: https://raw.githubusercontent.com/n8n-io/n8n/master/packages/cli/src/public-api/v1/openapi.yml
+  spec_seen: "2026-09-01"
+
+auth:
+  # Genuinely an API key, but expressed as scheme none plus fixed routes
+  # below -- the same trade windmill/recipe.yaml and census/recipe.yaml make
+  # in this collection, for the identical reason: a path this Recipe never
+  # registers has to fall through to Cauldron's own unknown_route handler
+  # untouched by auth, because that is what the live host does (see the
+  # header's "not found" case), and a Recipe-wide scheme would 401 it
+  # instead.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    # Only the two webhook-not-registered errors override code_field to
+    # "code" and need it as a JSON number rather than a string; this applies
+    # to both since code_type is Recipe-wide.
+    code_type: number
+
+resources:
+  execution:
+    id:
+      style: numeric
+      type: number
+    fields:
+      # The schema's own type is number and its own worked example is the
+      # quoted string '1000' -- see the header. This Recipe follows the
+      # declared type.
+      workflowId:
+        type: number
+      finished:
+        type: boolean
+      retrySuccessId:
+        type: number
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/v1/workflows
+    error: unauthorized_generic
+
+  - method: GET
+    path: /api/v1/workflows/abc123
+    error: unauthorized_generic
+
+  - method: PUT
+    path: /api/v1/workflows
+    error: put_not_allowed
+
+  - method: DELETE
+    path: /api/v1/workflows
+    error: delete_not_allowed
+
+  - method: GET
+    path: /api/v1/this-is-not-real
+    error: not_found_generic
+
+  - method: GET
+    path: /api/v1/executions
+    matches_header:
+      X-N8N-API-KEY: junk-not-real-000000
+    error: unauthorized_lower
+
+  - method: GET
+    path: /api/v1/executions
+    error: header_required
+
+  - method: GET
+    path: /api/v1/executions/{id}
+    matches_header:
+      X-N8N-API-KEY: cauldron-n8n-fixture-key-0000000000000000
+    resource: execution
+    operation: get
+    envelope:
+      style: bare
+
+  - method: POST
+    path: /api/v1/workflows/abc123/activate
+    matches_header:
+      X-N8N-API-KEY: junk-not-real-000000
+    error: unauthorized_lower
+
+  - method: POST
+    path: /api/v1/workflows/abc123/activate
+    error: header_required
+
+  - method: POST
+    path: /api/v1/workflows/abc123/deactivate
+    matches_header:
+      X-N8N-API-KEY: junk-not-real-000000
+    error: unauthorized_lower
+
+  - method: POST
+    path: /api/v1/workflows/abc123/deactivate
+    error: header_required
+
+  # A path this Recipe invented, two segments past /workflows/{id}/. See the
+  # header: this is not a claim that either sub-route is real.
+  - method: GET
+    path: /api/v1/workflows/abc123/zzz-not-a-real-subpath
+    error: header_required
+
+  - method: POST
+    path: /api/v1/workflows/abc123/zzz-not-a-real-subpath
+    error: post_not_allowed
+
+  - method: POST
+    path: /webhook/this-is-not-a-real-webhook-path-xyz
+    error: webhook_not_registered_prod
+
+  - method: POST
+    path: /webhook-test/this-is-not-a-real-webhook-path-xyz
+    error: webhook_not_registered_test
+
+errors:
+  unauthorized_generic:
+    status: 401
+    message: Unauthorized
+
+  # The lowercase sentence, reserved for a key that cleared no shape check
+  # at all -- there is none here -- and simply named nothing real. See the
+  # header for which routes answer this instead of unauthorized_generic.
+  unauthorized_lower:
+    status: 401
+    message: unauthorized
+
+  # The more specific of the two absent-key sentences. See the header.
+  header_required:
+    status: 401
+    message: "'X-N8N-API-KEY' header required"
+
+  not_found_generic:
+    status: 404
+    message: not found
+
+  put_not_allowed:
+    status: 405
+    message: "PUT method not allowed"
+
+  delete_not_allowed:
+    status: 405
+    message: "DELETE method not allowed"
+
+  post_not_allowed:
+    status: 405
+    message: "POST method not allowed"
+
+  webhook_not_registered_prod:
+    status: 404
+    code: "404"
+    code_field: code
+    fields:
+      hint: "The workflow must be active for a production URL to run successfully. You can activate the workflow using the toggle in the top-right of the editor. Note that unlike test URL calls, production URL calls aren't shown on the canvas (only in the executions list)"
+    message: 'The requested webhook "POST this-is-not-a-real-webhook-path-xyz" is not registered.'
+
+  webhook_not_registered_test:
+    status: 404
+    code: "404"
+    code_field: code
+    fields:
+      hint: "Click the 'Execute workflow' button on the canvas, then try again. (In test mode, the webhook only works for one call after you click this button)"
+    message: 'The requested webhook "this-is-not-a-real-webhook-path-xyz" is not registered.'
+
+fixtures:
+  empty: {}
+
+  executions:
+    execution:
+      - id: 1000
+        workflowId: 1000
+        finished: true
+
+# Every case below carries source. A verified date means this Recipe called
+# demo.app.n8n.cloud with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from execution.yml's
+# own field-level examples and never called.
+conformance:
+  - name: no credential and a wrong one answer the identical generic sentence
+    source: https://demo.app.n8n.cloud/api/v1/workflows
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workflows
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: and the same sentence covers a wrong credential too
+    source: https://demo.app.n8n.cloud/api/v1/workflows
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workflows
+      headers:
+        X-N8N-API-KEY: junk-not-real-000000
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a malformed-looking id does not change the answer -- auth is checked first
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workflows/abc123
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+
+  - name: a wrong method is a real 405 naming the method, checked before any credential
+    source: https://demo.app.n8n.cloud/api/v1/workflows
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /api/v1/workflows
+    expect:
+      status: 405
+      body:
+        message: "PUT method not allowed"
+
+  - name: a second method confirms the message names the method, not a fixed word
+    source: https://demo.app.n8n.cloud/api/v1/workflows
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/v1/workflows
+    expect:
+      status: 405
+      body:
+        message: "DELETE method not allowed"
+
+  - name: a route this host never registered is a routing miss regardless of credential
+    source: https://demo.app.n8n.cloud/api/v1/this-is-not-real
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/this-is-not-real
+      headers:
+        X-N8N-API-KEY: junk-not-real-000000
+    expect:
+      status: 404
+      body:
+        message: not found
+
+  - name: executions has its own, more specific absent-key sentence
+    source: https://demo.app.n8n.cloud/api/v1/executions
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/executions
+    expect:
+      status: 401
+      body:
+        message: "'X-N8N-API-KEY' header required"
+
+  - name: and a different, lowercase sentence for a wrong one
+    source: https://demo.app.n8n.cloud/api/v1/executions
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/executions
+      headers:
+        X-N8N-API-KEY: junk-not-real-000000
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: activate -- one segment past a single workflow -- leaves the generic sentence behind
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/activate
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/workflows/abc123/activate
+    expect:
+      status: 401
+      body:
+        message: "'X-N8N-API-KEY' header required"
+
+  - name: and a wrong credential against activate gets the lowercase sentence too
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/activate
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/workflows/abc123/activate
+      headers:
+        X-N8N-API-KEY: junk-not-real-000000
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: deactivate agrees with activate, not with the plain workflow lookup one segment back
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/deactivate
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/workflows/abc123/deactivate
+    expect:
+      status: 401
+      body:
+        message: "'X-N8N-API-KEY' header required"
+
+  - name: and a wrong credential against deactivate gets the lowercase sentence too
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/deactivate
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/workflows/abc123/deactivate
+      headers:
+        X-N8N-API-KEY: junk-not-real-000000
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: a two-segment path this Recipe invented gets the identical executions-family gate
+    # Not a claim that this sub-route is real -- see the header.
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/zzz-not-a-real-subpath
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workflows/abc123/zzz-not-a-real-subpath
+    expect:
+      status: 401
+      body:
+        message: "'X-N8N-API-KEY' header required"
+
+  - name: and the identical method-named 405 for a write against it
+    source: https://demo.app.n8n.cloud/api/v1/workflows/abc123/zzz-not-a-real-subpath
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/workflows/abc123/zzz-not-a-real-subpath
+    expect:
+      status: 405
+      body:
+        message: "POST method not allowed"
+
+  - name: a webhook nobody registered refuses, with a hint about activation
+    source: https://demo.app.n8n.cloud/webhook/this-is-not-a-real-webhook-path-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /webhook/this-is-not-a-real-webhook-path-xyz
+      json:
+        a: 1
+    expect:
+      status: 404
+      body:
+        code: 404
+        message: 'The requested webhook "POST this-is-not-a-real-webhook-path-xyz" is not registered.'
+        hint: "The workflow must be active for a production URL to run successfully. You can activate the workflow using the toggle in the top-right of the editor. Note that unlike test URL calls, production URL calls aren't shown on the canvas (only in the executions list)"
+
+  - name: the test variant answers a different hint for the identical unregistered path
+    source: https://demo.app.n8n.cloud/webhook-test/this-is-not-a-real-webhook-path-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /webhook-test/this-is-not-a-real-webhook-path-xyz
+      json:
+        a: 1
+    expect:
+      status: 404
+      body:
+        code: 404
+        message: 'The requested webhook "this-is-not-a-real-webhook-path-xyz" is not registered.'
+        hint: "Click the 'Execute workflow' button on the canvas, then try again. (In test mode, the webhook only works for one call after you click this button)"
+
+  - name: a single execution's documented shape carries finished beside status, not instead of it
+    # Never observed -- see the header. id, workflowId and finished are the
+    # only fields with a documented worked value; the rest of this object's
+    # real fields are left off rather than filled with an invented number.
+    source: https://raw.githubusercontent.com/n8n-io/n8n/master/packages/cli/src/public-api/v1/handlers/executions/spec/schemas/execution.yml
+    fixture: executions
+    request:
+      method: GET
+      path: /api/v1/executions/1000
+      headers:
+        X-N8N-API-KEY: cauldron-n8n-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        id: 1000
+        workflowId: 1000
+        finished: true
