@@ -4106,6 +4106,83 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// A real client of this API. Note that tink on npm is a package
+			// manager sharing the name and nothing else, which is why Tink
+			// itself is in the backlog rather than here.
+			recipe: "openaq",
+			npm:    []string{"openaq"},
+		},
+		{
+			// The vendor's own two packages: hub for the registry API this Recipe
+			// describes, inference for the serving one it does not.
+			recipe: "huggingface",
+			npm:    []string{"@huggingface/hub", "@huggingface/inference"},
+		},
+		{
+			// The vendor's own TypeScript client.
+			recipe: "mistral",
+			npm:    []string{"@mistralai/mistralai"},
+		},
+		{
+			// Not the vendor's own -- xAI ships no JavaScript SDK -- but the AI SDK's
+			// xAI provider is a real client of this API.
+			recipe: "xai",
+			npm:    []string{"@ai-sdk/xai"},
+		},
+		{
+			// The vendor's own Node and Go clients.
+			recipe: "vultr",
+			npm:    []string{"@vultr/vultr-node"},
+			gomod:  []string{"github.com/vultr/govultr/v3"},
+		},
+		{
+			// The vendor's own, and linodego is what Terraform's provider uses.
+			recipe: "linode",
+			npm:    []string{"@linode/api-v4"},
+			gomod:  []string{"github.com/linode/linodego"},
+		},
+		{
+			// The vendor's own SDK in both languages.
+			recipe: "scaleway",
+			npm:    []string{"@scaleway/sdk"},
+			gomod:  []string{"github.com/scaleway/scaleway-sdk-go"},
+		},
+		{
+			// The vendor's own JavaScript SDK.
+			recipe: "smartsheet",
+			npm:    []string{"smartsheet"},
+		},
+		{
+			// Two products, two clients, one account API -- which is the surface this
+			// Recipe describes.
+			recipe: "upstash",
+			npm:    []string{"@upstash/redis", "@upstash/qstash"},
+		},
+		{
+			// A third-party TypeScript client; Render ships no SDK of its own.
+			recipe: "render",
+			npm:    []string{"render-api"},
+		},
+		{
+			// A third-party client; UptimeRobot ships no SDK of its own.
+			recipe: "uptimerobot",
+			npm:    []string{"uptime-robot"},
+		},
+		{
+			// statusio is a client of this API. Note that status-io, one hyphen apart,
+			// is an unrelated host checker and is deliberately not listed.
+			recipe: "statusio",
+			npm:    []string{"statusio"},
+		},
+		{
+			// Three wrappers on npm and two well-used PHP clients, so this is
+			// mapped rather than listed as unreachable. unicodeveloper/
+			// laravel-paystack has over a million installs.
+			recipe:   "paystack",
+			npm:      []string{"paystack", "paystack-api", "paystack-node"},
+			composer: []string{"unicodeveloper/laravel-paystack", "yabacon/paystack-php"},
+		},
+		{
 			// The official SDK, and the reason this Recipe is mapped rather
 			// than listed in the backlog. Packagist has no PubNub package
 			// under the vendor name, so only two registries are named.

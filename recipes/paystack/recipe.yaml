@@ -1,0 +1,623 @@
+# Paystack Recipe for Cauldron
+#
+# The question worth asking about this API is stated in its own body. Every
+# response this Recipe reaches, success or failure, is
+#
+#   {"status": bool, "message": string, "data": ...}
+#
+# and the obvious hypothesis -- schooled by Slack, whose "ok" flag and HTTP
+# status disagree on purpose -- is that "status" is a second channel that can
+# say false while the status line says 200. On the surface reachable without
+# a key, it never does. Every case below was checked live against
+# api.paystack.co, unauthenticated, on 2026-08-31, and in each of them the
+# boolean and the status line agree: status:true rides with 200 on every
+# success and on every EMPTY result (an unrecognised country is not an error
+# -- see below), and the one failure this research is permitted to produce --
+# no Authorization header -- is status:false on a 401, not a 200.
+#
+# Whether that agreement survives authentication is a real question this
+# Recipe cannot answer. Paystack's own documentation describes
+# /transaction/verify answering a genuinely failed charge with status:true
+# (the *call* succeeded) and a separate, nested data.status:"failed" (the
+# *transaction* did not) -- two fields with the same name meaning two
+# different things at two different levels. That shape has never been
+# observed here, because reaching it needs a secret key, and the rule this
+# research runs under is absolute: never request, guess or use one. So it is
+# named here as a citation, not modelled as a case, and not seeded as a
+# fixture -- nothing below claims to know what an authenticated success looks
+# like.
+#
+# What was reachable without a key:
+#
+#   - /bank and /country are genuinely public.
+#   - Everything else -- /bank/resolve, /transaction/verify/{reference},
+#     /transaction, and by extension the rest of the surface -- answers the
+#     same 401 before it looks at the path, the query, or the reference:
+#
+#       {"status": false,
+#        "message": "No Authorization Header was found",
+#        "meta": {"nextStep": "Ensure that you provide the correct authorization key for the request"},
+#        "type": "validation_error",
+#        "code": "invalid_Key"}
+#
+#     A nonexistent transaction reference and a missing key are therefore
+#     indistinguishable from outside an account: auth is checked before the
+#     reference is, so this Recipe cannot serve a "reference not found" case
+#     without inventing one, and does not.
+#   - message is prose in every case observed here -- "Banks retrieved", "No
+#     Authorization Header was found", even the root path's "You probably
+#     shouldn't be here, but...". The machine-readable half of a failure is
+#     never in message: it is code and type, two separate fields, both
+#     present on the one failure this research could produce.
+#
+# Four more, each checked live rather than assumed:
+#
+#   1. /bank answers Nigeria and nothing else unless country is given, and
+#      the query spelling is not the record's spelling: country=ghana
+#      against a record whose own field says "Ghana". That is the same
+#      value-expansion Alpaca's status=open already needed, reused rather
+#      than re-invented. A country nobody has heard of is not an error: 200,
+#      status:true, data: [] -- indistinguishable on the wire from a country
+#      that filtered to nothing on purpose.
+#   2. Bank codes look numeric and are not. 011, 044, 057 and 058 are four of
+#      Nigeria's best-known banks, and every one loses a leading zero as a
+#      number. They are strings on the wire and stay strings here.
+#   3. gateway is null on some banks and an empty string on others -- not the
+#      same value -- and both are seeded, so a fixture built from only one of
+#      them would describe a bank Paystack does not have.
+#   4. Nothing on the public surface answers anything but 200. use_cursor,
+#      perPage and country were sent malformed, empty, negative and absurdly
+#      large -- ?perPage=abc returns the entire list exactly as no perPage
+#      does, ?perPage=-1 and ?perPage=99999999999999999999 both answer 200.
+#      The only non-2xx this research produced, on any route, any query, any
+#      path that Paystack itself routes, was the missing Authorization
+#      header.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Cursor pagination on /bank is opt-in behind use_cursor=true. Behind
+#     that flag the envelope grows a meta object carrying next, previous and
+#     an echoed perPage (default 50). Cauldron can declare a next cursor and
+#     has no way to declare an opt-in flag, a previous cursor, or an echoed
+#     page size, so this Recipe serves what /bank does when asked for with no
+#     parameters at all: the whole collection, unpaged -- which is also
+#     genuinely what the live endpoint does until use_cursor is named.
+#   - The bank list is long (280 Nigerian entries alone, live on the
+#     verification date) and changes weekly; new microfinance banks appear
+#     between runs of this same probe. Five Nigerian entries and two
+#     Ghanaian ones are pinned here instead of the whole collection: Access,
+#     First Bank, GTBank, UBA and Zenith have carried the same code and a
+#     createdAt of 2016-07-14 across every check made for this Recipe, which
+#     is as close to stable as an unversioned, growing list gets.
+#   - country's relationships object -- per-currency bank-field patterns,
+#     mobile money shapes, notices, integration and payment types -- is real,
+#     large and not modelled field by field. What is kept is what a client
+#     actually branches on: iso_code, default_currency_code, calling_code and
+#     pilot_mode, the last of which is not decoration -- Egypt and Rwanda are
+#     pilot_mode:true where the other five observed countries are not, live
+#     and unforced.
+#   - Amounts are not modelled at all, and no claim is made about kobo,
+#     minor units, or whether a response ever states its own currency's
+#     denomination. Every Paystack route that returns money -- a
+#     transaction, a charge, a transfer, a plan -- sits behind the same
+#     secret key this research never used. That is Paystack's most-quoted
+#     behaviour and this Recipe is silent on it because nothing observed
+#     here confirms or denies it.
+#   - A path Paystack has never mapped -- /bankk, /bank/999999999 -- answers
+#     404 with Content-Length: 0. Not "{}", not an empty JSON string, zero
+#     bytes, though Content-Type still claims application/json. That is the
+#     API gateway in front of Paystack refusing to route the request rather
+#     than Paystack's own error envelope, so it is recorded here and not
+#     modelled: forcing it through this Recipe's error table would either
+#     invent a body Paystack does not send for its own unmapped routes, or
+#     teach every other unrecognised path in the collection to answer with
+#     nothing, which most of them do not.
+
+recipe: paystack
+capability: payments
+version: 0.1.0
+
+upstream:
+  # api.paystack.co answers its own root with {"data": {"service":
+  # "paystack-api", "version": "1.0"}} -- see the raw route below. There is
+  # no version segment in any path this Recipe reaches.
+  api: "1.0"
+  docs: https://paystack.com/docs/api/
+
+auth:
+  # /bank and /country need no key at all. Everything else this Recipe
+  # reaches needs one and is modelled only for the shape of its refusal --
+  # see the header. Declaring scheme: none here is a statement about the
+  # routes this Recipe actually models, not about Paystack's API as a whole.
+  scheme: none
+
+responses:
+  success:
+    fields:
+      status: true
+  list:
+    style: wrapped
+    key: data
+  error:
+    style: flat
+    code_field: code
+    type_field: type
+    fields:
+      status: false
+
+resources:
+  bank:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      slug:
+        type: string
+      # Looks numeric and is not: 011, 044, 057 and 058 are all real codes
+      # among Nigeria's best-known banks, and every one loses a leading zero
+      # as a number.
+      code:
+        type: string
+      longcode:
+        type: string
+      # Null on some banks, an empty string on others -- not the same value,
+      # and both are seeded in the fixture below.
+      gateway:
+        type: string
+      pay_with_bank:
+        type: boolean
+      supports_transfer:
+        type: boolean
+      available_for_direct_debit:
+        type: boolean
+      active:
+        type: boolean
+      country:
+        type: string
+      currency:
+        type: string
+      type:
+        type: string
+      is_deleted:
+        type: boolean
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  country:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      iso_code:
+        type: string
+      default_currency_code:
+        type: string
+      # A string despite the digits: "+234" is not a number anybody adds to.
+      calling_code:
+        type: string
+      # Egypt and Rwanda carry true where the other five observed countries
+      # carry false. A fixture that flattened this to one value for every
+      # country would be hiding the one field here worth branching on.
+      pilot_mode:
+        type: boolean
+      active_for_dashboard_onboarding:
+        type: boolean
+      # Empty on every one of the seven countries observed. Declared as a
+      # map because it is free-form on the wire, not because anything here
+      # has seen it hold a key.
+      integration_defaults:
+        type: map
+
+routes:
+  # Defaults to Nigeria. country's query spelling ("ghana") is not the
+  # record's own spelling ("Ghana"), which values expands the same way
+  # Alpaca's status=open already needed to.
+  - method: GET
+    path: /bank
+    resource: bank
+    operation: list
+    fields:
+      message: Banks retrieved
+    filters:
+      - param: country
+        field: country
+        default: nigeria
+        values:
+          nigeria: [Nigeria]
+          ghana: [Ghana]
+
+  - method: GET
+    path: /country
+    resource: country
+    operation: list
+    fields:
+      message: Countries retrieved
+
+  # Undocumented, unauthenticated, and answers the same envelope as
+  # everything documented: {"status": true, "message": ..., "data": {...}}.
+  # Recorded verbatim because it is the only place this research could
+  # confirm the API's own version label.
+  - method: GET
+    path: /
+    raw:
+      content_type: application/json
+      text: '{"status":true,"message":"You probably shouldn''t be here, but...","data":{"service":"paystack-api","version":"1.0"}}'
+
+  # Three different resources, one identical refusal. Auth is checked before
+  # the path, the query or the reference, so a bad bank/account pair, an
+  # unknown reference and a perfectly fine one all look the same from here:
+  # this Recipe cannot tell them apart without a key, and does not pretend
+  # to.
+  - method: GET
+    path: /bank/resolve
+    error: no_authorization_header
+
+  - method: GET
+    path: /transaction/verify/{reference}
+    error: no_authorization_header
+
+  - method: GET
+    path: /transaction
+    error: no_authorization_header
+
+errors:
+  no_authorization_header:
+    status: 401
+    code: invalid_Key
+    type: validation_error
+    message: No Authorization Header was found
+    fields:
+      meta.nextStep: Ensure that you provide the correct authorization key for the request
+
+fixtures:
+  empty: {}
+
+  small-registry:
+    bank:
+      # 2016-07-14, the same day as First Bank, GTBank, UBA and Zenith below.
+      # Five Nigerian entries that have carried this code since this
+      # research's first probe of the API.
+      - id: 1
+        name: Access Bank
+        slug: access-bank
+        code: "044"
+        longcode: "044150149"
+        gateway: emandate
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: true
+        active: true
+        country: Nigeria
+        currency: NGN
+        type: nuban
+        is_deleted: false
+        createdAt: "2016-07-14T10:04:29.000Z"
+        updatedAt: "2020-02-18T08:06:44.000Z"
+      - id: 7
+        name: First Bank of Nigeria
+        slug: first-bank-of-nigeria
+        code: "011"
+        longcode: "011151003"
+        gateway: ibank
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: true
+        active: true
+        country: Nigeria
+        currency: NGN
+        type: nuban
+        is_deleted: false
+        createdAt: "2016-07-14T10:04:29.000Z"
+        updatedAt: "2021-03-25T14:22:52.000Z"
+      - id: 9
+        name: Guaranty Trust Bank
+        slug: guaranty-trust-bank
+        code: "058"
+        longcode: "058152036"
+        gateway: ibank
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: false
+        active: true
+        country: Nigeria
+        currency: NGN
+        type: nuban
+        is_deleted: false
+        createdAt: "2016-07-14T10:04:29.000Z"
+        updatedAt: "2024-11-14T12:30:43.000Z"
+      - id: 18
+        name: United Bank For Africa
+        slug: united-bank-for-africa
+        code: "033"
+        longcode: "033153513"
+        gateway: emandate
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: true
+        active: true
+        country: Nigeria
+        currency: NGN
+        type: nuban
+        is_deleted: false
+        createdAt: "2016-07-14T10:04:29.000Z"
+        updatedAt: "2022-03-09T10:28:57.000Z"
+      - id: 21
+        name: Zenith Bank
+        slug: zenith-bank
+        code: "057"
+        longcode: "057150013"
+        gateway: emandate
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: true
+        active: true
+        country: Nigeria
+        currency: NGN
+        type: nuban
+        is_deleted: false
+        createdAt: "2016-07-14T10:04:29.000Z"
+        updatedAt: "2023-09-26T17:09:43.000Z"
+      # Two Ghanaian entries. Access Bank Ghana shares a name with the
+      # Nigerian Access Bank above and nothing else -- a different id,
+      # code, country and currency, which is the point: the name is not
+      # the identifier.
+      - id: 31
+        name: Access Bank
+        slug: access-bank-ghana
+        code: "280100"
+        longcode: ""
+        gateway: null
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: false
+        active: true
+        country: Ghana
+        currency: GHS
+        type: ghipss
+        is_deleted: false
+        createdAt: "2018-03-29T12:54:59.000Z"
+        updatedAt: "2020-04-17T09:00:41.000Z"
+      - id: 76
+        name: Absa Bank Ghana Ltd
+        slug: absa-bank-ghana-ltd
+        code: "030100"
+        longcode: ""
+        gateway: null
+        pay_with_bank: false
+        supports_transfer: true
+        available_for_direct_debit: false
+        active: true
+        country: Ghana
+        currency: GHS
+        type: ghipss
+        is_deleted: false
+        createdAt: "2020-04-23T14:26:59.000Z"
+        updatedAt: "2020-04-23T14:26:59.000Z"
+
+    # All seven countries Paystack served on the verification date, copied
+    # in full rather than trimmed: the whole list is short enough that
+    # pinning "a few stable entries" would throw away more than it kept.
+    country:
+      - id: 1
+        name: Nigeria
+        iso_code: NG
+        default_currency_code: NGN
+        calling_code: "+234"
+        pilot_mode: false
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 2
+        name: Ghana
+        iso_code: GH
+        default_currency_code: GHS
+        calling_code: "+233"
+        pilot_mode: false
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 3
+        name: South Africa
+        iso_code: ZA
+        default_currency_code: ZAR
+        calling_code: "+27"
+        pilot_mode: false
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 4
+        name: Kenya
+        iso_code: KE
+        default_currency_code: KES
+        calling_code: "+254"
+        pilot_mode: false
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 5
+        name: "Côte d'Ivoire"
+        iso_code: CI
+        default_currency_code: XOF
+        calling_code: "+225"
+        pilot_mode: false
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 6
+        name: Egypt
+        iso_code: EG
+        default_currency_code: EGP
+        calling_code: "+20"
+        pilot_mode: true
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+      - id: 7
+        name: Rwanda
+        iso_code: RW
+        default_currency_code: RWF
+        calling_code: "+250"
+        pilot_mode: true
+        active_for_dashboard_onboarding: true
+        integration_defaults: {}
+
+# Every case below was run against api.paystack.co with no Authorization
+# header of any kind -- no key was requested, guessed, or used to produce
+# any of them.
+conformance:
+  - name: the envelope is a boolean, a sentence and data -- and the codes that look numeric are not
+    source: https://api.paystack.co/bank
+    verified: "2026-08-31"
+    fixture: small-registry
+    request:
+      method: GET
+      path: /bank
+    expect:
+      status: 200
+      body:
+        status: true
+        message: Banks retrieved
+        data[0].name: Access Bank
+        data[0].code: "044"
+        data[0].country: Nigeria
+        data[1].code: "011"
+        data[2].code: "058"
+      # Only the five Nigerian entries answer a plain /bank: the two
+      # Ghanaian ones seeded above are excluded by the same default that
+      # made the live 280-entry response all-Nigeria with no country param
+      # at all.
+      absent:
+        - data[5]
+
+  - name: an unrecognised country is an empty list, not a refusal
+    source: https://api.paystack.co/bank?country=notacountry
+    verified: "2026-08-31"
+    fixture: small-registry
+    request:
+      method: GET
+      path: /bank
+      query:
+        country: atlantis
+    expect:
+      status: 200
+      body:
+        status: true
+        message: Banks retrieved
+        data: []
+
+  - name: the query's spelling of a country is not the record's spelling
+    source: https://api.paystack.co/bank?country=ghana
+    verified: "2026-08-31"
+    fixture: small-registry
+    request:
+      method: GET
+      path: /bank
+      query:
+        country: ghana
+    expect:
+      status: 200
+      body:
+        status: true
+        data[0].country: Ghana
+        data[0].currency: GHS
+        data[1].name: Absa Bank Ghana Ltd
+      absent:
+        - data[2]
+
+  - name: no amount of query malformation earns anything but 200 here
+    source: https://api.paystack.co/bank?perPage=abc
+    verified: "2026-08-31"
+    fixture: small-registry
+    request:
+      method: GET
+      path: /bank
+      query:
+        perPage: abc
+    expect:
+      status: 200
+      body:
+        status: true
+        data[0].name: Access Bank
+      # perPage is not a parameter this Recipe models paging with, and an
+      # invalid value for it changes nothing live either: the whole
+      # collection answers exactly as it does with no perPage at all.
+      absent:
+        - data[5]
+
+  - name: pilot_mode is a real, varying field, not a constant
+    source: https://api.paystack.co/country
+    verified: "2026-08-31"
+    fixture: small-registry
+    request:
+      method: GET
+      path: /country
+    expect:
+      status: 200
+      body:
+        status: true
+        message: Countries retrieved
+        data[0].name: Nigeria
+        data[0].pilot_mode: false
+        data[0].iso_code: NG
+        data[5].name: Egypt
+        data[5].pilot_mode: true
+        data[4].name: "Côte d'Ivoire"
+
+  - name: an undocumented root answers the same envelope, and states its own version
+    source: https://api.paystack.co/
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 200
+      body:
+        status: true
+        message: "You probably shouldn't be here, but..."
+        data.service: paystack-api
+        data.version: "1.0"
+
+  - name: no Authorization header is a 401 with a boolean false, not a 200
+    source: https://api.paystack.co/bank/resolve
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /bank/resolve
+    expect:
+      status: 401
+      body:
+        status: false
+        message: No Authorization Header was found
+        code: invalid_Key
+        type: validation_error
+        meta.nextStep: Ensure that you provide the correct authorization key for the request
+
+  - name: a nonexistent reference and a missing key look identical from here
+    source: https://api.paystack.co/transaction/verify/somenonexistentref123
+    verified: "2026-08-31"
+    request:
+      method: GET
+      # A reference chosen to look like a real check and not exercised as
+      # one: the 401 below comes from the missing header, checked before
+      # Paystack ever looks at this value, and this Recipe cannot produce
+      # the reference-not-found case without a key to get past that check.
+      path: /transaction/verify/somenonexistentref123
+    expect:
+      status: 401
+      body:
+        status: false
+        message: No Authorization Header was found
+        code: invalid_Key
+
+  - name: the same refusal on a plain listing, not just a lookup
+    source: https://api.paystack.co/transaction
+    verified: "2026-08-31"
+    request:
+      method: GET
+      path: /transaction
+    expect:
+      status: 401
+      body:
+        status: false
+        code: invalid_Key
+        type: validation_error

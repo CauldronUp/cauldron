@@ -126,6 +126,7 @@ var words = map[string]int{
 	"Forty-eight": 48, "Forty-nine": 49, "Fifty": 50,
 	"Fifty-one": 51, "Fifty-two": 52, "Fifty-three": 53,
 	"Fifty-four": 54, "Fifty-five": 55, "Fifty-six": 56,
+	"Fifty-seven": 57,
 }
 
 // The backlog states how many routes still page by a parameter nobody named.
@@ -234,12 +235,14 @@ func TestTheBacklogDoesNotQueueAShippedProviderUnderALongerName(t *testing.T) {
 	// here must still be a candidate: an entry that stops matching is stale and
 	// fails, for the same reason the queue itself does.
 	distinct := map[string]string{
-		"Circle":         "the stablecoin company, not CircleCI",
-		"Grafana Cloud":  "a stack-management API on top of the Grafana HTTP API, which is what ships",
-		"Cloudflare R2":  "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
-		"GitHub Actions": "a separate surface of GitHub, as the row itself says",
-		"GoCardless":     "payments, where gocardlessbank is GoCardless Bank Account Data",
-		"Stripe Tax":     "a specialised extension of Stripe, as the row itself says",
+		"Circle":                 "the stablecoin company, not CircleCI",
+		"Grafana Cloud":          "a stack-management API on top of the Grafana HTTP API, which is what ships",
+		"Cloudflare R2":          "an S3-compatible object store sharing a brand with the Cloudflare Recipe",
+		"GitHub Actions":         "a separate surface of GitHub, as the row itself says",
+		"GoCardless":             "payments, where gocardlessbank is GoCardless Bank Account Data",
+		"Stripe Tax":             "a specialised extension of Stripe, as the row itself says",
+		"UPS":                    "the parcel carrier, which merely spells the first three letters of Upstash",
+		"Hugging Face Inference": "the model-serving API, where huggingface is the Hub registry API",
 	}
 
 	raw, err := os.ReadFile(backlogPath)

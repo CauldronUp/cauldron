@@ -1,0 +1,431 @@
+# Smartsheet Recipe for Cauldron
+#
+# Every failure this Recipe describes was checked with no credential at all --
+# no key requested, none guessed, no account created -- which is possible here
+# because Smartsheet's error shape does not change once a request is refused
+# for lacking one. What does change, in ways worth pinning exactly, is which
+# of two refusals a given path answers with.
+#
+# **A collection route and an item route disagree about what "no credential"
+# means.** GET /2.0/sheets with no Authorization header at all answers 403
+# with a body; GET /2.0/sheets/{id} with the exact same missing header answers
+# 401 with no body whatsoever -- zero bytes, no Content-Type, nothing to
+# parse. Checked against /sheets/abc, /sheets/1234567890123456 and
+# /workspaces/12345, all three identical. And it is not "every route with an
+# id in its path": GET /2.0/users/12345 with no credential answers the same
+# 403-with-a-body shape the collection routes do. Whatever authorises a
+# request runs at two different layers for two different sets of routes, and
+# which layer a path hits is not visible from its shape.
+#
+# **A missing credential and a wrong one are not the same failure.** No
+# Authorization header, an empty one, and one carrying a scheme other than
+# Bearer all answer 403 with errorCode 1004, "You are not authorized to
+# perform this action." Any Bearer token that is not a real one -- checked
+# with three different garbage strings, including one that is just "Bearer "
+# with nothing after it -- answers 401 with errorCode 1002, "Your Access
+# Token is invalid." instead, and adds a www-authenticate header the 403 never
+# carries. The two are the same request in every way that matters to a client
+# that has not configured a key yet, and Smartsheet still tells them apart.
+#
+# **The error envelope states its status three times.** The HTTP status line
+# says 401, and the body underneath it carries an errorCode that restates it
+# as 1002 and a refId that identifies nothing about the failure at all, only
+# the one request that hit it. Every case below cites one such refId as
+# recorded; a client asking again gets a different one for the identical
+# refusal.
+#
+# Written against the live API rather than a document: every case below was
+# checked against api.smartsheet.com on the date in its verified field.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Smartsheet pretty-prints its error bodies with a space before the colon
+#     as well as after it -- `"errorCode" : 1004` -- which this project's own
+#     JSON writer does not reproduce and no case below asserts, because
+#     nothing here compares raw bytes rather than parsed fields.
+#   - Its Content-Type on those bodies is `application/json;charset=UTF-8`,
+#     with no space after the semicolon and an upper-case charset name. Cases
+#     below pin that string exactly because a client that switches on
+#     Content-Type by exact match, rather than by parsing it, is a real client
+#     and this is a real header.
+#   - A single pass-or-fail credential check is the only mechanism this format
+#     has, and Smartsheet's split is a per-request comparison, not a per-route
+#     one: any Bearer value that fails to match is a 401, whatever the value
+#     is, and no Bearer at all is a 403. That cannot be declared as a general
+#     rule here. What is declared instead is the exact 401 shape for the one
+#     garbage token this Recipe was checked against on the collection route,
+#     with every other credential-less request -- no header, a different
+#     garbage token, a non-Bearer scheme -- falling to the 403 shape. A real
+#     integration sending some other invalid token would see the 401 shape in
+#     production and the 403 shape here.
+#   - GET /sheets/{id}'s empty-bodied 401 is recorded for the missing-header
+#     case only. The same route with a garbage Bearer token answers a third
+#     shape again -- 401, Content-Type: text/plain despite a compact JSON
+#     body, and a refId shaped as a full UUID rather than the six characters
+#     the collection routes use -- which is a real, reproducible finding and
+#     is not modelled here: a fourth distinct failure shape on top of the
+#     three already declared was judged not worth the Recipe's clarity.
+#   - /serverinfo's real payload also carries appleAuthInfos, azureAuthInfo
+#     and a much larger formats object than the two properties declared below
+#     -- font names, a forty-entry colour palette, currency symbols. None of
+#     that is what makes the endpoint interesting, and declaring a few of its
+#     dozens of sub-fields would look precise and be arbitrary, so this Recipe
+#     stops at supportedLocales, serverVersion and two representative entries
+#     under formats.
+
+recipe: smartsheet
+capability: files
+version: 0.1.0
+
+upstream:
+  api: "2.0"
+  provider: smartsheet
+  docs: https://developers.smartsheet.com
+
+auth:
+  # Genuinely none. The two real credential failures below -- no Bearer
+  # token presented, and a Bearer token that does not match -- are declared
+  # as fixed errors on the routes that were checked, because Cauldron's own
+  # auth scheme is one pass-or-fail gate for a whole Recipe and Smartsheet's
+  # two shapes are a per-request comparison that gate cannot reproduce. See
+  # the header comment.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    # A flat object: errorCode, message, refId, nothing nested. True for
+    # every failure this Recipe checked, from a missing credential to an
+    # unsupported method.
+    style: flat
+    message_field: message
+    code_field: errorCode
+    code_type: number
+    type_field: "-"
+
+resources:
+  # The one route this Recipe ever reached with a body: public, unauthenticated,
+  # and the same for every caller.
+  server_info:
+    id:
+      # There is one answer and nothing on the wire identifies it; Cauldron
+      # still keys the record internally.
+      style: opaque
+      field: "-"
+    fields:
+      supportedLocales:
+        type: list
+      serverVersion:
+        type: string
+      featureInfo:
+        type: map
+      formats:
+        type: map
+
+routes:
+  - method: GET
+    path: /serverinfo
+    resource: server_info
+    operation: get
+    id_from: auth
+
+  # /sheets, /workspaces and /users all answer this 403 shape for a request
+  # that carries no Bearer token, an empty one, or a non-Bearer scheme.
+  - method: GET
+    path: /sheets
+    error: missing_credential
+
+  # The same path, a Bearer token that is not a real one. Pinned to the exact
+  # garbage value this Recipe was checked against; see the header comment for
+  # why this cannot be generalised to any invalid token.
+  - method: GET
+    path: /sheets
+    matches_header:
+      Authorization: "Bearer invalid_token_12345"
+    error: invalid_credential
+
+  # An item route with the identical missing credential answers a third way:
+  # 401, and no body at all. Verified against /sheets/{id} and
+  # /workspaces/{id}; /users/{id} does not do this and answers the 403 shape
+  # above instead, so this is not "every route with an id", it is specific to
+  # whichever resources Smartsheet authorises at the deeper layer.
+  - method: GET
+    path: /sheets/{id}
+    raw:
+      content_type: ""
+      text: ""
+      empty: true
+    status: 401
+
+  # A path that is not a route Smartsheet has, one segment misspelled.
+  - method: GET
+    path: /sheeeets/notarealid
+    error: not_found
+
+  # A method the real route does not take.
+  - method: DELETE
+    path: /serverinfo
+    error: method_not_supported
+
+errors:
+  missing_credential:
+    status: 403
+    code: "1004"
+    message: "You are not authorized to perform this action."
+    fields:
+      refId: lbj7gw
+    headers:
+      Content-Type: "application/json;charset=UTF-8"
+
+  invalid_credential:
+    status: 401
+    code: "1002"
+    message: "Your Access Token is invalid."
+    fields:
+      refId: nz3lsb
+    headers:
+      Content-Type: "application/json;charset=UTF-8"
+      # Present on the 401, absent on the 403 above -- checked both ways.
+      www-authenticate: 'Basic realm="API"'
+
+  not_found:
+    status: 404
+    code: "1006"
+    message: "Not Found"
+    fields:
+      refId: pxmi2y
+    headers:
+      Content-Type: "application/json;charset=UTF-8"
+
+  method_not_supported:
+    status: 405
+    code: "1122"
+    # The method is inside the sentence, not beside it as a separate field.
+    message: "Requested URL does not support this method: DELETE"
+    fields:
+      refId: wbww06
+    headers:
+      Content-Type: "application/json;charset=UTF-8"
+
+fixtures:
+  empty: {}
+
+  public:
+    server_info:
+      - id: default
+        supportedLocales:
+          - en_US
+          - en_AU
+          - en_CA
+          - en_IN
+          - en_IE
+          - en_MT
+          - en_NZ
+          - en_PH
+          - en_SG
+          - en_ZA
+          - en_GB
+          - sq_AL
+          - ar_DZ
+          - ar_BH
+          - ar_EG
+          - ar_IQ
+          - ar_JO
+          - ar_KW
+          - ar_LB
+          - ar_LY
+          - ar_MA
+          - ar_OM
+          - ar_QA
+          - ar_SA
+          - ar_SD
+          - ar_SY
+          - ar_TN
+          - ar_AE
+          - ar_YE
+          - be_BY
+          - bg_BG
+          - ca_ES
+          - zh_CN
+          - zh_HK
+          - zh_SG
+          - zh_TW
+          - hr_HR
+          - cs_CZ
+          - da_DK
+          - de_DE
+          - de_LU
+          - de_AT
+          - de_CH
+          - nl_BE
+          - nl_NL
+          - es_AR
+          - es_BO
+          - es_CL
+          - es_CO
+          - es_CR
+          - es_EC
+          - es_SV
+          - es_ES
+          - es_US
+          - es_GT
+          - es_HN
+          - es_MX
+          - es_NI
+          - es_PA
+          - es_PY
+          - es_PE
+          - es_PR
+          - es_DO
+          - es_UY
+          - es_VE
+          - et_EE
+          - fi_FI
+          - fr_BE
+          - fr_CA
+          - fr_FR
+          - fr_LU
+          - fr_CH
+          - el_CY
+          - el_GR
+          - iw_IL
+          - hi_US
+          - hu_HU
+          - is_IS
+          - in_ID
+          - ga_IE
+          - it_IT
+          - it_CH
+          - ko_KR
+          - lv_LV
+          - lt_LT
+          - mk_MK
+          - ms_MY
+          - mt_MT
+          - no_NO
+          - pl_PL
+          - pt_BR
+          - pt_PT
+          - ru_RU
+          - ro_RO
+          - sr_BA
+          - sr_CS
+          - sk_SK
+          - sl_SI
+          - sv_SE
+          - th_US
+          - tr_TR
+          - uk_UA
+          - vi_VN
+          - ja_JP
+        serverVersion: "536.0.0"
+        featureInfo:
+          symbolsVersion: 2
+        formats:
+          defaults: "0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+          dateFormat:
+            - LOCALE_BASED
+            - MMMM_D_YYYY
+            - MMM_D_YYYY
+            - D_MMM_YYYY
+            - YYYY_MM_DD_HYPHEN
+            - YYYY_MM_DD_DOT
+            - DWWWW_MMMM_D_YYYY
+            - DWWW_DD_MMM_YYYY
+            - DWWW_MM_DD_YYYY
+            - MMMM_D
+            - D_MMMM
+
+conformance:
+  - name: serverinfo is public and states supported locales and formats
+    source: https://api.smartsheet.com/2.0/serverinfo
+    verified: "2026-08-31"
+    fixture: public
+    request:
+      method: GET
+      path: /serverinfo
+    expect:
+      status: 200
+      body:
+        "supportedLocales[0]": en_US
+        serverVersion: "536.0.0"
+        "featureInfo.symbolsVersion": 2
+        "formats.defaults": "0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+        "formats.dateFormat[0]": LOCALE_BASED
+
+  - name: no credential at all is a 403 with a body
+    source: https://api.smartsheet.com/2.0/sheets
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /sheets
+    expect:
+      status: 403
+      headers:
+        Content-Type: "application/json;charset=UTF-8"
+      body:
+        errorCode: 1004
+        message: "You are not authorized to perform this action."
+        refId: lbj7gw
+
+  - name: a Bearer token that does not match is a different failure entirely
+    source: https://api.smartsheet.com/2.0/sheets
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /sheets
+      headers:
+        Authorization: "Bearer invalid_token_12345"
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json;charset=UTF-8"
+        www-authenticate: 'Basic realm="API"'
+      body:
+        errorCode: 1002
+        message: "Your Access Token is invalid."
+        refId: nz3lsb
+
+  - name: an item route answers the same missing credential with no body at all
+    source: https://api.smartsheet.com/2.0/sheets/1234567890123456
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /sheets/1234567890123456
+    expect:
+      status: 401
+      no_body: true
+      absent_headers:
+        - Content-Type
+
+  - name: a misspelled resource segment is a 404, not a 400
+    source: https://api.smartsheet.com/2.0/sheeeets/notarealid
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /sheeeets/notarealid
+    expect:
+      status: 404
+      body:
+        errorCode: 1006
+        message: "Not Found"
+        refId: pxmi2y
+
+  - name: the method is named inside the sentence
+    source: https://api.smartsheet.com/2.0/serverinfo
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /serverinfo
+    expect:
+      status: 405
+      body:
+        errorCode: 1122
+        message: "Requested URL does not support this method: DELETE"
+        refId: wbww06

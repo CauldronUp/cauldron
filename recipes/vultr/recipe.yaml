@@ -1,0 +1,673 @@
+# Vultr Recipe for Cauldron
+#
+# Every catalogue route here is list-only, and that turns out to be load
+# bearing. Vultr has no GET /v2/regions/{id}, no GET /v2/plans/{id}, no
+# GET /v2/os/{id} and no GET /v2/applications/{id} -- asking for any of them,
+# with a real id or a fake one, answers the identical 404 a nonsense path
+# answers:
+#
+#   {"error": "Not found.", "status": 404}
+#
+# Checked against api.vultr.com on 2026-08-31: GET /v2/regions/ams,
+# GET /v2/plans/vc2-1c-0.5gb-v6 and GET /v2/regionzz all come back byte for
+# byte the same. A malformed path and a well-formed id for a route that does
+# not exist are the same failure here, because there is nothing to tell them
+# apart with -- so "unknown id" and "malformed path" are one finding rather
+# than two, and this Recipe declares one error for both.
+#
+# The listing envelope disagrees with itself across its own four endpoints,
+# which is the second finding and the one worth the most attention:
+#
+#   GET /v2/regions?per_page=2   -> {"regions": [...2...], "meta": {"total": 3}}
+#   GET /v2/regions?per_page=5   -> {"regions": [...5...], "meta": {"total": 6}}
+#   GET /v2/regions?per_page=33  -> {"regions": [...33...], "meta": {"total": 33}}
+#   GET /v2/plans?per_page=1     -> {"plans": [...1...], "meta": {"total": 151}}
+#   GET /v2/plans?per_page=100   -> {"plans": [...100...], "meta": {"total": 151}}
+#
+# meta.total on /v2/regions is not the size of the collection. It is
+# per_page + 1, for every per_page that does not already cover the whole
+# thirty-three -- the same "read a few past this page and report what you
+# found" shape this project already has a name for, with a lookahead of
+# exactly one page rather than Shopware's six. meta.total on /v2/plans,
+# /v2/os and /v2/applications is the real, stable total regardless of
+# per_page. Same field name, same envelope, same version of the same API,
+# and one endpoint counts pages while the other three count records.
+#
+# It goes further than the four endpoints disagreeing with each other: the
+# lookahead figure on /v2/regions is not even a property of the whole
+# collection. Paging past the last real record with per_page unset -- the
+# default of 100, comfortably larger than the thirty-three there are -- answers
+# an empty array and "total": 0, not 33. The number this project's
+# count_means: lookahead computes is bound by the size of the whole matching
+# set; Vultr's is bound by what is left after the cursor. The two agree
+# everywhere a request starts from the beginning, which is every case this
+# Recipe can assert without lying, and disagree once positioned at the end --
+# stated here rather than asserted, because asserting it would mean claiming
+# a number this Recipe cannot produce.
+#
+# The cursor itself is a plain token and nothing else: meta.links.next on a
+# thirty-three-region page one is "bmV4dF9fV0FX", which is base64 for
+# "next__WAW" -- a direction and a boundary region id, concatenated and
+# encoded, and not a thing any client is entitled to parse rather than pass
+# back. meta.links carries a prev the same way, which this format has no
+# field for: only ever the next pointer is modelled, the same restriction
+# the format's own header on link_header already states for a different
+# pagination mechanism.
+#
+# per_page has one ceiling and two ways of hitting it. Ask for a string --
+# per_page=abc -- or ask for 99999, and both come back:
+#
+#   {"error": "per_page must be an number between 1 and 500", "status": 400}
+#
+# "an number" is Vultr's own grammar, not a transcription slip, and it is
+# reproduced exactly because the byte-for-byte rule does not carve out typos.
+# The numeric-too-large half of that is refused rather than trimmed, which
+# this format's pagination.over_limit says outright; the malformed-type half
+# answering identically is armed rather than derived, because nothing here
+# validates that a query parameter parses as a number before comparing it to
+# a ceiling.
+#
+# One route needs a credential and none of the rest do. GET /v2/instances
+# unauthenticated is:
+#
+#   {"error": "Invalid API token.", "status": 401}
+#
+# Modelled as a route that only ever fails, the same way Jira's retired
+# search path is: no credential was requested, issued or guessed to find out
+# what a working call returns, so nothing here claims to know.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing is provisioned. Creating, resizing, powering off or deleting an
+#     instance, block storage, a load balancer, a VPC, a snapshot, a
+#     reserved IP, a firewall, a DNS domain or a Kubernetes cluster -- Vultr's
+#     entire write surface -- is not modelled. This Recipe describes the four
+#     catalogues an integration reads before making any of those decisions,
+#     and the one call that tells it a request needs a credential it was
+#     never given.
+#   - meta.total on /v2/regions is stated as a count_means: lookahead of one
+#     page, which reproduces every case this Recipe asserts and stops being
+#     accurate once a listing is positioned past the end of the collection,
+#     where the real API reports what remains and this reports the whole
+#     matching set. See the header above.
+#   - Only meta.links.next is modelled. meta.links.prev is real and unmodelled,
+#     for the reason link_header's own prev_link exists: the format has one
+#     next-pointer mechanism and no equivalent for a previous one on a cursor
+#     style, because a cursor names a position the caller was handed and
+#     cannot be arithmetic'd backwards.
+#   - Vultr sends "next": "" on a final page rather than dropping the key:
+#     the field is always present and only its value goes empty. This
+#     format's cursor_field is either sent when there is a cursor or left
+#     out entirely, with cursor_null available for a literal null in its
+#     place -- there is no third setting for "send it, always, empty when
+#     there is nothing." This Recipe omits the key on a final page rather
+#     than claim a value ("" or null) the runtime cannot actually choose
+#     between; the omission is confirmed live and is stated here rather
+#     than asserted around in the conformance case it touches.
+#   - The ?type= filter on /v2/plans, and its own 400 enumerating every valid
+#     type, is real and unmodelled -- observed, not carried, to keep this
+#     Recipe to the four catalogues Step 2 asked for.
+#   - Vultr's actual catalogues are far larger than the fixture below: 33
+#     regions, 151 plans, 48 operating systems, 122 applications on the date
+#     verified. The fixture pins a handful of each, named in the comments
+#     beside them, and the counts in every conformance case belong to the
+#     fixture rather than to production.
+
+recipe: vultr
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.vultr.com/api/
+
+auth:
+  # The four catalogues need no credential at all. The one route that does --
+  # GET /v2/instances -- is modelled as an unconditional failure instead of
+  # a scheme, because no key was ever requested, issued or guessed to find
+  # out what a successful call to it returns.
+  scheme: none
+
+responses:
+  list:
+    # Each catalogue is wrapped under its own plural name -- regions, plans,
+    # os, applications -- never a shared "data" key. resources.*.collection
+    # supplies the name per resource, so responses.list.key stays unset.
+    style: wrapped
+    # A base64 token, not a page number: "bmV4dF9fV0FX" decodes to
+    # "next__WAW", a direction and a boundary id concatenated. Opaque to a
+    # client either way, which is the only property that matters here.
+    cursor_field: meta.links.next
+    # The real, stable total on three of the four catalogues. /v2/regions
+    # overrides this at the route level; see the header.
+    count_field: meta.total
+  resource:
+    style: bare
+  error:
+    # {"error": "...", "status": 404} -- flat, with the HTTP status echoed a
+    # second time inside the body. No code, no category, just the two.
+    style: flat
+    message_field: error
+    status_field: status
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  region:
+    collection: regions
+    id:
+      # Three-letter codes -- ams, atl, blr -- opaque rather than prefixed:
+      # nothing here mints them and no fixed literal precedes the code.
+      style: opaque
+    fields:
+      city:
+        type: string
+      country:
+        type: string
+      continent:
+        type: string
+      options:
+        type: list
+      connectivity:
+        type: list
+
+  plan:
+    collection: plans
+    id:
+      # vc2-1c-0.5gb-free, vhf-1c-1gb, vcg-a16-2c-8g-2vram. A slug built from
+      # the plan family, not one fixed prefix Cauldron mints -- the family
+      # itself varies (vc2, vhf, vhp, vbm, vcg, voc, vdc, vdg, vdm, vx1), so
+      # this is opaque rather than prefixed.
+      style: opaque
+    fields:
+      vcpu_count:
+        type: integer
+      ram:
+        type: integer
+      disk:
+        type: integer
+      disk_type:
+        type: string
+      bandwidth:
+        type: integer
+      monthly_cost:
+        type: number
+      hourly_cost:
+        type: number
+      type:
+        type: string
+      # Region codes this plan can be deployed into. A plain array of
+      # strings, not a map -- and at least one real plan (voc-c-1c-2gb-25s-amd,
+      # not carried in the fixture below) had an empty string sitting in the
+      # middle of it on the date verified.
+      locations:
+        type: list
+      gpu_brand:
+        type: string
+
+  os:
+    collection: os
+    id:
+      # 159, 164, 1743 -- a plain integer, unlike region and plan.
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      arch:
+        type: string
+      # iso, snapshot, backup, application, windows, ubuntu, debian,
+      # fedora-coreos, rockylinux, almalinux, marketplace_app -- forty-eight
+      # values wide on the date verified, and none of it a generic "linux".
+      family:
+        type: string
+
+  application:
+    collection: applications
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      short_name:
+        type: string
+      deploy_name:
+        type: string
+      type:
+        type: string
+      vendor:
+        type: string
+      image_id:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/regions
+    resource: region
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      max_limit: 500
+      over_limit: per_page_out_of_range
+      limit_param: per_page
+      cursor_param: cursor
+    # Regions alone read the count as a bounded lookahead of exactly one
+    # page rather than the real total -- see the header comment for the
+    # verified formula and where it stops matching the live API.
+    list:
+      count_means: lookahead
+      count_lookahead: 1
+
+  - method: GET
+    path: /v2/plans
+    resource: plan
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      max_limit: 500
+      over_limit: per_page_out_of_range
+      limit_param: per_page
+      cursor_param: cursor
+
+  - method: GET
+    path: /v2/os
+    resource: os
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      max_limit: 500
+      over_limit: per_page_out_of_range
+      limit_param: per_page
+      cursor_param: cursor
+
+  - method: GET
+    path: /v2/applications
+    resource: application
+    operation: list
+    pagination:
+      style: cursor
+      limit: 100
+      max_limit: 500
+      over_limit: per_page_out_of_range
+      limit_param: per_page
+      cursor_param: cursor
+
+  # The one route that needs a credential, modelled as a route that only
+  # ever fails: no key was requested, issued or guessed to learn what a
+  # successful call answers, so nothing here claims to know.
+  - method: GET
+    path: /v2/instances
+    error: auth_required
+
+errors:
+  # Both an unmatched path and a well-formed id for a route that does not
+  # exist. Declaring this alone is what makes the two the same finding: the
+  # runtime's own unknown_route fallback borrows this shape rather than
+  # inventing a different one, exactly because Vultr does not have one.
+  resource_missing:
+    status: 404
+    message: "Not found."
+
+  # The cursor did not resolve to anything the store holds. Vultr's own
+  # wording -- "invalid cursor" -- covers both a garbled token and one built
+  # from a plausible-looking id that never existed.
+  invalid_request:
+    status: 400
+    message: "invalid cursor"
+
+  # per_page over the ceiling of 500, refused rather than trimmed. Vultr's
+  # own grammar, kept exactly: "an number" is what the API sends, not a
+  # transcription slip.
+  per_page_out_of_range:
+    status: 400
+    message: "per_page must be an number between 1 and 500"
+
+  auth_required:
+    status: 401
+    message: "Invalid API token."
+
+fixtures:
+  empty: {}
+
+  # Five of Vultr's own thirty-three regions, three of its own hundred and
+  # fifty-one plans, five of its forty-eight operating systems and two of
+  # its hundred and twenty-two applications, all real records read from
+  # api.vultr.com rather than invented. Ordered ams, atl, blr, fra, yto on
+  # purpose: the pagination cases below cite that order.
+  catalogue:
+    region:
+      - id: ams
+        city: Amsterdam
+        country: NL
+        continent: Europe
+        options: [ddos_protection, block_storage_storage_opt, block_storage_high_perf, load_balancers, kubernetes]
+        connectivity: [public_ip, nat_gateway]
+      - id: atl
+        city: Atlanta
+        country: US
+        continent: North America
+        options: [ddos_protection, block_storage_storage_opt, block_storage_high_perf, load_balancers, kubernetes]
+        connectivity: [public_ip, nat_gateway]
+      - id: blr
+        city: Bangalore
+        country: IN
+        continent: Asia
+        options: [ddos_protection, block_storage_storage_opt, block_storage_high_perf, load_balancers, kubernetes]
+        connectivity: [public_ip, nat_gateway]
+      - id: fra
+        city: Frankfurt
+        country: DE
+        continent: Europe
+        options: [ddos_protection, block_storage_storage_opt, load_balancers, kubernetes]
+        connectivity: [public_ip, nat_gateway]
+      - id: yto
+        city: Toronto
+        country: CA
+        continent: North America
+        options: [ddos_protection, block_storage_storage_opt, load_balancers, kubernetes]
+        connectivity: [public_ip, nat_gateway]
+
+    plan:
+      # The free tier: every cost is zero and invoice_type is still monthly.
+      - id: vc2-1c-0.5gb-free
+        vcpu_count: 1
+        ram: 512
+        disk: 10
+        disk_type: SSD
+        bandwidth: 0
+        monthly_cost: 0
+        hourly_cost: 0
+        type: vc2
+        locations: [sea, fra, mia]
+        gpu_brand: none
+      - id: vhf-1c-1gb
+        vcpu_count: 1
+        ram: 1024
+        disk: 32
+        disk_type: HIGHFREQUENCY
+        bandwidth: 1024
+        monthly_cost: 6
+        hourly_cost: 0.008
+        type: vhf
+        locations: [ewr, ord, dfw, sea]
+        gpu_brand: none
+      # GPU, billed hourly rather than monthly.
+      - id: vcg-a16-2c-8g-2vram
+        vcpu_count: 2
+        ram: 8192
+        disk: 50
+        disk_type: CLOUDGPU
+        bandwidth: 1024
+        monthly_cost: 43
+        hourly_cost: 0.059
+        type: vcg
+        locations: [ewr, ord, atl, fra, sjc, sgp, blr]
+        gpu_brand: NVIDIA
+
+    os:
+      - id: "159"
+        name: Custom
+        arch: x64
+        family: iso
+      - id: "164"
+        name: Snapshot
+        arch: x64
+        family: snapshot
+      - id: "501"
+        name: Windows 2022 Standard x64
+        arch: x64
+        family: windows
+      - id: "1743"
+        name: Ubuntu 22.04 LTS x64
+        arch: x64
+        family: ubuntu
+      - id: "2136"
+        name: Debian 12 x64 (bookworm)
+        arch: x64
+        family: debian
+
+    application:
+      - id: "55"
+        name: WP Squared
+        short_name: wpsquared
+        deploy_name: WP Squared on CloudLinux x64
+        type: one-click
+        vendor: vultr
+        image_id: ""
+      - id: "58"
+        name: GitLab App
+        short_name: gitlab
+        deploy_name: GitLab on Ubuntu 24.04 x64
+        type: one-click
+        vendor: vultr
+        image_id: ""
+
+conformance:
+  - name: each catalogue is wrapped under its own name, never a shared envelope
+    source: https://api.vultr.com/v2/regions
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regions
+    expect:
+      status: 200
+      body:
+        regions[0].id: ams
+        regions[0].city: Amsterdam
+        regions[4].id: yto
+        # The whole fixture fits under the default per_page of 100, so this
+        # is the real count and there is no next page.
+        meta.total: 5
+      absent:
+        # Not "data". Every catalogue names its own plural, and nothing here
+        # answers to the generic key the next Recipe in this pair uses for
+        # everything.
+        - data
+        - plans
+        - os
+        - applications
+        # Vultr sends "next": "" even on the last page -- the key never
+        # disappears, only the value goes empty. This format's cursor field
+        # has an omit-when-absent default and a null-when-absent option, and
+        # no third way to say "always send it, empty". Stated in the header
+        # rather than forced: this Recipe omits the key on a final page
+        # instead of claiming a specific wrong value for it.
+        - meta.links.next
+
+  - name: os and application ids are JSON numbers, region and plan ids are not
+    source: https://api.vultr.com/v2/os
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/os
+    expect:
+      status: 200
+      body:
+        os[0].id: 159
+        os[0].family: iso
+        os[2].family: windows
+        os[4].family: debian
+      matches:
+        os[0].id: '^[0-9]+$'
+
+  - name: and application ids are numbers the same way
+    source: https://api.vultr.com/v2/applications
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/applications
+    expect:
+      status: 200
+      body:
+        applications[0].id: 55
+        applications[1].id: 58
+        applications[1].short_name: gitlab
+
+  - name: meta.total on regions is per_page plus one, not the collection's size
+    # Verified against the live API across per_page 1, 2, 3, 5 and 10: every
+    # one answered total = per_page + 1, right up to the per_page that
+    # already covers all thirty-three, where it becomes the real count.
+    source: https://api.vultr.com/v2/regions?per_page=2
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regions
+      query:
+        per_page: "2"
+    expect:
+      status: 200
+      body:
+        regions[0].id: ams
+        regions[1].id: atl
+        # Five real regions in the fixture, a page of two, and the total is
+        # neither: it is 2 + 1.
+        meta.total: 3
+      matches:
+        meta.links.next: '^[A-Za-z0-9+/=]+$'
+      absent:
+        - regions[2]
+
+  - name: and the same field on plans is the real total regardless of page size
+    # The contrast: /v2/plans?per_page=1 through per_page=200 all answered
+    # meta.total 151 against the live API, unmoved by per_page. Same
+    # envelope, same field name, a different endpoint on the same version of
+    # the same API.
+    source: https://api.vultr.com/v2/plans?per_page=1
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/plans
+      query:
+        per_page: "1"
+    expect:
+      status: 200
+      body:
+        plans[0].id: vc2-1c-0.5gb-free
+        # The fixture holds three; the live API held a hundred and
+        # fifty-one. Either way it is the count, not per_page + 1.
+        meta.total: 3
+
+  - name: paging past the last cursor is an empty page, not an error
+    # A cursor built from a real but exhausted id -- the fixture's own
+    # last region -- rather than a garbled token, because Vultr answers
+    # both the same way: 200 and nothing left, sourced against a crafted
+    # cursor pointing past the real thirty-three.
+    #
+    # meta.total is not asserted here. The live API answers 0 in this exact
+    # position -- past the end, count still requested -- and this Recipe's
+    # count_means: lookahead computes it from the whole matching set rather
+    # than from what is left after the cursor, so it would say 5. That gap
+    # is stated in the header rather than asserted around.
+    source: https://api.vultr.com/v2/regions?cursor=<crafted, past the last real region>
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regions
+      query:
+        cursor: yto
+    expect:
+      status: 200
+      absent:
+        - regions[0]
+
+  - name: a cursor that resolves to nothing is a 400, not an empty page
+    source: https://api.vultr.com/v2/regions?cursor=garbage-not-base64
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regions
+      query:
+        cursor: garbage-not-base64
+    expect:
+      status: 400
+      body:
+        error: invalid cursor
+        status: 400
+
+  - name: a per_page over the ceiling is refused, not trimmed
+    source: https://api.vultr.com/v2/plans?per_page=99999
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/plans
+      query:
+        per_page: "99999"
+    expect:
+      status: 400
+      body:
+        # Vultr's own grammar, kept exactly.
+        error: "per_page must be an number between 1 and 500"
+        status: 400
+
+  - name: and a per_page that is not a number answers the identical sentence
+    # Armed rather than derived: nothing here validates that a query
+    # parameter parses as a number before comparing it to the ceiling, so a
+    # non-numeric per_page falls through unnoticed by default. The live API
+    # does not distinguish the two failures -- both come back as this exact
+    # body -- so this case pins the shape down without claiming the runtime
+    # detects it unassisted.
+    source: https://api.vultr.com/v2/plans?per_page=abc
+    verified: "2026-08-31"
+    fixture: catalogue
+    arm: per_page_out_of_range
+    request:
+      method: GET
+      path: /v2/plans
+      query:
+        per_page: abc
+    expect:
+      status: 400
+      body:
+        error: "per_page must be an number between 1 and 500"
+        status: 400
+
+  - name: an id in the path and a path that does not exist fail identically
+    source: https://api.vultr.com/v2/regions/ams
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regions/ams
+    expect:
+      status: 404
+      body:
+        error: "Not found."
+        status: 404
+
+  - name: because there is no route to tell the two apart
+    source: https://api.vultr.com/v2/regionzz
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/regionzz
+    expect:
+      status: 404
+      body:
+        error: "Not found."
+        status: 404
+
+  - name: the one route that needs a credential fails the same way with or without one
+    source: https://api.vultr.com/v2/instances
+    verified: "2026-08-31"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v2/instances
+    expect:
+      status: 401
+      body:
+        error: "Invalid API token."
+        status: 401
