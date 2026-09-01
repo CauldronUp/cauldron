@@ -1,0 +1,581 @@
+# PubNub Recipe for Cauldron
+#
+# PubNub publishes literal demo keys -- "demo" for both the publish key and
+# the subscribe key -- for exactly this kind of use, so every case below was
+# checked against the live network rather than a document. No account, no
+# real key, and nothing was ever published: publish is a write and this
+# Recipe only reads.
+#
+# PubNub's REST surface does not decompose into resources the way most of
+# this collection does. There is no envelope and -- with one exception --
+# no field name at all:
+#
+#   GET /time/0                                    ->  [17882284253083560]
+#   GET /v2/history/sub-key/demo/channel/my_channel
+#       ?count=2  ->  [["hello world!","hello world!"],
+#                      17882278577514975,17882278584801440]
+#
+# Both are bare JSON arrays holding values of different kinds at fixed
+# positions, with nothing naming any of them.
+#
+# **The timetoken is where this matters most.** It is seventeen digits --
+# 100-nanosecond ticks since the Unix epoch -- and Number.MAX_SAFE_INTEGER is
+# sixteen. Cauldron's own validator already knows this boundary: safeDigits
+# in internal/recipe/validate.go is fifteen, "with one to spare," because
+# 2^53 has sixteen. A timetoken has one more digit than the number JavaScript
+# can hold exactly, and it is not an identifier a client can treat as
+# opaque -- it is the cursor every history and subscribe call pages with.
+# `JSON.parse` hands back a Number that has already lost precision by the
+# time any code sees it, silently: no exception, no NaN, just a value one or
+# two counts away from the one the server sent, and a paging loop built on
+# it that occasionally skips or repeats a message. Sending it as a bare JSON
+# number rather than a quoted string is PubNub's choice, and it is the choice
+# that breaks in JavaScript specifically.
+#
+# **The history tuple is the second.** [messages, start, end] is a fixed
+# three-element array where element 0 is a list and elements 1 and 2 are
+# each a lone number -- not an object with three keys, an array with three
+# positions, so `body.messages` is undefined and the only way to reach any
+# of it is to know the position by heart. An empty channel does not omit
+# the timetokens or send null: it answers [[],0,0], the same shape with an
+# empty list and both cursors zeroed, so code that checks `body[0].length`
+# before trusting `body[1]` still has to know that 0 is itself a valid
+# timetoken and not a sentinel for "no data."
+#
+# Four more the Recipe pins:
+#
+#   1. The path segment after /time/ is not an argument, it is a JSONP
+#      callback name, and "0" is the one value that means "no callback."
+#      GET /time/1 answers `1([17882285598580244])` -- the number wrapped in
+#      a function call named after whatever was in the URL -- and GET
+#      /time/abc answers `abc([...])` the same way. Only /time/0 answers the
+#      bare array this Recipe's own name suggests every call gets.
+#   2. history's own failures disagree with each other about what "error"
+#      means. A bad subscribe key answers {"error":true,...}, a boolean; a
+#      bad count answers {"error":"Invalid Arguments"}, a string holding the
+#      whole sentence; and a malformed presence path answers
+#      {"error":1,...}, a number. Three types for one field name, each from
+#      a different failure on the same service.
+#   3. count=0 is not "zero results," it is a 503. Every other bad count
+#      (non-numeric, negative) answers 400 with {"error":"Invalid
+#      Arguments"}; asking for precisely zero answers 503 with
+#      {"error":"TTL storage query failed"} -- a storage-layer failure
+#      surfacing through the one input value that looks most like it should
+#      just mean "give me nothing."
+#   4. Presence never 404s on a channel. GET .../channel/my_channel and GET
+#      .../channel/whatever-nobody-has-ever-used answer the identical
+#      {"message":"OK","occupancy":0,"service":"Presence","status":200,
+#      "uuids":[]}, because a PubNub channel is not a provisioned object --
+#      it exists exactly as much as history does for it, which is to say
+#      not more than "nobody is publishing to it yet."
+#
+# What Cauldron's vocabulary could not express honestly:
+#
+#   - `responses.list.style: tuple` is the name that looks right for the
+#     history shape and is not the same shape. Checked against
+#     internal/runtime/shape.go: Cauldron's tuple always renders
+#     [metadata_object, records_array] -- a paging object first and an array
+#     second, which is the World Bank's v2 shape and the only one the style
+#     produces. PubNub's history answers [records_array, timetoken,
+#     timetoken] -- the array first, and two bare numbers after it with no
+#     object anywhere in it. Same word, two incompatible fixed shapes, no
+#     configuration for element order, and no way to make a trailing element
+#     a scalar instead of an object. Using it here would have meant either
+#     lying about the element order or inventing a metadata object PubNub
+#     never sends. Modelled instead as a raw response: the runtime sends
+#     these bytes verbatim, rather than rendering them through
+#     responses.list at all.
+#   - The credential lives in the URL path itself --
+#     .../sub-key/{key}/channel/... -- and none of Cauldron's five auth
+#     schemes (bearer, basic, header, query, none) describe a path segment.
+#     `auth.scheme` is declared none here, and a wrong key is reproduced as
+#     a literal route matching one exact bad value, the same device World
+#     Bank's ZZZ country code and npm's missing version already use for a
+#     failure the routing layer cannot parametrise. A key that is wrong in
+#     some other way that is not this Recipe's one literal string is not
+#     caught -- stated as a gap below rather than served.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nearly everything here is a literal captured response rather than a
+#     rule the runtime evaluates, because nearly none of PubNub's answers are
+#     computed from state a fixture can hold: a timetoken is the server's
+#     clock, a history tuple is whatever has actually been published to a
+#     shared public channel, and neither is something this Recipe invents or
+#     replays generally. Where the claim is about digit count rather than
+#     the value itself -- both timetokens -- the conformance case asserts a
+#     seventeen-digit pattern instead of the recorded digits, because the
+#     recorded digits are already stale by the time this file is read.
+#   - `my_channel` on the "demo" subscribe key is a shared public sandbox
+#     that other people's tutorials and test suites publish to continuously.
+#     The history capture below is dated and will not reproduce byte-for-byte
+#     against the live API on a later date; the shape -- a two-string list
+#     and two seventeen-digit cursors -- is the durable claim, and the
+#     fixture route answers the recorded strings only because this is a
+#     fake standing in for that one observation, not a live replay of it.
+#   - Only one wrong subscribe key value is modelled, as a literal route.
+#     PubNub checks the key against a real registry and refuses any value
+#     that is not provisioned; this Recipe refuses only the one string it
+#     was asked to refuse and answers every other key, right or wrong, as
+#     though it were "demo." The same is true of the one malformed-path
+#     shape captured per endpoint: other malformations may answer
+#     differently and were not tried.
+#   - Publish, subscribe (the long-poll and the wire protocol both), grant,
+#     and every access-manager and app-context endpoint are not modelled at
+#     all. Publish is a write this research was told not to perform; the
+#     others were out of scope for what was probed.
+#   - The Content-Type header is not one string across this API: plain
+#     history, time and count-argument failures send
+#     `text/javascript; charset="UTF-8"` (charset quoted); the Access
+#     Manager's subscribe-key failure sends the same words with the charset
+#     unquoted; and the malformed-path 404 sends bare `application/json`
+#     with no charset at all. Recorded per case below as observed rather
+#     than normalised into one header, because the three are apparently
+#     three different services behind one hostname.
+
+recipe: pubnub
+capability: push
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.pubnub.com/docs/sdks/rest-api
+
+auth:
+  # The real credential is a path segment -- sub-key/{key} -- which is not
+  # bearer, basic, header, query or none, and Cauldron has no sixth option.
+  # None is declared because it is the closest available claim ("nothing
+  # Cauldron checks"), and the one wrong-key value this Recipe does refuse is
+  # a literal route rather than anything read from this block.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    # The default shape most of this API's own failures actually use:
+    # {"error": "<sentence>"}. The two failures that disagree (the boolean
+    # Access Manager error and the numeric Presence one) override this
+    # per-entry below.
+    message_field: error
+
+resources:
+  # The one endpoint whose success answers an ordinary flat object. Time and
+  # history do not: see the header for why they are modelled as literal
+  # routes instead of resources.
+  presence:
+    id:
+      style: opaque
+      # PubNub never puts the channel name on a presence answer. What is in
+      # the path is how Cauldron finds the fixture; it is not on the wire.
+      field: "-"
+    fields:
+      status:
+        type: integer
+      message:
+        type: string
+      service:
+        type: string
+      occupancy:
+        type: integer
+      uuids:
+        type: list
+
+routes:
+  # The bare-array time value, with the JSONP callback disabled by the
+  # literal argument "0". This is the case the header calls out: everything
+  # after /time/ other than "0" is a callback name, not served here. A bare
+  # JSON array with one seventeen-digit integer, and nothing else in the
+  # document -- recorded 2026-08-31; the digit count is the claim, not this
+  # specific value, which the conformance case asserts by pattern.
+  - method: GET
+    path: /time/0
+    raw:
+      content_type: 'text/javascript; charset="UTF-8"'
+      text: "[17882284253083560]"
+
+  # Any other value in that position is read as a JSONP callback name and
+  # wraps the same array in a function call.
+  - method: GET
+    path: /time/1
+    raw:
+      content_type: 'text/javascript; charset="UTF-8"'
+      text: "1([17882285598580244])"
+
+  # No argument at all -- neither "0" nor a callback name. Unlike the two
+  # routes above, this really is a failure: a 404 whose body still happens
+  # to be valid JSON.
+  - method: GET
+    path: /time
+    error: server_time_missing_arg
+
+  # The one channel this Recipe recorded real history for, and the one query
+  # it was recorded under. Literal beats wildcard, so this wins over the
+  # general channel route below for this exact path and this exact count.
+  # [messages, start, end]. messages is a list of bare strings here -- this
+  # channel's publishers sent plain text, not JSON objects -- and the two
+  # trailing elements are lone seventeen-digit numbers with no key naming
+  # either one. Recorded against the shared public "demo" sandbox on
+  # 2026-08-31; see the header for why this exact capture will not
+  # reproduce against the live channel later.
+  - method: GET
+    path: /v2/history/sub-key/demo/channel/my_channel
+    matches_query:
+      count: "2"
+    raw:
+      content_type: 'text/javascript; charset="UTF-8"'
+      text: '[["hello world!","hello world!"],17882278577514975,17882278584801440]'
+
+  # Every other channel on the "demo" key, with any count. Not modelled as
+  # PubNub's default -- it is PubNub's default -- since a channel nobody has
+  # published to is the overwhelmingly common case and this is what it
+  # answers. The same three-element shape as above with the list empty and
+  # both cursors at zero -- not omitted, not null. A client that treats 0 as
+  # "no timetoken" cannot tell this apart from a channel whose first message
+  # was published at timetoken 0.
+  - method: GET
+    path: /v2/history/sub-key/{subKey}/channel/{channel}
+    raw:
+      content_type: 'text/javascript; charset="UTF-8"'
+      text: "[[],0,0]"
+
+  # A path with no channel segment at all, on the history endpoint
+  # specifically -- distinct from the same omission on presence below.
+  - method: GET
+    path: /v2/history/sub-key/demo/channel
+    error: invalid_uri
+
+  # A count that is not a usable non-negative integer. Both a non-numeric
+  # and a negative value were checked and answer identically; both are kept
+  # as separate cases because each is its own independent observation.
+  - method: GET
+    path: /v2/history/sub-key/demo/channel/my_channel
+    matches_query:
+      count: abc
+    error: invalid_arguments
+
+  - method: GET
+    path: /v2/history/sub-key/demo/channel/my_channel
+    matches_query:
+      count: "-5"
+    error: invalid_arguments
+
+  # Precisely zero, which is not the same failure as the two above.
+  - method: GET
+    path: /v2/history/sub-key/demo/channel/my_channel
+    matches_query:
+      count: "0"
+    error: ttl_storage_failure
+
+  # The one wrong-key value this Recipe refuses. See the header: any other
+  # wrong key answers as though it were "demo," which is the stated gap.
+  - method: GET
+    path: /v2/history/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    error: invalid_subscribe_key
+
+  # Presence for a channel this Recipe has seeded, rendered through the
+  # ordinary resource path -- and for every other channel, through
+  # not_found, both answering the same shape. That equivalence is the
+  # finding: a channel does not have to be provisioned to have presence
+  # answered for it.
+  - method: GET
+    path: /v2/presence/sub-key/{subKey}/channel/{id}
+    resource: presence
+    operation: get
+    not_found: presence_no_one_here
+
+  # A path with no channel segment, on presence -- a different 404 shape
+  # from history's, and named separately so the two are not confused.
+  - method: GET
+    path: /v2/presence/sub-key/demo/channel
+    error: presence_page_not_found
+
+  # The same wrong key, on presence, answering the same Access Manager
+  # failure history does above.
+  - method: GET
+    path: /v2/presence/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    error: invalid_subscribe_key
+
+errors:
+  # {"error":true,"status":400,"service":"Access Manager","message":"..."}.
+  # A boolean where the other two failure shapes below hold a string and a
+  # number, on the same API, depending which of its own services answers.
+  invalid_subscribe_key:
+    status: 400
+    message: "Invalid Subscribe Key"
+    message_field: message
+    fields:
+      error: true
+      status: 400
+      service: Access Manager
+
+  # {"error":"Invalid URI"}. Plain application/json, no charset -- a
+  # different Content-Type from every other failure in this file, which all
+  # answer text/javascript.
+  invalid_uri:
+    status: 404
+    message: Invalid URI
+    headers:
+      Content-Type: application/json
+
+  # {"error":"Invalid Arguments"}. The default flat shape: message_field is
+  # "error" at the Recipe level, so no override is needed here.
+  invalid_arguments:
+    status: 400
+    message: Invalid Arguments
+
+  # {"error":"TTL storage query failed"}. Same shape as invalid_arguments,
+  # different status and sentence -- and the one that answers 503 for an
+  # input (count=0) that looks like it should mean "nothing," not "storage
+  # broke."
+  ttl_storage_failure:
+    status: 503
+    message: TTL storage query failed
+
+  # {"error":1,"message":"Page not found","service":"Presence"}. The third
+  # shape: "error" is a bare number here, not the boolean above or the
+  # string two entries up.
+  presence_page_not_found:
+    status: 404
+    message: Page not found
+    message_field: message
+    code_field: error
+    code: "1"
+    fields:
+      service: Presence
+
+  # A 404 whose body is still valid JSON: a bare empty array, not an object
+  # with an "error" key.
+  server_time_missing_arg:
+    status: 404
+    style: text
+    headers:
+      Content-Type: 'text/javascript; charset="UTF-8"'
+    message: "[]"
+
+  # Answered instead of a 404 for any channel this Recipe has not seeded.
+  # Byte-identical to the ordinary resource rendering of the seeded
+  # "my_channel" fixture below, which is the point: PubNub does not
+  # distinguish a channel that exists from one that does not.
+  presence_no_one_here:
+    status: 200
+    style: text
+    headers:
+      Content-Type: 'text/javascript; charset="UTF-8"'
+    message: '{"message":"OK","occupancy":0,"service":"Presence","status":200,"uuids":[]}'
+
+fixtures:
+  empty: {}
+
+  channels:
+    presence:
+      - id: my_channel
+        status: 200
+        message: OK
+        service: Presence
+        occupancy: 0
+        uuids: []
+
+conformance:
+  - name: the timetoken is a bare JSON array holding one seventeen-digit number
+    source: https://ps.pndsn.com/time/0
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /time/0
+    expect:
+      status: 200
+      headers:
+        Content-Type: 'text/javascript; charset="UTF-8"'
+      # The digit count is the claim, not the recorded value: seventeen
+      # digits is already one more than Number.MAX_SAFE_INTEGER can hold
+      # (2^53 is sixteen), and the exact number served here will not be the
+      # exact number the live API answers on a later date.
+      body_matches: '^\[\d{17}\]$'
+
+  - name: anything other than 0 after /time/ is read as a JSONP callback name
+    source: https://ps.pndsn.com/time/1
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /time/1
+    expect:
+      status: 200
+      # The same bare array, wrapped in a call to a function named "1" --
+      # not an object, not an error, just the array from the case above
+      # inside parentheses.
+      body_matches: '^1\(\[\d{17}\]\)$'
+
+  - name: no argument at all is a 404 whose body is still a bare empty array
+    source: https://ps.pndsn.com/time
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /time
+    expect:
+      status: 404
+      body_matches: '^\[\]$'
+
+  - name: history is a fixed three-element array, not an object
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel/my_channel?count=2
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel/my_channel
+      query:
+        count: "2"
+    expect:
+      status: 200
+      # Element 0 is the message list, recorded exactly because it is this
+      # Recipe's own canned answer. Elements 1 and 2 are asserted by digit
+      # count rather than value, for the same reason the time cases are:
+      # this channel is a shared public sandbox and the live numbers move.
+      body_matches: '^\[\["hello world!","hello world!"\],\d{17},\d{17}\]$'
+
+  - name: an empty history is [[],0,0], not an omitted or null cursor
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel/definitely-empty-channel-xyz-987654
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel/definitely-empty-channel-xyz-987654
+    expect:
+      status: 200
+      # Zero is exact here rather than volatile, unlike the populated case
+      # above: an empty channel really does answer these three literal
+      # bytes, every time.
+      body_matches: '^\[\[\],0,0\]$'
+
+  - name: history's own path fails with an "error" field that is a string
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel
+    expect:
+      status: 404
+      headers:
+        # No charset at all, unlike every other failure in this file.
+        Content-Type: application/json
+      body:
+        error: Invalid URI
+
+  - name: a non-numeric count is a 400 with the same "error is a string" shape
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel/my_channel?count=abc
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel/my_channel
+      query:
+        count: abc
+    expect:
+      status: 400
+      body:
+        error: Invalid Arguments
+
+  - name: and a negative count answers the identical sentence
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel/my_channel?count=-5
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel/my_channel
+      query:
+        count: "-5"
+    expect:
+      status: 400
+      body:
+        error: Invalid Arguments
+
+  - name: count=0 specifically is a 503, not the 400 the other bad counts get
+    source: https://ps.pndsn.com/v2/history/sub-key/demo/channel/my_channel?count=0
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/demo/channel/my_channel
+      query:
+        count: "0"
+    expect:
+      status: 503
+      body:
+        error: TTL storage query failed
+
+  - name: a bad subscribe key answers with "error" as a boolean, not a string
+    source: https://ps.pndsn.com/v2/history/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/history/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    expect:
+      status: 400
+      body:
+        error: true
+        status: 400
+        service: Access Manager
+        message: Invalid Subscribe Key
+
+  - name: and the same wrong key fails the same way on presence
+    source: https://ps.pndsn.com/v2/presence/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/presence/sub-key/not-a-real-subkey-xyz/channel/my_channel
+    expect:
+      status: 400
+      body:
+        error: true
+        service: Access Manager
+
+  - name: a seeded channel's presence is an ordinary flat object
+    source: https://ps.pndsn.com/v2/presence/sub-key/demo/channel/my_channel
+    verified: "2026-08-31"
+    fixture: channels
+    request:
+      method: GET
+      path: /v2/presence/sub-key/demo/channel/my_channel
+    expect:
+      status: 200
+      body:
+        status: 200
+        message: OK
+        service: Presence
+        occupancy: 0
+      absent:
+        - uuids[0]
+
+  - name: an unseeded channel's presence is the identical shape, not a 404
+    source: https://ps.pndsn.com/v2/presence/sub-key/demo/channel/definitely-nobody-here-zzz-999
+    verified: "2026-08-31"
+    fixture: channels
+    request:
+      method: GET
+      path: /v2/presence/sub-key/demo/channel/definitely-nobody-here-zzz-999
+    expect:
+      status: 200
+      body_matches: '^\{"message":"OK","occupancy":0,"service":"Presence","status":200,"uuids":\[\]\}$'
+
+  - name: presence's own missing-channel path fails with "error" as a number
+    source: https://ps.pndsn.com/v2/presence/sub-key/demo/channel
+    verified: "2026-08-31"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/presence/sub-key/demo/channel
+    expect:
+      status: 404
+      body:
+        # Not the boolean the subscribe-key failure carries, and not the
+        # string history's missing-channel failure carries: a bare number.
+        error: 1
+        message: Page not found
+        service: Presence

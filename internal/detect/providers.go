@@ -4106,6 +4106,14 @@ func providers() []provider {
 			gomod: []string{"github.com/sashabaranov/go-openai"},
 		},
 		{
+			// The official SDK, and the reason this Recipe is mapped rather
+			// than listed in the backlog. Packagist has no PubNub package
+			// under the vendor name, so only two registries are named.
+			recipe: "pubnub",
+			npm:    []string{"pubnub"},
+			gomod:  []string{"github.com/pubnub/go"},
+		},
+		{
 			recipe:   "ably",
 			npm:      []string{"ably"},
 			composer: []string{"ably/ably-php"},
