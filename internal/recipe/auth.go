@@ -218,6 +218,11 @@ type Auth struct {
 	//   Baserow  is a third thing again: URL pattern first, then the
 	//            credential, then the specific id and the method. A wrong
 	//            method on a real path answers 401 rather than 405.
+	//   Sendcloud splits on whether any credential was presented at all --
+	//            not on the path, not on the method, and not on whether the
+	//            credential was any good. Two pieces of software answer here,
+	//            its own application and an OAuth2 gateway in front of it,
+	//            which is what makes that the dividing line.
 	//   Timescale splits on which verdict it reached. An absent or malformed
 	//            credential is refused before routing; a well-formed one that
 	//            is simply wrong reaches the router and gets a real 405. So
@@ -230,10 +235,10 @@ type Auth struct {
 	//            parsed, and the answer differs between two routes on one
 	//            host -- which no Recipe-wide setting can express at all.
 	//
-	// The last five would each need the credential's state to survive a
+	// The last six would each need the credential's state to survive a
 	// route match without gating it -- and Northflank's would need it to
 	// survive body validation as well, per route. That is a larger change
-	// than a boolean and is not obviously worth making for five providers.
+	// than a boolean and is not obviously worth making for six providers.
 	// What is worth doing is what those Recipes do: say so in the file, so
 	// the next reader knows the emulator is approximating rather than that
 	// the provider is simple.
