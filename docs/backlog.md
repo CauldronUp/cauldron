@@ -1074,7 +1074,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**216 more listings across 130 Recipes declare no paging at all**, and the
+**222 more listings across 135 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1439,6 +1439,7 @@ than a client for its API.
 | Steam | The packages naming Steam on npm are overwhelmingly clients of **Steamworks**, the C++ game SDK, or of the community trading and market pages -- different hosts, different protocols, and in the SDK's case not an HTTP API at all. Packagist returns OpenID login helpers for signing in with Steam, which touch the auth flow and never the Web API. Offering this emulator to any of them would be wrong about the host, so it ships unmapped |
 | NOAA | Nothing on either registry reaches the NCEI access service. The clients that exist are Python and R, which neither registry indexes, and the npm results for the name reach **api.weather.gov** -- the National Weather Service, a different NOAA API that this collection already describes under its own Recipe. Mapping this one to those packages would hand somebody the wrong NOAA, so it ships unmapped |
 | Guardian | The npm packages naming the Guardian are almost all unrelated: route guards for web frameworks, which share the word and nothing else. The few genuine Open Platform clients are unmaintained and depended on by nothing. Packagist returns authorisation libraries for the same reason. A name match here is a homograph rather than a miss, so it ships unmapped |
+| Tink | A homograph rather than a gap. `tink` on npm is a next-generation runtime and package manager that shares the name and nothing else; Packagist returns unrelated packages for the same reason. The clients that genuinely reach this API are Java and Python, which neither registry indexes. Offering an open-banking emulator to a project that installed a package manager would be wrong about everything at once, so it ships unmapped and a test guards the decision |
 | Semantic Scholar | Nothing on either registry reaches the Academic Graph API. The clients that exist for it are Python, which neither npm nor Packagist indexes, and the npm results for the name are citation-formatting libraries that parse BibTeX already on disk rather than calling the service. Offering this emulator to a bibliography formatter would be wrong about the host and the protocol at once, so it ships unmapped and a test guards the decision |
 | Mercado Libre | The npm and Packagist packages that name Mercado Libre are almost all clients of **Mercado Pago**, the payments product on a different host with a different credential, which this Recipe does not describe. The few that do target the marketplace API are unmaintained wrappers with nothing depending on them. Offering this emulator to a Mercado Pago integration would be wrong about the host, the credential and the vocabulary at once, so it ships unmapped |
 | US Census | Nothing on either registry calls the Census data API. The packages that name it are R and Python, which neither registry indexes, and the npm results are unrelated geographic-boundary datasets shipped as static files rather than clients of anything. This Recipe also models only the metadata endpoints, since the data API is behind a key gate, so a name match would be doubly wrong -- and it ships unmapped |
@@ -1482,7 +1483,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Fifty-five Recipes send at least one identifier as a number now, and each
+Fifty-seven Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
