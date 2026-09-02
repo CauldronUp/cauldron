@@ -1,0 +1,411 @@
+# Appsmith Recipe for Cauldron
+#
+# Appsmith matches the Retool shape in this collection, not the NocoDB one.
+# Retool's own Recipe found there is no data-table API at all, only an
+# organisation-management surface (users, groups, folders, apps); NocoDB's
+# found an auth order that flips on whether the route names an id. Neither
+# question is close for Appsmith. Every path this Recipe could reach --
+# api.appsmith.com, app.appsmith.com/api/v1/* -- manages the builder's own
+# objects (workspaces, applications, pages), never a row of a user's own
+# data, because Appsmith does not store application data itself; it queries
+# a connected datasource at request time and forwards the answer. So this
+# Recipe is administrative like Retool's, for the same underlying reason
+# (there is nothing else here to be), and its interesting behaviour is not
+# in what a record looks like -- no authenticated record was ever reachable
+# without an account -- but in how the credential is checked, which turned
+# out to have three distinct shapes rather than the one or two the rest of
+# this collection's auth mechanism was built to express.
+#
+# api.appsmith.com is the marketing site and the built frontend, not an API
+# host at all: every path on it, including nonsense ones, answers 200 with
+# the same React shell. The real API lives at app.appsmith.com/api/v1/*,
+# session-cookie authenticated (a Set-Cookie: XSRF-TOKEN on every response),
+# and this Recipe was struck against that host with no login, no account and
+# no cookie ever retained between requests.
+#
+# **Three shapes of "no," each coming from a different layer of the stack,
+# struck live and never conflated:**
+#
+#   GET  /api/v1/workspaces                (no header)  -> 401, zero bytes
+#   GET  /api/v1/this-is-not-a-real-route   (no header)  -> 401, zero bytes
+#   GET  /api/v1/applications               (no header)  -> 405, Appsmith's
+#                                                            own JSON envelope
+#   GET  /api/v1/applications/{id}          (no header)  -> 405, same body
+#   PUT  /api/v1/workspaces                 (no header)  -> 403, "Access Denied"
+#   POST /api/v1/this-is-not-a-real-route   (Bearer junk)-> 403, "Access Denied"
+#
+# Read top to bottom, those are three separate mechanisms answering, not one
+# mechanism with three moods. GET requests to most of /api/v1/** hit Spring
+# Security's own default entry point before Appsmith's router is ever
+# consulted, and that entry point sends literally nothing -- no body, no
+# Content-Type, a bare 401. A short allowlist of paths is exempt from that
+# gate entirely (applications and applications/{id} are on it, users/me is
+# too), and a GET to one of those reaches Appsmith's own Spring MVC
+# dispatcher, which answers its normal JSON error envelope when the method
+# named has no handler -- 405, wrapped under responseMeta, with an empty
+# errorDisplay string beside it. And every mutating verb -- PUT, POST,
+# DELETE, OPTIONS, checked across both a real path and an invented one --
+# never reaches either of those: Spring's CSRF filter answers first, for
+# every one of them, with 403 and thirteen bytes of plain text, "Access
+# Denied," because this Recipe never held a session to mint a matching
+# XSRF-TOKEN for. A credential (Authorization: Bearer junkjunkjunk, checked
+# on several of the above) never changed a single one of these answers,
+# because Appsmith's real credential is the session cookie and nothing here
+# reads a bearer header at all.
+#
+# That is a shape this collection had not produced before. Census splits on
+# the HTTP method; Rootly on whether the route exists; NocoDB on whether the
+# route names an id; Baserow checks the URL pattern before the credential.
+# Appsmith checks the URL pattern before the credential too, for GET -- but
+# splits a second way, orthogonally, on whether the verb is safe: every
+# unsafe verb is refused by a filter that runs before either check, on any
+# path, real or not. auth.after_routing is one boolean and cannot express
+# two independent splits at once, so auth.scheme is none here and every
+# shape below is a hand-rolled route with its own fixed error, the same
+# device Census's and Turso's Recipes in this collection use where the
+# built-in flag does not reach far enough. Declaring it as after_routing
+# would claim GET and PUT agree about the order, which they were checked and
+# do not.
+#
+# The one authenticated-shaped body this Recipe could reach without an
+# account is GET /api/v1/users/me, which answers about whoever is calling --
+# the same id_from: auth shape Turso's /v1/auth/validate and GitHub's /user
+# already use in this collection -- and with no session at all it answers
+# about the anonymous one. Real, live, and worth reading closely: roles and
+# groups are not empty arrays, they are arrays holding one string apiece,
+# "Upgrade to business plan to access roles and groups for conditional
+# business logic" -- an upsell rendered as if it were data, in the exact
+# field a caller would parse for a list of role names. Code that treats
+# response.data.roles.length as "how many roles does this user have" reads
+# 1, on every free-tier account, for a user who is not IN any role.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Nothing behind the session cookie is modelled. Workspaces,
+#     applications, pages, actions (the queries a page runs against a
+#     connected datasource) and datasources are all real, all named in the
+#     paths this Recipe struck, and none of their record shapes could be
+#     observed without logging in -- which this Recipe never did. That is
+#     the whole of Appsmith's actual product surface, and it is left out
+#     rather than invented, the same call Retool's Recipe makes about every
+#     object beyond create-user.
+#   - Only two paths (applications, applications/{id}) and one method
+#     mismatch (GET where only POST is registered) demonstrate the 405
+#     shape; only one protected path and one invented path demonstrate the
+#     401; only one real path and one invented path demonstrate the 403.
+#     Any other path or verb this Recipe does not declare falls through to
+#     Cauldron's own generic unknown-route handling instead, which answers
+#     a plain 404 no case here asserts and no live probe ever produced --
+#     the same caveat Census's Recipe states for the identical reason.
+#   - No spec is recorded. docs.appsmith.com/reference/rest-api, the page
+#     this Recipe expected to cite, answers 404 as of this Recipe's own
+#     probes; app.appsmith.com/v2/api-docs, /v3/api-docs and /swagger-ui.html
+#     all answer 200 with the same built frontend shell rather than a
+#     machine-readable description, so nothing here could be fingerprinted.
+#   - Rate limiting was never observed and is not declared. No 429 was
+#     reachable from any request this Recipe made.
+#
+# No account was ever created and no session was ever held. The 401, 403
+# and 405 cases below were struck with no cookie and, where noted, a bearer
+# header this host was already shown to ignore. The 200 case needed no
+# credential at all -- that is the finding it exists to carry.
+
+recipe: appsmith
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.appsmith.com/reference
+
+auth:
+  # Session-cookie authenticated, and none of this format's schemes is a
+  # cookie -- the same call NocoDB's and Turso's Recipes make for their own
+  # reasons. Every gate below is hand-rolled per route instead; see the
+  # header for why one boolean cannot cover both splits this host makes.
+  scheme: none
+
+responses:
+  # The shape the one genuinely JSON failure on this host takes. The two
+  # others (401, 403) are not JSON at all and override style per error
+  # below.
+  error:
+    style: nested
+    key: responseMeta
+    message_field: message
+    status_field: status
+    code_field: "-"
+    fields:
+      responseMeta.success: false
+      errorDisplay: ""
+  resource:
+    style: wrapped
+    key: data
+
+resources:
+  # /api/v1/users/me answers about whoever is calling, the same id_from: auth
+  # shape Turso's api_token and GitHub's /user already use here -- no id
+  # field on the record at all, because there is nothing to have addressed
+  # one of these by. With no session this Recipe could ever hold, "whoever
+  # is calling" is always the anonymous one, which is the real, live answer
+  # and not a stand-in for a logged-in shape this Recipe never saw.
+  session:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      email:
+        type: string
+        default: anonymousUser
+      username:
+        type: string
+        default: anonymousUser
+      name:
+        type: string
+        default: anonymousUser
+      workspaceIds:
+        type: list
+      isEmptyInstance:
+        type: boolean
+        default: false
+      enableTelemetry:
+        type: boolean
+        default: true
+      # Not role names. See the header: one string apiece, and the string is
+      # an upsell rather than data.
+      roles:
+        type: list
+      groups:
+        type: list
+      accountNonExpired:
+        type: boolean
+        default: true
+      accountNonLocked:
+        type: boolean
+        default: true
+      credentialsNonExpired:
+        type: boolean
+        default: true
+      isAnonymous:
+        type: boolean
+        default: true
+      isEnabled:
+        type: boolean
+        default: true
+      isSuperUser:
+        type: boolean
+        default: false
+      isConfigurable:
+        type: boolean
+        default: true
+      adminSettingsVisible:
+        type: boolean
+        default: false
+      isIntercomConsentGiven:
+        type: boolean
+        default: true
+
+routes:
+  - method: GET
+    path: /api/v1/users/me
+    resource: session
+    operation: get
+    id_from: auth
+    fields:
+      responseMeta.status: 200
+      responseMeta.success: true
+
+  # A protected path. No route named here is ever reached: the security
+  # filter answers before Appsmith's own router is consulted, for any path
+  # matching this pattern.
+  - method: GET
+    path: /api/v1/workspaces
+    error: session_required
+
+  # An invented path, and the identical answer -- proof this is the default
+  # for anything under /api/v1/** that is not specifically exempted, not a
+  # fact about /workspaces alone. See the header's fidelity gap: no other
+  # undeclared path reproduces this in the emulator, only this one.
+  - method: GET
+    path: /api/v1/this-is-not-a-real-endpoint-xyz
+    error: session_required
+
+  # On the short exemption list: GET reaches Appsmith's own router with no
+  # credential at all, and the router has no GET handler here.
+  - method: GET
+    path: /api/v1/applications
+    error: public_method_not_allowed
+
+  # The identical exemption and the identical mismatch, on a path shaped
+  # like it names one record rather than a collection -- unlike NocoDB, an
+  # id in the path changes nothing about this ordering.
+  - method: GET
+    path: /api/v1/applications/{id}
+    error: public_method_not_allowed
+
+  # Any mutating verb, on a real path, with no credential at all. CSRF is
+  # checked before the session gate above and before routing -- see the
+  # header.
+  - method: PUT
+    path: /api/v1/workspaces
+    error: csrf_denied
+
+  # The identical filter, on a path that does not exist, with a bearer
+  # credential this host has already been shown to ignore. Neither the path
+  # nor the header changes which layer answers first.
+  - method: POST
+    path: /api/v1/this-is-not-a-real-endpoint-xyz
+    error: csrf_denied
+
+errors:
+  # Spring Security's own default entry point, unwrapped by anything
+  # Appsmith's own code writes -- no body, no Content-Type, on every path
+  # this gate covers.
+  session_required:
+    status: 401
+    empty: true
+
+  # Spring's CSRF filter, also unwrapped -- thirteen bytes of plain text
+  # ahead of both the session gate and the router, on any verb it applies
+  # to.
+  csrf_denied:
+    status: 403
+    style: text
+    message: Access Denied
+    headers:
+      Content-Type: text/plain
+
+  # The one failure that is genuinely Appsmith's own JSON, reached only once
+  # both filters above have let a request through and its router still has
+  # no handler for the method asked.
+  public_method_not_allowed:
+    status: 405
+    message: "405 METHOD_NOT_ALLOWED \"Request method 'GET' is not supported.\""
+
+fixtures:
+  empty: {}
+
+  # The one record this Recipe could ever observe: what app.appsmith.com
+  # answers about a caller who holds no session at all. See the header for
+  # why roles and groups hold an upsell string rather than role names.
+  anonymous:
+    session:
+      - email: anonymousUser
+        username: anonymousUser
+        name: anonymousUser
+        workspaceIds: []
+        isEmptyInstance: false
+        enableTelemetry: true
+        roles:
+          - Upgrade to business plan to access roles and groups for conditional business logic
+        groups:
+          - Upgrade to business plan to access roles and groups for conditional business logic
+        accountNonExpired: true
+        accountNonLocked: true
+        credentialsNonExpired: true
+        isAnonymous: true
+        isEnabled: true
+        isSuperUser: false
+        isConfigurable: true
+        adminSettingsVisible: false
+        isIntercomConsentGiven: true
+
+conformance:
+  - name: the one public route needs no credential and answers the anonymous session
+    source: https://app.appsmith.com/api/v1/users/me
+    verified: "2026-09-01"
+    fixture: anonymous
+    request:
+      method: GET
+      path: /api/v1/users/me
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        responseMeta.status: 200
+        responseMeta.success: true
+        data.email: anonymousUser
+        data.username: anonymousUser
+        data.isAnonymous: true
+        # See the header: one string, and the string is an upsell rather
+        # than a role name.
+        "data.roles[0]": Upgrade to business plan to access roles and groups for conditional business logic
+      absent:
+        - id
+        - data.id
+
+  - name: a protected path with no credential answers 401 and zero bytes
+    source: https://app.appsmith.com/api/v1/workspaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workspaces
+    expect:
+      status: 401
+
+  - name: a path that does not exist gets the identical empty 401, not a routing-specific shape
+    source: https://app.appsmith.com/api/v1/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/this-is-not-a-real-endpoint-xyz
+    expect:
+      status: 401
+
+  - name: a path exempt from the session gate reaches Appsmith's own router and its own JSON 405
+    source: https://app.appsmith.com/api/v1/applications
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/applications
+    expect:
+      status: 405
+      headers:
+        Content-Type: application/json
+      body:
+        responseMeta.status: 405
+        responseMeta.success: false
+        responseMeta.message: "405 METHOD_NOT_ALLOWED \"Request method 'GET' is not supported.\""
+        errorDisplay: ""
+
+  - name: naming an id in the path changes nothing about that exemption
+    source: https://app.appsmith.com/api/v1/applications/000000000000000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/applications/000000000000000000000000
+    expect:
+      status: 405
+      body:
+        responseMeta.message: "405 METHOD_NOT_ALLOWED \"Request method 'GET' is not supported.\""
+
+  - name: a mutating verb on a real path is refused by CSRF before the session gate ever runs
+    source: https://app.appsmith.com/api/v1/workspaces
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PUT
+      path: /api/v1/workspaces
+    expect:
+      status: 403
+      headers:
+        Content-Type: text/plain
+      body_matches: "^Access Denied$"
+
+  - name: and the identical filter answers first for a path that does not exist, credential or not
+    source: https://app.appsmith.com/api/v1/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/this-is-not-a-real-endpoint-xyz
+      headers:
+        Authorization: Bearer junkjunkjunk
+    expect:
+      status: 403
+      body_matches: "^Access Denied$"

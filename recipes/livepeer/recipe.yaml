@@ -1,0 +1,485 @@
+# Livepeer Recipe for Cauldron
+#
+# Struck live against livepeer.studio, today, with no account and no key
+# ever created. Livepeer is video transcoding, and this Recipe is about the
+# one operation that is genuinely a long-running job: requesting an upload
+# for an Asset (Livepeer's video-on-demand object) and watching it move
+# through the phases its own published OpenAPI description enumerates in
+# full -- uploading, waiting, processing, ready, failed, deleting, deleted --
+# fetched from api-schema.yaml in livepeer/studio, the source that generates
+# Livepeer's own client SDKs, not a documentation page paraphrasing it.
+#
+# **The create response hands back two objects, not one, and they answer to
+# two different, disagreeing vocabularies.** POST /api/asset/request-upload
+# answers `{"url", "tusEndpoint", "asset", "task": {"id"}}`, per the schema's
+# own required-fields list. asset is the same object GET /api/asset/{id}
+# answers with, at status.phase "uploading" -- nothing has been sent yet --
+# and task is a bare id pointing at a *different* resource with its *own*
+# phase enum: pending, waiting, running, failed, completed, cancelled,
+# fetched from the same schema. Two words for "not started yet" (uploading,
+# pending), two for "done" (ready, completed), and no field on either object
+# says which one to poll or what its neighbour's words mean. This is a third
+# answer to the shape this group's other two Recipes settle differently:
+#
+#   - bunny/recipe.yaml: POST .../videos answers the *same* Video object a
+#     GET would, at status 0 of a single enum -- no second object, no second
+#     vocabulary, just one resource moving through one set of states.
+#   - pdfmonkey/recipe.yaml: POST /api/v1/documents answers the *same*
+#     Document a GET would, at status "draft" -- one resource, one
+#     vocabulary, and a second field in the create body (status: "pending")
+#     is what actually queues the work, which nothing about the response
+#     shape alone would tell a caller.
+#   - transloadit/recipe.yaml: POST /assemblies answers the *same* Assembly
+#     object a GET would, at ok "ASSEMBLY_EXECUTING" -- one resource, one
+#     vocabulary, no second object at all; the only other id it hands back
+#     (assembly_id) addresses the identical thing assembly_url does.
+#
+# Livepeer is the one member of this quartet that hands back a genuinely
+# separate task alongside the resource, the way temporal/recipe.yaml's
+# AsyncOperation does elsewhere in this collection -- except Temporal's
+# create returns *only* the operation, not the resource beside it, and
+# Livepeer returns both at once, with two vocabularies that share exactly
+# two words (waiting, failed) and disagree about the rest. A caller who
+# polls task.id instead of asset.id is watching the correct thing by the
+# wrong name; a caller who reads task's "completed" as a signal that
+# asset.status.phase is now "completed" is wrong, because that word never
+# appears in the asset's own enum at all -- the asset says "ready".
+#
+# **200, not 201, the same finding transloadit/recipe.yaml and
+# bunny/recipe.yaml both make about their own creates.** Livepeer's own
+# schema says so explicitly: `responses: "200": description: Success`, no
+# 201 anywhere on this operation.
+#
+# **The routing-vs-credential order genuinely depends on the shape of the
+# credential presented, not merely on whether one was.** Four requests,
+# struck live, to the identical unrouted path
+# (/api/totally-bogus-endpoint-xyz):
+#
+#   nothing at all                          -> 404 {"errors":["not found"]}
+#   Authorization: junktoken12345 (no "Bearer " prefix at all)
+#                                            -> 404 {"errors":["not found"]}
+#   Authorization: Bearer junktoken12345    -> 401 {"errors":["no token
+#                                               junktoken12345 found"]}
+#   Authorization: Bearer anotherjunkvalue999
+#                                            -> 401 {"errors":["no token
+#                                               anotherjunkvalue999 found"]}
+#
+# and the identical split on a wrong method against a real path (PATCH
+# /api/stream): no credential and a malformed one both answer 404 "not
+# found"; a Bearer-shaped one, right or wrong, answers 401 naming the token.
+# So this is not quite Sendcloud's split in this collection ("whether any
+# credential was presented at all") and not quite Timescale's either ("which
+# verdict it reached" -- there, absent and malformed are refused before
+# routing and a well-formed-wrong one reaches the router). Livepeer inverts
+# Timescale's direction: here a well-formed-but-wrong credential beats
+# routing and gets refused first, while an absent or malformed one lets
+# routing answer first -- the router wins for the two verdicts that are not
+# really a credential at all, and loses to the credential check for the one
+# that is. Absent and malformed collapse to the identical sentence on a real
+# path too ("request is not authenticated"), which is what makes them a
+# matched pair here rather than two separate exceptions to state.
+#
+# Cauldron's own AfterRouting is one boolean for the whole Recipe and cannot
+# split on the credential's shape the way this host does -- see
+# internal/recipe/auth.go for the five orderings it already records, none of
+# them this one. This Recipe leaves AfterRouting unset (the default,
+# credential-checked-first), because that is the position that reproduces
+# the *sharper* half of the split without arming anything: every case below
+# involving a well-formed Bearer-shaped credential, on a real path, an
+# unrouted path or a wrong method alike, is live-verified and organic. What
+# it cannot reproduce -- an absent or malformed credential against an
+# unrouted path or a wrong method answering 404 rather than 401 -- is stated
+# here rather than forced; declaring after_routing instead would flip which
+# half is faithful and lose the more surprising one.
+#
+# **Absent and malformed are not two credential problems, they are the
+# identical sentence, checked twice.** "request is not authenticated" is
+# what no Authorization header gets, and it is also, byte for byte, what
+# "Authorization: junktoken12345" (present, no "Bearer " prefix at all)
+# gets. Livepeer's own gate does not appear to distinguish "nothing sent"
+# from "something sent that is not shaped like a bearer token" at all -- only
+# "something sent, Bearer-shaped, and wrong" gets its own sentence, which
+# echoes the token itself back verbatim: "no token junktoken12345 found" for
+# one probe, "no token anotherjunkvalue999 found" for a different one, both
+# checked live. A different wrong token echoes a different fragment, the
+# same caveat pdfmonkey/recipe.yaml states for its own echoing failure.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested,
+#     guessed or used. Every 401 and 404 below was struck live against
+#     livepeer.studio today and carries a `verified:` date; the create and
+#     get-by-id 200 cases are read from Livepeer's own published OpenAPI
+#     description (api-schema.yaml, re-fetched today) and carry none.
+#   - The task object is real, documented, and not modelled as its own
+#     resource or route -- there is no GET /task/{id} case to cite a worked
+#     example from, and this Recipe's own point is the *mismatch* between
+#     the two vocabularies, which the header states precisely without
+#     inventing a route to demonstrate it further.
+#   - playbackUrl and downloadUrl's own schema examples embed two different
+#     ids from each other and from the asset's own id example -- Livepeer's
+#     own documentation does not agree on which id belongs where. Each field
+#     below reproduces its own schema-declared example verbatim rather than
+#     forcing the three into one coherent story none of Livepeer's own pages
+#     tells.
+#   - Of roughly twenty-five documented Asset fields this Recipe declares
+#     eleven. staticMp4, playbackPolicy, creatorId, storage (IPFS export),
+#     profiles, hash and every track-level videoSpec field beyond duration
+#     and format are real and absent.
+#   - Streams (live ingest, the other half of this product, addressed by an
+#     entirely different resource and lifecycle) are not modelled at all.
+#     Every credential and routing finding above was independently
+#     re-verified against /api/asset and /api/asset/{id} directly rather
+#     than assumed to carry over from the /api/stream probes that found it
+#     first -- both surfaces answer byte-identical, confirming one shared
+#     gate rather than two coincidentally alike ones.
+#   - Listing (GET /asset) pagination is not documented anywhere in the
+#     published schema and is not modelled; the route below answers the
+#     whole fixture, unpaged.
+#
+# The key below is a fixture and belongs to no Livepeer account.
+
+recipe: livepeer
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.livepeer.org/api-reference/asset/overview
+  spec: https://raw.githubusercontent.com/livepeer/studio/master/packages/api/src/schema/api-schema.yaml
+  spec_hash: ab7dd2550c75afbed3d9542e271114461c59b27a2ca5637a872796d15a096efc
+  spec_seen: "2026-09-01"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-livepeer-fixture-key-0000000000000000
+  # Absent and malformed collapse to the identical sentence -- see the
+  # header. Named explicitly rather than left to the shared fallback, so a
+  # reader can see both were checked rather than assuming only one was.
+  absent_error: not_authenticated
+  malformed_error: not_authenticated
+  rejected_error: token_not_found
+
+responses:
+  # {"errors": ["..."]} -- bare strings in the array, not objects, per
+  # Livepeer's own schema (components.schemas.error) and every live probe.
+  error:
+    style: string_list
+    key: errors
+  resource:
+    style: bare
+  list:
+    style: bare
+
+resources:
+  Asset:
+    id:
+      # Livepeer's own schema example ("09F8B46C-61A0-4254-9875-F71F4C605BC7")
+      # is UUID-shaped but rendered in uppercase, which is not the canonical
+      # lowercase form -- opaque is the honest style rather than folding the
+      # case to claim a stricter guarantee than the one worked example this
+      # Recipe has ever seen actually shows.
+      style: opaque
+    fields:
+      name:
+        type: string
+      playbackId:
+        type: string
+      # Genuinely absent rather than null_when_unset on a freshly requested
+      # upload -- Livepeer's own schema gives no worked example showing
+      # whether these are sent as null or left out before anything has
+      # happened, the same gap bunny/recipe.yaml states for its own
+      # just-created video's unset fields, and this Recipe does not claim
+      # the one it did not see either.
+      playbackUrl:
+        type: string
+      downloadUrl:
+        type: string
+      # Milliseconds -- Livepeer's own words: "Timestamp (in milliseconds)".
+      createdAt:
+        type: timestamp_ms
+      size:
+        type: integer
+      # uploading, waiting, processing, ready, failed, deleting, deleted --
+      # the full enum this Recipe exists to carry. A freshly requested
+      # upload starts here, at "uploading": nothing has been sent yet.
+      status_phase:
+        type: string
+        default: uploading
+        in: status
+        as: phase
+      status_updatedAt:
+        type: timestamp_ms
+        in: status
+        as: updatedAt
+      status_progress:
+        type: number
+        null_when_unset: true
+        in: status
+        as: progress
+      status_errorMessage:
+        type: string
+        null_when_unset: true
+        in: status
+        as: errorMessage
+      # url, recording, directUpload, clip -- how this asset came to exist.
+      source_type:
+        type: string
+        default: directUpload
+        in: source
+        as: type
+      videoSpec_duration:
+        type: number
+        in: videoSpec
+        as: duration
+      videoSpec_format:
+        type: string
+        in: videoSpec
+        as: format
+
+routes:
+  - method: GET
+    path: /api/asset
+    resource: Asset
+    operation: list
+
+  - method: GET
+    path: /api/asset/{id}
+    resource: Asset
+    operation: get
+
+  # 200, not 201 -- see the header. The envelope is not this resource's
+  # ordinary bare shape: {url, tusEndpoint, asset, task}, all four required
+  # by Livepeer's own schema, with the created Asset nested under "asset"
+  # rather than answered bare the way GET does.
+  - method: POST
+    path: /api/asset/request-upload
+    resource: Asset
+    operation: create
+    status: 200
+    envelope:
+      style: wrapped
+      key: asset
+    fields:
+      # Livepeer's own schema examples, quoted verbatim -- these are
+      # per-request signed tokens on the real API and fixed values here,
+      # which is what makes this case doc-sourced rather than observed.
+      url: "https://origin.livepeer.com/api/asset/upload/direct?token=eyJhbGciOiJIUzI1NiJ9.eyJtc2ciOiJoZWxsbyBoYWNrZXIsIHRoZXJlJ3Mgbm90aGluZyBmb3IgeW91IGhlcmUg8J-YhiJ9.1YDjmXsqLcgNyMSzT4kXl_kIni46_EuGX_xfqmC7e0Q"
+      tusEndpoint: "https://origin.livepeer.com/api/asset/upload/tus?token=eyJhbGciOiJIUzI1NiJ9.eyJtc2ciOiJoZWxsbyBoYWNrZXIsIHRoZXJlJ3Mgbm90aGluZyBmb3IgeW91IGhlcmUg8J-YhiJ9.1YDjmXsqLcgNyMSzT4kXl_kIni46_EuGX_xfqmC7e0Q"
+      task.id: 34d7618e-fd42-4798-acf5-19504616a11e
+
+errors:
+  not_authenticated:
+    status: 401
+    headers:
+      Content-Type: application/json; charset=utf-8
+    message: request is not authenticated
+
+  # Tied to the exact fixture credential this Recipe's own cases send -- a
+  # different wrong token echoes a different fragment. See the header.
+  token_not_found:
+    status: 401
+    headers:
+      Content-Type: application/json; charset=utf-8
+    message: "no token junktoken12345 found"
+
+fixtures:
+  empty: {}
+
+  # A freshly requested upload: nothing has been sent yet, so nothing beyond
+  # id, name and the phase is populated. Not observed -- no account exists to
+  # request one.
+  uploading:
+    Asset:
+      - id: 09F8B46C-61A0-4254-9875-F71F4C605BC7
+        name: filename.mp4
+        status_phase: uploading
+
+  # A finished asset. Every value here is a field's own "example:" in
+  # Livepeer's schema, cited rather than observed -- see the header for why
+  # playbackUrl and downloadUrl embed ids that do not agree with each other
+  # or with this record's own id.
+  account:
+    Asset:
+      - id: 09F8B46C-61A0-4254-9875-F71F4C605BC7
+        name: filename.mp4
+        playbackId: eaw4nk06ts2d0mzb
+        playbackUrl: "https://livepeercdn.com/asset/ea03f37e-f861-4cdd-b495-0e60b6d753ad/index.m3u8"
+        downloadUrl: "https://livepeercdn.com/asset/eaw4nk06ts2d0mzb/video/download.mp4"
+        createdAt: 1587667174725
+        size: 84934509
+        status_phase: ready
+        status_updatedAt: 1587667174725
+        source_type: directUpload
+        videoSpec_duration: 23.8328
+        videoSpec_format: mp4
+
+conformance:
+  - name: no credential at all is refused, in plain prose
+    source: https://livepeer.studio/api/asset
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/asset
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        errors:
+          - request is not authenticated
+
+  - name: a well-formed but wrong bearer token gets a different sentence, echoing itself back
+    source: https://livepeer.studio/api/asset
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/asset
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors:
+          - no token junktoken12345 found
+
+  - name: a header with no Bearer prefix is treated as though nothing were sent
+    source: https://livepeer.studio/api/asset
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/asset
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        errors:
+          - request is not authenticated
+
+  - name: a real id-addressed route is gated by the identical check
+    source: https://livepeer.studio/api/asset/00000000-0000-0000-0000-000000000000
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/asset/00000000-0000-0000-0000-000000000000
+    expect:
+      status: 401
+      body:
+        errors:
+          - request is not authenticated
+
+  - name: the create route is gated by the identical check too
+    source: https://livepeer.studio/api/asset/request-upload
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/asset/request-upload
+      json:
+        name: test
+    expect:
+      status: 401
+      body:
+        errors:
+          - request is not authenticated
+
+  - name: a well-formed wrong credential beats routing -- an unrouted path still answers about the token
+    # The sharper half of the split this Recipe's header describes. Fully
+    # organic: this runtime checks the credential before the router by
+    # default, which happens to be exactly this host's own behaviour for a
+    # Bearer-shaped credential.
+    source: https://livepeer.studio/api/totally-bogus-endpoint-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/totally-bogus-endpoint-xyz
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors:
+          - no token junktoken12345 found
+
+  - name: and the same is true of a wrong method on a real path
+    source: https://livepeer.studio/api/asset
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/asset
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors:
+          - no token junktoken12345 found
+
+  - name: requesting an upload answers two objects at once, the asset at status uploading
+    source: https://raw.githubusercontent.com/livepeer/studio/master/packages/api/src/schema/api-schema.yaml
+    fixture: empty
+    request:
+      method: POST
+      path: /api/asset/request-upload
+      headers:
+        Authorization: Bearer cauldron-livepeer-fixture-key-0000000000000000
+      json:
+        name: filename.mp4
+    expect:
+      status: 200
+      body:
+        "asset.name": filename.mp4
+        "asset.status.phase": uploading
+        "task.id": 34d7618e-fd42-4798-acf5-19504616a11e
+      matches:
+        url: "^https://"
+        tusEndpoint: "^https://"
+      absent:
+        - "asset.size"
+        - "asset.playbackUrl"
+        - "asset.downloadUrl"
+        - "asset.videoSpec"
+
+  - name: polling the same id once finished shows the phase Livepeer's own words assign it
+    source: https://raw.githubusercontent.com/livepeer/studio/master/packages/api/src/schema/api-schema.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /api/asset/09F8B46C-61A0-4254-9875-F71F4C605BC7
+      headers:
+        Authorization: Bearer cauldron-livepeer-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        status.phase: ready
+        size: 84934509
+        videoSpec.duration: 23.8328
+        videoSpec.format: mp4
+
+  - name: listing answers a bare array, the same as every other envelope on this host is not
+    source: https://raw.githubusercontent.com/livepeer/studio/master/packages/api/src/schema/api-schema.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /api/asset
+      headers:
+        Authorization: Bearer cauldron-livepeer-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].name": filename.mp4
+        "[0].status.phase": ready
+      absent:
+        - data
+        - assets
+        - results

@@ -1076,7 +1076,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**284 more listings across 181 Recipes declare no paging at all**, and the
+**290 more listings across 185 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1180,7 +1180,7 @@ transfers alone, and say so in the header.
 
 | Provider | Why |
 |---|---|
-| AWS Cognito | The SDK is the API, and the token lifecycle is the whole integration |
+| ~~AWS Cognito~~ | Shipped as `recipes/cognito`. Sharpest finding: **a pool id with the wrong region baked in is indistinguishable from one that never existed** -- the same `ResourceNotFoundException` sentence word for word, differing only in the id echoed back. A Cognito pool id carries its region in the first half, so the one thing the caller needs to know is the one thing the response declines to use. Three layers answer on that host, not two: a load balancer refuses non-POST verbs before Cognito's dispatcher runs, the dispatcher answers `UnknownOperationException` with no credential examined, and only a recognised operation reaches the credential check, which has three sentences of its own |
 | ~~Ory Kratos~~ | Shipped, and the flow object was the unusual part. The server sends you the form: a flow carries the URL to post to, the method, and the list of fields to render, so a login page is a renderer for somebody else's JSON and a hardcoded {email, password} POST works against one deployment and not the next. An expired flow is 410 and 410 is not a retry -- Ory's words are that a new flow has to be initiated. The CSRF token is a node in the same array as the visible fields, a node's `type` and its attribute's `type` are different words at different depths, and `identity.state` is documented as having no effect while still carrying an enum |
 | ~~Kinde~~ | Shipped, and the assessment it was queued for came out sharper than expected. Kinde **tells three credential failures apart under one status** -- a missing header, a bearer that is not JWT-shaped, and a JWT whose kid was never issued -- which is the first Recipe here to use all three of the credential verdicts the runtime learned this week. Auth resolves before routing, confirmed on `kinde.kinde.com`, Kinde's own tenant. The finding that was not anticipated is the contrast inside one hostname: the management API answers in rich JSON and `POST /oauth2/token`, the surface that exists to handle credentials, collapses every malformed request into ten bytes of plain text -- `not_found`. On the per-customer-hostname question this was grouped to answer, Kinde avoids the failure the Make Recipe records |
 | ~~Persona~~ | Shipped. completed is not approved, needs_review is neither, and nothing is at the top level because it is JSON:API |
@@ -1194,7 +1194,7 @@ transfers alone, and say so in the header.
 | ~~Backblaze B2~~ | Shipped, and the row was right about where to look. Deleting a file brings back an older one -- Backblaze's words are that the most recent older version becomes the current version -- so delete-then-read is a 200 and stale bytes rather than a 404. There is no overwrite either, so the S3 habit of writing a key to replace it accumulates billed copies. A hide is a version with its own id, the action enum is documented open, the base URL is data and comes back from authorize, and part sizes are quoted strings beside a contentLength that is a number |
 | ~~Uploadcare~~ | Shipped. A file exists before it is stored and unstored files are deleted after twenty-four hours, so the same code works on one project and loses files on another; a removed file still answers 200 with everything intact |
 | ~~ImageKit~~ | Shipped, and the assessment came out as an absence. **There is no state field on a File because there is no state**: transformation happens at request time on the CDN edge, so nothing is ever pending and there is nothing to poll -- which is a real answer beside Transloadit's queue and Bunny's encoder rather than a missing one. It does have exactly one asynchronous job, and it is modelled for the contrast: a purge returns `{"requestId"}` with no status, and a second endpoint takes that same id and answers `Pending` or `Completed`. Its credential failures split by **status** rather than by wording -- 401 for absent and for a wrong scheme, 403 for a well-formed Basic credential naming a key nobody issued. No description exists to fingerprint: the documentation is a client-rendered application curl cannot reach, which is the dead end this backlog already recorded, so the source is the generated SDK's TypeScript interfaces |
-| Livepeer | Assess — streams and recordings, asynchronous throughout |
+| ~~Livepeer~~ | Shipped, and it gives the sharpest version of this collection's create-returns-what question. An upload request hands back **two statuses that both look authoritative and are not about the same thing**: the created Asset at phase `uploading`, and a separate `task.id` answering to a different vocabulary entirely. They share two words and disagree about the important one -- a caller polling the task and reading `completed` has learned nothing about the asset, whose terminal word is `ready` and is never `completed`. Also live: an unrouted path with no Authorization header 404s, and the identical path with a well-formed wrong bearer 401s naming the token back, so which layer answers depends on the **shape** of what was presented rather than on whether anything was |
 
 ### Data and search
 
@@ -1493,6 +1493,12 @@ than a client for its API.
 | JustCall | Nothing under any spelling. Its own OpenAPI contradicts itself about whether a list returns an array, which is not a document anyone would generate a client from |
 | CloudTalk | Nothing, which fits a vendor whose two hosts disagree with each other about credential granularity and routing order |
 | Adapty | Nothing on npm. Its published SDKs are for iOS, Android and React Native -- the platforms where a paywall lives -- and the server API this Recipe models is called from a backend that installs none of them |
+| Appsmith | `appsmith` on npm is a **security holding package**, version 0.0.1-security -- a reserved name with no code, the third in this collection after Fireworks and Baserow. Fitting for a product whose public API this Recipe found to be administrative only |
+| Budibase | `budibase` on npm is the **CLI**: it installs and runs Budibase. This Recipe describes the public API a caller reaches from outside an instance, which is the same distinction the n8n and NocoDB rows draw |
+| SavvyCal | Nothing under any spelling, on either registry. Its API is small and recent, and the integrations that use it are written directly |
+| Ayrshare | Nothing, which is unsurprising for a product whose whole value is one call to several networks -- there is little for a client library to abstract |
+| Postscript | Nothing. Its callers are Shopify apps, which reach it through Shopify's own tooling rather than through a published client |
+| Papaya Global | `papaya` on npm is a **dependency-injection container**, unrelated. Nothing exists under the company's own name either, which fits this Recipe's finding that the only reachable API is a payment-disbursement product rather than the employment one the name suggests |
 | Zapier | `zapier-platform-core` is the SDK for **building** an integration that Zapier runs, not for calling Zapier. Same shape as the Pipedream row: a project holding it is a thing Zapier invokes rather than a thing that invokes Zapier, so the emulator would intercept nothing |
 | n8n | Installing `n8n` means **running n8n**, not calling it, and `n8n-workflow` is its own base code. The public API this Recipe describes is called by the operator of an n8n instance, from outside it, and nothing on either registry represents that |
 | Worldpay | `worldpay` on npm was last published in **2014**, at version 0.0.4, against the old worldpay.com endpoints. This Recipe describes Worldpay Access (`access.worldpay.com`) with its versioned vendor content types, which did not exist then. A package that resolves and targets a retired API is worse than none: it would map a modern integration to an emulator of something else |
@@ -1556,7 +1562,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Seventy-seven Recipes send at least one identifier as a number now, and each
+Seventy-eight Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

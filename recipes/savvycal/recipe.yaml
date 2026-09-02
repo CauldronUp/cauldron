@@ -1,0 +1,792 @@
+# SavvyCal Recipe for Cauldron
+#
+# This task's brief put SavvyCal beside two Recipes already in this
+# collection, Calendly and Cal.com, and asked what SavvyCal does differently
+# with the one fact every scheduling API has to represent: a meeting that
+# gets cancelled. Read alongside recipes/calendly/recipe.yaml and
+# recipes/calcom/recipe.yaml, the three land in three different places:
+#
+#   - Calendly's scheduled_event carries a flat "status" of exactly two
+#     values, active or canceled, and nothing else -- no timestamp for when,
+#     no field for why.
+#   - Cal.com's booking carries four values (accepted, pending, cancelled,
+#     rejected) plus one nullable cancellationReason, so a cancelled booking
+#     at least says why but never when.
+#   - SavvyCal's event carries an eight-value state (confirmed, canceled,
+#     awaiting_reschedule, awaiting_checkout, checkout_expired,
+#     awaiting_approval, declined, tentative) -- more than either of the
+#     other two -- and, separately, TWO independent nullable-timestamp pairs
+#     neither of them has at all: canceled_at + cancel_reason, and
+#     rescheduled_at + reschedule_reason + original_start_at + original_end_at.
+#     SavvyCal is the only one of the three that keeps not just what
+#     happened but when it happened and what the record looked like before.
+#     Source: https://developers.savvycal.com/api/schemas/event, whose own
+#     worked example gives every one of these fields a concrete null on an
+#     active, never-touched meeting -- read alongside
+#     https://developers.savvycal.com/api/schemas/canceleventrequest, whose
+#     only field is cancel_reason, and
+#     https://developers.savvycal.com/api/schemas/eventcanceledwebhook.
+#
+# The task also asked for the record of a booking cancelled by one party,
+# specifically. SavvyCal's own webhook catalogue answers this more precisely
+# than either Calendly's invitee.canceled or Cal.com's booking.cancelled:
+# it fires two DIFFERENT, separately-schemed events for two different facts.
+# event.canceled (schema: eventcanceledwebhook) means the event itself is
+# off -- canceled_at gets stamped on the Event record and state becomes
+# "canceled" for every attendee. event.attendee.canceled (schema:
+# eventattendeecanceledwebhook) is a different payload shape entirely: a
+# nested {"attendee": {...}, "event": {...}} pair, and its own worked example
+# shows the *event* untouched (canceled_at still null in the "event" half of
+# that same payload) while ONE named attendee is reported to have withdrawn.
+# In a group session (is_group_session: true, maximum_group_size > 1) one
+# invitee dropping out and the whole meeting being called off are not the
+# same fact, and SavvyCal is the one of these three providers whose own
+# schema says so with two distinct event types rather than one. This
+# Recipe does not seed a fixture demonstrating the per-attendee case,
+# because no worked example anywhere in SavvyCal's reference gives
+# attendees[].response_status a documented value for "this person dropped
+# out" -- inventing one would be exactly the fabrication Step 3 forbids --
+# so the finding is recorded here, cited to the two webhook schema pages,
+# rather than served as a fixture this Recipe cannot back.
+#
+# What create returns, and whether it carries state -- the group's other
+# question -- has a blunt answer for SavvyCal: yes, maximally. POST
+# /v1/links/{link_id}/events answers with the same SingleEventResponse shape
+# GET does, unwrapped, carrying the full eight-value state on the record from
+# the moment it exists. That is the opposite pole from Whereby, this group's
+# control, whose POST /v1/meetings answers a flat object with "no state, no
+# status and no phase anywhere in it" (see recipes/whereby/recipe.yaml).
+# Cancelling does not delete, either, which is the finding Cal.com's own
+# Recipe already made about its booking: the record persists, state becomes
+# canceled, and every attendee is still there to be read back.
+#
+# Credentials, checked live against api.savvycal.com with no account and no
+# key ever created: no Authorization header, a header with no "Bearer "
+# prefix at all, "Bearer " with nothing after it, a syntactically fine but
+# wrong bearer token, and even an entirely different scheme (Basic) all
+# answered the byte-identical body -- {"error":"Unauthenticated"}'s plain-text
+# cousin, 15 bytes, text/plain -- on every one of five distinct credential
+# shapes tried against the same route. Nothing here tells absent from
+# malformed from rejected; auth.absent_error and auth.malformed_error both
+# name the one error entry this Recipe declares, and rejected_error is left
+# unset so it falls through to the same message, which is the honest default
+# for a provider that never told the three apart in the first place.
+#
+# Routing order is the sharpest live finding, and it needed auth.after_routing
+# to reproduce at all. A path this Recipe has never heard of --
+# /v1/no-such-route-xyz -- and a real path with the wrong method -- PATCH and
+# DELETE on /v1/links, tried separately -- all answered the identical 404:
+# not this API's own JSON shape, but SavvyCal's marketing site's generic
+# "Whoops, this page was not found." page (an Inertia/Phoenix app, ~14KB of
+# HTML, a fresh CSRF token and script nonce on every single response). No
+# credential was ever examined for any of these three requests, with or
+# without one presented -- confirmed by sending the unrouted path both with
+# no Authorization header and with a wrong bearer token and getting the same
+# 404 either way. Only a request whose path AND method match a route this
+# API actually has reaches the credential gate; everything else falls
+# straight through to the surrounding web application's own 404, the same
+# way a request to a path Rails never routes at all falls past Rootly's own
+# authentication check in recipes/rootly/recipe.yaml. Cauldron's own
+# unknown_route and method_not_allowed are both reserved names the runtime
+# fills in automatically once auth.after_routing is set (see
+# internal/runtime/handler.go), and this Recipe points both at the identical
+# entry -- the same "wrong method looks exactly like no route at all"
+# collapse recipes/turso/recipe.yaml already states for a different provider
+# -- because that is what was actually watched happen on PATCH and on DELETE
+# alike. The real body cannot be reproduced byte for byte: it carries a fresh
+# CSRF token and script nonce on every response, is roughly 14KB of HTML, and
+# links a CDN-hosted stylesheet and script bundle. This Recipe serves only
+# the one sentence a person actually reads on that page -- "Whoops, this page
+# was not found." -- as literal text with the real Content-Type
+# (text/html; charset=utf-8) and the real status, and says so here rather
+# than pretending the simplification is the whole page.
+#
+# One inconsistency inside SavvyCal's own published reference, found by
+# reading three schema pages side by side: EventListResponse and
+# LinkListResponse both page the same way, cursor-based, nested under a
+# sibling "metadata" object -- {"entries": [...], "metadata": {"after",
+# "before", "limit"}} -- confirmed by both schemas' own worked examples. But
+# LinkSlotListResponse, the time-slot listing at GET /v1/links/{id}/slots, is
+# not a wrapped envelope of that shape or any shape: its own worked example
+# is a bare top-level JSON array, [{"start_at", "end_at", ...}, ...], with no
+# metadata and no cursor at all. Three list endpoints, two envelopes. This
+# Recipe does not route get-link-slots -- see the fidelity gaps -- but the
+# inconsistency is worth stating on its own, the same way this collection
+# already states Fireworks answering two incompatible envelopes on two halves
+# of one host.
+#
+# Link.state carries a third value neither comparison provider's nearest
+# field has: active, pending, or disabled (SingleLinkResponse's own schema
+# example: "state": "active"). Calendly's nearest field, event_type.active,
+# is a plain boolean; Cal.com has no equivalent field on its event_type at
+# all. What "pending" means for a scheduling link, and whether a pending or
+# disabled link still appears in an ordinary listing the way Calendly's
+# inactive event type does, is not demonstrated by any worked example this
+# Recipe found -- stated here as an open question, not served as an answer.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no OAuth token was ever requested,
+#     guessed or used. Every 200 below is read from developers.savvycal.com's
+#     published schema and operation pages and carries no verified date; the
+#     credential and routing cases were struck live with no credential at
+#     all and carry today's date.
+#   - developers.savvycal.com is a Docusaurus site built with
+#     docusaurus-openapi-docs. Its schema pages (/api/schemas/*) render
+#     server-side and were read directly; its operation pages
+#     (/api/list-events, /api/cancel-event, and the rest) render their
+#     request/response examples client-side in React and could not be read
+#     without executing JavaScript, so this Recipe's routes carry methods and
+#     paths confirmed from those pages' server-rendered sidebar navigation
+#     and heading badges, but field values are sourced from the schema pages
+#     alone.
+#   - Of roughly forty documented Event fields this Recipe declares about
+#     twenty. attendees[].fields (custom per-attendee form answers),
+#     conferencing (join_url, meeting_id, instructions, type), payment
+#     (amount_total, state, url), location_settings, poll,
+#     description_settings and scheduler/organizer as fields distinct from
+#     the attendees list are all real, documented fields and none are typed
+#     here.
+#   - Link.scope (the team/workspace a scoped link belongs to) and
+#     Link.fields (its own custom-field definitions) are documented and not
+#     modelled: scope is nullable on a personal link and populated on a team
+#     one, and this format's field-nesting has no way this Recipe found to
+#     express "nest under this object, but only when it is not null."
+#   - create-scope-scheduling-link, delete-scheduling-link,
+#     duplicate-scheduling-link, toggle-scheduling-link,
+#     update-scheduling-link and get-link-slots are real, documented routes
+#     and none of them are here. This Recipe is scoped to what the group's
+#     question turns on: what a booking's create answers with, and what its
+#     cancellation leaves behind.
+#   - POST /v1/events/{id}/cancel is modelled as Cauldron's update operation
+#     against a fixture event that is already cancelled, sending the same
+#     cancel_reason it already carries -- the same honest compromise
+#     recipes/talkjs/recipe.yaml states for its own PUT-as-update route.
+#     Cauldron's update merges only the fields a request body actually sends,
+#     and CancelEventRequest sends cancel_reason alone; there is no
+#     mechanism here for one submitted field to also flip state to "canceled"
+#     and stamp canceled_at the way SavvyCal's real endpoint does server-side.
+#     This route proves the record's shape once cancelled, not the live
+#     transition into it.
+#   - A get on a real route with an id nothing seeds (GET
+#     /v1/events/{bad-id}, credentialed) is left to Cauldron's own generic
+#     resource_missing fallback rather than a SavvyCal-specific shape: the
+#     operation pages' response tabs name only the words "Not Found" for this
+#     status, with no worked body anywhere this Recipe could read, and a
+#     guessed JSON shape would be exactly the fabrication Step 3 forbids.
+#   - Webhook signing is not declared. No page under developers.savvycal.com
+#     -- not the Webhooks category, not CreateWebhookRequest, whose only
+#     field is url -- names a signature header, a secret, or an HMAC scheme
+#     anywhere. That silence is recorded as an absence in what was published,
+#     not a claim that deliveries go out unsigned.
+#
+# The token below is a fixture and belongs to no account.
+
+recipe: savvycal
+capability: scheduling
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developers.savvycal.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-savvycal-fixture-token-0000000000000000
+  after_routing: true
+  # Five credential shapes, struck live, answered the identical body -- see
+  # the header. Naming both fields the same entry is the finding, the same
+  # trick recipes/whereby/recipe.yaml uses for its own no-prefix case.
+  absent_error: authentication_error
+  malformed_error: authentication_error
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: metadata.after
+  resource:
+    style: bare
+  error:
+    style: text
+
+resources:
+  link:
+    collection: entries
+    id:
+      # "link_01J5KC2G3MHPCECSQ6KM6FMDPC" in SavvyCal's own schema example --
+      # a fixed "link_" prefix ahead of what reads as a ULID, though no page
+      # this Recipe read states a format for it beyond "string".
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+        required: true
+      description:
+        type: string
+        null_when_unset: true
+      private_name:
+        type: string
+        null_when_unset: true
+      default_duration:
+        type: integer
+        default: 30
+      # A bare list of integers (minutes), e.g. [15, 30, 45] -- not modelled
+      # field by field, the same way firehydrant/recipe.yaml's milestones is
+      # a raw list rather than a set of declared sub-fields.
+      durations:
+        type: list
+      increment:
+        type: integer
+        default: 15
+      # active, pending, disabled -- see the header. Calendly's nearest
+      # field is a plain boolean; Cal.com's event_type has no equivalent at
+      # all.
+      state:
+        type: string
+        default: active
+
+  event:
+    collection: entries
+    id:
+      # "event_01KKGY70MFPCECSQ6KM6FMDPC3" in SavvyCal's own schema example,
+      # the same fixed-prefix-plus-ULID shape as link and attendee ids.
+      style: opaque
+    fields:
+      summary:
+        type: string
+      description:
+        type: string
+        null_when_unset: true
+      location:
+        type: string
+        null_when_unset: true
+      additional_info:
+        type: string
+        null_when_unset: true
+      duration:
+        type: integer
+        default: 30
+      start_at:
+        type: datetime
+        required: true
+      end_at:
+        type: datetime
+        required: true
+      # Null on an event never rescheduled -- SavvyCal's own worked example
+      # gives both a concrete null on an active meeting. Neither Calendly's
+      # scheduled_event nor Cal.com's booking carries a "what this looked
+      # like before" pair at all.
+      original_start_at:
+        type: datetime
+        null_when_unset: true
+      original_end_at:
+        type: datetime
+        null_when_unset: true
+      # confirmed, canceled, awaiting_reschedule, awaiting_checkout,
+      # checkout_expired, awaiting_approval, declined, tentative -- eight
+      # values, documented on Event's own schema page. Compare Calendly's
+      # two-value status and Cal.com's four-value one; see the header.
+      state:
+        type: string
+        default: confirmed
+      # Null unless this event has been cancelled; stamped with cancel_reason
+      # at the same moment, per CancelEventRequest's own single field.
+      canceled_at:
+        type: datetime
+        null_when_unset: true
+      cancel_reason:
+        type: string
+        null_when_unset: true
+      rescheduled_at:
+        type: datetime
+        null_when_unset: true
+      reschedule_reason:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: datetime
+      url:
+        type: string
+      is_group_session:
+        type: boolean
+        default: false
+      maximum_group_size:
+        type: integer
+        default: 1
+      metadata:
+        type: map
+        default: {}
+      # Raw, per attendee: id, display_name, email, first_name, last_name,
+      # is_organizer, marketing_opt_in, phone_number, response_status,
+      # time_zone, fields. Not declared field by field -- see the header --
+      # the same choice firehydrant/recipe.yaml makes for its own milestones
+      # list.
+      attendees:
+        type: list
+      # The scheduling link this event was booked against, nested the same
+      # way Cal.com nests an attendee under a booking -- see
+      # recipes/calcom/recipe.yaml's attendeeEmail field for the identical
+      # mechanism.
+      link_id:
+        type: string
+        in: link
+        as: id
+        default: link_01J5KC2G3MHPCECSQ6KM6FMDPC
+      link_name:
+        type: string
+        in: link
+        as: name
+        default: 30 Minute Meeting
+      link_slug:
+        type: string
+        in: link
+        as: slug
+        default: 30min
+
+routes:
+  - method: GET
+    path: /v1/links
+    resource: link
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /v1/links/{id}
+    resource: link
+    operation: get
+
+  - method: GET
+    path: /v1/events
+    resource: event
+    operation: list
+    pagination:
+      style: cursor
+      limit: 25
+
+  - method: GET
+    path: /v1/events/{id}
+    resource: event
+    operation: get
+
+  - method: POST
+    path: /v1/links/{link_id}/events
+    resource: event
+    operation: create
+    scope: [link_id]
+
+  # See the header: modelled as update against an already-cancelled fixture,
+  # not a live state transition.
+  - method: POST
+    path: /v1/events/{id}/cancel
+    resource: event
+    operation: update
+
+errors:
+  # The one sentence every credential shape answered live -- see the header.
+  authentication_error:
+    status: 401
+    message: Unauthenticated
+    headers:
+      Content-Type: "text/plain; charset=utf-8"
+
+  # SavvyCal's own marketing-site 404, collapsed to its one invariant,
+  # human-legible sentence -- see the header for what this leaves out. Named
+  # for both of Cauldron's reserved routing-miss entries because a wrong
+  # method on a real path answered the identical body an unrouted path did,
+  # struck live both ways.
+  unknown_route:
+    status: 404
+    message: "Whoops, this page was not found."
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+
+  method_not_allowed:
+    status: 404
+    message: "Whoops, this page was not found."
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    link:
+      - id: link_01J5KC2G3MHPCECSQ6KM6FMDPC
+        name: 30 Minute Meeting
+        slug: 30min
+        description: A brief meeting to discuss your needs
+        private_name: Quick sync with prospects
+        default_duration: 30
+        durations: [15, 30, 45]
+        increment: 15
+        state: active
+
+    event:
+      # SavvyCal's own schema example, quoted in the header: an active
+      # meeting, never rescheduled, never cancelled. Every nullable pair on
+      # this record is genuinely null.
+      - id: event_01KKGY70MFPCECSQ6KM6FMDPC3
+        summary: 30 Minute Meeting with John Doe
+        duration: 30
+        start_at: "2024-01-20T14:00:00Z"
+        end_at: "2024-01-20T14:30:00Z"
+        state: confirmed
+        created_at: "2024-01-15T10:30:00Z"
+        url: https://savvycal.com/events/event_01KKGY70MFPCECSQ6KM6FMDPC3
+        is_group_session: false
+        maximum_group_size: 1
+        metadata: {}
+        attendees:
+          - id: attendee_01J5KCPP3XKRFGT8V2WD9Y8H6X
+            display_name: John Doe
+            email: john@example.com
+            first_name: John
+            last_name: Doe
+            is_organizer: true
+            marketing_opt_in: false
+            phone_number: null
+            response_status: accepted
+            time_zone: America/New_York
+            fields: []
+          - id: attendee_01J5KCRR5ZKRFGT8V2WD9Y8H6X
+            display_name: Jane Smith
+            email: jane@example.com
+            first_name: Jane
+            last_name: Smith
+            is_organizer: false
+            marketing_opt_in: true
+            phone_number: "+1234567890"
+            response_status: accepted
+            time_zone: America/New_York
+            fields: []
+
+      # Cancelled. cancel_reason is CancelEventRequest's own single worked
+      # example value ("Schedule conflict"); canceled_at is this Recipe's
+      # own fixture, not an observed timestamp -- no worked example anywhere
+      # in SavvyCal's reference gives a cancelled event a concrete
+      # canceled_at value to cite. Still fully readable: every attendee is
+      # still here, the way Cal.com's own cancelled-booking fixture stays
+      # readable in recipes/calcom/recipe.yaml.
+      - id: event_01KKGY7CANCELPCECSQ6KM6F
+        summary: Design review with Priya Anand
+        duration: 30
+        start_at: "2024-01-22T16:00:00Z"
+        end_at: "2024-01-22T16:30:00Z"
+        state: canceled
+        canceled_at: "2024-01-21T09:12:00Z"
+        cancel_reason: Schedule conflict
+        created_at: "2024-01-18T08:00:00Z"
+        url: https://savvycal.com/events/event_01KKGY7CANCELPCECSQ6KM6F
+        is_group_session: false
+        maximum_group_size: 1
+        metadata: {}
+        attendees:
+          - id: attendee_01J5KCPP3XKRFGT8V2WD9Y8H70
+            display_name: Priya Anand
+            email: priya@example.com
+            first_name: Priya
+            last_name: Anand
+            is_organizer: false
+            marketing_opt_in: false
+            phone_number: null
+            response_status: accepted
+            time_zone: America/Chicago
+            fields: []
+
+# Every case below carries source. A verified date means this Recipe called
+# api.savvycal.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from
+# developers.savvycal.com's published schema pages and never called -- no
+# account was ever created and no OAuth token was ever requested, guessed or
+# used.
+conformance:
+  - name: no credential at all is refused with the same sentence on every route
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/links
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: '^Unauthenticated$'
+
+  - name: a wrong bearer token answers the identical body
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/links
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body_matches: '^Unauthenticated$'
+
+  - name: a header with no Bearer prefix at all reads the same way
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/links
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body_matches: '^Unauthenticated$'
+
+  - name: and so does Bearer with nothing after it
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/links
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body_matches: '^Unauthenticated$'
+
+  - name: even a different scheme entirely answers the same body
+    # Authorization Basic, struck live -- not merely a wrong bearer token but
+    # a wrong scheme altogether, and still the identical sentence.
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/links
+      headers:
+        Authorization: "Basic amFuazpqdW5r"
+    expect:
+      status: 401
+      body_matches: '^Unauthenticated$'
+
+  - name: a POST with no credential is refused before its body is examined
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/links/link_01J5KC2G3MHPCECSQ6KM6FMDPC/events
+    expect:
+      status: 401
+      body_matches: '^Unauthenticated$'
+
+  - name: an unrouted path answers the marketing site's 404, not this API's
+    source: https://api.savvycal.com/v1/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/no-such-route-xyz
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body_matches: 'Whoops, this page was not found\.'
+
+  - name: and the identical 404 answers with a wrong credential too
+    # Struck live: the router never reaches the credential at all for a path
+    # it has no route for, so a wrong bearer token changes nothing.
+    source: https://api.savvycal.com/v1/no-such-route-xyz
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/no-such-route-xyz
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 404
+      body_matches: 'Whoops, this page was not found\.'
+
+  - name: a wrong method on a real path answers the same 404, not a 405
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/links
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=utf-8"
+      body_matches: 'Whoops, this page was not found\.'
+
+  - name: a second wrong method confirms it, not a one-off
+    source: https://api.savvycal.com/v1/links
+    verified: "2026-09-01"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /v1/links
+    expect:
+      status: 404
+      body_matches: 'Whoops, this page was not found\.'
+
+  - name: creating an event returns the full record, state included
+    # Contrast recipes/whereby/recipe.yaml's create, whose flat response
+    # carries "no state, no status and no phase anywhere in it" -- this is
+    # the opposite pole. Values reused from Event's own schema example
+    # rather than a dedicated create-response example, which SavvyCal's
+    # docs site does not render server-side -- see the header.
+    source: https://developers.savvycal.com/api/schemas/singleeventresponse
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/links/link_01J5KC2G3MHPCECSQ6KM6FMDPC/events
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+      json:
+        start_at: "2024-01-20T14:00:00Z"
+        end_at: "2024-01-20T14:30:00Z"
+    expect:
+      status: 200
+      body:
+        state: confirmed
+        "link.id": link_01J5KC2G3MHPCECSQ6KM6FMDPC
+      absent:
+        - data
+        - resource
+        - link_id
+
+  - name: a resource comes back bare, a list wraps under entries
+    source: https://developers.savvycal.com/api/schemas/eventlistresponse
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/events
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "entries[0].id": event_01KKGY70MFPCECSQ6KM6FMDPC3
+        "entries[1].state": canceled
+      absent:
+        - data
+        - collection
+
+  - name: paging nests under metadata, cursor named after
+    # Compare recipes/calendly/recipe.yaml's pagination.next_page_token --
+    # a sibling object with a different name for the identical idea.
+    source: https://developers.savvycal.com/api/schemas/eventlistresponse
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/events
+      query:
+        limit: "1"
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      matches:
+        metadata.after: "."
+      absent:
+        - pagination
+        - next_page_token
+        - metadata.count
+
+  - name: cancelling does not delete, and the reason persists
+    # Modelled against an already-cancelled fixture, sending the identical
+    # cancel_reason it already carries -- see the header for why a live
+    # confirmed-to-canceled transition cannot be reproduced through
+    # Cauldron's update operation.
+    source: https://developers.savvycal.com/api/schemas/canceleventrequest
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1/events/event_01KKGY7CANCELPCECSQ6KM6F/cancel
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+      json:
+        cancel_reason: Schedule conflict
+    expect:
+      status: 200
+      body:
+        state: canceled
+        cancel_reason: Schedule conflict
+        summary: Design review with Priya Anand
+      matches:
+        canceled_at: "."
+
+  - name: a cancelled event still lists its attendee in full
+    source: https://developers.savvycal.com/api/schemas/event
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/events/event_01KKGY7CANCELPCECSQ6KM6F
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        state: canceled
+        "attendees[0].display_name": Priya Anand
+        "attendees[0].response_status": accepted
+
+  - name: an active event has no cancellation or reschedule trail at all
+    source: https://developers.savvycal.com/api/schemas/event
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/events/event_01KKGY70MFPCECSQ6KM6FMDPC3
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        state: confirmed
+        canceled_at: null
+        cancel_reason: null
+        rescheduled_at: null
+        reschedule_reason: null
+        original_start_at: null
+        original_end_at: null
+
+  - name: a link's state has a third value neither comparison provider has
+    # active, pending, disabled -- see the header. Calendly's nearest field
+    # is a boolean; Cal.com's event_type has none at all.
+    source: https://developers.savvycal.com/api/schemas/singlelinkresponse
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/links/link_01J5KC2G3MHPCECSQ6KM6FMDPC
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        state: active
+        default_duration: 30
+        durations: [15, 30, 45]
+
+  - name: a link listing wraps under entries too, the same shape as events
+    source: https://developers.savvycal.com/api/schemas/linklistresponse
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/links
+      headers:
+        Authorization: Bearer cauldron-savvycal-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "entries[0].slug": 30min
+      absent:
+        - data
