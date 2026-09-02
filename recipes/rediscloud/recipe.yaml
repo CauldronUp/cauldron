@@ -1,0 +1,603 @@
+# Redis Cloud Recipe for Cauldron
+#
+# Read alongside Neon and Tiger Data's Recipes in this collection first.
+# Redis Cloud lands at the opposite extreme from both of them on the
+# create-returns-what question: Neon's create answers with the branch AND
+# the operations that will finish it, plus a live password. Tiger Data's
+# answers with the full service record, status included, plus a one-time
+# password. Redis Cloud's create -- POST /v1/subscriptions and POST
+# /v1/subscriptions/{subscriptionId}/databases alike, checked against the
+# same published description -- answers 202 with a bare TaskStateUpdate:
+# a taskId, a status word, and nothing else required. Not the subscription,
+# not the database, not even the integer id the object will eventually
+# have. That id only appears later, inside response.resourceId, once a
+# separate GET on the task reports status processing-completed. Of the
+# three providers in this batch, Redis Cloud discloses the least at
+# creation of anything modelled anywhere in this collection: pure operation
+# id, no resource, no pending state to read at all.
+#
+# ## The two-header credential, and what this format cannot say about it
+#
+# Redis Cloud authenticates with two headers at once -- x-api-key (the
+# account key) and x-api-secret-key (a personal user key), per Redis's own
+# get-started page -- which is a credential shape this collection has very
+# little of, and Step 2a asks for exactly this: what does presenting only
+# one of the two get you? Checked live against api.redislabs.com/v1 on
+# 2026-09-02, holding no real key of either kind:
+#
+#   neither header                                -> 500, nginx's own
+#                                                      generic error page
+#   x-api-key only (any value, including empty)   -> 500, the same page
+#   x-api-secret-key only (any value)             -> 500, the same page
+#   both headers present (any values)             -> 401, a DIFFERENT
+#                                                      nginx page,
+#                                                      "Authorization
+#                                                      Required"
+#
+# Both pages are bare HTML with Content-Type: text/html -- no JSON, no
+# WWW-Authenticate, nothing Redis Cloud itself wrote. The determining fact
+# is PRESENCE, not correctness: an account key that is completely wrong
+# still reaches the 401 as long as a secret key of some kind rides beside
+# it, and a secret key that is completely wrong does the same. Half a
+# credential -- either half, it does not matter which -- is answered
+# identically to no credential at all, and only a COMPLETE pair, right or
+# wrong, reaches whatever actually checks the values. This also settled
+# the routing question for free: every one of these four states was
+# repeated against an unrouted path and against DELETE on a real path, and
+# none of the eight combinations answered anything path- or method-shaped
+# -- see the conformance cases below. Presence of both headers is checked
+# before routing, unconditionally, the same arrangement CockroachDB Cloud's
+# Recipe in this batch found for its own bearer token.
+#
+# This format has no two-header scheme; auth.scheme checks one credential's
+# VALUE and required_headers checks a second header's PRESENCE, run after
+# it, which is a design that assumes one primary credential gates
+# everything else. Redis Cloud's real behaviour does not have a primary:
+# both headers are symmetric, and only their joint presence decides
+# 500-versus-401, never either one's correctness alone. Modelled here as
+# x-api-key primary (auth.scheme: header) and x-api-secret-key as a
+# required header, this Recipe reproduces three of the four states exactly
+# -- neither present, x-api-key valid with the secret missing, and both
+# present -- but not the fourth: a WRONG x-api-key with the secret absent
+# really answers 500 live, and this Recipe's credential check settles a
+# Rejected verdict before required_headers is ever consulted, so it would
+# answer with the wrong-credential message instead. That corner is real,
+# dated, and deliberately not a conformance case, for the same reason
+# Tiger Data's Recipe in this collection declines to assert the half of
+# its own ordering that auth.after_routing cannot express: forcing it would
+# make the Recipe claim a behaviour this runtime cannot produce. It is
+# exactly the "half a credential" verdict Step 2a asks this batch to find
+# a case that strains the vocabulary, and this is that case.
+#
+# ## What a settled object looks like, once you get there
+#
+# Neither Subscription nor Database constrains its own "status" field to an
+# enumeration anywhere in Redis's published OpenAPI description -- it is
+# typed as a bare string, and the only literal value that appears anywhere
+# in the document is the worked examples' own "active". That is a real
+# absence, not an oversight in this Recipe: CockroachDB Cloud's Recipe in
+# this same batch found a five-value ClusterState.Type enum and Tiger
+# Data's found eleven documented Service statuses, both quoted verbatim
+# from their own descriptions. Redis Cloud's task has exactly that kind of
+# real, quotable enum -- status: initialized, received,
+# processing-in-progress, processing-completed, processing-error, five
+# values, one success -- but a task describes the OPERATION, not the
+# database it produces, so knowing a task finished tells a caller nothing
+# about what words the resulting object's own state might ever hold. No
+# case here can therefore say what "deleting" looks like on a subscription
+# or a database, or whether it is distinguishable from "deleted", because
+# the description never says either word about either resource.
+#
+# The eventual object is worth reading once it exists, though. Database's
+# own published example -- databaseId, name, publicEndpoint,
+# security.password -- is quoted here exactly:
+# "publicEndpoint": "redis-17571.c235866.us-east-1-1.ec2.qa-cloud.rlrcp.com:17571"
+# and, in the same object, "security": {"password": "redis123456redis", ...}.
+# A live Redis AUTH password, in plaintext, in an ordinary GET response, in
+# Redis's own documentation. This is the fixture this Recipe uses for
+# GET .../databases/{id}, unmodified.
+#
+# Subscription and database ids are plain integers -- Subscription.id and
+# Database.databaseId are both typed integer/int32 in the description, with
+# literal examples (1206, 1) rather than anything UUID-shaped. Compare
+# CockroachDB Cloud's Recipe in this batch, whose cluster ids are UUIDs
+# confirmed the same way, from the description's own worked examples rather
+# than from a live, credentialled call -- neither Recipe holds a real key
+# to call an authenticated route and see one on the wire.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - GET /v1/subscriptions/{id}/databases (list) is real and not modelled.
+#     Its response schema nests databases two levels deep -- an array of
+#     subscriptions, each carrying its own databases array, even when the
+#     path already names one subscription -- which is a shape this format's
+#     list styles do not have a vocabulary for without inventing one. A
+#     single database's GET is modelled instead, which is where the
+#     password finding above lives anyway.
+#   - DELETE /v1/subscriptions/{id} and DELETE .../databases/{id} are real
+#     and not modelled. No worked example of either response exists in the
+#     description to check a claim against.
+#   - commandType, description, timestamp, response.additionalResourceId
+#     and response.additionalInfo are real fields on TaskStateUpdate and are
+#     not modelled: none carries a worked example anywhere in the
+#     description (TaskStateUpdate itself has no "example" block at all),
+#     and Step 3 says an unmodelled field beats an invented one.
+#   - Everything about organizations, cloud accounts, networking (VPC
+#     peering, PrivateLink, Transit Gateway), ACL roles, backups, CIDR
+#     allowlists, the Fixed/Essentials product line and Data Integration
+#     (a second, entirely separate API this same description also
+#     contains) is real, documented, and out of scope for the questions
+#     this batch exists to answer.
+#   - Pagination: no evidence of any exists. Neither GET /v1/subscriptions
+#     nor GET .../databases documents a page or cursor parameter anywhere
+#     in the description, so none is declared here.
+#
+# The two headers below are fixtures and belong to no account.
+
+recipe: rediscloud
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://redis.io/docs/latest/operate/rc/api/get-started/
+  spec: https://api.redislabs.com/v1/cloud-api-docs/capi
+  spec_hash: 05286316b736b9d084516d645df08820a1472265bf0ce6dd6571998c16298a36
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: header
+  header: x-api-key
+  keys:
+    - cauldron-rediscloud-fixture-account-key-00000000
+  # See the header: absence of x-api-key is what the live host answers 500
+  # to, whether or not x-api-secret-key is present, because the live host
+  # cannot tell "neither" from "only the other one" apart either.
+  absent_error: credential_incomplete
+  rejected_error: invalid_api_credentials
+
+required_headers:
+  # Presence only, checked once x-api-key's own value has been accepted.
+  # See the header for exactly which of the live host's four states this
+  # does and does not reproduce.
+  x-api-secret-key: credential_incomplete
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  task:
+    collection: tasks
+    id:
+      style: uuid
+      field: taskId
+    fields:
+      # initialized, received, processing-in-progress, processing-completed
+      # or processing-error -- the one real, quoted enum this Recipe has for
+      # anything. See the header.
+      status:
+        type: string
+        default: initialized
+      response:
+        type: map
+        null_when_unset: true
+      # Only present on a task created under a database route -- the
+      # partition lives in the path and is not echoed in the body, the same
+      # convention as database.subscriptionId below.
+      subscriptionId:
+        type: integer
+        in: "-"
+
+  subscription:
+    collection: subscriptions
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+        required: true
+      status:
+        type: string
+        null_when_unset: true
+      deploymentType:
+        type: string
+        null_when_unset: true
+      paymentMethodId:
+        type: integer
+        null_when_unset: true
+      paymentMethodType:
+        type: string
+        null_when_unset: true
+      publicEndpointAccess:
+        type: boolean
+        default: true
+      memoryStorage:
+        type: string
+        default: ram
+      numberOfDatabases:
+        type: integer
+        default: 0
+
+  database:
+    collection: databases
+    id:
+      style: numeric
+      type: number
+      field: databaseId
+    fields:
+      # The partition lives in the path and is not repeated in the body --
+      # Database's own published example carries no subscriptionId field at
+      # all.
+      subscriptionId:
+        type: integer
+        in: "-"
+      name:
+        type: string
+        required: true
+      protocol:
+        type: string
+        default: redis
+      status:
+        type: string
+        null_when_unset: true
+      datasetSizeInGb:
+        type: number
+        null_when_unset: true
+      memoryStorage:
+        type: string
+        default: ram
+      replication:
+        type: boolean
+        default: false
+      dataPersistence:
+        type: string
+        null_when_unset: true
+      # The finding this Recipe exists for. See the header.
+      publicEndpoint:
+        type: string
+        null_when_unset: true
+      privateEndpoint:
+        type: string
+        null_when_unset: true
+      security:
+        type: map
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v1/subscriptions
+    resource: subscription
+    operation: list
+
+  - method: GET
+    path: /v1/subscriptions/{id}
+    resource: subscription
+    operation: get
+
+  # 202, a bare task, nothing about the subscription at all. See the header.
+  - method: POST
+    path: /v1/subscriptions
+    resource: task
+    operation: create
+    status: 202
+
+  - method: GET
+    path: /v1/subscriptions/{subscriptionId}/databases/{id}
+    resource: database
+    operation: get
+    scope: [subscriptionId]
+
+  # 202, a bare task again -- the identical disclosure-nothing shape POST
+  # /v1/subscriptions uses, for the resource whose eventual GET is the one
+  # that hands back a plaintext password.
+  - method: POST
+    path: /v1/subscriptions/{subscriptionId}/databases
+    resource: task
+    operation: create
+    scope: [subscriptionId]
+    status: 202
+
+  - method: GET
+    path: /v1/tasks/{id}
+    resource: task
+    operation: get
+
+errors:
+  # Real body: bare HTML, "500 Internal Server Error", Content-Type
+  # text/html, nginx's own stock page -- not anything Redis Cloud wrote.
+  # Served here as this Recipe's ordinary JSON envelope with the page's own
+  # title as the message, which is the same honest-wording-wrong-framing
+  # trade Together's Recipe in this collection makes for its own
+  # text/plain case.
+  credential_incomplete:
+    status: 500
+    message: Internal Server Error
+
+  # Real body: bare HTML, "401 Authorization Required", also nginx's own
+  # page, also not JSON. Same trade as above.
+  invalid_api_credentials:
+    status: 401
+    message: Authorization Required
+
+fixtures:
+  empty: {}
+
+  small-account:
+    subscription:
+      # Subscription's own published example, quoted field for field: id,
+      # name, status, deploymentType, paymentMethodId, publicEndpointAccess,
+      # memoryStorage, numberOfDatabases and paymentMethodType are all
+      # exactly what the schema's "example" shows.
+      - id: 1206
+        name: updated new name
+        status: active
+        deploymentType: single-region
+        paymentMethodId: 2
+        publicEndpointAccess: true
+        memoryStorage: ram
+        numberOfDatabases: 6
+        paymentMethodType: credit-card
+
+    database:
+      # Database's own published example, quoted field for field: the
+      # publicEndpoint, privateEndpoint and security.password below are
+      # exactly what the schema's "example" shows -- see the header.
+      - id: 1
+        subscriptionId: 1206
+        name: DB-RCP-2-81-7
+        protocol: redis
+        status: active
+        datasetSizeInGb: 2
+        memoryStorage: ram
+        replication: false
+        dataPersistence: snapshot-every-1-hour
+        publicEndpoint: "redis-17571.c235866.us-east-1-1.ec2.qa-cloud.rlrcp.com:17571"
+        privateEndpoint: "redis-17571.internal.c235866.us-east-1-1.ec2.qa-cloud.rlrcp.com:17571"
+        security:
+          password: redis123456redis
+          enableTls: false
+
+    task:
+      # A task that has already finished, pointing at the subscription
+      # above by its resourceId -- the only way this API ever hands back
+      # the id of what it created. No worked example of a settled
+      # TaskStateUpdate exists in the description (see the header), so
+      # only status and response.resourceId are asserted from this fixture.
+      - id: 8f14e45f-ceea-467e-bd54-9d5e58a5f1a2
+        status: processing-completed
+        response:
+          resourceId: 1206
+
+# Every case below carries source. A verified date means this exact request
+# was sent to api.redislabs.com today and this is exactly what came back;
+# its absence means the case is read from the description's own worked
+# example and no real account key exists to call it.
+conformance:
+  - name: neither header gets a 500, not a 401
+    source: https://api.redislabs.com/v1/subscriptions
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions
+    expect:
+      status: 500
+      body:
+        message: Internal Server Error
+
+  - name: the secret key alone is answered the identical 500
+    # x-api-key is what this Recipe's own credential check examines, and it
+    # is absent here regardless of what rides beside it -- which is exactly
+    # what the live host does too, checked with a junk x-api-secret-key and
+    # no x-api-key at all.
+    source: https://api.redislabs.com/v1/subscriptions
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions
+      headers:
+        x-api-secret-key: junksecret12345
+    expect:
+      status: 500
+      body:
+        message: Internal Server Error
+
+  - name: both headers present, both wrong, is a different status entirely
+    source: https://api.redislabs.com/v1/subscriptions
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions
+      headers:
+        x-api-key: junkkey12345
+        x-api-secret-key: junksecret12345
+    expect:
+      status: 401
+      body:
+        message: Authorization Required
+
+  - name: an unrouted path with no headers gets the same 500, not a 404
+    source: https://api.redislabs.com/v1/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint-xyz
+    expect:
+      status: 500
+      body:
+        message: Internal Server Error
+
+  - name: and the same unrouted path with both headers gets the 401, not a 404
+    source: https://api.redislabs.com/v1/this-is-not-a-real-endpoint-xyz
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/this-is-not-a-real-endpoint-xyz
+      headers:
+        x-api-key: junkkey12345
+        x-api-secret-key: junksecret12345
+    expect:
+      status: 401
+      body:
+        message: Authorization Required
+
+  - name: a wrong method with no headers is still the 500, not a 405
+    source: https://api.redislabs.com/v1/subscriptions
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /v1/subscriptions
+    expect:
+      status: 500
+      body:
+        message: Internal Server Error
+
+  - name: and a wrong method with both headers is still the 401, not a 405
+    source: https://api.redislabs.com/v1/subscriptions
+    verified: "2026-09-02"
+    fixture: small-account
+    request:
+      method: DELETE
+      path: /v1/subscriptions
+      headers:
+        x-api-key: junkkey12345
+        x-api-secret-key: junksecret12345
+    expect:
+      status: 401
+      body:
+        message: Authorization Required
+
+  - name: a valid account key with no secret key is the same 500 again
+    # Not struck live with this Recipe's own fixture key -- it is not a real
+    # Redis Cloud credential, so sending it would just be one more wrong
+    # value from the live host's point of view. This is required_headers
+    # doing what it is for: x-api-key's own check accepts, and the second
+    # header's absence is what this Recipe can still catch. See the header
+    # for the one live-observed combination this mechanism does not cover.
+    source: https://redis.io/docs/latest/operate/rc/api/get-started/
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+    expect:
+      status: 500
+      body:
+        message: Internal Server Error
+
+  - name: creating a subscription answers a bare task, nothing about the subscription
+    source: https://api.redislabs.com/v1/cloud-api-docs/capi
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1/subscriptions
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+        x-api-secret-key: cauldron-rediscloud-fixture-user-key-00000000
+      json:
+        name: cauldron-newsubscription
+        paymentMethod: credit-card
+        paymentMethodId: 12345
+        cloudProviders:
+          - provider: AWS
+            regions:
+              - region: us-east-1
+        databases:
+          - name: cauldron-db
+            protocol: redis
+            datasetSizeInGb: 1
+    expect:
+      status: 202
+      body:
+        status: initialized
+      absent:
+        - id
+        - name
+        - subscriptionId
+      matches:
+        taskId: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+  - name: creating a database answers the identical bare-task shape
+    source: https://api.redislabs.com/v1/cloud-api-docs/capi
+    fixture: small-account
+    request:
+      method: POST
+      path: /v1/subscriptions/1206/databases
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+        x-api-secret-key: cauldron-rediscloud-fixture-user-key-00000000
+      json:
+        name: cauldron-newdb
+        protocol: redis
+        datasetSizeInGb: 1
+    expect:
+      status: 202
+      body:
+        status: initialized
+      absent:
+        - databaseId
+        - publicEndpoint
+        - security
+
+  - name: only a settled task's own GET names the id it produced
+    source: https://api.redislabs.com/v1/cloud-api-docs/capi
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/tasks/8f14e45f-ceea-467e-bd54-9d5e58a5f1a2
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+        x-api-secret-key: cauldron-rediscloud-fixture-user-key-00000000
+    expect:
+      status: 200
+      body:
+        status: processing-completed
+        response.resourceId: 1206
+
+  - name: a settled database carries a live-looking endpoint and a plaintext password
+    source: https://api.redislabs.com/v1/cloud-api-docs/capi
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions/1206/databases/1
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+        x-api-secret-key: cauldron-rediscloud-fixture-user-key-00000000
+    expect:
+      status: 200
+      body:
+        publicEndpoint: "redis-17571.c235866.us-east-1-1.ec2.qa-cloud.rlrcp.com:17571"
+        security.password: redis123456redis
+
+  - name: a subscription listing is wrapped under subscriptions
+    source: https://api.redislabs.com/v1/cloud-api-docs/capi
+    fixture: small-account
+    request:
+      method: GET
+      path: /v1/subscriptions
+      headers:
+        x-api-key: cauldron-rediscloud-fixture-account-key-00000000
+        x-api-secret-key: cauldron-rediscloud-fixture-user-key-00000000
+    expect:
+      status: 200
+      body:
+        subscriptions[0].id: 1206
+        subscriptions[0].status: active
+      absent:
+        - data
+        - results
