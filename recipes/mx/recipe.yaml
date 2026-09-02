@@ -1,0 +1,663 @@
+# MX Recipe for Cauldron
+#
+# This Recipe is one of a group answering the same question about five bank
+# aggregators: when a connection breaks silently -- a changed password, a
+# bank-added challenge, an expired consent -- does the connection carry a
+# health state distinct from its data, and does a stale balance look any
+# different from a fresh one? See plaid/recipe.yaml and
+# truelayer/recipe.yaml, read first, for the same question asked of two
+# other providers. Where this Recipe differs from both:
+#
+#   - Plaid's credential is two headers and its failure category is a
+#     top-level field a client switches on before the code. MX's credential
+#     is HTTP Basic -- a client id and an API key, not a header pair -- and
+#     Cauldron's basic scheme checks only one half (the password), the same
+#     simplification Twilio and Mailgun's Recipes already make elsewhere in
+#     this collection.
+#   - TrueLayer's connection carries one field for the whole question --
+#     consent_status -- with a documented expiry date. MX carries the
+#     question across *three* separate signals on three different objects,
+#     and none of them agrees with the others about what "broken" looks
+#     like: a string (connection_status, e.g. "CONNECTED"), a boolean
+#     (needs_updated_credentials) on the same Member record, and a second,
+#     narrower boolean (is_authenticated) that only exists on a *different*
+#     endpoint, GET .../status, not on the Member itself.
+#   - MX's own OpenAPI description says outright that it is mid-migration:
+#     "MX has introduced new, more detailed information on the current
+#     status of a members connection... the connection_status field. These
+#     are intended to replace and expand upon the information provided in
+#     the status field, which will soon be deprecated; support for the
+#     status field remains for the time being." Two health fields, one
+#     replacing the other, both live. See the Members section below.
+#   - MX is the one of the three with a vendor Accept header as part of the
+#     credential contract (application/vnd.mx.api.v1+json), and it is
+#     checked before literally everything else, including the credential.
+#     See "The Accept gate" below -- this is the sharpest, and least
+#     reproducible, finding in the file.
+#
+# ---------------------------------------------------------------------------
+# What was checked live against api.mx.com, 2026-09-02, no account, no key
+# ever created. Every request below was actually sent; see the header on
+# each finding for exactly what was sent and received.
+# ---------------------------------------------------------------------------
+#
+# THE ACCEPT GATE. curl's own default header -- "Accept: */*", sent by
+# every plain `curl url` -- gets refused:
+#
+#   GET /users, no headers at all
+#     -> 400 {"error":{"message":"The Accept header is missing or invalid.",
+#             "status":"bad_request","type":"invalid_accept_header_error"}}
+#
+# That is not a credential failure: it is byte-identical whether or not a
+# credential, a real path, or a real method is present. Confirmed against
+# every combination this Recipe could construct without an account:
+# /users and a fabricated path (/v99/nosuchroute) both 400 the same way;
+# POST /users and DELETE /users both 400 the same way; a request carrying a
+# wrong Basic credential 400s the same way too. The check runs before the
+# route is resolved and before the credential is examined, for every method.
+# "Accept: application/json" (not the vendor type) is accepted, so the rule
+# is not "must be vnd.mx.api.v1+json" -- it is closer to "must resolve to
+# Rails' :json format", and curl's wildcard fails that resolution where a
+# named type passes it.
+#
+# This ordering is not declared as required_headers, on purpose. Cauldron's
+# own credential check always runs before required_headers (see
+# internal/runtime/handler.go), and auth.after_routing only moves the
+# credential relative to the router, not relative to a required header --
+# so a Recipe has no way to say "this header gates the credential and the
+# router too" the way MX's own gateway does. Declaring it anyway would
+# reproduce the sentence and the status but silently claim the opposite
+# order (credential first, Accept second) from the one observed, and the
+# only request that could prove the declared order fires -- a genuinely
+# accepted credential with no Accept header -- was never sent, because
+# sending it needs a real key. Every case in this file therefore sends the
+# vendor Accept header, as real client code has to, and this finding lives
+# in prose rather than in a route.
+#
+# THE CREDENTIAL CONTRACT. Once the Accept header is right, MX tells absent
+# from wrong, and the two answers are not just different sentences -- they
+# are different *shapes*:
+#
+#   no Authorization header at all
+#     -> 401 {"error":{"message":"Invalid Authorization header.",
+#             "status":"unauthorized","type":"unauthorized_error"}}
+#   Authorization: Basic <base64 of a well-formed, wrong, client:key pair>
+#     -> 401, Content-Length: 0, no body, no Content-Type at all
+#
+# Repeated three times each; both are stable. A missing credential gets a
+# JSON explanation; a credential that is present and simply wrong gets
+# nothing at all -- the reverse of the usual pattern in this collection,
+# where the terser answer is normally reserved for the absent case.
+#
+# A malformed Basic value splits three ways under Cauldron's own verdict
+# computation, and the three ways do not agree with each other. Malformed
+# covers everything the credential check rules out by shape: no "Basic "
+# prefix at all, an empty value after it, invalid base64, and valid base64
+# with no colon or an empty second half. Checked one at a time:
+#
+#   Authorization: junk               (no "Basic " prefix)  -> matches the
+#                                       ABSENT sentence above, verbatim
+#   Authorization: Basic              (nothing after)        -> 500, JSON
+#                                       {"error":{"message":null}}
+#   Authorization: Basic <bad base64>                        -> matches the
+#                                       REJECTED shape above: empty, 401
+#   Authorization: Basic <b64 "hello">  (no colon)            -> same, empty
+#   Authorization: Basic <b64 ":">   (colon, both halves empty) -> same, empty
+#
+# Three of five real answers land on "empty, like rejected"; this Recipe's
+# malformed_error is set to that entry, so it is right for the common case
+# -- a caller who base64-encoded something wrong -- and wrong for the other
+# two. The "Basic" / "Basic " case is a genuine, reproducible 500: sending
+# nothing after the scheme word crashes something server-side rather than
+# refusing cleanly, twice confirmed. It is not modelled, because Cauldron
+# has one malformed_error for the whole bucket and forcing this one case's
+# status onto the other four would misrepresent the majority. Recorded here
+# instead, per the same convention firehydrant/recipe.yaml and
+# together/recipe.yaml use for a provider's malformed bucket splitting more
+# ways than the runtime's three verdicts can hold.
+#
+# ROUTING ORDER. auth.after_routing is left at its default (false, checked
+# first) because that is what was observed: a fabricated path
+# (/v99/nosuchroute) and a disallowed method (DELETE /users, PATCH /users)
+# both answer with the *credential's* verdict rather than a routing miss,
+# whether or not a credential was sent. No route in this Recipe ever
+# reaches a genuine 404 or 405, because reaching one needs a credential
+# this Recipe cannot have. unknown_route and method_not_allowed are left
+# undeclared rather than guessed.
+#
+# Keys and identifiers below are fixtures, not secrets, and every account
+# and member value is taken from an "example:" in MX's own published
+# OpenAPI description -- never invented, never observed live (no account
+# was ever created).
+
+recipe: mx
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.mx.com/api
+  spec: https://raw.githubusercontent.com/mxenabled/openapi/main/openapi/mx_platform_api.yml
+  spec_hash: f043c1f521ec5a322f64138953734fac10646d36f1fe890ee1b79cbe2a89faf9
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: basic
+  # MX's own words are "client ID" and "API key" -- an identifier and a
+  # secret, the same shape Twilio (account SID + auth token) and Mailgun
+  # (constant username + key) already have Recipes for in this collection.
+  # The key is the half that is actually secret, so it is the half checked;
+  # Cauldron only verifies one side of a Basic pair, so a real integration's
+  # client id is not validated here, same simplification those two make.
+  credential: password
+  keys:
+    - cauldron-mx-api-key
+  # A credential that is present and simply wrong gets nothing: no body, no
+  # Content-Type. Three of five ways a Basic value can be malformed land on
+  # this same empty shape, so malformed_error points at it too -- see the
+  # header for the two that do not, and why forcing them in would be worse.
+  rejected_error: unauthorized_empty
+  malformed_error: unauthorized_empty
+  # A header that was never sent at all gets a full sentence, not silence.
+  absent_error: unauthorized_error
+
+responses:
+  list:
+    style: wrapped
+    count_field: pagination.total_entries
+    pages_field: pagination.total_pages
+    page_field: pagination.current_page
+  resource:
+    # MX wraps a single record too, under the resource's own singular name
+    # -- {"member": {...}}, {"account": {...}} -- unlike Plaid and
+    # TrueLayer, which both answer a single fetch bare.
+    style: wrapped
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: type
+    status_field: "-"
+
+resources:
+  # The connection. MX calls it a Member -- a user's login at one
+  # institution -- and this is the object the "mid-migration" header note
+  # is about: two health signals, old and new, both live on the same
+  # record.
+  member:
+    collection: members
+    id:
+      style: prefixed
+      prefix: "MBR-"
+      field: guid
+    # MX also documents a second, separate "id" field on this resource --
+    # an integrator-supplied identifier distinct from the guid MX mints --
+    # and it is not modelled here: Cauldron's own lookup key is the literal
+    # fixture field "id", which this Recipe already spends on the guid.
+    fields:
+      name:
+        type: string
+      institution_code:
+        type: string
+      institution_guid:
+        type: string
+      user_guid:
+        type: string
+      # "CONNECTED" is the only value MX's own machine-readable description
+      # gives as an example anywhere; GET .../challenges' description names
+      # one more, "CHALLENGED", in prose. The rest of the enum this field is
+      # widely known to carry is not in the description this Recipe was
+      # checked against, so it is not declared here -- see the header rule
+      # against inventing a value nobody supplied.
+      connection_status:
+        type: string
+        null_when_unset: true
+      connection_status_message:
+        type: string
+        null_when_unset: true
+      # The new, narrower signal, and it is a boolean on this endpoint,
+      # nowhere near connection_status: does this specific connection need
+      # the user to sit through Connect again. MX's own description never
+      # shows this field set to true anywhere in the document -- see the
+      # header.
+      needs_updated_credentials:
+        type: boolean
+        null_when_unset: true
+      is_being_aggregated:
+        type: boolean
+        null_when_unset: true
+      is_manual:
+        type: boolean
+        null_when_unset: true
+      is_oauth:
+        type: boolean
+        null_when_unset: true
+      # When MX last *tried* to pull data through this connection, whether
+      # or not it worked.
+      aggregated_at:
+        type: string
+        null_when_unset: true
+      # When it last *worked*. The gap between the two is how long a
+      # connection has been failing without anybody having to compute
+      # anything -- see the account timestamps below for the other half of
+      # the staleness question.
+      successfully_aggregated_at:
+        type: string
+        null_when_unset: true
+      # Free text an integration writes itself. MX's own worked example of
+      # what to put here is truncated, malformed JSON --
+      # '\"credentials_last_refreshed_at\": \"2015-10-15\' -- missing a
+      # closing quote and brace, in the description of the field, not
+      # copied out of it. Not modelled as a fixture value for that reason.
+      metadata:
+        type: string
+        null_when_unset: true
+
+  # A second, narrower view of the same connection, from a route the Member
+  # object itself does not carry. is_authenticated lives only here.
+  member_status:
+    id:
+      style: prefixed
+      prefix: "MBR-"
+      field: guid
+    fields:
+      guid:
+        type: string
+      connection_status:
+        type: string
+        null_when_unset: true
+      # Whether MX currently holds a working login for this connection.
+      # This is the field closest to a direct answer to "does the user need
+      # to re-authenticate" -- and it sits on a route a caller has to know
+      # to fetch separately, not on the connection record itself.
+      is_authenticated:
+        type: boolean
+        null_when_unset: true
+      is_being_aggregated:
+        type: boolean
+        null_when_unset: true
+      has_processed_accounts:
+        type: boolean
+        null_when_unset: true
+      has_processed_account_numbers:
+        type: boolean
+        null_when_unset: true
+      has_processed_transactions:
+        type: boolean
+        null_when_unset: true
+      aggregated_at:
+        type: string
+        null_when_unset: true
+      successfully_aggregated_at:
+        type: string
+        null_when_unset: true
+
+  account:
+    collection: accounts
+    id:
+      style: prefixed
+      prefix: "ACT-"
+      field: guid
+    # Same simplification as member.id above: MX's separate integrator-set
+    # "id" field on an account is not modelled, for the same reason.
+    fields:
+      member_guid:
+        type: string
+      user_guid:
+        type: string
+      institution_code:
+        type: string
+      name:
+        type: string
+      type:
+        type: string
+      subtype:
+        type: string
+      currency_code:
+        type: string
+      balance:
+        type: number
+        null_when_unset: true
+      available_balance:
+        type: number
+        null_when_unset: true
+      # A provenance flag on every financial figure -- who last set this
+      # number. MX's own description gives it a type (integer) and an
+      # example (1) and never says what the values mean: no enum, no
+      # description text on the field at all, on every one of the roughly
+      # twenty "_set_by" fields the full Account schema carries. A caller
+      # reading balance_set_by: 1 cannot tell, from the description alone,
+      # whether this balance came from the bank or was typed in by the
+      # user it belongs to -- which is exactly the "does a stale balance
+      # look different from a fresh one" question this collection exists
+      # to ask, and MX's own machine-readable answer is silent on it.
+      balance_set_by:
+        type: integer
+        null_when_unset: true
+      is_closed:
+        type: boolean
+        null_when_unset: true
+      is_hidden:
+        type: boolean
+        null_when_unset: true
+      # Two different timestamps, not one. imported_at is when this record
+      # first entered MX; updated_at is when it was last written to since.
+      # Neither is named on the connection-health objects above, and
+      # neither is the same field as member.successfully_aggregated_at --
+      # three clocks across two objects, none of them a single source of
+      # truth for "how old is this number".
+      imported_at:
+        type: string
+        null_when_unset: true
+      updated_at:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /users/{user_guid}/members
+    resource: member
+    operation: list
+    scope: [user_guid]
+    pagination:
+      style: page
+      limit: 25
+      limit_param: records_per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /users/{user_guid}/members/{id}
+    resource: member
+    operation: get
+    scope: [user_guid]
+
+  - method: GET
+    path: /users/{user_guid}/members/{id}/status
+    resource: member_status
+    operation: get
+    # MX wraps this route's answer under "member", the same key the plain
+    # Member route uses, even though the object underneath is a different,
+    # narrower shape (MemberStatusResponse, not MemberResponse). Modelled
+    # here as its own resource so the two schemas do not have to share
+    # fields that only one of them documents.
+    envelope:
+      style: wrapped
+      key: member
+
+  - method: GET
+    path: /users/{user_guid}/accounts
+    resource: account
+    operation: list
+    scope: [user_guid]
+    pagination:
+      style: page
+      limit: 25
+      limit_param: records_per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /users/{user_guid}/accounts/{id}
+    resource: account
+    operation: get
+    scope: [user_guid]
+
+errors:
+  # The full sentence: a header was never sent at all. The wire body also
+  # carries a "status": "unauthorized" string inside the error object,
+  # sitting beside type and message; it is not reproduced here because
+  # Cauldron's nested error style has no way to place a per-error extra
+  # field inside the wrapper rather than beside it -- message and type are
+  # the two this Recipe can place correctly, and both are asserted below.
+  unauthorized_error:
+    status: 401
+    type: unauthorized_error
+    message: Invalid Authorization header.
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # Nothing: no body, no Content-Type. What a credential that was present
+  # and simply wrong gets, and what three of five malformed shapes get too
+  # -- see the header.
+  unauthorized_empty:
+    status: 401
+    empty: true
+
+fixtures:
+  empty: {}
+
+  # One user's single connection to one institution, and its accounts.
+  # Every field value below is an "example:" in MX's own OpenAPI
+  # description (mxenabled/openapi, mx_platform_api.yml) and none of them
+  # was ever seen against a live account -- MX's connection_status and
+  # needs_updated_credentials both stay at their only documented example,
+  # the healthy one, because no worked example of the broken state exists
+  # in the description this Recipe was checked against. See the header.
+  connected-user:
+    member:
+      - id: MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+        name: MX Bank
+        institution_code: mxbank
+        institution_guid: INST-12345678-90ab-cdef-1234-567890abcdef
+        user_guid: USR-fa7537f3-48aa-a683-a02a-b18940482f54
+        connection_status: CONNECTED
+        connection_status_message: Connected to MX Bank
+        needs_updated_credentials: false
+        is_being_aggregated: false
+        is_manual: false
+        is_oauth: false
+        aggregated_at: "2016-10-13T18:07:57.000Z"
+        successfully_aggregated_at: "2016-10-13T17:57:38.000Z"
+
+    member_status:
+      - id: MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+        connection_status: CONNECTED
+        is_authenticated: false
+        is_being_aggregated: false
+        has_processed_accounts: true
+        has_processed_account_numbers: true
+        has_processed_transactions: false
+        aggregated_at: "2016-10-13T18:07:57.000Z"
+        successfully_aggregated_at: "2016-10-13T17:57:38.000Z"
+
+    account:
+      - id: ACT-06d7f44b-caae-0f6e-1384-01f52e75dcb1
+        member_guid: MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+        user_guid: USR-fa7537f3-48aa-a683-a02a-b18940482f54
+        institution_code: mxbank
+        name: Test account 2
+        type: SAVINGS
+        subtype: NONE
+        currency_code: USD
+        balance: 10000
+        available_balance: 1000
+        balance_set_by: 1
+        is_closed: false
+        is_hidden: false
+        imported_at: "2015-10-13T17:57:37.000Z"
+        updated_at: "2016-10-13T18:08:00.000Z"
+
+# Every case below sends the vendor Accept header, because every real
+# client has to -- see "The Accept gate" in the header for the finding
+# that header itself is, and why it cannot be declared as a route.
+conformance:
+  - name: no credential at all is a full sentence, not silence
+    source: https://api.mx.com/users
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+      body:
+        error:
+          message: Invalid Authorization header.
+          type: unauthorized_error
+
+  - name: a credential that is present and wrong gets nothing at all
+    # The reverse of the usual pattern here: the more complete mistake gets
+    # the terser answer. Content-Length 0, no Content-Type, confirmed twice
+    # against a well-formed, wrong client:key pair.
+    source: https://api.mx.com/users
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic anVua2NsaWVudDpqdW5ra2V5"
+    expect:
+      status: 401
+      no_body: true
+
+  - name: a malformed Basic value with no colon answers the same empty shape
+    # Valid base64, no colon in it -- "hello", not a user:pass pair -- and
+    # it lands on the same empty 401 as a well-formed wrong credential
+    # rather than on the JSON sentence absence gets. See the header: three
+    # of five malformed shapes do this, and this Recipe's malformed_error
+    # is set to match the majority.
+    source: https://api.mx.com/users
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic aGVsbG8="
+    expect:
+      status: 401
+      no_body: true
+
+  - name: a fabricated path answers with the credential's verdict, not a routing miss
+    # No route in this Recipe can ever reach a genuine 404 here: a
+    # nonexistent path answers exactly the way a real one does when the
+    # credential is absent, which is auth.after_routing's default
+    # (checked first) and is what was observed on both a real and an
+    # invented path.
+    source: https://api.mx.com/v99/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v99/nosuchroute
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+    expect:
+      status: 401
+      body:
+        error:
+          message: Invalid Authorization header.
+
+  - name: a disallowed method answers with the credential's verdict too, not a 405
+    source: https://api.mx.com/users
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+    expect:
+      status: 401
+      body:
+        error:
+          message: Invalid Authorization header.
+
+  - name: a member wraps under its own name and carries two live health fields
+    # connection_status (a string, no declared enum) and
+    # needs_updated_credentials (a boolean) sit on the same record and do
+    # not agree about how to say "this is fine": one is a word MX chose,
+    # the other is a flag a caller can branch on with no vocabulary to
+    # miss.
+    source: https://raw.githubusercontent.com/mxenabled/openapi/main/openapi/mx_platform_api.yml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members/MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tbXgtYXBpLWtleQ=="
+    expect:
+      status: 200
+      body:
+        member:
+          guid: MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+          connection_status: CONNECTED
+          connection_status_message: Connected to MX Bank
+          needs_updated_credentials: false
+      absent:
+        - member.is_authenticated
+
+  - name: is_authenticated lives only on the status route, not on the member itself
+    source: https://raw.githubusercontent.com/mxenabled/openapi/main/openapi/mx_platform_api.yml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members/MBR-7c6f361b-e582-15b6-60c0-358f12466b4b/status
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tbXgtYXBpLWtleQ=="
+    expect:
+      status: 200
+      body:
+        member:
+          is_authenticated: false
+          has_processed_accounts: true
+          has_processed_transactions: false
+          aggregated_at: "2016-10-13T18:07:57.000Z"
+          successfully_aggregated_at: "2016-10-13T17:57:38.000Z"
+
+  - name: an account carries two different clocks, not one
+    # imported_at and updated_at are documented as separate fields with
+    # separate example values, one from 2015 and one from 2016 -- proof
+    # they are not aliases of the same moment, whatever a fixture happens
+    # to set them to. balance_set_by rides along with no declared meaning
+    # at all.
+    source: https://raw.githubusercontent.com/mxenabled/openapi/main/openapi/mx_platform_api.yml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/accounts/ACT-06d7f44b-caae-0f6e-1384-01f52e75dcb1
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tbXgtYXBpLWtleQ=="
+    expect:
+      status: 200
+      body:
+        account:
+          balance: 10000
+          available_balance: 1000
+          balance_set_by: 1
+          imported_at: "2015-10-13T17:57:37.000Z"
+          updated_at: "2016-10-13T18:08:00.000Z"
+          is_closed: false
+
+  - name: a member listing pages under a nested pagination object
+    source: https://raw.githubusercontent.com/mxenabled/openapi/main/openapi/mx_platform_api.yml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/USR-fa7537f3-48aa-a683-a02a-b18940482f54/members
+      headers:
+        Accept: application/vnd.mx.api.v1+json
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tbXgtYXBpLWtleQ=="
+    expect:
+      status: 200
+      body:
+        members[0].guid: MBR-7c6f361b-e582-15b6-60c0-358f12466b4b
+        pagination:
+          current_page: 1
+          total_entries: 1
+          total_pages: 1
+      absent:
+        - meta
+        - has_more
