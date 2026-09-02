@@ -5339,6 +5339,108 @@ func providers() []provider {
 			recipe: "calcom",
 			npm:    []string{"@calcom/atoms"},
 		},
+		{
+			// The old Web Tools XML API was retired in January 2026, and
+			// USPS publishes no SDK of its own for the OAuth2 one that
+			// replaced it. This Laravel package covers all twenty domains of
+			// the new API -- including tracking, the one this Recipe models
+			// -- against the same apis.usps.com host.
+			recipe:   "usps",
+			composer: []string{"johnpaulmedina/laravel-usps"},
+		},
+		{
+			// Confirmed against the package's own source rather than its
+			// description: it calls soa-gw.canadapost.ca/vis/track with
+			// Basic auth and the application/vnd.cpc.track+xml media type,
+			// the exact host, path and content type this Recipe struck live.
+			recipe: "canadapost",
+			npm:    []string{"canadapost-api"},
+		},
+		{
+			// Reddit's OAuth2 token mint -- POST /api/v1/access_token on
+			// www.reddit.com, HTTP Basic client_id:client_secret -- is
+			// exactly what this Recipe models, and exactly the first call
+			// snoowrap makes before it touches oauth.reddit.com at all.
+			recipe: "reddit",
+			npm:    []string{"snoowrap"},
+		},
+		{
+			recipe: "bluesky",
+			npm:    []string{"@atproto/api"},
+		},
+		{
+			recipe: "mastodon",
+			npm:    []string{"masto"},
+		},
+		{
+			// Not the official `coinbase` package (the old, now-abandoned v2
+			// retail API) and not `@coinbase/coinbase-sdk` (the onchain CDP
+			// platform, a different product entirely). This community
+			// client's own source targets api.exchange.coinbase.com by
+			// name, the host this Recipe's docs link describes.
+			recipe: "coinbase",
+			npm:    []string{"coinbase-pro-node"},
+		},
+		{
+			recipe: "binance",
+			npm:    []string{"@binance/connector"},
+		},
+		{
+			// Bare `alchemy` on npm is an unrelated infrastructure-as-code
+			// tool. This is Alchemy's own SDK, published under the vendor's
+			// GitHub org.
+			recipe: "alchemy",
+			npm:    []string{"alchemy-sdk"},
+		},
+		{
+			recipe:   "ipinfo",
+			composer: []string{"ipinfo/ipinfo"},
+			npm:      []string{"node-ipinfo"},
+			gomod:    []string{"github.com/ipinfo/go"},
+		},
+		{
+			// Bare `maxmind` on npm is runk/node-maxmind, a local MMDB
+			// database reader -- a different surface from this Recipe's web
+			// service. The scoped package is MaxMind's own, and its web
+			// service client takes the same account-id-and-license-key
+			// Basic pair this Recipe checks.
+			recipe:   "maxmind",
+			composer: []string{"geoip2/geoip2"},
+			npm:      []string{"@maxmind/geoip2-node"},
+		},
+		{
+			// Hunter.io publishes no SDK of its own. This unofficial client
+			// is the one with real, ongoing use, four thousand downloads a
+			// month against the next candidate's few hundred.
+			recipe: "hunterio",
+			npm:    []string{"hunter.io"},
+		},
+		{
+			recipe:   "livekit",
+			composer: []string{"agence104/livekit-server-sdk"},
+			npm:      []string{"livekit-server-sdk"},
+			gomod:    []string{"github.com/livekit/server-sdk-go"},
+		},
+		{
+			recipe:   "discogs",
+			composer: []string{"calliostro/php-discogs-api"},
+			npm:      []string{"disconnect"},
+		},
+		{
+			recipe:   "lastfm",
+			composer: []string{"nucleos/lastfm"},
+			npm:      []string{"lastfm"},
+		},
+		{
+			// Bare `genius` on npm is an unrelated, decade-old MVC
+			// framework. Confirmed against genius-lyrics' own source: it
+			// calls api.genius.com with Authorization: Bearer and requests
+			// exactly /artists/{id} and /songs/{id}, the two resources this
+			// Recipe models.
+			recipe:   "genius",
+			composer: []string{"simivar/genius-php"},
+			npm:      []string{"genius-lyrics"},
+		},
 	}
 }
 
