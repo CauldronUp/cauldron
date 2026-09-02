@@ -1,0 +1,775 @@
+# LiveKit Recipe for Cauldron
+#
+# LiveKit is a Twirp RPC service wearing an HTTP dress -- every operation is
+# POST /twirp/livekit.RoomService/{Method}, a protobuf message in and a
+# protobuf message out, JSON-encoded. Compare recipes/whereby/recipe.yaml,
+# this group's control, whose four routes are ordinary REST verbs on
+# /v1/meetings, and recipes/100ms/recipe.yaml, whose /v2/rooms and
+# /v2/sessions are REST too. LiveKit is the one provider in this group where
+# the path never varies with the resource at all -- every RPC in this Recipe
+# answers on one of two literal path strings, ListRooms or CreateRoom or
+# DeleteRoom, and what changes per call is the method name inside the path,
+# never a resource id.
+#
+# The room's own lifecycle is genuinely implicit, more so than either of this
+# group's other two providers. LiveKit's own words, from
+# docs.livekit.io/home/server/managing-rooms: "A room can be created manually
+# via server API, or automatically, when the first participant joins it.
+# Once the last participant leaves a room, it closes after a short delay."
+# CreateRoom exists and this Recipe routes it, but it is optional -- the
+# service's own .proto file says so in the RPC's own comment, quoted
+# verbatim: "This method is optional; rooms are automatically created when
+# clients connect to them for the first time." No other provider in this
+# group states that a create route is skippable in its own source.
+#
+# And there is no GetRoom. Checked against the service definition itself --
+# github.com/livekit/protocol/blob/main/protobufs/livekit_room.proto, the
+# same public source every field below is typed from -- RoomService declares
+# CreateRoom, ListRooms, DeleteRoom, ListParticipants, GetParticipant,
+# RemoveParticipant, MutePublishedTrack, UpdateParticipant,
+# UpdateSubscriptions, SendData, UpdateRoomMetadata, ForwardParticipant,
+# MoveParticipant and PerformRpc. A participant can be fetched individually;
+# a room cannot. The only way to ask about one room is ListRooms with a
+# names filter -- "when set, will only return rooms with name match", the
+# request message's own comment -- which means this group's central
+# question has one answer for LiveKit and it is the flattest of the three:
+# a room that was never created and a room that existed and has since closed
+# both answer the identical empty rooms: [] a client cannot tell apart,
+# because there is no route on this service that answers about one room
+# behind a distinct identifier at all. Compare recipes/agora/recipe.yaml,
+# written alongside this one, which lands on the same flat answer by a
+# completely different route -- Agora's channel list is inherently a
+# presence snapshot with no create or delete anywhere on that surface
+# either. LiveKit and Agora agree with each other and disagree with both
+# Whereby and 100ms, which each answer a specific room's own address with a
+# real 200 or (Whereby's case) a documented 404.
+#
+# DeleteRoomResponse is the emptiest message in this whole task: no fields
+# at all, in the .proto, in these words: "message DeleteRoomResponse {}".
+# Not Turso's truncated-but-nonempty {"database": "name"}, not Daily's
+# {"deleted": true, "name": ...} -- an object with nothing in it, the same
+# style recipes/rootly/recipe.yaml's own vocabulary calls "empty" for Asana's
+# {"data": {}}: a client calling .json() on it succeeds and reads nothing,
+# which is not the same as the 204 many APIs answer a delete with.
+#
+# Both the room-management credential and the room-JOIN credential a
+# participant's own client presents are the identical mechanism, not two
+# different shapes wearing one name. docs.livekit.io/frontends/reference/
+# tokens-grants states it in as many words: "Access tokens are JWT-based and
+# signed with your API secret to prevent forgery," and the same page's own
+# worked example of a decoded join token is quoted here verbatim:
+#
+#   {"exp": 1621657263, "iss": "APIMmxiL8rquKztZEoZJV9Fb", "sub": "myidentity",
+#    "nbf": 1619065263, "video": {"room": "myroom", "roomJoin": true},
+#    "metadata": ""}
+#
+# iss is the API key; the video grant is what changes between a management
+# call and a room join, not the token format. roomCreate, roomList and
+# roomAdmin are the grants a management token needs (all real, documented
+# fields on the same video object this join token's roomJoin sits on);
+# roomJoin plus a room name is what a participant's own token needs instead.
+# And the token is never fetched from LiveKit at all -- "Generating a token
+# requires API keys so it must be created on a backend server," from
+# docs.livekit.io/frontends/build/authentication -- it is signed locally,
+# by the integrator's own backend, with a secret LiveKit never sees a
+# request for. That is the split this group's brief asks after: not a
+# bearer key traded for a session token by calling an endpoint, but one
+# signing mechanism minting two differently-scoped tokens, neither one ever
+# requested from LiveKit itself.
+#
+# Credentials, struck live against a project subdomain under *.livekit.cloud
+# with no account, no project, and no key ever created. The subdomain
+# itself does not gate anything at this layer -- two different fabricated
+# names, cauldron-fixture-probe-xyz123.livekit.cloud and
+# another-fake-project-999.livekit.cloud, answered byte-identically to every
+# probe below, which this task confirmed by striking the plain absent-header
+# case against both. *.livekit.cloud is wildcard-routed to one shared edge
+# that a project name does not have to be real to reach.
+#
+#   nothing sent
+#     -> 401 application/json {"code":"unauthenticated","msg":"permissions denied"}
+#   Authorization: junktoken12345 (no "Bearer " prefix)
+#   Authorization: Bearer  (prefix, nothing after it)
+#     -> 401 text/plain "invalid authorization header. Must start with Bearer "
+#   Authorization: Bearer junktoken12345 (prefixed, not JWT-shaped: no dots)
+#     -> 401 text/plain "invalid authorization token"
+#   Authorization: Bearer <JWT-shaped, claims decode, iss a syntactically
+#     plausible but unknown API key>
+#     -> 401 text/plain "invalid API key"
+#
+# Four sentences, and this format's three verdicts cannot carry all four at
+# once -- the identical tension recipes/100ms/recipe.yaml's own header states
+# for its own five. The no-prefix and empty-after-prefix cases collapse
+# together cleanly (absent_error and malformed_error, if this Recipe used
+# Cauldron's built-in scheme, would name that pair), and this Recipe's own
+# choice, made the same way 100ms's was, is to keep the deepest tier --
+# "invalid API key", the sentence a real integration's rotated or
+# mistyped key actually earns -- as the one independently represented,
+# rather than the shallower "invalid authorization token" a stray string
+# with no dots in it gets. Both are real, both are struck live below, and
+# only one is reachable through this Recipe's own scheme: none plus
+# matches_header design, explained below.
+#
+# Timed rather than assumed, the same re-check recipes/daily/recipe.yaml and
+# recipes/agora/recipe.yaml both ran for the same reason: 100ms's own
+# sharpest finding is that its two deepest credential failures differ only
+# in how long they take, sub-2ms against 221ms. Three requests each, against
+# the same fixture project subdomain: absent averaged roughly 64-145ms,
+# no-prefix roughly 55-98ms, non-JWT-shaped roughly 61-91ms, and the
+# JWT-shaped-unknown-issuer tier roughly 61-143ms -- four tiers, all in the
+# same noisy tens-of-milliseconds band, no consistent gap anywhere between
+# them. Whatever LiveKit's edge does to decide "invalid API key" costs the
+# same, within measurement noise, as everything shallower than it. Nothing
+# here leaks a lookup the way 100ms's pair did.
+#
+# Routing answers a shape none of this collection's eight recorded
+# arrangements name outright, and it does not split on path, method, or
+# verdict depth the way any of those eight do -- it splits on whether a
+# credential was presented AT ALL, the same axis auth.go's own comment
+# names for Sendcloud, one step stranger. Struck live, four ways:
+#
+#   GET (wrong method) on a real RPC path, no credential
+#     -> 404 {"code":"bad_route","msg":"unsupported method \"GET\" ..."}
+#   GET on the same path, a JWT-shaped-but-unknown credential attached
+#     -> 401 text/plain "invalid API key"
+#   GET /nosuchroute (outside /twirp entirely), no credential
+#     -> 200 text/plain "OK"
+#   GET /nosuchroute, the identical credential attached
+#     -> 401 text/plain "invalid API key"
+#
+# A credential, right or wrong, is checked before routing is even attempted
+# -- an unrouted path and a wrong method both fall to the SAME "invalid API
+# key" a real RPC path with a bad credential gets, once anything at all is
+# presented. Absent one, routing decides instead, and two different
+# fallbacks answer depending on which routing failure it is: a real service
+# with the wrong method or an unknown RPC name gets Twirp's own bad_route
+# 404, and a path with no /twirp prefix at all does not 404 -- it falls
+# through the LiveKit application entirely to what reads like a load
+# balancer's own default backend, answering 200 "OK" in two bytes of plain
+# text, no relation to anything this API does. Cauldron's own
+# auth.after_routing flag ties routing and the credential check to one
+# joint ordering, checked once; this splits on the credential's mere
+# presence and answers a wrong method one of two different ways depending
+# on it, which needs the credential's state to survive a route match
+# without gating it, the exact shape auth.go's own comment says Sendcloud
+# needs and a boolean cannot express. So this Recipe declares auth.scheme:
+# none and reproduces every verified shape above as its own route, the same
+# device recipes/turso/recipe.yaml and recipes/census/recipe.yaml both use
+# for the identical tension: a route naming matches_header outranks one
+# naming none, regardless of write order, so the specific literal credential
+# values struck live are declared first and the true absent case -- no
+# header at all -- is the one route with no matches_header, last. Any
+# Authorization value this Recipe never struck falls to that same last
+# route, approximated as the absent case rather than independently modelled
+# -- Turso's own header states the identical trade-off for its own bare
+# fallback.
+#
+# One more routing fact, struck live and not reproduced as a case: sending
+# the RPC's request body with the default Content-Type curl chooses
+# (application/x-www-form-urlencoded) rather than application/json answers
+# 404 {"code":"bad_route","msg":"unexpected Content-Type: ...\""}, with no
+# credential examined either -- a malformed request never reaches far enough
+# for auth to matter, the same "routing" bucket a wrong method and an
+# unknown RPC name both fall into.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account, no project, and no API key or secret was ever created.
+#     Every case below asserting a 200 is read from the public
+#     livekit_room.proto and livekit_models.proto sources (both under
+#     github.com/livekit/protocol) and carries no verified date; no worked
+#     JSON example with concrete field values exists in any page this task
+#     read for CreateRoom's or ListRooms's response, so those cases assert
+#     the fields this Recipe's own request supplies back (name,
+#     emptyTimeout, maxParticipants) rather than a literal value nobody
+#     confirmed, and leave sid, creationTime and numParticipants to a
+#     pattern match rather than a claimed number.
+#   - ListRoomsRequest has no limit, page size or cursor of any kind in the
+#     .proto -- names is its only field. This Recipe declares no
+#     pagination for the route either, which means Cauldron's own runtime
+#     pages it at ten anyway, reading a "limit" parameter that does not
+#     exist on the real request message; stated here rather than declared
+#     with a parameter name that would be invented.
+#   - ListRoomsRequest.names is real and documented, and this Recipe's own
+#     route declares it as a filter in name only: Cauldron's filters
+#     mechanism reads query parameters, and names travels in this RPC's
+#     JSON body, the same REST-shaped assumption every route on this
+#     Twirp-shaped service runs into. Sending a names value this Recipe's
+#     fixture does not hold still answers every room the fixture has,
+#     rather than narrowing the list the way the real RPC's own field
+#     comment says it does.
+#   - No default empty_timeout was found anywhere this task read. The
+#     field's own comment says only "number of seconds to keep the room
+#     open if no one joins"; every worked call in the documentation sets it
+#     explicitly (600, ten minutes, in both the CLI and every SDK example),
+#     and this Recipe does not claim what an omitted one becomes.
+#   - ListParticipants, GetParticipant, RemoveParticipant,
+#     MutePublishedTrack, UpdateParticipant, UpdateSubscriptions, SendData,
+#     UpdateRoomMetadata, ForwardParticipant, MoveParticipant, PerformRpc,
+#     Egress, Ingress and SIP are all real, documented parts of this
+#     surface and none of them are modelled. This Recipe is scoped to what
+#     the group's question turns on: a room's own lifecycle and how the
+#     credential that manages it fails.
+#   - Of the Room message's thirteen documented fields (sid, name,
+#     emptyTimeout, departureTimeout, maxParticipants, creationTime,
+#     creationTimeMs, turnPassword, enabledCodecs, metadata,
+#     numParticipants, numPublishers, activeRecording, version) this
+#     Recipe declares eight. turnPassword, enabledCodecs, activeRecording,
+#     version and creationTimeMs are not typed here.
+#   - No upstream.spec. LiveKit publishes .proto source files on GitHub
+#     rather than an OpenAPI description at any fetchable URL -- there is
+#     no REST surface to describe one for, since every route is the same
+#     Twirp path shape -- so no fingerprint is recorded. docs: below points
+#     at the room-management guide; the .proto URLs are cited inline above
+#     for the specific claims that come from them.
+#
+# The tokens below are fixtures and belong to no project.
+
+recipe: livekit
+capability: voice
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.livekit.io/home/server/managing-rooms/
+
+# scheme: none plus a matches_header route per verified credential shape --
+# see the header for why. This Recipe's own auth is entirely inside routes:
+# below, not this block.
+auth:
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+
+resources:
+  room:
+    # ListRoomsResponse's own field: "repeated Room rooms = 1" -- the array
+    # sits directly under "rooms", no count, no cursor, nothing else in the
+    # envelope at all.
+    collection: rooms
+    id:
+      # Every RPC that names a room -- DeleteRoomRequest.room ("name of the
+      # room"), ListRoomsRequest.names ("will only return rooms with name
+      # match") -- addresses it by name, never by sid. The same split
+      # recipes/daily/recipe.yaml's own room resource makes for id versus
+      # name, and recipes/turso/recipe.yaml's makes for DbId versus Name.
+      style: opaque
+      field: name
+    fields:
+      # Server-minted, real, and never what an RPC takes. LiveKit's own
+      # wire key for this really is "sid" -- no rename needed, unlike
+      # Daily's id/uuid split in this same group.
+      sid:
+        type: string
+        default: RM_cauldron0000000000
+      emptyTimeout:
+        type: integer
+        null_when_unset: true
+      # "Number of seconds to keep the room open after everyone leaves" --
+      # the .proto's own words, and the field this group's question turns
+      # on: a room does not vanish the instant it empties, it outlives its
+      # last participant by exactly this many seconds. See the header for
+      # why no default is claimed for either timeout field.
+      departureTimeout:
+        type: integer
+        null_when_unset: true
+      maxParticipants:
+        type: integer
+        null_when_unset: true
+      creationTime:
+        type: timestamp
+      # Freshly created and structurally certain to be zero -- a room this
+      # call just minted cannot have anyone in it yet -- rather than a
+      # business value this task read anywhere.
+      numParticipants:
+        type: integer
+        default: 0
+      numPublishers:
+        type: integer
+        default: 0
+      metadata:
+        type: string
+        default: ""
+
+routes:
+  # ListRooms. Six routes at the identical path and method, one per
+  # verified credential shape, most specific first -- see the header.
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    resource: room
+    operation: list
+    matches_header:
+      Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      Content-Type: application/json
+
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+      Content-Type: application/json
+    error: invalid_api_key
+
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Authorization: Bearer junktoken12345
+      Content-Type: application/json
+    error: invalid_auth_token
+
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Authorization: junktoken12345
+      Content-Type: application/json
+    error: invalid_auth_header
+
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Authorization: "Bearer "
+      Content-Type: application/json
+    error: invalid_auth_header
+
+  # The wrong Content-Type curl sends by default -- struck live with no
+  # credential at all, and routing answers before auth would have been
+  # reached anyway. See the header's last paragraph.
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Content-Type: application/x-www-form-urlencoded
+    error: bad_route_contenttype
+
+  # No matches_header at all -- the true absent case, and the catch-all for
+  # any Authorization value this Recipe never struck live. See the header.
+  - method: POST
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Content-Type: application/json
+    error: permissions_denied
+
+  # The wrong method on the same path. Struck live both ways: a credential,
+  # right shape or wrong, wins over routing; its absence lets routing
+  # answer instead.
+  - method: GET
+    path: /twirp/livekit.RoomService/ListRooms
+    matches_header:
+      Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+    error: invalid_api_key
+
+  - method: GET
+    path: /twirp/livekit.RoomService/ListRooms
+    error: bad_route_method
+
+  # An RPC name this service does not have, under the real service path.
+  # Struck live with no credential.
+  - method: POST
+    path: /twirp/livekit.RoomService/NoSuchMethod
+    matches_header:
+      Content-Type: application/json
+    error: bad_route_path
+
+  # Outside /twirp entirely. Struck live both ways -- see the header: a
+  # credential wins over this fallback exactly as it wins over the
+  # in-service routing misses above, and its absence answers the load
+  # balancer's own default backend, not this application at all.
+  - method: GET
+    path: /nosuchroute
+    matches_header:
+      Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+    error: invalid_api_key
+
+  - method: GET
+    path: /nosuchroute
+    error: edge_ok
+
+  # CreateRoom and DeleteRoom. Documented, not verified -- see the header.
+  - method: POST
+    path: /twirp/livekit.RoomService/CreateRoom
+    resource: room
+    operation: create
+    matches_header:
+      Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      Content-Type: application/json
+    returns: [id, sid, emptyTimeout, departureTimeout, maxParticipants, creationTime, numParticipants, numPublishers, metadata]
+
+  # {} -- see the header for why no deleted_body style fits an object with
+  # nothing in it at all; empty is the honest one.
+  - method: POST
+    path: /twirp/livekit.RoomService/DeleteRoom
+    resource: room
+    operation: delete
+    # DeleteRoomRequest.room -- "name of the room" -- carries the identifier
+    # in the RPC's own JSON body, never a path segment. Every route on this
+    # service is the same literal path shape; see the header.
+    id_from: "body:room"
+    matches_header:
+      Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      Content-Type: application/json
+    deleted_body: empty
+
+errors:
+  # No credential at all, on a real RPC path with the right method and
+  # Content-Type. Struck live.
+  permissions_denied:
+    status: 401
+    code: unauthenticated
+    message: permissions denied
+
+  # No "Bearer " prefix, and "Bearer " with nothing after it -- both struck
+  # live, byte-identical. text/plain, unlike permissions_denied's JSON.
+  invalid_auth_header:
+    status: 401
+    style: text
+    message: "invalid authorization header. Must start with Bearer "
+
+  # Present, "Bearer "-prefixed, and not JWT-shaped at all -- no dots.
+  # Struck live. The shallower of the two tiers a presented-and-wrong
+  # credential can fail at; see the header for why this Recipe's own
+  # rejected-style verdict names the deeper one instead.
+  invalid_auth_token:
+    status: 401
+    style: text
+    message: invalid authorization token
+
+  # JWT-shaped, claims parse, iss a syntactically plausible key nobody
+  # issued. Struck live -- the deepest tier this Recipe could reach without
+  # a real project, and the one a real integration's rotated key actually
+  # earns. See the header for the timing check this sentence's depth did
+  # not turn out to cost anything for.
+  invalid_api_key:
+    status: 401
+    style: text
+    message: invalid API key
+
+  # A real RPC path, wrong method. Struck live with no credential --
+  # routing answers before anything about auth is reached.
+  bad_route_method:
+    status: 404
+    code: bad_route
+    message: 'unsupported method "GET" (only POST is allowed)'
+
+  # A path under the real service name Twirp does not have a handler for.
+  # Struck live with no credential.
+  bad_route_path:
+    status: 404
+    code: bad_route
+    message: 'no handler for path "/twirp/livekit.RoomService/NoSuchMethod"'
+
+  # The Content-Type curl sends by default. Struck live with no credential.
+  bad_route_contenttype:
+    status: 404
+    code: bad_route
+    message: 'unexpected Content-Type: "application/x-www-form-urlencoded"'
+
+  # Outside /twirp entirely, with no credential -- not this application at
+  # all. See the header.
+  edge_ok:
+    status: 200
+    style: text
+    message: "OK"
+
+fixtures:
+  empty: {}
+
+  small-project:
+    room:
+      # No worked JSON example exists for this shape anywhere this task
+      # read -- see the header. Every field below is typed from the public
+      # .proto sources and this record is a fixture this Recipe invented to
+      # prove the shape, not a value observed or documented.
+      - id: cauldron-fixture-room
+        sid: RM_cauldron0000000000
+        name: cauldron-fixture-room
+        emptyTimeout: 600
+        departureTimeout: 20
+        maxParticipants: 20
+        creationTime: 1735689600
+        numParticipants: 0
+        numPublishers: 0
+        metadata: ""
+
+conformance:
+  - name: no credential at all is refused in JSON, not text
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+      json: {}
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        code: unauthenticated
+        message: permissions denied
+
+  - name: a header with no Bearer prefix is a different failure entirely, in plain text
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: junktoken12345
+      json: {}
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: "invalid authorization header\\. Must start with Bearer "
+
+  - name: and so is Bearer with nothing after it, the identical sentence
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: "Bearer "
+      json: {}
+    expect:
+      status: 401
+      body_matches: "invalid authorization header\\. Must start with Bearer "
+
+  - name: a Bearer value with no dots in it is refused for its shape, not its issuer
+    # "junktoken12345" -- present, prefixed, and not JWT-shaped at all.
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer junktoken12345
+      json: {}
+    expect:
+      status: 401
+      body_matches: "invalid authorization token"
+
+  - name: a JWT-shaped credential with an unknown issuer earns the deepest sentence
+    # A syntactically valid JWT (three base64url segments, claims decode)
+    # whose iss is a plausible-looking key nobody issued. The token here is
+    # a fixture, not the one actually sent.
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+      json: {}
+    expect:
+      status: 401
+      body_matches: "invalid API key"
+
+  - name: the wrong Content-Type is a routing failure, checked before any credential
+    # curl's own default form-urlencoded Content-Type, sent with no
+    # Authorization header at all.
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      json: {}
+    expect:
+      status: 404
+      body:
+        code: bad_route
+        message: 'unexpected Content-Type: "application/x-www-form-urlencoded"'
+
+  - name: a wrong method with no credential is refused for routing, not authentication
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /twirp/livekit.RoomService/ListRooms
+    expect:
+      status: 404
+      body:
+        code: bad_route
+        message: 'unsupported method "GET" (only POST is allowed)'
+
+  - name: and the identical wrong method is refused for its credential instead, once one is attached
+    # The pair to the case above: same path, same wrong method, and the
+    # only difference is a credential now being present at all. The 401
+    # here wins over the 404 above.
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/ListRooms
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+    expect:
+      status: 401
+      body_matches: "invalid API key"
+
+  - name: an unknown RPC name under the real service path is a routing miss too
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/twirp/livekit.RoomService/NoSuchMethod
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/NoSuchMethod
+      headers:
+        Content-Type: application/json
+      json: {}
+    expect:
+      status: 404
+      body:
+        code: bad_route
+        message: 'no handler for path "/twirp/livekit.RoomService/NoSuchMethod"'
+
+  - name: a path outside /twirp entirely is not this application's 404 at all
+    # Struck live with no credential: two bytes of plain text, not JSON,
+    # and not even a failure -- 200. See the header for why this reads as a
+    # load balancer's own default backend rather than anything LiveKit's
+    # Twirp router answers.
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /nosuchroute
+    expect:
+      status: 200
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: "OK"
+
+  - name: and a credential wins over that fallback too, once one is presented
+    source: https://cauldron-fixture-probe-xyz123.livekit.cloud/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /nosuchroute
+      headers:
+        Authorization: Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiY2F1bGRyb25maXh0dXJlYXBpa2V5MDAiLCAic3ViIjogImNhdWxkcm9uIiwgImV4cCI6IDk5OTk5OTk5OTksICJ2aWRlbyI6IHsicm9vbUxpc3QiOiB0cnVlfX0.bm90LWEtcmVhbC1zaWduYXR1cmUtYnl0ZXMtMDAwMDAw
+    expect:
+      status: 401
+      body_matches: "invalid API key"
+
+  - name: no GetRoom exists -- filtering the list is the only way to ask about one room
+    # Read from the service definition itself: ListRoomsRequest.names is
+    # documented as "will only return rooms with name match", and no other
+    # RPC on this service takes a single room name and answers about that
+    # room alone. See the header.
+    source: https://github.com/livekit/protocol/blob/main/protobufs/livekit_room.proto
+    fixture: small-project
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      json:
+        names: [cauldron-fixture-room]
+    expect:
+      status: 200
+      body:
+        "rooms[0].name": cauldron-fixture-room
+        "rooms[0].numParticipants": 0
+
+  - name: a project with nothing currently running answers the identical empty shape a closed room would
+    # This Recipe cannot reproduce ListRoomsRequest.names actually filtering
+    # a nonexistent name out of a nonempty list -- Cauldron's own filters
+    # mechanism reads query parameters, and names travels in this RPC's JSON
+    # body, the same mismatch every route on this Twirp-shaped service has
+    # with a format built around REST query strings. What this case proves
+    # instead is the same claim from the other side: an account with no
+    # rooms running answers rooms absent entirely, not an error and not a
+    # 404 -- the identical shape a room that was never created and a room
+    # that has since closed both leave behind, because nothing on this
+    # surface can address one room that is not currently listed at all.
+    source: https://github.com/livekit/protocol/blob/main/protobufs/livekit_room.proto
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/ListRooms
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      json: {}
+    expect:
+      status: 200
+      absent:
+        - "rooms[0]"
+
+  - name: creating a room echoes what was asked for, and departureTimeout governs what happens after everyone leaves
+    # "number of seconds to keep the room open after everyone leaves" --
+    # the .proto's own words for departureTimeout, quoted in the header.
+    # No worked JSON example exists for this response anywhere this task
+    # read, so only the fields this request itself supplies are asserted;
+    # sid and creationTime are checked by shape, not by a value nobody
+    # confirmed.
+    source: https://github.com/livekit/protocol/blob/main/protobufs/livekit_room.proto
+    fixture: empty
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/CreateRoom
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      json:
+        name: cauldron-fixture-new-room
+        emptyTimeout: 600
+        departureTimeout: 20
+        maxParticipants: 20
+    expect:
+      status: 200
+      body:
+        name: cauldron-fixture-new-room
+        emptyTimeout: 600
+        departureTimeout: 20
+        maxParticipants: 20
+        numParticipants: 0
+      matches:
+        sid: ".+"
+
+  - name: deleting a room answers an object with nothing in it at all
+    # "message DeleteRoomResponse {}" -- the .proto's own definition,
+    # quoted in the header. Not a receipt, not an id, not even a status
+    # field -- an empty object, which a client calling .json() on succeeds
+    # against and a 204 would not have.
+    source: https://github.com/livekit/protocol/blob/main/protobufs/livekit_room.proto
+    fixture: small-project
+    request:
+      method: POST
+      path: /twirp/livekit.RoomService/DeleteRoom
+      headers:
+        Content-Type: application/json
+        Authorization: Bearer cauldron-fixture-livekit-accepted-management-token-0000000000000000
+      json:
+        room: cauldron-fixture-room
+    expect:
+      status: 200
+      body: {}
+      absent:
+        - deleted
+        - id
+        - name
