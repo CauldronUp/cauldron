@@ -1,0 +1,504 @@
+# Binance Recipe for Cauldron
+#
+# Binance answers "what is the price right now" from three different public
+# endpoints, and each one attaches a different amount of proof about when.
+#
+#   GET /api/v3/ticker/price?symbol=BTCUSDT
+#     {"symbol":"BTCUSDT","price":"76974.42000000"}
+#
+# Nothing. No time, no sequence, no field of any kind beside the number
+# itself.
+#
+#   GET /api/v3/ticker/bookTicker?symbol=BTCUSDT
+#     {"symbol":"BTCUSDT","bidPrice":"76974.19000000","bidQty":"1.07296000",
+#      "askPrice":"76974.20000000","askQty":"4.18642000"}
+#
+# Also nothing -- a whole extra pair of numbers and still no timestamp.
+#
+#   GET /api/v3/ticker/24hr?symbol=BTCUSDT
+#     {..., "openTime":1788283276012,"closeTime":1788369676012,
+#      "firstId":6644753725,"lastId":6648472788,"count":3719064}
+#
+# Both: a window in epoch milliseconds and a trade-id range wide enough to
+# say how many trades happened inside it. Three routes, one underlying
+# price, and the answer to this collection's question goes from nothing to
+# both depending only on which of Binance's own endpoints answered.
+#
+# **The order book is the one Binance endpoint that actually protects a
+# caller from a gap**, and it does not spell the symbol back either:
+#
+#   GET /api/v3/depth?symbol=BTCUSDT&limit=1
+#     {"lastUpdateId":99585211799,"bids":[[...]],"asks":[[...]]}
+#
+# lastUpdateId is a real sequence number -- the same field named U/u on
+# Binance's own diff-depth websocket stream, so two REST reads or a REST
+# read and a stream can be reconciled against each other. And "BTCUSDT" is
+# not anywhere in the response: asked with a name, answered with none, the
+# same shape Kraken's Recipe in this collection pins for a different reason.
+#
+# **Weight-based rate limiting is published in headers, precisely, on every
+# request that reaches the application -- and there are two of them.**
+# Binance's own docs name one pattern, `X-MBX-USED-WEIGHT-(intervalNum)
+# (intervalLetter)`, confirmed live as x-mbx-used-weight-1m: 2. What the
+# live response also carries, undocumented on that page, is a second header
+# with no interval in its name at all -- x-mbx-used-weight: 2, the same
+# number, and x-mbx-uuid, a per-request trace id neither page mentions.
+# A client reading only the documented pattern still gets a real number; one
+# that assumes the documented pattern is the only header on the response
+# does not know about the other two.
+#
+# **A SIGNED endpoint's credential check sits behind two earlier gates, and
+# neither one looks at the credential.** Probed live against
+# GET /api/v3/account, four ways:
+#
+#   no X-MBX-APIKEY, no params           -> 400 -1102 "Mandatory parameter
+#                                            'signature' was not sent, was
+#                                            empty/null, or malformed."
+#   X-MBX-APIKEY: junk, no params        -> 400 -1102, byte-identical
+#   no key, timestamp+signature garbage  -> 400 -1021 "Timestamp for this
+#                                            request is outside of the
+#                                            recvWindow."
+#   junk key, same garbage params        -> 400 -1021, byte-identical
+#
+# Sending no API key at all and sending a wrong one produce exactly the same
+# body at both stages, because Binance validates the shape of the request --
+# is a signature present, is the timestamp fresh -- before it ever reaches
+# code that could tell an absent key from a wrong one. A client fixing its
+# request one mistake at a time never sees a credential-specific message
+# until both of those are already right, which this Recipe cannot reach
+# without a live, per-request HMAC signature -- see the gaps below.
+#
+# **A wrong method and a route that does not exist are the same 404, empty,
+# with none of the headers a real response carries:**
+#
+#   GET  /api/v3/no-such-route-xyz  -> 404, zero bytes, no Content-Type
+#   POST /api/v3/ticker/price       -> 404, zero bytes, no Content-Type,
+#                                       no Allow header
+#
+# Neither answer carries x-mbx-used-weight or x-mbx-uuid, which every real
+# response does -- evidence both are answered by the edge in front of
+# Binance's application rather than the application itself, and neither
+# mistake is told apart from the other by shape, status, or any header.
+# There is no 405 anywhere on this host for the cases this Recipe could
+# reach.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - SIGNED endpoints need a live HMAC-SHA256 signature over the query
+#     string, the same reason AWS SigV4 is only pattern-matched elsewhere in
+#     this collection. This Recipe reproduces the two gates in front of that
+#     check -- missing signature, stale timestamp -- because both were
+#     reachable and byte-identical with and without a credential. What is on
+#     the other side of a fresh signature, an actually distinct "your key is
+#     wrong" message, was not reachable without one and is not claimed here.
+#   - One symbol, BTCUSDT, of several thousand, and the numbers move --
+#     recorded as they stood at the verified moment, the gap every ticker
+#     Recipe in this collection states for the same reason.
+#   - depth is served at limit=1; larger limits are not modelled.
+#   - No order placement, no account data, no user data stream. Nothing
+#     here can move money.
+#   - No upstream.spec. Binance's own reference (developers.binance.com) is
+#     markdown prose, not a machine-readable document at a stable URL --
+#     confirmed by listing the provider's own GitHub docs repository, which
+#     holds .md files and no OpenAPI document at all.
+#   - The live Content-Type on every JSON response, success or failure, is
+#     the exact bytes "application/json;charset=UTF-8" -- no space before
+#     charset, capital UTF-8. Cauldron's resource envelope sends plain
+#     "application/json" and has no per-route override for it, so that exact
+#     header is recorded here rather than asserted as a case.
+#
+# Every case below carries source. A verified date means this Recipe called
+# api.binance.com with exactly the request shown, on 2026-09-02, and
+# recorded exactly what came back; no case here lacks one.
+
+recipe: binance
+capability: brokerage
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.binance.com/docs/binance-spot-api-docs/rest-api
+
+auth:
+  # Every route this Recipe serves successfully needs no credential.
+  # SIGNED endpoints exist and are not modelled that way -- see the header
+  # and the gaps below.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  # {"code": -1102, "msg": "..."} -- a negative integer and a field
+  # spelled msg, not message, on every failure this Recipe reached.
+  error:
+    style: flat
+    message_field: msg
+    code_field: code
+    type_field: "-"
+
+resources:
+  # GET /api/v3/ticker/price. Two fields and nothing else -- see the
+  # header.
+  price:
+    id:
+      style: opaque
+      field: symbol
+    fields:
+      price:
+        type: string
+
+  # GET /api/v3/ticker/bookTicker. A whole second price pair and still no
+  # timestamp.
+  bookticker:
+    id:
+      style: opaque
+      field: symbol
+    fields:
+      bidPrice:
+        type: string
+      bidQty:
+        type: string
+      askPrice:
+        type: string
+      askQty:
+        type: string
+
+  # GET /api/v3/ticker/24hr. The one ticker-family route that carries both
+  # a time window and a trade-id range.
+  ticker24hr:
+    id:
+      style: opaque
+      field: symbol
+    fields:
+      priceChange:
+        type: string
+      priceChangePercent:
+        type: string
+      lastPrice:
+        type: string
+      bidPrice:
+        type: string
+      askPrice:
+        type: string
+      openPrice:
+        type: string
+      highPrice:
+        type: string
+      lowPrice:
+        type: string
+      volume:
+        type: string
+      quoteVolume:
+        type: string
+      openTime:
+        type: timestamp_ms
+      closeTime:
+        type: timestamp_ms
+      # A trade-id range, not a single sequence: wide enough to say how
+      # many trades happened in the window, not to reconcile one read
+      # against the next the way depth.lastUpdateId does.
+      firstId:
+        type: integer
+      lastId:
+        type: integer
+      count:
+        type: integer
+
+  # GET /api/v3/depth. The one endpoint with a real, single, gap-detectable
+  # sequence -- and the one where the symbol asked for is nowhere in the
+  # answer, see the header.
+  depth:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      lastUpdateId:
+        type: integer
+      bids:
+        type: list
+      asks:
+        type: list
+
+  # GET /api/v3/time. No id at all, the same faithful-absence CoinGecko's
+  # Recipe in this collection makes for its own /ping.
+  servertime:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      serverTime:
+        type: timestamp_ms
+
+routes:
+  - method: GET
+    path: /api/v3/ticker/price
+    resource: price
+    operation: get
+    id_from: query:symbol
+
+  - method: GET
+    path: /api/v3/ticker/bookTicker
+    resource: bookticker
+    operation: get
+    id_from: query:symbol
+
+  - method: GET
+    path: /api/v3/ticker/24hr
+    resource: ticker24hr
+    operation: get
+    id_from: query:symbol
+
+  - method: GET
+    path: /api/v3/depth
+    resource: depth
+    operation: get
+    id_from: query:symbol
+
+  - method: GET
+    path: /api/v3/time
+    resource: servertime
+    operation: get
+    id_from: auth
+
+  # No signature, no timestamp -- with or without an API key header, this is
+  # the answer. See the header: nothing here has looked at a credential yet.
+  - method: GET
+    path: /api/v3/account
+    error: signature_missing
+
+  # Past the parameter check and into the freshness check, still with or
+  # without a credential -- the fixed timestamp below is stale by
+  # construction, which is what earns this particular message rather than
+  # the one above it.
+  - method: GET
+    path: /api/v3/account
+    matches_query:
+      timestamp: "1788369700000"
+      signature: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    error: timestamp_stale
+
+  # A route that does not exist.
+  - method: GET
+    path: /api/v3/no-such-route-xyz
+    error: not_found
+
+  # The wrong method on a route that does. The identical shape.
+  - method: POST
+    path: /api/v3/ticker/price
+    error: not_found
+
+errors:
+  signature_missing:
+    status: 400
+    code: "-1102"
+    message: Mandatory parameter 'signature' was not sent, was empty/null, or malformed.
+
+  timestamp_stale:
+    status: 400
+    code: "-1021"
+    message: Timestamp for this request is outside of the recvWindow.
+
+  # Zero bytes, no Content-Type -- see the header. Empty serves the status
+  # line and nothing else, which is the honest description of what this
+  # host sends for both a routing miss and a wrong method.
+  not_found:
+    status: 404
+    empty: true
+
+fixtures:
+  empty: {}
+
+  bitcoin:
+    price:
+      - id: BTCUSDT
+        symbol: BTCUSDT
+        price: "76974.42000000"
+
+    bookticker:
+      - id: BTCUSDT
+        symbol: BTCUSDT
+        bidPrice: "76974.19000000"
+        bidQty: "1.07296000"
+        askPrice: "76974.20000000"
+        askQty: "4.18642000"
+
+    ticker24hr:
+      - id: BTCUSDT
+        symbol: BTCUSDT
+        priceChange: "-638.75000000"
+        priceChangePercent: "-0.823"
+        lastPrice: "76974.19000000"
+        bidPrice: "76974.19000000"
+        askPrice: "76974.20000000"
+        openPrice: "77612.94000000"
+        highPrice: "77792.00000000"
+        lowPrice: "76264.00000000"
+        volume: "14728.13649000"
+        quoteVolume: "1135850567.69624210"
+        openTime: 1788283276012
+        closeTime: 1788369676012
+        firstId: 6644753725
+        lastId: 6648472788
+        count: 3719064
+
+    depth:
+      - id: BTCUSDT
+        lastUpdateId: 99585211799
+        bids:
+          - ["76974.19000000", "1.07146000"]
+        asks:
+          - ["76974.20000000", "4.18797000"]
+
+    servertime:
+      - id: "-"
+        serverTime: 1788369677007
+
+conformance:
+  - name: the plain price ticker carries nothing but the number
+    source: "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/ticker/price
+      query:
+        symbol: BTCUSDT
+    expect:
+      status: 200
+      body:
+        symbol: BTCUSDT
+        price: "76974.42000000"
+      absent:
+        - time
+        - closeTime
+        - updateId
+
+  - name: the book ticker adds a second price pair and still no time
+    source: "https://api.binance.com/api/v3/ticker/bookTicker?symbol=BTCUSDT"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/ticker/bookTicker
+      query:
+        symbol: BTCUSDT
+    expect:
+      status: 200
+      body:
+        bidPrice: "76974.19000000"
+        askPrice: "76974.20000000"
+      absent:
+        - time
+        - updateId
+
+  - name: the 24hr ticker is the one route with both a window and a trade-id range
+    source: "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/ticker/24hr
+      query:
+        symbol: BTCUSDT
+    expect:
+      status: 200
+      body:
+        openTime: 1788283276012
+        closeTime: 1788369676012
+        firstId: 6644753725
+        lastId: 6648472788
+        count: 3719064
+
+  - name: the order book carries a real sequence and no symbol at all
+    source: "https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=1"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/depth
+      query:
+        symbol: BTCUSDT
+    expect:
+      status: 200
+      body:
+        lastUpdateId: 99585211799
+        "bids[0][0]": "76974.19000000"
+      absent:
+        - symbol
+        - time
+
+  - name: the server clock is a bare epoch millisecond integer
+    source: https://api.binance.com/api/v3/time
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/time
+    expect:
+      status: 200
+      body:
+        serverTime: 1788369677007
+
+  - name: a signed route with no signature refuses the shape, not the key
+    source: https://api.binance.com/api/v3/account
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/account
+    expect:
+      status: 400
+      body:
+        code: -1102
+        msg: Mandatory parameter 'signature' was not sent, was empty/null, or malformed.
+
+  - name: a junk API key gets the identical shape complaint
+    source: https://api.binance.com/api/v3/account
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/account
+      headers:
+        X-MBX-APIKEY: junkkeyjunkkeyjunkkeyjunkkeyjunkkeyjunkkey
+    expect:
+      status: 400
+      body:
+        code: -1102
+        msg: Mandatory parameter 'signature' was not sent, was empty/null, or malformed.
+
+  - name: past the shape check, a stale timestamp is the next gate, key or no key
+    source: https://api.binance.com/api/v3/account
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/account
+      query:
+        timestamp: "1788369700000"
+        signature: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 400
+      body:
+        code: -1021
+        msg: Timestamp for this request is outside of the recvWindow.
+
+  - name: a route that does not exist answers nothing at all
+    source: https://api.binance.com/api/v3/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/no-such-route-xyz
+    expect:
+      status: 404
+
+  - name: the wrong method on a real route gets the identical nothing
+    source: "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: POST
+      path: /api/v3/ticker/price
+    expect:
+      status: 404
