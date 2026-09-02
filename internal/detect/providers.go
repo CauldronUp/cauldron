@@ -5441,6 +5441,353 @@ func providers() []provider {
 			composer: []string{"simivar/genius-php"},
 			npm:      []string{"genius-lyrics"},
 		},
+		{
+			// The Payments API this Recipe models -- create a payment, get
+			// it back, list its actions -- is the server-side surface. The
+			// @checkout.com npm scope is entirely the client side of the
+			// same product: checkout-web-components, the 3ds-web-sdk and
+			// its React wrapper, the Cordova and React Native Frames
+			// wrappers all tokenize a card in a browser or app and hand the
+			// token to a backend, which is what actually calls the routes
+			// below.
+			//
+			// Both mapped packages are the vendor's own, unscoped, and say
+			// "Full API coverage" in their own descriptions -- confirmed
+			// against checkout-sdk-node's README, which shows
+			// cko.payments.request and cko.payments.get by name, and
+			// checkout-sdk-php's, which exposes a dedicated
+			// PaymentsClient.
+			recipe:   "checkoutcom",
+			composer: []string{"checkout/checkout-sdk-php"},
+			npm:      []string{"checkout-sdk-node"},
+		},
+		{
+			// Klarna publishes five PHP SDKs, one per product, and the
+			// Order Management API this Recipe models -- viewing and
+			// changing an order already placed -- is only one of them.
+			// klarna/checkout (kco_php) is the Checkout product,
+			// deprecated in favour of the REST SDK below, and
+			// klarna/php-xmlrpc is older still. Neither touches
+			// /ordermanagement/v1/orders.
+			//
+			// klarna/kco_rest is the REST SDK for the same Checkout
+			// product by name, but its own source tree carries a
+			// dedicated OrderManagement namespace -- Order.php,
+			// Capture.php, Refund.php -- whose base path is literally
+			// "/ordermanagement/v1/orders", confirmed by reading the
+			// class rather than guessing from the package name. Packagist
+			// marks it abandoned with no replacement named, which is the
+			// shape commercetools/php-sdk has elsewhere in this
+			// collection: the API is alive, only the PHP client stopped
+			// being maintained, in this case in 2020, and a Recipe is
+			// still useful to whoever has not rewritten that integration.
+			//
+			// No JS or Node SDK exists under the vendor's own GitHub org
+			// -- kco_php, kco_java, kco_python, kco_dotnet, kco_asp, and
+			// no kco_node or kco_js beside them -- and the closest npm
+			// candidates are for the Checkout product's own v3 API
+			// (klarna-checkout-sdk, an unofficial personal project) or the
+			// Payments session API (@agoransson/klarna-payments), neither
+			// the Order Management surface this Recipe models.
+			//
+			// zhutik/klarna-api-go's own README claims "Checkout v3 and
+			// Order Management APIs" and its source has no
+			// OrderManagement file at all -- the claim outruns the code,
+			// so it is left out. Flaconi/go-klarna makes no such claim
+			// and delivers it anyway: its order_management.go builds
+			// OrderManagementEndpoint + "/" + id, which is
+			// "/ordermanagement/v1/orders/{id}" itself, behind the same
+			// APIUsername/APIPassword Basic pair.
+			recipe:   "klarna",
+			composer: []string{"klarna/kco_rest"},
+			gomod:    []string{"github.com/Flaconi/go-klarna"},
+		},
+		{
+			// mangopay/php-sdk-v2 is Packagist's own top hit for the
+			// vendor prefix, and it names its own replacement: the
+			// package is marked abandoned in favour of mangopay4/php-sdk,
+			// which is the one mapped here, actively released the day
+			// before this was checked. The Node package follows the same
+			// v4 naming and is published under a mangopay.com maintainer
+			// address, also released the day this was checked -- the
+			// OAuth Bearer gateway this Recipe's own header describes is
+			// exactly what its clientId/clientApiKey configuration
+			// authenticates against.
+			//
+			// The bare npm "mangopay" is the earlier kind of near miss:
+			// its own README says "This is not the official Mangopay
+			// Node library. At this time they don't have one" -- true in
+			// 2016, superseded since. The @mangopay npm scope otherwise
+			// is entirely the client-side Checkout SDK -- vault,
+			// three-ds-helper, sdk-loader, sdk-authorize -- the
+			// card-tokenization surface rather than the PayIns API this
+			// Recipe models.
+			//
+			// gotsunami/mangopay2-go-sdk is unofficial but reads its own
+			// version tag off the API it targets -- its command-line tool
+			// installs as `mangopay@v2.01`, this Recipe's own api: field
+			// -- and carries a dedicated payin.go alongside it.
+			recipe:   "mangopay",
+			composer: []string{"mangopay4/php-sdk"},
+			npm:      []string{"mangopay4-nodejs-sdk"},
+			gomod:    []string{"github.com/gotsunami/mangopay2-go-sdk"},
+		},
+		{
+			// Both mapped packages are the vendor's own, published by the
+			// Amadeus Developer Team under the amadeus4dev GitHub org.
+			// The Node SDK's README shows
+			// amadeus.shopping.flightOffersSearch.get by name, which is
+			// the v2 route this Recipe models, authenticated with a
+			// clientId and clientSecret the SDK exchanges for a token
+			// itself against the v1 endpoint above it. No Go SDK exists
+			// under the vendor's org -- amadeus-node, amadeus-python and
+			// amadeus-java only -- so there is no gomod mapping.
+			recipe:   "amadeus",
+			composer: []string{"amadeus4dev/amadeus-php"},
+			npm:      []string{"amadeus"},
+		},
+		{
+			// "kiwi" is one of the busiest homographs in this collection.
+			// Both registries return a Cassowary constraint solver
+			// (kiwi.js, @lume/kiwi), a Figma binary-format reader
+			// (fig-kiwi and its forks), Kiwi TCMS test-management
+			// clients, a font and an ESLint plugin before anything about
+			// this API turns up at all, and Packagist has nothing under
+			// "kiwi" or "tequila" beyond an EPFL authentication helper
+			// and unrelated MongoDB packages sharing the second word.
+			//
+			// The one genuine candidate is small and unofficial --
+			// @ohm-vision/kiwi-tequila-api, one author, its own
+			// description reading "Unofficial wrapper for Kiwi (tequila)
+			// API" -- but its default base URL is tequila-api.kiwi.com,
+			// the real host behind the search this Recipe models, and
+			// its search module posts to a "search" path taking an
+			// apiKey option. Small and unambiguous is the bar this
+			// collection has used before, for easyship and ecwid alike.
+			recipe: "kiwi",
+			npm:    []string{"@ohm-vision/kiwi-tequila-api"},
+		},
+		{
+			// hotelbeds/hotel-api-sdk-php is the package Packagist names
+			// first for the vendor prefix, and it is dead: its source,
+			// github.com/hotelbeds-sdk/hotel-api-sdk-php, no longer
+			// exists, and Packagist's own metadata endpoint for it
+			// resolves no installable version at all.
+			//
+			// What is still alive is the same code under other names.
+			// Every fork shares the exact namespace
+			// hotelbeds\hotel_api_sdk\, and one of them --
+			// serkancelik17/hotel_content_api_sdk -- carries its author
+			// as Tomeu Capo at a hotelbeds.com address, which is as close
+			// to confirmation of authorship as this collection gets
+			// without an official vendor account on the registry.
+			// iivanov/hotel-api-sdk-php is the most actively kept fork,
+			// last released 2023, and its README shows
+			// apikey/sharedsecret configuration and Availability,
+			// BookingConfirm, BookingCancellation, BookingList and Status
+			// methods -- the Api-key header and the bookings/status
+			// routes this Recipe models, across both the content and
+			// booking hosts.
+			//
+			// hotelbeds.ts on npm reads as unverifiable from its README
+			// alone -- a single package, unreleased since 2022, whose
+			// entire README is its own name -- but its published dist is
+			// not: Client.js hardcodes both hosts, hotelBookingURL
+			// ending /hotel-api/1.0 and hotelContentURL ending
+			// /hotel-content-api/1.0, and its request interceptor sets
+			// both Api-key and X-Signature by name. Its own status()
+			// method calls exactly `${hotelBookingURL}/status`. Read
+			// rather than guessed from the README, it is the closest
+			// match in either registry.
+			recipe:   "hotelbeds",
+			composer: []string{"iivanov/hotel-api-sdk-php", "serkancelik17/hotel_content_api_sdk"},
+			npm:      []string{"hotelbeds.ts"},
+		},
+		{
+			// mx-platform-node is the vendor's own -- published under a
+			// devexperience@mx.com maintainer address -- and it is the
+			// one unscoped package among the company's npm presence:
+			// everything under @mxenabled is the Connect Widget, the
+			// client-side embed that renders a bank-login UI in a page
+			// (web-widget-sdk, the React Native widget SDKs), a
+			// different surface from the server API this Recipe models.
+			//
+			// rewards-wise/mx-sdk-php is unofficial but unambiguous: its
+			// own README documents HTTP Basic auth via
+			// setUsername/setPassword and lists GET/POST
+			// /users/{user_guid}/members and /users/{user_guid}/accounts
+			// by path, the exact routes below.
+			//
+			// mx-platform-go is the vendor's third official client, under the
+			// same mxenabled GitHub org as the widgets rather than the npm
+			// scope they are published to -- confirmed against its own
+			// source, which calls SetBasicAuth(auth.UserName, auth.Password)
+			// and builds /users/{user_guid}/members by string replacement,
+			// the identical shape the other two mapped packages carry.
+			recipe:   "mx",
+			composer: []string{"rewards-wise/mx-sdk-php"},
+			npm:      []string{"mx-platform-node"},
+			gomod:    []string{"github.com/mxenabled/mx-platform-go"},
+		},
+		{
+			// The vendor's own Node SDK, published under the
+			// belvo-finance GitHub org: its own README authenticates
+			// with a key-id-and-secret pair passed to the client
+			// constructor and exposes client.links and client.accounts
+			// by name, the two resources this Recipe models.
+			//
+			// Packagist has no PHP client under "belvo" at all -- what
+			// its search returns instead is Laravel's BelongsTo
+			// relationship helpers, matched on a shared substring rather
+			// than on anything about this provider.
+			recipe: "belvo",
+			npm:    []string{"belvo"},
+		},
+		{
+			// The bare npm "basiq" is a homograph exactly as the name
+			// invites: a "cross-platform JavaScript minimal library
+			// inspired by jQuery," dated and unrelated. The real client
+			// is scoped: @basiq/basiq-javascript-sdk, published under
+			// the vendor's own basiqio GitHub org by maintainers named
+			// after the company, and its README shows getInstitutions,
+			// postConnection and getAccounts among its methods -- the
+			// institutions, connections and accounts routes this Recipe
+			// models -- authenticated with an access token on the
+			// Authorization header. The rest of the @basiq scope is the
+			// Connect widget, the client-side bank-login UI
+			// (basiq-connect-control, connect-auth), a different
+			// surface.
+			//
+			// basiqio/basiq-sdk-php is the same vendor's PHP client,
+			// marked abandoned on Packagist with no replacement named --
+			// the klarna/kco_rest shape again, an alive API and a PHP
+			// client nobody kept maintaining. Its own README shows the
+			// identical three resources by name, so it is mapped anyway,
+			// alongside fork-basiqio/basiq-sdk-php, an actively
+			// maintained fork of the same code that out-installs the
+			// original nine to one -- the original for what older code
+			// still carries, the fork for what a project installs today.
+			//
+			// basiq-sdk-nodejs is the other Node client under the same
+			// basiqio org, older than @basiq/basiq-javascript-sdk and
+			// separately maintained rather than superseded by it; its
+			// own README shows getInstitutions, createConnection and
+			// getAccounts, the same three resources under different
+			// names.
+			//
+			// The vendor's Go module, basiq-sdk-golang, is checked
+			// rather than assumed from its name: its documentation lists
+			// GetInstitutions, ListAllConnections and GetAccounts on a
+			// session built from an access token. Its source repository
+			// is gone -- the hotelbeds shape below, an SDK whose GitHub
+			// org no longer resolves -- but the module itself is still
+			// fetchable, cached permanently by the Go module proxy the
+			// way every published version is, so a project that added it
+			// while the repository was still live still builds today.
+			recipe:   "basiq",
+			composer: []string{"basiqio/basiq-sdk-php", "fork-basiqio/basiq-sdk-php"},
+			npm:      []string{"@basiq/basiq-javascript-sdk", "basiq-sdk-nodejs"},
+			gomod:    []string{"github.com/basiqio/basiq-sdk-golang"},
+		},
+		{
+			// This Recipe deliberately does not model Stability's
+			// generation endpoints -- see the header for why a v1 image
+			// response mints no id to reconnect to -- so the question
+			// for every candidate here is whether it also reaches the
+			// account side of the same v1 host, GET /v1/user/account,
+			// /v1/user/balance and /v1/engines/list, using the same
+			// Bearer sk- key, or only wraps text-to-image.
+			//
+			// Both mapped packages do. Neither is the vendor's own --
+			// Stability publishes no JS, PHP or Go client, only a Python
+			// one this collection's registries do not index -- but both
+			// name the same three methods by name: stability-ai's own
+			// README shows stability.v1.user.account(),
+			// .v1.user.balance() and .v1.engines.list(), and
+			// thehocinesaad/stability-php shows
+			// $client->user()->account(), ->user()->balance() and
+			// ->engines()->list(). The older stability-client and
+			// stability-ts packages, from 2022 and 2023, wrap
+			// DreamStudio's generation surface only and were left out on
+			// that basis. thehocinesaad/stability-laravel is the same
+			// author's Laravel wrapper around the identical client, the
+			// same account/engines/balance methods behind a facade.
+			recipe:   "stabilityai",
+			composer: []string{"thehocinesaad/stability-php", "thehocinesaad/stability-laravel"},
+			npm:      []string{"stability-ai"},
+		},
+		{
+			// The Recipe's own header already cites @fal-ai/client's
+			// published types as the source for the queue response
+			// shape, and reading its source confirms the rest of it:
+			// request.ts builds the Authorization header as literally
+			// `Key ${credentials}`, and queue.ts requests
+			// /requests/{id}/status and /requests/{id} -- the status and
+			// result legs this Recipe models -- on the vendor's own
+			// fal-ai GitHub org, 5.3 million downloads a month.
+			//
+			// hosmelq/falai on Packagist (the composer name is "falai",
+			// not "falai-php") is unofficial and matches just as
+			// precisely: its own README shows queue()->submit(),
+			// ->status() and ->result() against the identical
+			// three-URL shape. marceloeatworld/falai-php, the more
+			// installed of the two, matches the same three verbs and
+			// uses fal-ai/flux/schnell as its own worked example -- the
+			// exact application this Recipe's fixtures are built
+			// against. valksor/fal-go is a Go port with zero stars and a
+			// source tree just as exact -- its auth package sets scheme
+			// "Key" from FAL_KEY, and its queue package builds
+			// ".../requests/{id}" and ".../requests/{id}/status" by
+			// string concatenation. Small and unofficial, all three, but
+			// unambiguous.
+			recipe:   "falai",
+			composer: []string{"hosmelq/falai", "marceloeatworld/falai-php"},
+			npm:      []string{"@fal-ai/client"},
+			gomod:    []string{"github.com/valksor/fal-go"},
+		},
+		{
+			// Sumsub's own npm scope is entirely the other surface --
+			// @sumsub/websdk, the mobile SDKs, @sumsub/id-connect's OAuth
+			// flow, @sumsub/fisherman's fraud tooling -- none of it a caller
+			// of the applicant API this Recipe models. What does call it are
+			// two independent backend clients: alexeevdv/sumsub-client signs
+			// requests with a RequestSigner built from the app token and
+			// secret and exposes getApplicantData and getApplicantStatus by
+			// name, and sumsub-node-sdk takes the same appToken/secretKey
+			// pair and covers applicant creation, retrieval and status
+			// alongside it.
+			//
+			// vadimzhukck/sumsub-sdk carries the third leg of the same
+			// scheme in Go: its sign method builds
+			// HMAC-SHA256(secretKey, timestamp+method+path+body), and its
+			// ApplicantService.Get requests
+			// /resources/applicants/{id}/one by name.
+			recipe:   "sumsub",
+			composer: []string{"alexeevdv/sumsub-client"},
+			npm:      []string{"sumsub-node-sdk"},
+			gomod:    []string{"github.com/vadimzhukck/sumsub-sdk"},
+		},
+		{
+			// Every client under Veriff's own npm scope is the
+			// client-side verification-camera SDK -- @veriff/js-sdk,
+			// @veriff/react-native-sdk, Cordova and Capacitor plugins --
+			// and Packagist has nothing under the name at all, which is
+			// where the backlog would otherwise record this Recipe as
+			// unmapped.
+			//
+			// What neither registry search turns up is a Go module,
+			// because Go modules are not searchable by npm-style
+			// registry text search -- they are found by reading source.
+			// brokeyourbike/veriff-api-client-go's CreateSession posts to
+			// "/v1/sessions" and its SessionDecision requests
+			// "/v1/sessions/%s/decision", both against the same
+			// X-AUTH-CLIENT header this Recipe checks, with an
+			// X-HMAC-SIGNATURE alongside it that this Recipe does not
+			// model. One author, no stars logged, but the source reads
+			// unambiguous rather than plausible.
+			recipe: "veriff",
+			gomod:  []string{"github.com/brokeyourbike/veriff-api-client-go"},
+		},
 	}
 }
 
