@@ -194,8 +194,8 @@ type Auth struct {
 	// unauthenticated -- the behaviour every Recipe was written against, and
 	// the commoner arrangement.
 	//
-	// Providers genuinely disagree about this and eighteen Recipes here have
-	// had to say so in prose. Airbyte checks the credential first, always, and
+	// Providers genuinely disagree about this and ninety-one Recipes here
+	// have had to say so in prose. Airbyte checks the credential first, always, and
 	// answered a byte-identical 401 to every path real or invented. Fireworks
 	// resolves the route and the method first, so an unrouted path 404s and a
 	// wrong method 405s with nothing sent at all. Temporal routes first;
@@ -243,11 +243,30 @@ type Auth struct {
 	//            your credential is missing depends on whether your JSON
 	//            parsed, and the answer differs between two routes on one
 	//            host -- which no Recipe-wide setting can express at all.
+	//   LiveKit  splits on which credential was presented, which is Timescale's
+	//            split inverted. A **bad** credential answers 401 everywhere,
+	//            unrouted paths and wrong methods included; an **absent** one
+	//            lets routing answer instead. So sending nothing gets a more
+	//            informative reply than sending something wrong.
+	//   Genius   splits within one verdict. Its absent-credential case depends
+	//            on routing -- 401 on a real path, 403 on one that does not
+	//            exist -- while its rejected-credential case is
+	//            routing-blind and answers identically either way. Two
+	//            different programs answer, which is why: its own application
+	//            and the OAuth library in front of it.
+	//   Canada Post is not about routing at all. It validates the tracking
+	//            number's **shape** -- twelve, thirteen or sixteen
+	//            alphanumeric characters, its three real formats -- before it
+	//            examines the credential, and does so even when a wrong
+	//            credential is presented. A domain constraint on a path
+	//            parameter running ahead of authentication is a third axis
+	//            this boolean does not have, and an id pattern here is
+	//            checked strictly after the credential.
 	//
-	// The last eight would each need the credential's state to survive a
+	// The last twelve would each need the credential's state to survive a
 	// route match without gating it -- and Northflank's would need it to
 	// survive body validation as well, per route. That is a larger change
-	// than a boolean and is not obviously worth making for eight providers.
+	// than a boolean and is not obviously worth making for twelve providers.
 	// What is worth doing is what those Recipes do: say so in the file, so
 	// the next reader knows the emulator is approximating rather than that
 	// the provider is simple.
