@@ -1,0 +1,480 @@
+# Last.fm Recipe for Cauldron
+#
+# Same collection as recipes/spotify/recipe.yaml and recipes/discogs/recipe.yaml.
+# Spotify mints opaque ids and never lets an outsider edit anything. Discogs
+# is a wiki with opaque numeric ids that still get merged and deleted.
+# Last.fm is the odd one out: for most of its catalogue there is no id at
+# all, only the artist's own name string, and the one place a stable
+# identifier does show up is a MusicBrainz id riding along as an optional
+# extra rather than the API's own key.
+#
+# Checked live against ws.audioscrobbler.com on 2026-09-02, with no account,
+# no registered app and no api_key ever sent:
+#
+#   GET /2.0/?method=artist.getinfo&artist=Cher&format=json
+#     (no api_key at all)          -> 400 {"message":"Invalid parameters -
+#                                     Your request is missing a required
+#                                     parameter","error":6}
+#     (api_key=&format=json, i.e.
+#      the param present and empty) -> 400, byte-identical to absent
+#     (api_key=deadbeef...)         -> 403 {"message":"Invalid API key - You
+#                                     must be granted a valid key by
+#                                     last.fm","error":10}
+#   GET /2.0/?method=bogus.notarealmethod&format=json (no api_key)
+#                                    -> 400, error 6 -- the SAME sentence as
+#                                       above, not a method-specific one
+#   GET /2.0/?method=bogus.notarealmethod&api_key=deadbeef...&format=json
+#                                    -> 400 {"message":"Invalid Method - No
+#                                     method with that name in this
+#                                     package","error":3}
+#   GET /2.0/?method=artist.getinfo&api_key=deadbeef...&format=json
+#     (artist param omitted entirely, key present but wrong)
+#                                    -> 403, error 10 -- NOT error 6, even
+#                                       though the method's own required
+#                                       parameter is missing
+#   DELETE, PATCH on the same URL, with or without api_key
+#                                    -> identical 400/403 answers to GET
+#   GET without &format=json         -> 400/403 in text/xml, <lfm
+#                                     status="failed"><error code="10">...
+#   GET /nosuchpath (any query, any method)
+#                                    -> 404, text/html, openresty's own
+#                                     generic not-found page, not this API's
+#                                     JSON shape at all
+#
+# **Three parameters gate a request in a fixed order, and only the first
+# one is a credential in Cauldron's sense.** api_key presence is checked
+# before anything else -- absent or empty, either way, gets error 6 no
+# matter what method= names, even a name this API has never heard of. Once
+# a key is present (any value, right or wrong), method= is resolved against
+# the package.method registry -- wrong or missing gets error 3. Only once
+# both of those pass does the key's own validity get checked, and a method
+# a real credential's own required parameters (artist, for
+# artist.getinfo) are apparently checked later still: sending a present,
+# wrong key with artist entirely omitted still answers error 10, not error
+# 6, so a caller only learns their key was ever going to be rejected if
+# they also happened to spell the method name right.
+#
+# **auth.after_routing: true reproduces the outer half of this and cannot
+# reach the inner half.** The header on recipes/fireworks/recipe.yaml and
+# recipes/together/recipe.yaml in this collection names the mechanism; the
+# comment on Auth.AfterRouting in internal/recipe/auth.go lists Census,
+# Rootly, NocoDB, Baserow, CloudTalk, Flexport, Sendcloud, Timescale and
+# Northflank as providers whose real ordering needs more than the one
+# boolean expresses. Last.fm is a tenth: routing here means the query
+# parameter method= resolving against a fixed registry rather than a URL
+# path, and turning after_routing on gets the finding this Recipe leads
+# with -- a wrong path is 404 regardless of credential, checked live below
+# -- exactly right, because the router (matches_query on method=) is
+# consulted before auth.absent_error or auth.rejected_error ever fire.
+# What it cannot reproduce is the live-verified fact that an absent key
+# beats an invalid method= value: with after_routing on, a request naming
+# a method this Recipe does not declare fails to match any route before
+# credential is ever consulted, so this emulator would answer 404
+# unknown_route for that combination where the real API answers 400 error
+# 6. This is the same shape of gap Timescale's own entry in that same
+# comment names -- "the order depends on how badly you got the credential
+# wrong" -- with routing playing the role Timescale's method check plays.
+# Declared as after_routing: true because it is right for the more legible
+# and more testable half of the finding -- a genuinely wrong path -- and
+# stated here for the half it is wrong about.
+#
+# **Method (the HTTP verb, not the query parameter of the same name) does
+# not matter to this API at all.** DELETE and PATCH against the exact same
+# URL a GET would use answer the identical body Cauldron's method_not_allowed
+# machinery exists to guard against ever seeing -- checked live, both
+# verbs, both with and without a credential, all four answering exactly
+# what the matching GET request would. recipes/turso/recipe.yaml in this
+# collection is read alongside this one for the same reason: "no 405
+# anywhere." This Recipe declares no method_not_allowed override and needs
+# none, because nothing here ever produces a 405 to override -- but
+# Cauldron's own router gates on the HTTP verb as part of matching a route
+# at all, which real Last.fm never does, so with auth.after_routing on
+# (see below) an undeclared verb would fall through to unknown_route
+# rather than reach the credential check the live API actually applies to
+# every verb alike. The name-lookup route is declared twice below, once
+# for GET and once for DELETE, so the conformance suite can prove the
+# finding through the emulator's own routing rather than only in this
+# paragraph; PATCH and the rest of the verb space are not separately
+# declared, and the two live checks above already cover them.
+#
+# **The identifier is a name string, and Cauldron's format has a field for
+# saying so.** artist.getInfo's own parameter table calls its lookup key
+# "artist (Required (unless mbid))" -- not an id, a name, and the record
+# that comes back carries no id property of any kind: name, mbid, url,
+# image, stats, similar, tags, bio, and nothing named id anywhere in the
+# documented sample. id.field: "-" below says exactly that, and
+# id.carried_by: name says where the address actually lives, the same
+# mechanism recorded for Dwolla's HAL records elsewhere in this collection.
+#
+# **The "unless mbid" is the only place any of these three catalogues
+# admits a name and an id might name the same thing, and this Recipe
+# demonstrates it working.** artist.getInfo's own params table lists mbid
+# as an alternative to artist, not an additional filter, and the routes
+# below model both: one keyed on the query parameter artist and matched
+# against the fixture's name field, one keyed on mbid and matched against
+# its mbid field, and both resolve to the same fixture record (Cher,
+# bfcc6d75-a6a5-4bc6-8282-47aec8531818, Last.fm's own documented example
+# for both artist.getInfo and track.getInfo). Two request shapes, one
+# answer -- the direct, positive version of the question this collection's
+# header asks, on the one provider of the three that can actually answer
+# it yes.
+#
+# **A track carries an id and nothing in this API's own method list will
+# ever take it back.** track.getInfo's documented sample response includes
+# "id": 1019817 sitting on the track object, a genuine integer -- and
+# every method in the full list this project read from
+# last.fm/api/show/track.getInfo (addTags, getCorrection, getInfo,
+# getSimilar, getTags, getTopTags, love, removeTag, scrobble, search,
+# unlove, updateNowPlaying) takes artist and track name, or mbid, or a
+# username -- never a bare track id as a lookup parameter. The number is
+# real, documented, and permanently unaddressable through this API on its
+# own terms, which is a sharper version of Discogs' finding that a track
+# has no id at all: Last.fm's tracks have one and it still cannot be used.
+# Not modelled as a route below, for the reason in the gaps list.
+#
+# **A field's own JSON shape depends on whether the equivalent XML element
+# happened to carry an attribute, and this Recipe caught the rule
+# contradicting itself.** The REST Requests reference states the
+# translation plainly: "Attributes are expressed as string member values...
+# Text child nodes are expressed as string values, unless the element also
+# contains attributes, in which case the text node is expressed as a
+# string member value with the key #text." track.getInfo's own sample XML
+# has <streamable fulltrack="1">1</streamable> on the track and a bare
+# <streamable>1</streamable> on the artist nested inside it -- so by the
+# stated rule, the same field name comes back shaped two different ways
+# on one document, {"fulltrack": "1", "#text": "1"} against a bare "1",
+# depending on a detail of the XML the JSON caller never sees. And the
+# rule's own "attributes are expressed as string values" is contradicted
+# by this Recipe's own live evidence: the error envelope's code arrives as
+# <error code="10"> in XML, an attribute by the rule's own definition, and
+# the live JSON answer is {"error": 10} -- an actual JSON number, not the
+# string the documentation's translation rule says an attribute becomes.
+# Checked directly, twice, both error 6 and error 10, both unquoted. Given
+# a provider's own translation rule is wrong about a field this Recipe
+# could check, the fields it could not check -- listeners, plays, image,
+# streamable, all live only in documentation this project has no key to
+# call -- are left out of the resource below rather than typed on the
+# strength of a rule shown to be unreliable on the one field this project
+# could verify.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No route has ever been called with a real api_key. Every 200 in this
+#     Recipe is read from the worked sample responses on
+#     last.fm/api/show/artist.getInfo and last.fm/api/show/track.getInfo,
+#     never observed, and carries no verified date. "Do not sign up" ruled
+#     out the one way to change that.
+#   - What an unrecognised artist name answers -- 200 with an empty or
+#     partial object, or a reused error 6, or something else -- is not
+#     stated anywhere this project could read. Every read-method reference
+#     page enumerates the same fourteen service-level codes (2, 3, 4, 5, 6,
+#     7, 8, 9, 10, 11, 13, 16, 26, 29) and none of them names "no such
+#     artist" or "no such track" as a concept; the absence of a not-found
+#     code in Last.fm's own taxonomy is itself the finding. This Recipe
+#     declares no not_found override for the artist route as a result, so
+#     an id this fixture does not hold falls through to Cauldron's own
+#     generic default -- which is this emulator's fallback, not a claim
+#     about Last.fm.
+#   - track.getInfo is not modelled as a route. It is addressed by two
+#     query parameters together (artist and track), and this format's
+#     id_from names one location for one value; there is no mechanism here
+#     for a lookup keyed on a pair. Its documented shape and its
+#     unaddressable id are recorded in this header instead.
+#   - listeners, plays, image, similar, tags, bio and streamable are not
+#     declared as fields. See the header's #text finding: their JSON
+#     encoding depends on an XML attribute this project cannot observe
+#     being applied consistently, on a rule this project's own evidence
+#     shows the provider's documentation gets wrong at least once.
+#   - The narrow ordering gap between an absent key and an invalid method=
+#     value (see above) has no conformance case that reaches it through
+#     routing and auth together; errors.invalid_method is proven reachable
+#     with arm rather than through a request that would actually trigger
+#     it in this emulator, per this format's own rule that arm proves a
+#     shape and not an ordering.
+#   - No upstream.spec. Last.fm's reference is a set of per-method HTML
+#     pages under last.fm/api/show/*, not a machine-readable document of
+#     any kind.
+
+recipe: lastfm
+capability: media
+version: 0.1.0
+
+upstream:
+  api: "2.0"
+  docs: https://www.last.fm/api/show/artist.getInfo
+
+auth:
+  scheme: query
+  param: api_key
+  keys:
+    - cauldronlastfmapikey00000000000
+  # error 6's own wording, and what an empty api_key= value gets too --
+  # checked live, byte-identical either way.
+  absent_error: missing_parameter
+  # error 10 -- the verdict a real integration actually hits, once its key
+  # is rotated or copied from the wrong environment.
+  rejected_error: invalid_api_key
+  # See the header: this reproduces the live-verified fact that a wrong
+  # path is 404 before any credential is examined, and cannot also
+  # reproduce the narrower fact that an absent key outranks an invalid
+  # method= value. The gap is named in the header rather than forced.
+  after_routing: true
+
+responses:
+  resource:
+    # {"artist": {...}}, per the REST Requests reference's own translation
+    # rule (element child nodes keyed by node name) and the sample XML's
+    # own root element. Not observed with a real key -- see the gaps list.
+    style: wrapped
+  error:
+    # {"message": "...", "error": 10} -- flat, and the numeric code sits
+    # under the literal key "error", not "code". Observed live, both codes
+    # this Recipe reached.
+    style: flat
+    message_field: message
+    code_field: error
+    type_field: "-"
+
+resources:
+  artist:
+    id:
+      # No id property exists on this record at all. See the header.
+      style: opaque
+      field: "-"
+      carried_by: name
+    fields:
+      name:
+        type: string
+      # The one cross-catalogue identifier any of these three providers
+      # exposes. Optional on the wire -- Last.fm's own track.getInfo sample
+      # shows a bare <mbid/> on the track it names, empty even where the
+      # artist and album nested in the same document both carry a real
+      # one -- so coverage is genuinely partial even where the field
+      # exists at all.
+      mbid:
+        type: string
+        null_when_unset: true
+      url:
+        type: string
+
+routes:
+  # The name-keyed address -- artist.getInfo's own primary parameter.
+  - method: GET
+    path: /2.0/
+    resource: artist
+    operation: get
+    matches_query:
+      method: artist.getinfo
+    id_from: query:artist
+    lookup_by: name
+
+  # The mbid-keyed address for the identical record. A more specific
+  # matches_query than the route above, so a request naming this exact
+  # mbid picks this route instead -- see the header: two identifier
+  # schemes, one fixture, one answer either way.
+  - method: GET
+    path: /2.0/
+    resource: artist
+    operation: get
+    matches_query:
+      method: artist.getinfo
+      mbid: bfcc6d75-a6a5-4bc6-8282-47aec8531818
+    id_from: query:mbid
+    lookup_by: mbid
+
+  # A second declared verb for the same match, so the credential check
+  # (deferred behind routing -- see auth.after_routing above) still has a
+  # route to defer behind when the request is not a GET. Real Last.fm
+  # never gates on the verb at all, for any of its methods; Cauldron's
+  # router gates on method as part of matching one, so this Recipe
+  # declares the one other verb its conformance suite exercises rather
+  # than let DELETE fall through to unknown_route, which would misreport
+  # routing having failed rather than credential.
+  - method: DELETE
+    path: /2.0/
+    resource: artist
+    operation: get
+    matches_query:
+      method: artist.getinfo
+    id_from: query:artist
+    lookup_by: name
+
+errors:
+  missing_parameter:
+    status: 400
+    code: 6
+    message: "Invalid parameters - Your request is missing a required parameter"
+
+  invalid_api_key:
+    status: 403
+    code: 10
+    message: "Invalid API key - You must be granted a valid key by last.fm"
+
+  # Reachable only via arm -- see the header and the gaps list for why the
+  # ordinary routing/auth pipeline cannot reach it in this emulator.
+  invalid_method:
+    status: 400
+    code: 3
+    message: "Invalid Method - No method with that name in this package"
+
+  # Openresty's own generic page for a path this host has no route for at
+  # all, not this API's JSON shape. Short enough to reproduce whole, unlike
+  # Discogs' Cloudflare page in this same collection.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html"
+    message: |
+      <html>
+      <head><title>404 Not Found</title></head>
+      <body bgcolor="white">
+      <center><h1>404 Not Found</h1></center>
+      <hr><center>openresty</center>
+      </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+  catalogue:
+    artist:
+      # Last.fm's own documented sample for artist.getInfo and the artist
+      # named inside its track.getInfo sample alike. Read, not called --
+      # see the gaps list.
+      - name: Cher
+        mbid: bfcc6d75-a6a5-4bc6-8282-47aec8531818
+        url: http://www.last.fm/music/Cher
+
+conformance:
+  # Observed. No api_key parameter on the request at all.
+  - name: no api_key names the missing parameter, whatever the method is
+    source: http://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Cher&format=json
+    verified: "2026-09-02"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /2.0/
+      query:
+        method: artist.getinfo
+        artist: Cher
+        format: json
+    expect:
+      status: 400
+      body:
+        message: "Invalid parameters - Your request is missing a required parameter"
+        error: 6
+
+  # Observed. A key that is present and simply wrong -- the required
+  # artist parameter is even supplied, and it is refused for the key
+  # first regardless.
+  - name: a wrong key is refused before its own missing parameters are
+    source: http://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Cher&api_key=deadbeefdeadbeefdeadbeefdeadbeef&format=json
+    verified: "2026-09-02"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /2.0/
+      query:
+        method: artist.getinfo
+        artist: Cher
+        api_key: deadbeefdeadbeefdeadbeefdeadbeef
+        format: json
+    expect:
+      status: 403
+      body:
+        message: "Invalid API key - You must be granted a valid key by last.fm"
+        error: 10
+
+  # Observed. DELETE against the exact URL a GET would use, no credential
+  # at all -- see the header: the HTTP verb has no bearing on any of this.
+  - name: the HTTP method itself has no bearing on any of this
+    source: http://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Cher&format=json
+    verified: "2026-09-02"
+    fixture: catalogue
+    request:
+      method: DELETE
+      path: /2.0/
+      query:
+        method: artist.getinfo
+        artist: Cher
+        format: json
+    expect:
+      status: 400
+      body:
+        message: "Invalid parameters - Your request is missing a required parameter"
+        error: 6
+
+  # Observed. A path this host has no route for whatsoever, no credential
+  # sent -- proves the after_routing ordering declared above.
+  - name: a wrong path is 404 before any credential is examined
+    source: http://ws.audioscrobbler.com/nosuchpath
+    verified: "2026-09-02"
+    fixture: catalogue
+    request:
+      method: GET
+      path: /nosuchpath
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html"
+      body_matches: "404 Not Found"
+
+  # Shape only -- see the header and errors.invalid_method for why this
+  # cannot be reached through the ordinary pipeline in this emulator.
+  - name: an unrecognised method= value names itself, given a valid key
+    source: http://ws.audioscrobbler.com/2.0/?method=bogus.notarealmethod&api_key=deadbeefdeadbeefdeadbeefdeadbeef&format=json
+    verified: "2026-09-02"
+    fixture: catalogue
+    arm: invalid_method
+    request:
+      method: GET
+      path: /2.0/
+      query:
+        method: bogus.notarealmethod
+        format: json
+    expect:
+      status: 400
+      body:
+        message: "Invalid Method - No method with that name in this package"
+        error: 3
+
+  # Documented, not observed. Looked up by name.
+  - name: an artist looked up by name carries the mbid beside it
+    source: https://www.last.fm/api/show/artist.getInfo
+    fixture: catalogue
+    request:
+      method: GET
+      path: /2.0/
+      query:
+        method: artist.getinfo
+        artist: Cher
+        api_key: cauldronlastfmapikey00000000000
+        format: json
+    expect:
+      status: 200
+      body:
+        "artist.name": Cher
+        "artist.mbid": bfcc6d75-a6a5-4bc6-8282-47aec8531818
+      absent:
+        - artist.id
+
+  # Documented, not observed. The identical record, looked up by the mbid
+  # instead of the name -- the positive answer to this collection's own
+  # "same real-world object, two schemes" question.
+  - name: the same artist looked up by mbid answers the same record
+    source: https://www.last.fm/api/show/artist.getInfo
+    fixture: catalogue
+    request:
+      method: GET
+      path: /2.0/
+      query:
+        method: artist.getinfo
+        mbid: bfcc6d75-a6a5-4bc6-8282-47aec8531818
+        api_key: cauldronlastfmapikey00000000000
+        format: json
+    expect:
+      status: 200
+      body:
+        "artist.name": Cher
+        "artist.url": http://www.last.fm/music/Cher
