@@ -1,0 +1,403 @@
+# UPS Recipe for Cauldron
+#
+# UPS really did retire its old Access-Key/XML API in favour of OAuth2 client
+# credentials -- for the *new* callers it wants. What it did not do is turn
+# the old one off. Checked live on 2026-09-02: POST /ups.app/xml/Track with a
+# deliberately malformed body answers 200 (not an HTTP error at all)
+# <TrackResponse><Response><ResponseStatusCode>0</ResponseStatusCode>...
+# <ErrorCode>10002</ErrorCode><ErrorDescription>The request is well formed
+# but the document is not valid</ErrorDescription>..., and a well-formed
+# AccessRequest carrying a junk AccessLicenseNumber answers 200 with
+# ErrorCode 250003, "Invalid Access License number" -- the credential really
+# is being checked, by a service that is still listening. Neither of those
+# is an HTTP-level failure; the old API never uses the status line to say no,
+# it always answers 200 and puts the verdict in the XML body. This Recipe
+# models the live one -- OAuth2 client credentials at
+# onlinetools.ups.com/security/v1/oauth/token, JSON everywhere -- and says so
+# plainly here rather than in a case, because the legacy surface is a
+# different host behaviour this Recipe does not reach.
+#
+# The OAuth2 token endpoint distinguishes absent from wrong, in a way the
+# Track API itself never does. Checked live: POST /security/v1/oauth/token
+# with no Authorization header at all answers 400 {"response":{"errors":
+# [{"code":"10400","message":"Invalid/Missing Authorization Header"}]}};
+# the identical request with "Authorization: Basic" wrapping a junk
+# client_id:client_secret pair answers 401 {"response":{"errors":[{"code":
+# "10401","message":"ClientId is Invalid"}]}}. Two different codes, two
+# different statuses, for the two ways of getting a client credential wrong
+# -- at the endpoint that mints the token. Not modelled as a route (every
+# bearer-scheme Recipe in this collection treats the token mint as a fact
+# about the provider rather than something Cauldron's static key list
+# simulates), and worth having in the header because of what it is not: the
+# same distinction the Track API itself refuses to make.
+#
+# GET /api/track/v1/details/{inquiryNumber} makes no such distinction.
+# Checked live, four separate ways -- no Authorization header, "Authorization:
+# Bearer junktoken12345", "Authorization: junktoken12345" (no Bearer prefix
+# at all), and "Authorization: Bearer " (the prefix with nothing after it) --
+# and all four answered the byte-identical body:
+# {"response":{"errors":[{"code":"250002","message":"Invalid Authentication
+# Information."}]}}, 401. Whatever the OAuth endpoint can tell apart, the
+# resource endpoint behind it cannot: presented, malformed and simply wrong
+# all collapse to one sentence, which is Cauldron's own default and needs no
+# per-verdict field below.
+#
+# What UPS's credential check refuses to distinguish, its router insists on
+# deciding first. Checked live, systematically:
+#
+#   GET  /api/track/v1/details/1Z12345E0205271688          -> 401, no cred
+#   GET  /api/track/v1/nosuchroute            no cred       -> 404, empty body
+#   GET  /api/track/v1/nosuchroute            junk cred     -> 404, empty body
+#   POST /api/track/v1/details/1Z12345E0205271688 no cred   -> 405, empty body
+#   DELETE (same path)                        no cred       -> 405, empty body
+#   PUT  /api/track/v1/nosuchroute            no cred       -> 404, empty body
+#
+# A path this Recipe does not know about is refused for its path, not its
+# credential, whether or not one was sent; a real path asked with the wrong
+# method is refused for its method, again with nothing about a credential
+# ever examined. auth.after_routing below is what says so, and it is
+# verified in both directions rather than asserted from the shape of one
+# case, the way Fireworks' Recipe already does in this collection for the
+# identical flag.
+#
+# The two shapes look nothing alike. The 401 is a real JSON body -- the
+# nested response.errors[0] object quoted above, Content-Type:
+# application/json, Content-Length 91. The 404s and 405s are zero bytes:
+# Content-Length 0, still Content-Type: application/json, with the only
+# information about what went wrong sitting in two response *headers*
+# (errorcode, errordescription) that never made it into a body at all. A
+# client that reads Content-Type and calls .json() on a 404 gets an empty
+# string, not an error object, on a header that told it the opposite. Cauldron
+# has no field for "Content-Type declared, zero bytes served" beyond the
+# error table's own empty flag, which is what serves it below -- and RFC 9110
+# wants an Allow header on that 405 that UPS itself never sends (checked:
+# no Allow anywhere on either wrong-method response). Cauldron computes one
+# automatically for any error named method_not_allowed at status 405, so this
+# Recipe's own 405 carries a header the live one does not; stated here
+# instead of forced, the same trade CloudTalk's Recipe in this collection
+# already makes for the identical reason.
+#
+# What none of this reaches is the one question the wire never answers here:
+# what a syntactically valid but never-issued number looks like, or what a
+# malformed one looks like beside it. UPS's own published Track API
+# description (Tracking.yaml, UPS-API/api-documentation on GitHub, the
+# organisation's own account) documents both as distinct: 400 "Invalid
+# request" for a malformed one and 404 "Tracking number information not
+# found" for a well-formed one nobody has ever shipped -- and inquiryNumber
+# itself is documented as needing to be "between 7 and 34 characters in
+# length," the one shape constraint given anywhere. None of that was ever
+# reachable: every probe this Recipe ran, at every length and every
+# character set, upstream of a credential, answered the identical 401 above.
+# The credential wall is total and it sits in front of the very thing the
+# shape rule would gate, so this Recipe can say which two status codes UPS's
+# own spec commits to and cannot say what either one's body reads, because
+# nowhere -- live or documented -- is there a worked example of either
+# sentence. Declaring one would be inventing it, so 400 and 404 are named
+# here and not served: no resource_missing, no invalid_request entry below,
+# and no case pretending to have seen either.
+#
+# The 200 body fares slightly better, because the spec's schema at least
+# carries field-level example: annotations, one field at a time, even though
+# it never assembles them into one worked response. Every value in the
+# fixture below is quoted from exactly one of those, not observed against a
+# real shipment (no account was ever created, no token ever minted) and
+# carrying no verified date as a result.
+#
+# Two things about that shape are worth having pinned even unverified.
+# First: trackResponse.shipment is documented as an array on every route,
+# including the one that takes a single inquiryNumber and answers about
+# exactly one shipment -- the identical decision FedEx's Recipe in this
+# collection already documents for completeTrackResults, for what looks like
+# the identical reason (a number can, in principle, match more than one
+# shipment). Second: a package's status is named three times on one object.
+# currentStatus is a nested Status container -- code, description,
+# simplifiedTextDescription, statusCode, type -- and Package's own schema
+# *also* declares a flat statusCode and a flat statusDescription, siblings of
+# currentStatus rather than inside it. The same word, "statusCode," names two
+# different properties at two different depths of the same record. Neither
+# flat field carries a schema example anywhere, so this Recipe cannot say
+# whether the two would agree or disagree on a real shipment -- see the
+# fidelity gaps for why they are named here and not declared as fields.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Activity (the scan-event history) is documented and not modelled.
+#     Its gmtOffset sits beside gmtDate/gmtTime as a sibling field rather
+#     than inside the timestamp, which is DHL's Recipe's own finding in this
+#     collection restated on a different provider -- cited here rather than
+#     built into a case with no verified body behind it.
+#   - Rating, Shipping, Address Validation, Pickup and every other UPS API in
+#     the UPS-API/api-documentation repository are out of scope. Tracking
+#     only.
+#   - Track by reference number (GET /track/v1/reference/details/
+#     {referenceNumber}) is a second, documented lookup path and is not
+#     modelled; this Recipe addresses a shipment by inquiryNumber only.
+#   - AlternateTrackingNumber -- a second carrier's own number for the same
+#     package, e.g. a USPS_PIC value on a UPS Mail Innovations shipment -- is
+#     real and not modelled.
+#   - Package's own flat statusCode and statusDescription -- siblings of
+#     currentStatus, not inside it, see above -- carry no schema example and
+#     are not declared as fields, rather than guessed at either matching or
+#     contradicting the nested currentStatus pair this Recipe does declare.
+#   - No rate-limit response was ever seen or is documented for this route.
+#
+# The token below is a fixture and belongs to no account.
+
+recipe: ups
+capability: shipping
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://developer.ups.com/api/reference/tracking/product-info
+  spec: https://raw.githubusercontent.com/UPS-API/api-documentation/main/Tracking.yaml
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-ups-fixture-access-token-0000000000
+  # Absent, no-prefix, empty-after-prefix and simply-wrong all answered the
+  # identical body live -- see the header. One message covers every verdict,
+  # which is this field left at its default.
+  #
+  # Routing and method both resolve before the credential does, verified
+  # both ways: an unrouted path 404s and a wrong method 405s, in both cases
+  # whether or not a credential was sent at all.
+  after_routing: true
+
+responses:
+  resource:
+    style: wrapped
+    key: trackResponse.shipment
+    # A single inquiryNumber still answers an array of shipments -- see the
+    # header. Xero's invoice-of-one is the format's own worked example for
+    # this; FedEx's completeTrackResults in this collection is the same
+    # decision from a different provider.
+    array: true
+  error:
+    # response.errors[0] -- nested one level deeper than the plain "errors"
+    # array most of this collection's shipping Recipes use, because UPS
+    # really does wrap the whole failure under "response" first. A dotted
+    # key nests the same way QuickBooks' Fault.Error already does.
+    style: list
+    key: response.errors
+    message_field: message
+    code_field: code
+    # "250002" is quoted on the wire, checked live -- all digits, and still a
+    # string. Left to infer from the literal it would come out as the number
+    # 250002, which is not what UPS sends.
+    code_type: string
+
+resources:
+  shipment:
+    collection: trackResponse.shipment
+    id:
+      # Not digits: a UPS small-package number is "1Z" followed by
+      # alphanumerics, and the wider inquiryNumber space (Infonotice, Mail
+      # Innovations, freight) is documented only as 7-34 characters with no
+      # narrower shape given.
+      style: opaque
+      field: inquiryNumber
+    fields:
+      # An opaque list rather than a typed sub-resource, the same choice
+      # FedEx's Recipe makes for trackResults in this collection: everything
+      # under one shipment's packages is pinned by the conformance cases
+      # rather than declared field by field, because most of it (Activity,
+      # Address, AlternateTrackingNumber, Milestones) is out of scope -- see
+      # the header.
+      package:
+        type: list
+
+routes:
+  - method: GET
+    # {id} rather than {inquiryNumber} -- Cauldron's own route-template
+    # convention, independent of what the wire calls the field: id.field
+    # below is what puts it on the wire as "inquiryNumber".
+    path: /api/track/v1/details/{id}
+    resource: shipment
+    operation: get
+
+errors:
+  # response.errors[0] -- the shape every verdict this Recipe can produce
+  # (absent, no prefix, empty after the prefix, simply wrong) collapses
+  # into. See the header: the OAuth2 token endpoint tells these apart and
+  # this route never does.
+  authentication_error:
+    status: 401
+    message: Invalid Authentication Information.
+    code: "250002"
+
+  # Zero bytes, Content-Type still application/json, the diagnostic living
+  # only in the errorcode/errordescription response headers -- see the
+  # header. This is what Cauldron's own router falls back to for any path
+  # this Recipe does not declare, checked before any credential at all
+  # because auth.after_routing says routing decides first.
+  unknown_route:
+    status: 404
+    empty: true
+    headers:
+      Content-Type: application/json
+      errorcode: "404"
+      errordescription: Not Found
+
+  # The identical shape, for a real path asked with a method this Recipe
+  # does not declare. UPS itself sends no Allow header here -- see the
+  # header for why this Recipe's own 405 cannot make the same claim.
+  method_not_allowed:
+    status: 405
+    empty: true
+    headers:
+      Content-Type: application/json
+      errorcode: "405"
+      errordescription: Method Not Allowed
+
+fixtures:
+  empty: {}
+
+  one-shipment:
+    shipment:
+      # Every value here is the example: UPS's own published Tracking.yaml
+      # gives for that field. None of it was observed: no account exists to
+      # call this route with a real credential, so no case built from this
+      # fixture carries a verified date.
+      - id: 1Z023E2X0214323462
+        package:
+          - packageCount: 2
+            currentStatus:
+              # The same fact, three ways: a stable code, prose that is
+              # translated per the request's locale, and a simplified word
+              # that reads like a verdict on its own. Compare FedEx's
+              # code/derivedCode/statusByLocale in this collection -- three
+              # again, named differently, on a different carrier.
+              code: SR
+              description: Your package was released by the customs agency.
+              simplifiedTextDescription: Delivered
+              statusCode: "003"
+              type: X
+            service:
+              code: "518"
+              description: UPS Ground
+              levelCode: "011"
+
+conformance:
+  - name: no credential is refused
+    source: https://onlinetools.ups.com/api/track/v1/details/1Z12345E0205271688
+    verified: "2026-09-02"
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /api/track/v1/details/1Z12345E0205271688
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        "response.errors[0].code": "250002"
+        "response.errors[0].message": Invalid Authentication Information.
+
+  - name: and a wrong one is refused with the byte-identical sentence
+    # Live, back to back with the case above: "Authorization: Bearer
+    # junktoken12345" answers the same body UPS sends for no header at all.
+    # See the header for two more shapes of "wrong" (no Bearer prefix at
+    # all, and the prefix with nothing after it) that answered the same way
+    # and are not repeated as separate cases.
+    source: https://onlinetools.ups.com/api/track/v1/details/1Z12345E0205271688
+    verified: "2026-09-02"
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /api/track/v1/details/1Z12345E0205271688
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        "response.errors[0].code": "250002"
+        "response.errors[0].message": Invalid Authentication Information.
+
+  - name: an unrouted path is refused for its path, empty, no credential needed
+    source: https://onlinetools.ups.com/api/track/v1/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/track/v1/nosuchroute
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json
+      # Zero bytes on the wire -- Content-Length: 0, checked live -- even
+      # though Content-Type still claims JSON. The diagnostic UPS does send
+      # (errorcode: 404, errordescription: Not Found) travels in headers
+      # this format's error table has no field for; the empty body is what
+      # a client calling .json() on this response actually meets.
+      no_body: true
+
+  - name: and the same path with a credential answers identically
+    # Live: a syntactically fine bearer token changes nothing about this
+    # answer, which is what auth.after_routing is declaring -- the router
+    # decided before any credential was examined, so presenting one here
+    # does not move the needle.
+    source: https://onlinetools.ups.com/api/track/v1/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/track/v1/nosuchroute
+      headers:
+        Authorization: Bearer cauldron-ups-fixture-access-token-0000000000
+    expect:
+      status: 404
+      no_body: true
+
+  - name: a wrong method on a real path is refused for its method, also empty, also no credential needed
+    # Live, no Authorization header at all. See the header for why this
+    # Recipe's own 405 carries an Allow header the real one never sends --
+    # Cauldron computes one for any 405 named method_not_allowed, and UPS's
+    # is not among the shipping Recipes here that get to keep it off.
+    source: https://onlinetools.ups.com/api/track/v1/details/1Z12345E0205271688
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/track/v1/details/1Z12345E0205271688
+    expect:
+      status: 405
+      no_body: true
+
+  - name: a single inquiry answers an array of shipments, not one object
+    source: https://raw.githubusercontent.com/UPS-API/api-documentation/main/Tracking.yaml
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /api/track/v1/details/1Z023E2X0214323462
+      headers:
+        Authorization: Bearer cauldron-ups-fixture-access-token-0000000000
+    expect:
+      status: 200
+      body:
+        "trackResponse.shipment[0].inquiryNumber": 1Z023E2X0214323462
+
+  - name: status is named three times on one nested container
+    # code, statusCode and simplifiedTextDescription -- a stable code, a
+    # finer internal one, and translated prose that reads like a verdict on
+    # its own. See the header for the flat statusCode Package's own schema
+    # also declares as a sibling of this whole container, with no example to
+    # say whether it would agree with the nested one.
+    source: https://raw.githubusercontent.com/UPS-API/api-documentation/main/Tracking.yaml
+    fixture: one-shipment
+    request:
+      method: GET
+      path: /api/track/v1/details/1Z023E2X0214323462
+      headers:
+        Authorization: Bearer cauldron-ups-fixture-access-token-0000000000
+    expect:
+      status: 200
+      body:
+        "trackResponse.shipment[0].package[0].currentStatus.code": SR
+        "trackResponse.shipment[0].package[0].currentStatus.statusCode": "003"
+        "trackResponse.shipment[0].package[0].currentStatus.simplifiedTextDescription": Delivered
+        "trackResponse.shipment[0].package[0].service.code": "518"
+        "trackResponse.shipment[0].package[0].service.description": UPS Ground
