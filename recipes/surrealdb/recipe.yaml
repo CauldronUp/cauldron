@@ -1,0 +1,500 @@
+# SurrealDB Cloud Recipe for Cauldron
+#
+# Read alongside Neon and Tiger Data's Recipes in this collection first.
+# SurrealDB Cloud is the newest provider in this batch and the brief for it
+# assumed the honest finding might be that no public cloud control-plane API
+# exists at all -- that the only reachable surface would be a database's own
+# HTTP/RPC endpoint. That assumption does not hold: a real, documented,
+# unauthenticated-to-discover control plane exists, and it is worth saying
+# exactly how it was found, because the discovery path is itself a small
+# finding. GET https://api.surrealdb.com/health answers 200 {"ok":true} with
+# no credential at all, and its response carries a Link header --
+# `<https://api.surrealdb.com/openapi/public.yaml>; rel="service-desc"` --
+# pointing at a 450KB OpenAPI 3.0 description, fetched live and unmodified,
+# covering account, cloud, docs, support and marketing endpoints under one
+# server. Within it, /api/cloud/v0/instances and its siblings are exactly
+# the managed-database control plane this collection's providers all have:
+# create, get, list, delete, pause, resume, a dedicated status endpoint,
+# usage and metrics. This Recipe models that surface. See the very end of
+# this header for the OTHER surface the brief also asked about -- the raw
+# database's own HTTP/RPC endpoint, which is real, different, and
+# deliberately not modelled here.
+#
+# ## Auth: three verdicts, one message, checked live
+#
+# Every route needs a Bearer JWT (Authorization: Bearer <token>). Checked
+# against api.surrealdb.com on 2026-09-02 with no account:
+#
+#   no header at all              -> 401 {"success":false,"message":
+#                                     "Invalid or missing access token"}
+#   Authorization: junktoken12345 (no Bearer prefix)
+#                                  -> the identical 401 body
+#   Authorization: Bearer junktoken12345
+#                                  -> the identical 401 body again
+#
+# Absent, malformed and rejected all collapse to the same sentence -- the
+# same finding Airbyte's and Temporal's Recipes elsewhere in this collection
+# record for their own hosts, and naming the same error for all three
+# verdicts is the honest claim here rather than an approximation, per Step
+# 2a: none of auth.absent_error, auth.malformed_error or auth.rejected_error
+# is set below, and every verdict falls through to the one message this
+# Recipe actually observed. Every one of those three requests, repeated
+# against a path this host routes nowhere (/api/cloud/v0/nonexistent-xyz)
+# and against DELETE on a real path, answered the identical 401 -- the
+# credential is examined before routing, unconditionally, for every path
+# and method, so auth.after_routing stays at its default. The failure also
+# carries a WWW-Authenticate header this collection has not seen elsewhere:
+# `Bearer resource_metadata="https://api.surrealdb.com/.well-known/
+# oauth-protected-resource/api"` -- RFC 9728's protected-resource-metadata
+# challenge, on a database control plane, which is a more modern credential
+# story than anything else in this batch.
+#
+# The description itself declares a SECOND, optional credential --
+# X-Cloud-Token, an API-key-style header -- composed with Bearer as an OR of
+# an AND: `security: [{Bearer, CloudToken}, {Bearer alone}]` on the create
+# and most instance routes. That is a third shape for a multi-credential
+# scheme in this same batch, next to Redis Cloud's Recipe here, whose two
+# headers are an AND with no alternative at all. Reaching that second header
+# needs a session obtained from POST /api/cloud/v0/signin, itself gated on a
+# personal access token this task cannot obtain without an account, so this
+# Recipe models Bearer alone -- the branch every route above genuinely
+# accepts on its own -- and does not attempt X-Cloud-Token.
+#
+# ## Create returns a resource in a state that says wait, with a hostname beside it
+#
+# POST /api/cloud/v0/instances answers 202 with the FULL CloudInstance
+# object -- no separate operation, the same shape Tiger Data's and
+# CockroachDB Cloud's Recipes in this batch found for their own creates,
+# and the opposite of Redis Cloud's Recipe in this batch, whose create
+# answers a bare task and nothing else. Two of CloudInstance's fields are
+# the finding this collection exists to check, both quoted verbatim from
+# the description's own field-level examples:
+#
+#   "state": {"type": "string", "example": "creating"}
+#   "host": {"type": "string", "example": "aaaaaaa-aaaa.surrealdb.com",
+#             "description": "Primary endpoint hostname..."}
+#
+# and "host" is in CloudInstance's own required list -- not optional, not
+# added once the instance is ready. A connection hostname is a mandatory
+# field on the very same response that says the instance is still creating.
+# Whether a fresh instance's host resolves to anything reachable at that
+# exact moment could not be established without a real account to create
+# one against, and this Recipe does not claim to know: what it claims, and
+# what the description supports directly, is that the field is present,
+# required, and sits beside "creating" rather than appearing only once
+# state changes. That is closer to Neon's and Tiger Data's end of this
+# batch than to CockroachDB Cloud's, whose create discloses nothing that
+# connects to anything at all -- see that Recipe's own header.
+#
+# ## The state vocabulary is unenumerated for the one resource this batch cares about
+#
+# Unlike CockroachDB Cloud's five-value ClusterState.Type and Tiger Data's
+# eleven-value Service status, both real enums quoted verbatim in their own
+# Recipes, CloudInstance.state carries no `enum:` at all in the description
+# -- it is a bare string with the single example above. Neither is
+# CloudInstanceStatus.phase (from the dedicated GET .../status endpoint,
+# modelled here as its own small resource): also a bare string, whose only
+# documented example is "Ready", capitalised differently from state's
+# lowercase "creating" -- two different fields, two different casing
+# conventions, neither constrained, both nominally about the same question.
+# No case below can say what a mid-deletion instance's state or phase reads
+# as, because the description never says either word about either field,
+# for either one -- the honest answer to this batch's question about
+# "deleting" and "deleted" here is that this host does not document a
+# checkable vocabulary for its own instances at all.
+#
+# It is worth stating precisely, though, that THIS SAME description
+# contradicts that gap in exactly one other place: Organization.state
+# genuinely is a six-value enum -- created, onboarded, freezing, frozen,
+# terminating, "termianted" (verbatim, the description's own typo, not
+# introduced here) -- which DOES distinguish an in-progress termination
+# from a finished one, for organizations, on the same host that declines to
+# do so for the instances inside them. One provider, one description, two
+# different answers to whether deleting and deleted are distinguishable,
+# depending which resource you ask about.
+#
+# DELETE /api/cloud/v0/instances/{instanceID} answers 202 with CloudEmptyBody
+# -- an object with no declared properties, {} on the wire -- so deletion
+# discloses as little as creation discloses much: no state word, no
+# operation id, nothing to poll on the delete response itself. A caller
+# learns an instance is gone by GETting it again and eventually getting
+# something other than 200, which this Recipe does not model either -- see
+# the gaps below.
+#
+# ## Ids
+#
+# CloudId is a 26-character opaque string (minLength: 26, maxLength: 26 in
+# the description), matched everywhere by the path parameter pattern
+# `^[A-Za-z0-9._~-]+$` -- not a UUID, and not the plain integer Redis
+# Cloud's Recipe in this batch found for its own subscription and database
+# ids. Worth one more note in the same spirit as the state-vocabulary
+# inconsistency above: the description's own worked example for CloudId,
+# "67upifj5dt6p87ch3nh5t3a8", is 24 characters, two short of the 26 its own
+# schema demands -- the kind of small self-contradiction this batch keeps
+# finding in generated documentation, and reason enough not to pin an id's
+# exact length in a conformance case, only its style.
+#
+# ## Known fidelity gaps, stated rather than hidden
+#
+#   - X-Cloud-Token, signin, refresh and everything behind a personal
+#     access token: not modelled. See above.
+#   - Pause, resume, resize (type/computeunits/storagesize), version
+#     upgrade, access_type changes, capabilities, distributed storage
+#     specs, backups and backup policy, usage and metrics, and the
+#     org-scoped billing/members/roles/spectron surface -- the bulk of this
+#     description's 148 paths -- are real, documented, and out of scope for
+#     the questions this batch exists to answer.
+#   - CloudInstance.type (a nested CloudInstanceType object: slug,
+#     display_name, cpu, memory, a compute_units{min,max} range, price_hour)
+#     and .capabilities (a large permissions/experimental-features config
+#     object) are both real and modelled here only as opaque maps, not
+#     field by field.
+#   - CloudInstanceVersion carries no example anywhere in the description --
+#     not on the property, not in any endpoint's worked response -- so
+#     .version and .available_versions are declared but no case asserts a
+#     literal value for either. Per Step 3: a type with no worked example
+#     gets no invented content.
+#   - The direct database HTTP/RPC surface is real, different, and NOT
+#     modelled here. It is not part of this cloud control plane at all: it
+#     is SurrealDB's own per-instance data-plane API, reached at the
+#     instance's own host (the very field this Recipe's create case checks
+#     for) rather than at api.surrealdb.com, documented at
+#     surrealdb.com/docs/surrealdb/integration/http. It answers SurrealQL
+#     over POST /sql and record access over GET/POST /key/:table, and it
+#     selects WHICH namespace and database a request runs against with two
+#     request headers -- Surreal-NS and Surreal-DB -- rather than with
+#     anything in the path, which is a genuinely different addressing
+#     scheme from every other resource in this Recipe or this collection:
+#     nowhere else here does a client name which database it means in a
+#     header instead of a URL segment. It authenticates with HTTP Basic
+#     (root credentials) or a separate Bearer JWT, a third credential shape
+#     next to this control plane's own. Reaching it for real needs an
+#     instance this task never created, so it is described here and left
+#     unmodelled rather than guessed at.
+#
+# The token below is a fixture and belongs to no organization.
+
+recipe: surrealdb
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v0
+  docs: https://surrealdb.com/docs/cloud
+  spec: https://api.surrealdb.com/openapi/public.yaml
+  spec_hash: 0084d15edb96fc1e93bb14cca42c6d50de9bb31bf7e57fbe7a81c7c5d971c9ae
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-surrealdb-fixture-access-token-0000000000000000
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # {"success":false,"message":"..."} -- the ApiError shape, the
+    # description's own name for an error this API raises itself rather
+    # than relays from elsewhere in Cloud.
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+    fields:
+      success: false
+
+resources:
+  instance:
+    collection: instances
+    id:
+      style: opaque
+      length: 26
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+        null_when_unset: true
+      version:
+        type: string
+        null_when_unset: true
+      # Required, present at every state including the one that says the
+      # instance is not up yet. See the header -- this is the finding.
+      host:
+        type: string
+        default: aaaaaaa-aaaa.surrealdb.com
+      access_type:
+        type: string
+        default: public
+      region:
+        type: string
+      organization_id:
+        type: string
+      compute_units:
+        type: integer
+        default: 1
+      # No enum anywhere in the description. See the header.
+      state:
+        type: string
+        default: creating
+      storage_size:
+        type: integer
+        null_when_unset: true
+      can_update_storage_size:
+        type: boolean
+        default: false
+      storage_size_update_cooloff_hours:
+        type: integer
+        default: 6
+      type:
+        type: map
+        null_when_unset: true
+      capabilities:
+        type: map
+        null_when_unset: true
+
+  # The dedicated GET .../status projection -- a different field, a
+  # different word, and a different casing convention from instance.state.
+  # See the header.
+  instance_status:
+    id:
+      style: opaque
+      length: 26
+    fields:
+      phase:
+        type: string
+        default: Ready
+
+routes:
+  - method: POST
+    path: /api/cloud/v0/instances
+    resource: instance
+    operation: create
+    status: 202
+
+  - method: GET
+    path: /api/cloud/v0/instances/{id}
+    resource: instance
+    operation: get
+
+  - method: GET
+    path: /api/cloud/v0/organizations/{organization_id}/instances
+    resource: instance
+    operation: list
+    scope: [organization_id]
+
+  - method: GET
+    path: /api/cloud/v0/instances/{id}/status
+    resource: instance_status
+    operation: get
+
+  # 202, CloudEmptyBody -- see the header: deletion discloses as little as
+  # creation discloses much.
+  - method: DELETE
+    path: /api/cloud/v0/instances/{id}
+    resource: instance
+    operation: delete
+    status: 202
+
+errors:
+  # The one message every verdict falls through to. See the header.
+  authentication_error:
+    status: 401
+    message: Invalid or missing access token
+    headers:
+      WWW-Authenticate: Bearer resource_metadata="https://api.surrealdb.com/.well-known/oauth-protected-resource/api"
+
+fixtures:
+  empty: {}
+
+  small-org:
+    instance:
+      # A settled instance, phase Ready, quoting the description's own
+      # CloudInstanceType.slug/display_name examples for .type.
+      - id: 67upifj5dt6p87ch3nh5t3a800
+        name: instance-1
+        slug: pretty-lark
+        version: "2.1.0"
+        host: aaaaaaa-aaaa.surrealdb.com
+        access_type: public
+        region: aws-euw1
+        organization_id: cauldronsurrealorgid00001
+        compute_units: 1
+        state: creating
+        storage_size: 1
+        can_update_storage_size: false
+        storage_size_update_cooloff_hours: 6
+        type:
+          slug: shared-1
+          display_name: shared instance
+          cpu: 0.5
+          memory: 512
+
+    instance_status:
+      - id: 67upifj5dt6p87ch3nh5t3a800
+        phase: Ready
+
+# Every case below carries source. A verified date means this exact request
+# was sent to api.surrealdb.com today and this is exactly what came back;
+# its absence means the case is read from the description's own field-level
+# examples and no account exists to call the route for real.
+conformance:
+  - name: no credential gets the one message this host has
+    source: https://api.surrealdb.com/api/cloud/v0/version
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/version
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: Bearer resource_metadata="https://api.surrealdb.com/.well-known/oauth-protected-resource/api"
+      body:
+        success: false
+        message: Invalid or missing access token
+
+  - name: a header with no Bearer prefix gets the identical message
+    source: https://api.surrealdb.com/api/cloud/v0/version
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/version
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        message: Invalid or missing access token
+
+  - name: a well-formed wrong token gets the same message again
+    source: https://api.surrealdb.com/api/cloud/v0/version
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/version
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        message: Invalid or missing access token
+
+  - name: an unrouted path is refused before routing, not with a 404
+    source: https://api.surrealdb.com/api/cloud/v0/nonexistent-route-xyz
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/nonexistent-route-xyz
+    expect:
+      status: 401
+      body:
+        message: Invalid or missing access token
+
+  - name: and so is a wrong method on a real path, not with a 405
+    source: https://api.surrealdb.com/api/cloud/v0/instances
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: PUT
+      path: /api/cloud/v0/instances
+    expect:
+      status: 401
+      body:
+        message: Invalid or missing access token
+
+  - name: creating an instance answers the full record, in a state that says wait
+    # The finding this Recipe exists for. See the header: host is required
+    # and present here, beside a state that is not "ready".
+    source: https://api.surrealdb.com/openapi/public.yaml
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/cloud/v0/instances
+      headers:
+        Authorization: Bearer cauldron-surrealdb-fixture-access-token-0000000000000000
+      json:
+        name: cauldron-newinstance
+        org: cauldronsurrealorgid00001
+        region: aws-euw1
+        storage: 100
+        specs:
+          slug: shared-1
+    expect:
+      status: 202
+      body:
+        state: creating
+      matches:
+        host: "."
+      absent:
+        - operation
+        - operation_id
+
+  - name: only a separate GET on a settled instance shows a hostname that means anything
+    source: https://api.surrealdb.com/openapi/public.yaml
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/instances/67upifj5dt6p87ch3nh5t3a800
+      headers:
+        Authorization: Bearer cauldron-surrealdb-fixture-access-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        host: aaaaaaa-aaaa.surrealdb.com
+        region: aws-euw1
+        type.slug: shared-1
+
+  - name: the dedicated status endpoint uses a different word than state does
+    source: https://api.surrealdb.com/openapi/public.yaml
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/instances/67upifj5dt6p87ch3nh5t3a800/status
+      headers:
+        Authorization: Bearer cauldron-surrealdb-fixture-access-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        phase: Ready
+      absent:
+        - state
+
+  - name: an organization's instances are a bare array
+    source: https://api.surrealdb.com/openapi/public.yaml
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/cloud/v0/organizations/cauldronsurrealorgid00001/instances
+      headers:
+        Authorization: Bearer cauldron-surrealdb-fixture-access-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": 67upifj5dt6p87ch3nh5t3a800
+      absent:
+        - instances
+        - data
+
+  - name: deleting an instance answers 202 and an empty body, no state word at all
+    source: https://api.surrealdb.com/openapi/public.yaml
+    fixture: small-org
+    request:
+      method: DELETE
+      path: /api/cloud/v0/instances/67upifj5dt6p87ch3nh5t3a800
+      headers:
+        Authorization: Bearer cauldron-surrealdb-fixture-access-token-0000000000000000
+    expect:
+      status: 202
+      absent:
+        - state
+        - id
