@@ -331,6 +331,30 @@ type Route struct {
 	// A route declaring one needs no resource and no operation, because it
 	// never reaches either.
 	Error string `yaml:"error"`
+	// Public marks a route the provider answers without a credential, on a
+	// Recipe whose other routes need one.
+	//
+	// Auth is one setting for a whole Recipe, and nineteen Recipes here have
+	// had to write down that their provider disagrees. Cognito serves a
+	// genuinely public key set beside SigV4-gated operations. FireHydrant,
+	// which hit this first, has one public route it could not model.
+	// Checkly's runtimes list answers 200 with nothing presented. Ashby's job
+	// board is public and the rest of Ashby is not. Chroma's whole retired
+	// surface is public. Coinbase's public market data sits on the same hosts
+	// as its private endpoints. Appsmith has exactly one.
+	//
+	// Every one of those had the same two choices: declare the route and
+	// misrepresent it as needing a credential, or leave it out and describe a
+	// provider as smaller than it is. Both are wrong in the direction that
+	// matters, because a caller writing against the emulator would learn to
+	// send a credential where none is wanted, or would not find the route at
+	// all.
+	//
+	// This exempts the credential and nothing else. A required header is a
+	// separate contract -- a provider can want its version header on a public
+	// route, and Cognito does -- so those are still checked. Routing,
+	// method resolution and the error table are unaffected.
+	Public bool `yaml:"public"`
 }
 
 // Pagination describes how a list endpoint pages.

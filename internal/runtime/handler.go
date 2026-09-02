@@ -92,7 +92,16 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !s.recipe.Auth.AfterRouting && refuse() {
+	// The route is resolved before the credential is judged even when the
+	// credential is judged first, because one route may be exempt from it.
+	// Resolving is a pure function of the request -- rawBody restores what it
+	// reads -- so doing it early changes nothing for every other Recipe: a
+	// route that is not public still gets refused here, before the 404 or the
+	// 405 below, exactly as it did when the match came after.
+	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), rawBody(r), r.URL.Query(), r.Header)
+	public := ok && matched.spec.Public
+
+	if !s.recipe.Auth.AfterRouting && !public && refuse() {
 		return
 	}
 
@@ -111,7 +120,6 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), rawBody(r), r.URL.Query(), r.Header)
 	if !ok {
 		if allowed := s.router.allowedMethods(r.URL.Path); len(allowed) > 0 {
 			// Allow belongs on a 405 and nowhere else, which is what RFC 9110
@@ -148,10 +156,13 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// here the request has matched a real route, so a refusal is about the
 	// credential rather than about the path.
 	if s.recipe.Auth.AfterRouting {
-		if refuse() {
+		if !public && refuse() {
 			return
 		}
 
+		// Still checked on a public route. Public exempts the credential and
+		// nothing else, and a provider can want its version header on a route
+		// that needs no key at all.
 		if header, name, ok := s.missingHeader(r); !ok {
 			exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
 				"The "+header+" header is required.", header)
