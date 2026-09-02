@@ -1,0 +1,632 @@
+# Coinbase Recipe for Cauldron
+#
+# Coinbase runs two live, unrelated-shaped public APIs on two hosts, and they
+# give opposite answers to the question this collection keeps asking a price:
+# how would a caller know it is stale?
+#
+# api.exchange.coinbase.com is the old Pro/Exchange API -- still live, still
+# answering, not deprecated in anything it actually does on the wire. Its
+# ticker stamps every quote with both a nanosecond-precision timestamp and a
+# trade id:
+#
+#   GET /products/BTC-USD/ticker ->
+#   {"ask":"77025.54","bid":"77025.53","trade_id":1087702428,
+#    "price":"77025.54","time":"2026-09-02T17:18:19.725542836Z", ...}
+#
+# and its order book adds a genuine gap-detectable sequence number beside its
+# own timestamp:
+#
+#   GET /products/BTC-USD/book?level=1 ->
+#   {"bids":[[...]],"asks":[[...]],"sequence":135467658332,
+#    "time":"2026-09-02T17:18:24.544989845Z"}
+#
+# api.coinbase.com/api/v3/brokerage is Advanced Trade, the API Coinbase
+# actually points new integrations at today. Its public equivalent of "give
+# me the current price" -- GET /market/products/{id}, no credential needed --
+# carries neither:
+#
+#   {"product_id":"BTC-USD","price":"77016.72","best_bid_price":"",
+#    "best_ask_price":"","volume_24h":"6372.15850966", ...}
+#
+# No time field. No sequence field. Nothing at all says when this price was
+# true, on the newer of the two APIs from the same company on the same day --
+# and best_bid_price and best_ask_price are not null or absent either, they
+# are present and empty, a third way this collection has seen absence spelled
+# that a client checking `if (best_bid_price)` will not catch because an
+# empty string is falsy and a client checking `!== null` will not catch
+# because it never was one.
+#
+# This Recipe models both surfaces and says which routes came from which,
+# route by route, rather than picking a side. Every route under
+# /products/*, /accounts and /time is api.exchange.coinbase.com (Exchange);
+# every route under /api/v3/brokerage/* is api.coinbase.com (Advanced
+# Trade). No Cauldron Recipe field records a hostname, so this header is the
+# only place that split is written down -- the same trade Mezmo's Recipe in
+# this collection makes for its own two hosts.
+#
+# **A wrong-shaped credential crashes the server; a missing one does not.**
+# Exchange's private endpoints are signed with CB-ACCESS-KEY /
+# CB-ACCESS-SIGN / CB-ACCESS-TIMESTAMP / CB-ACCESS-PASSPHRASE, never a
+# bearer token. Probed live, three ways, against GET /accounts:
+#
+#   no header at all                    -> 401 {"message":"Unauthorized."}
+#   Authorization: Bearer junk12345     -> 500 {"message":"Internal Server
+#                                              Error."}          (reproduced
+#                                              twice, with two different
+#                                              junk values)
+#   CB-ACCESS-KEY: junkkeyjunkkeyjunkkey -> 401 {"message":"invalid timestamp"}
+#
+# Sending no credential at all is handled cleanly. Sending the credential
+# shape every other bearer-scheme API in this collection expects is not
+# handled at all -- it reaches code that assumes CB-ACCESS-TIMESTAMP exists
+# and throws trying to read it, which is a real Content-Type: application/json
+# 500 for a mistake that is, on every other host here, a routine 401. Sending
+# the *right* header name with a wrong value gets past that crash and into
+# the API's real complaint, which is about the timestamp it still has not
+# seen -- CB-ACCESS-KEY alone is not enough to reach a "your key is wrong"
+# message at all.
+#
+# **And that same 401 "Unauthorized." is what a typo gets, and what the
+# wrong method gets.** No credential, on a path that does not exist at all:
+#
+#   GET /no-such-route-xyz               -> 401 {"message":"Unauthorized."}
+#   PATCH /products/BTC-USD/ticker        -> 401 {"message":"Unauthorized."}
+#
+# both the identical body a genuinely private, real endpoint answers with no
+# credential. Compare GET /products/NOSUCHPROD-USD/ticker, a real route
+# pattern asked about a product that does not exist: 404 {"message":
+# "NotFound"}, a different message, no credential involved anywhere. So
+# Exchange's routing is narrower than it looks -- a small allowlist of
+# public GETs resolves normally, complete with its own 404, and everything
+# else, real path or invented, right method or wrong, falls through to one
+# blanket "you must be authenticated" that cannot be told from a routing
+# miss by its wording alone. That is a sixth ordering beside the five
+# `auth.after_routing` already names: routing exists, but only inside the
+# public surface, and a credential gate that also serves as the 404 for
+# everything outside it.
+#
+# **Advanced Trade disagrees with Exchange about the shape of every failure
+# above, live, on the same date:**
+#
+#   GET /api/v3/brokerage/accounts (no credential)    -> 401, text/plain,
+#                                                         "Unauthorized"
+#   GET /api/v3/brokerage/accounts (Bearer junk12345) -> 401, text/plain,
+#                                                         "Unauthorized"
+#   GET /api/v3/brokerage/market/no-such-route-xyz    -> 404
+#     {"error":"unknown","error_details":"Not Found","message":"Not Found"}
+#   POST /api/v3/brokerage/market/products/BTC-USD    -> 501
+#     {"error":"unknown","error_details":"Method Not Allowed",
+#      "message":"Method Not Allowed"}
+#
+# Missing and wrong collapse to the same word here, which is the opposite of
+# Exchange crashing on one and not the other. The 401 is bare text under a
+# real text/plain Content-Type -- no lie about the media type, unlike
+# Together's Recipe in this collection, just no JSON at all where Exchange
+# always sends one. And the wrong-method case is a genuine mismatch inside
+# one response: the status line says 501 Not Implemented, and the message
+# inside it says "Method Not Allowed" -- the sentence for 405, on a response
+# that is not one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Exchange's private auth is HMAC-signed across four headers and cannot
+#     be checked without implementing the signature, the same reason AWS
+#     SigV4 is only pattern-matched elsewhere in this collection. This
+#     Recipe declares auth.scheme none and reproduces the credential
+#     failures it observed as literal routes instead -- see
+#     recipes/inngest/recipe.yaml for the same trade made for a path-carried
+#     key. Advanced Trade's private scheme was not identified at all: no
+#     credential and a bearer token both got the same plain "Unauthorized",
+#     so there was nothing to distinguish and nothing to name.
+#   - One product, BTC-USD, on both hosts, and the prices move -- recorded
+#     as they stood at the verified moment, the same gap Kraken's Recipe
+#     states for the same reason.
+#   - book is served at level=1 only; levels 2 and 3 change the shape of
+#     bids and asks and are not modelled.
+#   - Placing an order, cancelling one, and every write on both hosts are
+#     entirely absent. Nothing here can move money or state.
+#   - No upstream.spec on either host. Both documentation sites are
+#     interactive reference pages; neither points at a fetchable OpenAPI
+#     document at a stable URL, the same gap Fireworks' Recipe in this
+#     collection states for the same reason.
+#
+# Every case below carries source. A verified date means this Recipe called
+# the named host with exactly the request shown, on 2026-09-02, and recorded
+# exactly what came back; no case here lacks one, because no worked example
+# was needed from either provider's documentation to describe a public
+# price.
+
+recipe: coinbase
+capability: brokerage
+version: 0.1.0
+
+upstream:
+  api: rest
+  docs: https://docs.cdp.coinbase.com/exchange/reference/exchangerestapi_getproductticker
+
+auth:
+  # Both hosts' public routes below need no credential at all. Both hosts'
+  # private routes are modelled as literal error-only routes instead of a
+  # declared scheme -- see the header for why neither could be represented
+  # as bearer, basic, header or query.
+  scheme: none
+
+responses:
+  resource:
+    style: bare
+  # Exchange's own shape: {"message": "..."}, nothing else, on every
+  # failure this Recipe reached on that host.
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # Exchange: GET /products/{id}/ticker. No field anywhere in the body holds
+  # the product id -- it is only the path segment, the way Kraken's Recipe
+  # in this collection makes the same point about a different field.
+  ticker:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      ask:
+        type: string
+      bid:
+        type: string
+      volume:
+        type: string
+      # The one field here that lets a caller notice a gap, and it counts
+      # trades, not ticker updates -- see book.sequence for the field that
+      # actually does that job.
+      trade_id:
+        type: integer
+      price:
+        type: string
+      size:
+        type: string
+      # Nanosecond precision, as a string: a JSON number could not carry it.
+      time:
+        type: datetime
+      rfq_volume:
+        type: string
+
+  # Exchange: GET /products/{id}/book?level=1. sequence is what trade_id on
+  # the ticker is not: a counter a caller can compare between two reads to
+  # notice one was missed.
+  book:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # Each entry is [price, size, order_count] -- two strings and a bare
+      # integer in one three-element array, on the same host whose ticker
+      # keeps every number a string. Kraken's Recipe in this collection
+      # pins the same mixed-shape-tuple problem for a different provider.
+      bids:
+        type: list
+      asks:
+        type: list
+      sequence:
+        type: integer
+      auction_mode:
+        type: boolean
+      time:
+        type: datetime
+
+  # Exchange: GET /time. No id anywhere -- the same faithful-absence
+  # CoinGecko's Recipe in this collection makes for its own /ping.
+  servertime:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      iso:
+        type: datetime
+      # A Unix epoch as a JSON float, fractional seconds and all -- a third
+      # spelling of "now" beside iso on the same object.
+      epoch:
+        type: number
+
+  # Advanced Trade: GET /api/v3/brokerage/market/products/{id}. The record
+  # this Recipe exists to contrast with ticker above: everything else here
+  # is a snapshot of the same fact -- current price of BTC-USD -- and this
+  # is the one with nothing on it saying when.
+  atproduct:
+    id:
+      style: opaque
+      field: product_id
+    fields:
+      price:
+        type: string
+      volume_24h:
+        type: string
+      base_name:
+        type: string
+      quote_name:
+        type: string
+      status:
+        type: string
+      product_type:
+        type: string
+      display_name:
+        type: string
+      high_24h:
+        type: string
+      low_24h:
+        type: string
+      # Present and empty, not null and not absent -- see the header. A
+      # third way to spell "no value" beside Kraken's absent key and
+      # CoinGecko's dropped-in-silence coin.
+      best_bid_price:
+        type: string
+      best_ask_price:
+        type: string
+
+routes:
+  # -- Exchange (api.exchange.coinbase.com) --
+
+  - method: GET
+    path: /products/{id}/ticker
+    resource: ticker
+    operation: get
+    not_found: product_not_found
+
+  - method: GET
+    path: /products/{id}/book
+    resource: book
+    operation: get
+
+  - method: GET
+    path: /time
+    resource: servertime
+    operation: get
+    id_from: auth
+
+  # A real route pattern, a product that does not exist: routing works, and
+  # says so with its own message rather than the credential gate's.
+  - method: GET
+    path: /products/NOSUCHPROD-USD/ticker
+    error: product_not_found
+
+  # No credential at all, on a genuinely private path.
+  - method: GET
+    path: /accounts
+    error: unauthorized
+
+  # The credential shape every bearer-scheme host in this collection
+  # expects, sent to a host that has never used it. See the header: this
+  # crashes rather than refusing.
+  - method: GET
+    path: /accounts
+    matches_header:
+      Authorization: "Bearer junk12345"
+    error: authorization_header_crash
+
+  # The real header name, a value that cannot be one CB issued. Past the
+  # crash above and into the API's own complaint, which is about the
+  # timestamp it still has not seen.
+  - method: GET
+    path: /accounts
+    matches_header:
+      CB-ACCESS-KEY: junkkeyjunkkeyjunkkey
+    error: invalid_timestamp
+
+  # No credential, no real route either. The identical body /accounts gives
+  # with no credential -- see the header for what that says about ordering.
+  - method: GET
+    path: /no-such-route-xyz
+    error: unauthorized
+
+  # A real path, the wrong method, no credential. The same blanket answer
+  # again.
+  - method: PATCH
+    path: /products/BTC-USD/ticker
+    error: unauthorized
+
+  # -- Advanced Trade (api.coinbase.com) --
+
+  - method: GET
+    path: /api/v3/brokerage/market/products/{id}
+    resource: atproduct
+    operation: get
+
+  - method: GET
+    path: /api/v3/brokerage/accounts
+    status: 401
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: Unauthorized
+
+  - method: GET
+    path: /api/v3/brokerage/accounts
+    matches_header:
+      Authorization: "Bearer junk12345"
+    status: 401
+    raw:
+      content_type: text/plain; charset=utf-8
+      text: Unauthorized
+
+  - method: GET
+    path: /api/v3/brokerage/market/no-such-route-xyz
+    error: at_not_found
+
+  - method: POST
+    path: /api/v3/brokerage/market/products/BTC-USD
+    error: at_method_not_allowed
+
+errors:
+  # Exchange's one-field shape, for a missing credential, an unrouted path,
+  # and the wrong method alike -- see the header.
+  unauthorized:
+    status: 401
+    message: "Unauthorized."
+
+  # What a wrong-shaped Authorization header does instead of being refused.
+  authorization_header_crash:
+    status: 500
+    message: "Internal Server Error."
+
+  # Past the crash, with the real header name and a value CB never issued.
+  invalid_timestamp:
+    status: 401
+    message: invalid timestamp
+
+  # A real route, a product that is not there.
+  product_not_found:
+    status: 404
+    message: NotFound
+
+  # Advanced Trade's three-key shape, shared by its 404 and its 501 below --
+  # see the header for the status/message mismatch on the second one.
+  at_not_found:
+    status: 404
+    message: Not Found
+    fields:
+      error: unknown
+      error_details: Not Found
+
+  at_method_not_allowed:
+    status: 501
+    message: Method Not Allowed
+    fields:
+      error: unknown
+      error_details: Method Not Allowed
+
+fixtures:
+  empty: {}
+
+  bitcoin:
+    ticker:
+      - id: BTC-USD
+        ask: "77025.54"
+        bid: "77025.53"
+        volume: "6083.05935575"
+        trade_id: 1087702428
+        price: "77025.54"
+        size: "0.0007"
+        time: "2026-09-02T17:18:19.725542836Z"
+        rfq_volume: "97.296218"
+
+    book:
+      - id: BTC-USD
+        bids:
+          - ["77016.88", "0.11080638", 5]
+        asks:
+          - ["77016.89", "0.36327684", 6]
+        sequence: 135467658332
+        auction_mode: false
+        time: "2026-09-02T17:18:24.544989845Z"
+
+    servertime:
+      - id: "-"
+        iso: "2026-09-02T17:18:26.925Z"
+        epoch: 1788369506.925
+
+    atproduct:
+      - id: BTC-USD
+        price: "77016.72"
+        volume_24h: "6372.15850966"
+        base_name: Bitcoin
+        quote_name: US Dollar
+        status: online
+        product_type: SPOT
+        display_name: BTC-USD
+        high_24h: "77750"
+        low_24h: "76219.18"
+        best_bid_price: ""
+        best_ask_price: ""
+
+conformance:
+  - name: the ticker carries a nanosecond timestamp and a trade id, not a sequence
+    source: https://api.exchange.coinbase.com/products/BTC-USD/ticker
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /products/BTC-USD/ticker
+    expect:
+      status: 200
+      body:
+        price: "77025.54"
+        trade_id: 1087702428
+        time: "2026-09-02T17:18:19.725542836Z"
+
+  - name: the order book adds a real gap-detectable sequence, and a tuple with a bare integer in it
+    source: "https://api.exchange.coinbase.com/products/BTC-USD/book?level=1"
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /products/BTC-USD/book
+    expect:
+      status: 200
+      body:
+        sequence: 135467658332
+        time: "2026-09-02T17:18:24.544989845Z"
+        "bids[0][0]": "77016.88"
+        "bids[0][2]": 5
+
+  - name: the server clock has a third spelling of now beside the other two
+    source: https://api.exchange.coinbase.com/time
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /time
+    expect:
+      status: 200
+      body:
+        iso: "2026-09-02T17:18:26.925Z"
+        epoch: 1788369506.925
+
+  - name: a product that does not exist gets routing's own message
+    source: https://api.exchange.coinbase.com/products/NOSUCHPROD-USD/ticker
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /products/NOSUCHPROD-USD/ticker
+    expect:
+      status: 404
+      body:
+        message: NotFound
+
+  - name: no credential at all is refused cleanly
+    source: https://api.exchange.coinbase.com/accounts
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /accounts
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized."
+
+  - name: the credential shape every other bearer host expects crashes this one instead
+    source: https://api.exchange.coinbase.com/accounts
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /accounts
+      headers:
+        Authorization: Bearer junk12345
+    expect:
+      status: 500
+      body:
+        message: "Internal Server Error."
+
+  - name: the real header name with a wrong value reaches a different complaint
+    source: https://api.exchange.coinbase.com/accounts
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /accounts
+      headers:
+        CB-ACCESS-KEY: junkkeyjunkkeyjunkkey
+    expect:
+      status: 401
+      body:
+        message: invalid timestamp
+
+  - name: a path that does not exist gets the same answer as a real private one
+    source: https://api.exchange.coinbase.com/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /no-such-route-xyz
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized."
+
+  - name: and so does the wrong method on a real, public path
+    source: https://api.exchange.coinbase.com/products/BTC-USD/ticker
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: PATCH
+      path: /products/BTC-USD/ticker
+    expect:
+      status: 401
+      body:
+        message: "Unauthorized."
+
+  - name: the newer API's public price carries no time and no sequence at all
+    source: https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/brokerage/market/products/BTC-USD
+    expect:
+      status: 200
+      body:
+        price: "77016.72"
+        # Present and empty, not null and not absent -- a third way to
+        # spell no value.
+        best_bid_price: ""
+        best_ask_price: ""
+      absent:
+        - time
+        - timestamp
+        - last_updated_at
+        - sequence
+
+  - name: missing and wrong collapse to the same plain-text word here
+    source: https://api.coinbase.com/api/v3/brokerage/accounts
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/brokerage/accounts
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: "^Unauthorized$"
+
+  - name: a genuinely wrong credential gets the identical word
+    source: https://api.coinbase.com/api/v3/brokerage/accounts
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/brokerage/accounts
+      headers:
+        Authorization: Bearer junk12345
+    expect:
+      status: 401
+      body_matches: "^Unauthorized$"
+
+  - name: the newer API's 404 shares no keys with the older one's
+    source: https://api.coinbase.com/api/v3/brokerage/market/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: GET
+      path: /api/v3/brokerage/market/no-such-route-xyz
+    expect:
+      status: 404
+      body:
+        error: unknown
+        error_details: Not Found
+        message: Not Found
+
+  - name: a wrong method answers 501 with a 405's sentence inside it
+    source: https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD
+    verified: "2026-09-02"
+    fixture: bitcoin
+    request:
+      method: POST
+      path: /api/v3/brokerage/market/products/BTC-USD
+    expect:
+      status: 501
+      body:
+        error: unknown
+        message: Method Not Allowed
