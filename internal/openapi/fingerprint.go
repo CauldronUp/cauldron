@@ -40,6 +40,30 @@ import (
 // A Recipe whose fingerprint has not moved is un-contradicted by the
 // description, on the parts it claims. That is a smaller sentence than
 // "unchanged", and it is the true one.
+//
+// It is smaller still for a provider that wraps its responses. The field half
+// of the fingerprint reads the success schema's own top-level properties --
+// Document.Properties merges allOf and stops there, and never descends into a
+// property's own schema. An API answering {"data": {...}} therefore has one
+// top-level property called data, and every field name the Recipe declares is
+// recorded as absent rather than as a type. The claims are still made and
+// still compared, so a Recipe adding or removing a field still moves its
+// fingerprint; what cannot move it is the provider changing one of those
+// fields' types, because the type was never read.
+//
+// Nine shipped Recipes are in that position: Attio, Vercel, Turso, Temporal,
+// ClickHouse, NocoDB, Scout APM, Livepeer and MX. For those, drift compares
+// paths, methods and response codes and nothing else, which is a real check
+// and a narrower one than the paragraph above promises. Found while
+// establishing why Attio moved, where the answer turned out to be a response
+// code, and where it could not have been a field type whatever the provider
+// did.
+//
+// Teaching this to follow an envelope is the obvious fix and is not free: it
+// would move the recorded fingerprint of every one of those nine at once, and
+// a batch of moves nobody can attribute to a provider is the same
+// switched-off-scanner failure the paragraph above is about. Worth doing
+// deliberately, on its own, rather than as a side effect.
 func Fingerprint(r *recipe.Recipe, doc *Document, basePath string) string {
 	index := indexPaths(doc, basePath)
 

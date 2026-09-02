@@ -1,0 +1,944 @@
+# Anthropic Recipe for Cauldron
+#
+# Differs from openai/recipe.yaml and replicate/recipe.yaml in kind, not just
+# in vendor. OpenAI's refusal hides in a sibling field nobody reads; Claude's
+# hides in a field every integration already reads. Replicate's unit of work
+# is a prediction id that outlives the connection; Claude's default unit of
+# work is nothing at all -- a dropped stream leaves no id anywhere to ask
+# about, unless the caller specifically chose the Batches API instead of the
+# ordinary one. That split is what this Recipe is built around.
+#
+# THE CREDENTIAL, THE VERSION, AND WHICH ONE WINS.
+#
+# x-api-key is a bare header, no "Bearer " prefix -- and anthropic-version is
+# a second mandatory header sitting beside it, which this collection has few
+# of (Notion's Notion-Version is the other). Four requests, struck live
+# against api.anthropic.com on 2026-09-02, establish the order:
+#
+#   no x-api-key, no anthropic-version -> 401 "x-api-key header is required"
+#   no x-api-key, WITH anthropic-version -> 401, byte-identical message
+#   x-api-key: junk, no anthropic-version -> 401 "API key is invalid."
+#   x-api-key: junk, WITH anthropic-version -> 401, byte-identical message
+#
+# The first pair says the missing-key sentence does not care whether a
+# version was sent. The second pair says the same about a version-blind
+# wrong-key sentence. Both verdicts -- absent and rejected -- resolve before
+# anthropic-version is ever consulted, for every combination this Recipe
+# could reach without a credential it holds. What could not be reached: a
+# VALID key with anthropic-version missing. No account was created and no key
+# was ever minted to get past the first gate and find out what the second one
+# says on its own. required_headers.missing_version therefore carries no
+# verified date, and its message is not a quotation -- see the entry itself
+# for how it was built and why that is stated rather than hidden.
+#
+# A third, unrelated credential lives on the same header slot. The docs table
+# at platform.claude.com/docs/en/api/overview lists `Authorization: Bearer
+# <token>` (a short-lived Workload Identity Federation token) as an
+# alternative to x-api-key, not a typo -- and live, sending only
+# `Authorization: Bearer junk` (no x-api-key at all) answers 401 "Invalid
+# bearer token", a THIRD sentence, distinct from both the ones above. Cauldron
+# is one credential scheme per Recipe, x-api-key is the one nearly every
+# integration actually uses, and the Bearer path is recorded here rather than
+# reproduced.
+#
+# ROUTING RESOLVES BEFORE THE CREDENTIAL -- MOSTLY.
+#
+# Verified live, with NO credential sent at all: GET /v1/nosuchroute -> 404
+# {"type":"error","error":{"type":"not_found_error","message":"Not found"}};
+# DELETE /v1/models -> 405 with an Allow: GET header; PATCH /v1/messages ->
+# 405 with Allow: POST. All three happened with nothing in the x-api-key
+# header, which only means one thing: the router and the method check both
+# run before the credential does. That is Fireworks' arrangement in this same
+# collection (auth.after_routing), not Together's, and it is declared below
+# the same way.
+#
+# One route goes further than after_routing describes, and is the sharpest
+# finding in this file. GET /v1/messages/batches/{id} resolves the id's SHAPE
+# and its EXISTENCE before the credential is ever examined -- not just the
+# route and the method. Four requests, all live, all with no credential sent:
+#
+#   GET .../batches/not-a-real-id-@@@
+#     -> 400 "Message Batch id must have `msgbatch_` prefix."
+#   GET .../batches/msgbatch_0000000000000000  (well-shaped, does not exist)
+#     -> 404 "Message Batch `msgbatch_0000000000000000` not found."
+#   DELETE on that same nonexistent id -> the SAME 404, not a 405
+#   POST .../batches/msgbatch_0000000000000000/cancel, same id
+#     -> the SAME 404
+#
+# GET /v1/models/{id}, on the same host, does not do this -- it answers 401
+# for the identical no-credential shape, exactly like the list route beside
+# it. So the id-first behaviour is not a Recipe-wide rule and not even an
+# every-id-route rule; it is specific to the batches resource. This is
+# auth.go's NocoDB pattern ("a route with an id resolves the id first...
+# credential or no credential") but narrower than NocoDB's, which applies it
+# to every id route on the whole host. Cauldron's after_routing is one
+# boolean for the whole Recipe and cannot express "resolve the id before the
+# credential on this one resource and not that one" -- doing so would need
+# the credential's state to survive an id lookup as well as a route match,
+# which is the same larger change auth.go says Northflank and Timescale would
+# need and were not given. after_routing: true is declared below because it
+# is correct for messages, models, and batch create/list; the two id-scoped
+# batch cases in conformance below use a valid credential, because that is
+# what this emulator actually requires to reach the id check at all, and each
+# says so in its own comment rather than pretending it sent what the live
+# probe sent.
+#
+# THE REFUSAL IS A STOP REASON, NOT A SIBLING FIELD.
+#
+# openai/recipe.yaml's whole point is that content and refusal are two
+# nullable siblings and a client reading content alone finds null with no
+# signal beside it explaining why. Claude's schema (platform.claude.com/docs
+# /en/api/messages, "Returns" section) does not repeat that shape. stop_reason
+# is documented with a "refusal" value in its own enum -- "when streaming
+# classifiers intervene to handle potential policy violations" -- and
+# stop_details.type: refusal carries a structured category (cyber, bio,
+# frontier_llm, reasoning_extraction, general_harms) and a free-text
+# explanation beside it. So a client that already reads stop_reason, which is
+# the field every integration reads to tell a normal stop from a
+# max_tokens cutoff, sees the refusal exactly where it is already looking --
+# the opposite lesson from OpenAI's, arrived at from the same shape of
+# question. content is documented empty on a refusal in this Recipe's model,
+# a choice explained in the fixture comment, not a value read off a worked
+# example.
+#
+# TOKENS ARE PRESENT ON 200 AND ABSENT ON EVERY FAILURE THIS RECIPE REACHED.
+#
+# usage never appears in any error body this Recipe struck live -- not the
+# missing-key 401, not the wrong-key 401, not the 404s, not the 405s. The
+# error shape itself has no room for it: {"type":"error","error":{"type",
+# "message"},"request_id"} is the whole envelope, quoted from
+# platform.claude.com/docs/en/api/errors#error-shapes, and nothing about a
+# rejected or unrouted request is billed. A model that spends its budget
+# thinking still shows up in usage.output_tokens_details.thinking_tokens on a
+# 200, the same shape OpenAI's completion_tokens_details.reasoning_tokens
+# claim makes about a different provider -- stated rather than modelled here,
+# because doing it properly would need a second stop_reason: max_tokens
+# fixture just to carry one field, and the one below already carries that
+# finding with output_tokens alone.
+#
+# THE UNIT OF WORK: A RESOURCE WITH AN ID, OR NOTHING AT ALL.
+#
+# Two answers, and Claude gives both depending on which endpoint a caller
+# chose. POST /v1/messages, streaming or not, has no id a client can come
+# back for. There is no GET /v1/messages/{id} anywhere in Claude's API --
+# unlike OpenAI, whose stored-completion id is fetchable when store: true.
+# Anthropic's own guidance for a dropped connection
+# (platform.claude.com/docs/en/build-with-claude/streaming#error-recovery) is
+# not "poll this id"; it is "capture whatever text arrived, and build a NEW
+# request that continues from it" -- as a prefilled assistant turn on Claude
+# 4.5 and earlier, or as a user message asking the model to continue on
+# Claude 4.6 and later. The work is not resumed. It is manually replayed by
+# the caller pasting their own partial answer back in.
+#
+# The Batches API is the other answer, and it is addressable: POST
+# /v1/messages/batches returns an id prefixed msgbatch_, GET
+# .../batches/{id} is documented in as many words as "idempotent and can be
+# used to poll for Message Batch completion", and the finished output is at
+# results_url -- a THIRD address, on the SAME host, unlike Fal.ai's queue
+# below, whose result lives on a different host from the one that accepted
+# the submission. There is no queue POSITION anywhere in a batch's status:
+# processing_status is a three-value state machine (in_progress, canceling,
+# ended) and request_counts tallies processing/succeeded/errored/canceled/
+# expired, which says how much of the batch has landed and nothing about
+# where in line it is -- the coarser, cruder cousin of Fal.ai's numeric
+# queue_position.
+#
+# Cancelling a batch is not a promise that it stops. Quoted directly from
+# platform.claude.com/docs/en/api/messages/batches/cancel: "the system may
+# complete any in-progress, non-interruptible requests before finalizing
+# cancellation... cancellation may not result in any canceled requests if
+# they were non-interruptible." The canceling fixture below has
+# cancel_initiated_at set and request_counts.canceled at zero for exactly
+# that reason -- asking for a stop and getting one are different events, the
+# same shape as Replicate's "succeeded is not the same as produced something"
+# finding, reached by a different mechanism (a state that admits it did
+# nothing rather than a status that says too little).
+#
+# STREAMING'S ERROR ENVELOPE IS THINNER THAN THE NON-STREAMING ONE.
+#
+# Quoted verbatim from platform.claude.com/docs/en/build-with-claude
+# /streaming#error-events, the whole of a mid-stream error:
+#
+#   event: error
+#   data: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+#
+# No request_id. The non-streaming envelope always carries one at the top
+# level, beside type and error, quoted in the same documentation set's own
+# words: "The response also includes a request_id field for easier tracking
+# and debugging." A client that logs request_id for support and only ever
+# reads it off a caught exception has nothing to log for the one failure mode
+# that happens mid-generation, after 200 has already been sent and after
+# real, billed tokens may already have been produced.
+#
+# Not modelled as a route: Cauldron serves whole JSON bodies, not
+# server-sent-event streams, the same gap openai/recipe.yaml and
+# together/recipe.yaml both declare. Quoted here instead, which is where the
+# finding survives without an emulator that would teach the wrong parse.
+#
+# WHAT THE DOCUMENTATION GETS WRONG ABOUT ITSELF.
+#
+# platform.claude.com/docs/en/api/errors#error-shapes gives one worked
+# not_found_error example: {"message": "The requested resource could not be
+# found."}. Neither of the two not_found_error bodies this Recipe actually
+# reached said that. A genuinely unrouted path said "Not found" (below,
+# verified). A batch id that does not exist said "Message Batch
+# `msgbatch_0000000000000000` not found." (below, verified). One error type,
+# one documented example, three sentences -- the sample in the reference page
+# is not what api.anthropic.com sends for the case it illustrates.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No inference was ever run and no key was ever minted. Every 200 case
+#     below is built from the schema in Anthropic's own published reference
+#     (id prefixes, field names, the stop_reason and processing_status enums)
+#     and carries no verified date, the same discipline replicate/recipe.yaml
+#     and together/recipe.yaml already hold to for the same reason.
+#   - message create's three outcomes (ordinary, refusal, max_tokens cutoff)
+#     are reached with selects_body, the same mechanism the Gemini Recipe uses
+#     for a request whose response shape depends on what was asked rather than
+#     where it was sent -- see route.go. A case sends a marker phrase inside
+#     the user turn; the matching route overrides stop_reason, content and
+#     usage with route-level fields. No inference happens; the marker only
+#     selects which fixture-shaped body this emulator answers with.
+#   - stop_details' category is modelled as "cyber" for the one refusal
+#     fixture below. Anthropic documents five categories and no worked
+#     example prefers one over another; "cyber" is this Recipe's own choice,
+#     stated rather than presented as observed.
+#   - Model capabilities (the nested batch/citations/code_execution/
+#     context_management/effort/thinking object on every ModelInfo) are not
+#     modelled at all. The schema is real and deeply nested; no worked
+#     example gives it values that mean anything without a live account to
+#     compare against, so declaring it would be declaring structure with
+#     nothing behind it.
+#   - GET /v1/files, the Skills API, the Agents/Sessions/Environments beta
+#     surface, and token counting (POST /v1/messages/count_tokens) are absent.
+#     Each answered its own unauthenticated 401 or 404 when probed and none
+#     added a claim this Recipe does not already make elsewhere.
+#   - Rate limiting (429 rate_limit_error), overload (529 overloaded_error)
+#     and the request-size 413 are documented in
+#     platform.claude.com/docs/en/api/errors and never triggered live, and no
+#     worked JSON body exists for any of the three in that reference -- only
+#     prose describing when each occurs. Declaring a message for them would be
+#     inventing one. Left out rather than guessed at.
+#   - request_id is real on every response this Recipe struck live and is not
+#     modelled: it is a fresh value per request, Cauldron's error envelope has
+#     no mechanism to generate one and echo it into a body field, and
+#     Fireworks' Recipe in this collection states the identical gap for its
+#     own X-Request-Id pair rather than fabricate a matching value.
+#   - No upstream.spec. Anthropic's reference is served as per-page Markdown
+#     (platform.claude.com/docs/en/api/messages.md and siblings) rather than
+#     one fetchable machine-readable document, the same shape of gap
+#     fireworks/recipe.yaml states for the same reason.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: anthropic
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: "2023-06-01"
+  docs: https://platform.claude.com/docs/en/api/messages
+
+auth:
+  scheme: header
+  header: x-api-key
+  keys:
+    - sk-ant-cauldron-fixture-key-0000000000000000000000
+  # Verified live: absent wins over a present-but-wrong key, and both win
+  # over the version header regardless of whether one was sent -- see the
+  # header. No malformed_error: x-api-key carries no declared prefix or
+  # pattern, so Malformed is only reachable for an all-whitespace header
+  # value, which was never probed and is not worth claiming a sentence for.
+  absent_error: missing_key
+  rejected_error: authentication_error
+  # Verified live, twice: an unrouted path 404s and a wrong method 405s, both
+  # with no credential sent at all. See the header for the one resource
+  # (message_batch, by id) that goes further than this flag can express.
+  after_routing: true
+
+# A missing anthropic-version is Claude's other mandatory header, and no
+# valid key was ever held to see its message on its own -- see the header.
+# missing_version's message is this Recipe's own construction, built from a
+# pattern that WAS observed: Claude's house style for "you left out a header
+# I require" is, verified live, "{header} header is required." (x-api-key's
+# own sentence, word for word). anthropic-version is applied to that same
+# template rather than invented from nothing, and the case below says so
+# again rather than claiming a verified date it has not earned.
+required_headers:
+  anthropic-version: missing_version
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    cursor_field: last_id
+    has_more_field: has_more
+  resource:
+    style: bare
+  error:
+    # Nested under "error", with request_id OUTSIDE it at the top level --
+    # verified on every failure this Recipe struck. Fireworks' Recipe in this
+    # collection has the identical shape (request_id beside the envelope, not
+    # inside it) for an unrelated provider; see the header for why the value
+    # itself is not reproduced.
+    style: nested
+    key: error
+    message_field: message
+    code_field: "-"
+    type_field: type
+    fields:
+      type: error
+
+resources:
+  message:
+    id:
+      style: prefixed
+      prefix: msg_
+    constants:
+      type: message
+      role: assistant
+    fields:
+      model:
+        type: string
+        required: true
+      # The ordinary case's default. Quoted verbatim from the worked example
+      # embedded in Anthropic's own Messages reference page.
+      content:
+        type: list
+        default:
+          - type: text
+            text: Hi! My name is Claude.
+      stop_reason:
+        type: string
+        default: end_turn
+      stop_sequence:
+        type: string
+        null_when_unset: true
+      # Populated only on the refusal route below, via that route's own
+      # fields: -- see the header for why content is empty on a refusal in
+      # this Recipe rather than a partial answer.
+      stop_details:
+        type: map
+        null_when_unset: true
+      usage:
+        type: map
+        default:
+          input_tokens: 10
+          output_tokens: 12
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+
+  model:
+    id:
+      style: opaque
+    constants:
+      type: model
+    fields:
+      display_name:
+        type: string
+      created_at:
+        type: datetime
+      # Capabilities is deliberately absent -- see the header's fidelity
+      # gaps. max_input_tokens and max_tokens are declared and left unset on
+      # the fixture below: Anthropic's own worked example gives both the
+      # value 0, which is a placeholder rather than a real context window
+      # (a model cannot generate zero tokens), and copying a value known to
+      # be a template artefact would be the exact mistake this format exists
+      # to prevent.
+      max_input_tokens:
+        type: integer
+        null_when_unset: true
+      max_tokens:
+        type: integer
+        null_when_unset: true
+
+  message_batch:
+    id:
+      style: prefixed
+      prefix: msgbatch_
+      pattern: '^msgbatch_[A-Za-z0-9]+$'
+    constants:
+      type: message_batch
+    fields:
+      # in_progress, canceling, ended -- a three-value state machine, not a
+      # richer one. See the header for what it does not say (no queue
+      # position, no per-request detail beyond the tally below).
+      processing_status:
+        type: string
+        default: in_progress
+      request_counts:
+        type: map
+        default:
+          processing: 0
+          succeeded: 0
+          errored: 0
+          canceled: 0
+          expired: 0
+      # A third address, on this same host -- unlike Fal.ai's result URL,
+      # which lives on a different host from the one that took the
+      # submission. Absent until processing ends, which is Anthropic's own
+      # words for the field.
+      results_url:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: datetime
+      expires_at:
+        type: datetime
+      ended_at:
+        type: datetime
+        null_when_unset: true
+      archived_at:
+        type: datetime
+        null_when_unset: true
+      cancel_initiated_at:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  # Three routes at one path, disambiguated by a marker phrase in the
+  # request body -- see the header. The plain route (no selects_body) is
+  # listed last so it loses to either marker and only answers when neither
+  # is present, per route.go's own ordering rule.
+  - method: POST
+    path: /v1/messages
+    resource: message
+    operation: create
+    selects_body: cauldron_trigger_refusal
+    fields:
+      content: []
+      stop_reason: refusal
+      stop_details:
+        type: refusal
+        category: cyber
+        explanation: This request was declined because it conflicts with Anthropic's Usage Policy.
+      usage:
+        input_tokens: 31
+        output_tokens: 3
+        cache_creation_input_tokens: 0
+        cache_read_input_tokens: 0
+
+  - method: POST
+    path: /v1/messages
+    resource: message
+    operation: create
+    selects_body: cauldron_trigger_max_tokens
+    fields:
+      content:
+        - type: text
+          text: The kettle boils at
+      stop_reason: max_tokens
+      stop_sequence: null
+      usage:
+        input_tokens: 22
+        # Billed for the whole budget the caller asked for, cut off
+        # mid-sentence, still a 200 -- the OpenAI/Cohere shape openai
+        # /recipe.yaml's header already names, spelled stop_reason:
+        # max_tokens here instead of finish_reason: length.
+        output_tokens: 16
+        cache_creation_input_tokens: 0
+        cache_read_input_tokens: 0
+
+  - method: POST
+    path: /v1/messages
+    resource: message
+    operation: create
+
+  - method: GET
+    path: /v1/models
+    resource: model
+    operation: list
+    pagination:
+      style: cursor
+      cursor_param: after_id
+      limit_param: limit
+      limit: 20
+      max_limit: 1000
+
+  - method: GET
+    path: /v1/models/{id}
+    resource: model
+    operation: get
+
+  - method: POST
+    path: /v1/messages/batches
+    resource: message_batch
+    operation: create
+
+  - method: GET
+    path: /v1/messages/batches
+    resource: message_batch
+    operation: list
+    pagination:
+      style: cursor
+      cursor_param: after_id
+      limit_param: limit
+      limit: 20
+      max_limit: 1000
+
+  - method: GET
+    path: /v1/messages/batches/{id}
+    resource: message_batch
+    operation: get
+    # Named explicitly so the not-found message carries the bare id rather
+    # than this runtime's own "resource: id" convention -- Anthropic's own
+    # sentence is "Message Batch `{id}` not found.", not a composite.
+    not_found: resource_missing
+
+errors:
+  missing_key:
+    status: 401
+    type: authentication_error
+    message: x-api-key header is required
+
+  authentication_error:
+    status: 401
+    type: authentication_error
+    message: API key is invalid.
+
+  # This Recipe's own construction -- see required_headers above for how it
+  # was built and why it carries no verified date.
+  missing_version:
+    status: 400
+    type: invalid_request_error
+    message: anthropic-version header is required.
+
+  unknown_route:
+    status: 404
+    type: not_found_error
+    message: Not found
+
+  method_not_allowed:
+    status: 405
+    type: invalid_request_error
+    message: Method Not Allowed
+
+  # Verified live, without a credential -- see the header for the ordering
+  # this reaches without one, and why the case below cannot fully reproduce
+  # that combination while carrying a credential the emulator requires.
+  id_malformed:
+    status: 400
+    type: invalid_request_error
+    message: "Message Batch id must have `msgbatch_` prefix."
+
+  resource_missing:
+    status: 404
+    type: not_found_error
+    message: "Message Batch `{detail}` not found."
+
+fixtures:
+  empty: {}
+
+  account:
+    model:
+      # Anthropic's own worked example on the List Models reference page.
+      - id: claude-opus-5
+        display_name: Claude Opus 5
+        created_at: "2026-07-24T00:00:00Z"
+
+    message_batch:
+      # The one real, cited id in this fixture -- Anthropic's own worked
+      # example, repeated identically across its create/list/get/cancel
+      # reference pages. Still running: no ended_at, no results_url, no
+      # archived_at, none of the terminal fields the vendor's own kitchen-
+      # sink example populates anyway despite processing_status: in_progress
+      # -- see the header's discipline about not copying a self-contradictory
+      # sample.
+      - id: msgbatch_013Zva2CMHLNnXjNJJKqJ2EF
+        processing_status: in_progress
+        request_counts:
+          processing: 3
+          succeeded: 0
+          errored: 0
+          canceled: 0
+          expired: 0
+        created_at: "2026-08-20T18:37:24.100435Z"
+        expires_at: "2026-08-21T18:37:24.100435Z"
+
+      # A synthetic id (Cauldron spelled into it, the same tell
+      # openai/recipe.yaml uses) standing in for the ended state the
+      # in_progress example above cannot also show. results_url follows the
+      # exact path Anthropic's own reference gives it.
+      - id: msgbatch_Ca0uldr0n0000000000000002
+        processing_status: ended
+        request_counts:
+          processing: 0
+          succeeded: 2
+          errored: 0
+          canceled: 0
+          expired: 0
+        results_url: https://api.anthropic.com/v1/messages/batches/msgbatch_Ca0uldr0n0000000000000002/results
+        created_at: "2026-08-14T09:00:00.000000Z"
+        expires_at: "2026-08-15T09:00:00.000000Z"
+        ended_at: "2026-08-14T15:12:03.000000Z"
+
+      # Cancellation asked for, and request_counts.canceled still at zero --
+      # the header's point about non-interruptible requests, put into a
+      # fixture rather than only stated.
+      - id: msgbatch_Ca0uldr0n0000000000000003
+        processing_status: canceling
+        request_counts:
+          processing: 4
+          succeeded: 0
+          errored: 0
+          canceled: 0
+          expired: 0
+        created_at: "2026-08-20T02:00:00.000000Z"
+        expires_at: "2026-08-21T02:00:00.000000Z"
+        cancel_initiated_at: "2026-08-20T02:05:00.000000Z"
+
+# Every case below carries source. A verified date means this exact request
+# was sent to api.anthropic.com on 2026-09-02 and the response shown is what
+# came back. Its absence means the case was built from Anthropic's own
+# published reference and never called -- most of them could not be, because
+# every route that succeeds needs a key this Recipe does not hold.
+conformance:
+  - name: a missing key says the same thing whether or not a version was sent
+    source: https://api.anthropic.com/v1/models
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models
+    expect:
+      status: 401
+      body:
+        type: error
+        error.type: authentication_error
+        error.message: x-api-key header is required
+
+  - name: and sending the version header changes nothing about that answer
+    source: https://api.anthropic.com/v1/models
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 401
+      body:
+        error.message: x-api-key header is required
+
+  - name: a present but wrong key is told only that it is wrong
+    source: https://api.anthropic.com/v1/models
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        x-api-key: sk-ant-junk0000000000000000000000000000000000000000
+    expect:
+      status: 401
+      body:
+        error.type: authentication_error
+        error.message: API key is invalid.
+
+  - name: an unrouted path 404s with no credential examined at all
+    source: https://api.anthropic.com/v1/nosuchroute
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/nosuchroute
+    expect:
+      status: 404
+      body:
+        error.type: not_found_error
+        # Not Anthropic's own worked example for this error type -- see the
+        # header's "what the documentation gets wrong about itself".
+        error.message: Not found
+
+  - name: a wrong method 405s, also with no credential examined
+    source: https://api.anthropic.com/v1/models
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: DELETE
+      path: /v1/models
+    expect:
+      status: 405
+      headers:
+        allow: GET
+      body:
+        error.type: invalid_request_error
+        error.message: Method Not Allowed
+
+  - name: and a second path confirms it is the method, not a one-off
+    source: https://api.anthropic.com/v1/messages
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: PATCH
+      path: /v1/messages
+    expect:
+      status: 405
+      headers:
+        allow: POST
+
+  - name: a malformed batch id is refused for its shape
+    # Verified live WITHOUT a credential (see the header). This case carries
+    # one, because Cauldron checks the credential before the id shape and
+    # the live host does not -- so this is the shape the emulator actually
+    # reaches, not the exact request that was sent live. The status and the
+    # message text are the live-observed ones either way.
+    source: https://api.anthropic.com/v1/messages/batches/not-a-real-id-@@@
+    fixture: account
+    request:
+      method: GET
+      path: /v1/messages/batches/not-a-real-id-@@@
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 400
+      body:
+        error.type: invalid_request_error
+        error.message: "Message Batch id must have `msgbatch_` prefix."
+
+  - name: a well-shaped batch id that does not exist names itself in the refusal
+    # Same caveat as the case above: verified live without a credential, sent
+    # here with one because that is what reaches this emulator's id lookup.
+    source: https://api.anthropic.com/v1/messages/batches/msgbatch_0000000000000000
+    fixture: account
+    request:
+      method: GET
+      path: /v1/messages/batches/msgbatch_0000000000000000
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 404
+      body:
+        error.type: not_found_error
+        error.message: "Message Batch `msgbatch_0000000000000000` not found."
+
+  - name: leaving out anthropic-version is refused once the key has already passed
+    # This Recipe's own construction -- see required_headers above.
+    source: https://platform.claude.com/docs/en/api/versioning
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+    expect:
+      status: 400
+      body:
+        error.type: invalid_request_error
+        error.message: anthropic-version header is required.
+
+  - name: the models listing pages by after_id, last_id and has_more
+    source: https://platform.claude.com/docs/en/api/models/list
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 200
+      body:
+        "data[0].id": claude-opus-5
+        "data[0].type": model
+        "data[0].display_name": Claude Opus 5
+        has_more: false
+      absent:
+        # last_id is Cauldron's cursor field and is only emitted when a
+        # further page exists to point at, the same convention
+        # openai/recipe.yaml's own last_id declaration uses -- and a
+        # one-record fixture can never produce a second page. See the
+        # message_batch listing case below for last_id actually emitted.
+        - last_id
+        - object
+
+  - name: a single model is fetched by its bare id
+    source: https://platform.claude.com/docs/en/api/models/list
+    fixture: account
+    request:
+      method: GET
+      path: /v1/models/claude-opus-5
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 200
+      body:
+        id: claude-opus-5
+        type: model
+        created_at: "2026-07-24T00:00:00Z"
+      absent:
+        - capabilities
+
+  - name: an ordinary reply leaves content filled in and stop_reason at end_turn
+    source: https://platform.claude.com/docs/en/api/messages
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/messages
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+      json:
+        model: claude-opus-5
+        max_tokens: 128
+        messages:
+          - role: user
+            content: What temperature does water boil at?
+    expect:
+      status: 200
+      body:
+        type: message
+        role: assistant
+        "content[0].text": Hi! My name is Claude.
+        stop_reason: end_turn
+        stop_sequence: null
+        # Present and null, not omitted -- Anthropic's own schema types this
+        # "RefusalStopDetails or null" rather than optional, the same
+        # nullable-not-absent shape stop_reason and stop_sequence carry.
+        stop_details: null
+      matches:
+        id: '^msg_'
+
+  - name: a refusal is a stop_reason, not a null content field beside a sentence
+    # The finding this Recipe exists to make about Claude specifically -- see
+    # the header's contrast with openai/recipe.yaml's sibling-field shape.
+    source: https://platform.claude.com/docs/en/api/messages
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/messages
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+      json:
+        model: claude-opus-5
+        max_tokens: 128
+        messages:
+          - role: user
+            content: cauldron_trigger_refusal
+    expect:
+      status: 200
+      body:
+        stop_reason: refusal
+        content: []
+        "stop_details.type": refusal
+        "stop_details.category": cyber
+      matches:
+        id: '^msg_'
+
+  - name: a max_tokens cutoff is billed for the whole budget it was given
+    # The same shape openai/recipe.yaml already names for a different
+    # provider, spelled stop_reason here instead of finish_reason.
+    source: https://platform.claude.com/docs/en/api/messages
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/messages
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+      json:
+        model: claude-opus-5
+        max_tokens: 16
+        messages:
+          - role: user
+            content: cauldron_trigger_max_tokens
+    expect:
+      status: 200
+      body:
+        stop_reason: max_tokens
+        "usage.output_tokens": 16
+        "content[0].text": The kettle boils at
+        stop_details: null
+
+  - name: creating a batch answers with a fresh id and nothing processed yet
+    source: https://platform.claude.com/docs/en/api/messages/batches/create
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/messages/batches
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+      json:
+        requests:
+          - custom_id: cauldron-case-1
+            params:
+              model: claude-opus-5
+              max_tokens: 128
+              messages:
+                - role: user
+                  content: Hello
+    expect:
+      status: 200
+      body:
+        type: message_batch
+        processing_status: in_progress
+        # Present and null rather than omitted -- see the message resource's
+        # stop_details for the same "X or null" schema shape.
+        results_url: null
+        ended_at: null
+      matches:
+        id: '^msgbatch_'
+
+  - name: the batches listing pages by after_id, and last_id is emitted once a page is not the whole set
+    source: https://platform.claude.com/docs/en/api/messages/batches/list
+    fixture: account
+    request:
+      method: GET
+      path: /v1/messages/batches?limit=2
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 200
+      body:
+        has_more: true
+        "data[0].id": msgbatch_013Zva2CMHLNnXjNJJKqJ2EF
+        "data[1].id": msgbatch_Ca0uldr0n0000000000000002
+      matches:
+        last_id: '^msgbatch_'
+      absent:
+        - data[2]
+
+  - name: a batch that has ended carries a results_url and nothing left processing
+    source: https://platform.claude.com/docs/en/api/messages/batches/retrieve
+    fixture: account
+    request:
+      method: GET
+      path: /v1/messages/batches/msgbatch_Ca0uldr0n0000000000000002
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 200
+      body:
+        processing_status: ended
+        "request_counts.succeeded": 2
+        "request_counts.processing": 0
+        results_url: https://api.anthropic.com/v1/messages/batches/msgbatch_Ca0uldr0n0000000000000002/results
+
+  - name: a cancellation in flight does not mean anything has actually been canceled
+    # Anthropic's own words, quoted in the header: non-interruptible requests
+    # may finish anyway, so canceling is a state, not a completed action.
+    source: https://platform.claude.com/docs/en/api/messages/batches/cancel
+    fixture: account
+    request:
+      method: GET
+      path: /v1/messages/batches/msgbatch_Ca0uldr0n0000000000000003
+      headers:
+        x-api-key: sk-ant-cauldron-fixture-key-0000000000000000000000
+        anthropic-version: "2023-06-01"
+    expect:
+      status: 200
+      body:
+        processing_status: canceling
+        "request_counts.canceled": 0
+        "request_counts.processing": 4
+      matches:
+        cancel_initiated_at: "."

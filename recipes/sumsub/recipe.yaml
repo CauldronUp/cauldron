@@ -1,0 +1,577 @@
+# Sumsub Recipe for Cauldron
+#
+# Persona and Onfido, read first, both keep "the flow finished" and "somebody
+# decided" as separate fields on separate timelines: completed is not
+# approved, complete is not clear. Sumsub keeps that same separation but
+# resolves it faster and more bluntly than either. reviewStatus only ever
+# reaches "completed" once a decision exists -- there is no state meaning
+# "the applicant finished, nobody has looked yet" the way Persona's completed
+# or Onfido's in_progress-then-complete does. Once completed, reviewResult
+# is never ambiguous: reviewAnswer is GREEN or RED, full stop, never a third
+# value sitting between them the way Onfido's consider does. What Sumsub
+# does instead, and what Persona and Onfido do not, is put a second axis on
+# the RED answer itself: reviewRejectType, which is FINAL or RETRY, and RETRY
+# means the applicant can walk the failed steps again and the SAME
+# applicantId can come back completed a second time with a different
+# reviewAnswer. Nothing on the resource says a decision might still move --
+# no version field, no "revisable" flag -- reviewRejectType is the only tell,
+# and it sits beside the very answer it is quietly qualifying. A client that
+# reads reviewAnswer alone and stops cannot tell a closed case from one that
+# is one resubmission away from flipping to GREEN.
+#
+# On reasons, Sumsub is the most forthcoming of the three. Persona's decline
+# reason lives on a separate verification resource, fetched by a second
+# request. Onfido's lives on a separate report, one per check, also a second
+# request. Sumsub puts rejectLabels, moderationComment and clientComment
+# directly inside reviewResult, on the same object as the answer -- an array
+# of named codes (BAD_PROOF_OF_IDENTITY, COMPROMISED_PERSONS, PEP,
+# SANCTIONS, ...), a sentence meant for the end user, and a separate sentence
+# meant for whoever operates the integration. Three tiers of "why", and none
+# of them cost a second call.
+#
+# All three of the above are established from Sumsub's own published
+# documentation, not from a live account -- see the header's next section for
+# why nothing here carries a verified date.
+#
+# **The live host answers every request with an identical Cloudflare block,
+# and that is the finding this Recipe has to lead with rather than bury.**
+# api.sumsub.com sits behind Cloudflare, and every request this Recipe sent
+# it -- with no credential, with a garbage X-App-Token, to a route this
+# Recipe declares, to a route that does not exist, GET, POST, PATCH, OPTIONS,
+# with a browser user agent and without one -- answered the same 403, the
+# same 114 bytes, byte for byte:
+#
+#   HTTP/1.1 403 Forbidden
+#   Content-Type: application/json
+#   { "code" : 403, "correlationId" : "fb0b6e1e3cd94759bc1769e36bd745a8",
+#     "description" : "Unauthorized (cfb)" }
+#
+# "(cfb)" and the identical correlationId across requests minutes apart and
+# across completely different paths are Cloudflare's own signature, not
+# Sumsub's application: this is a bot-management rule refusing the request
+# before it reaches Sumsub's API at all, the same way Hotelbeds is reported
+# to in the parallel group this Recipe was written alongside. sumsub.com
+# itself, the marketing site on the same Cloudflare account, answered a
+# normal 200 throughout, so the block is specific to the api. subdomain and
+# to how this Recipe's requests looked to Cloudflare, not to the network path
+# generally.
+#
+# The consequence is direct: none of Sumsub's own documented distinctions --
+# missing token vs. missing signature vs. stale timestamp, which of the six
+# X-App-* error codes below a given mistake actually produces, whether
+# routing or the credential is checked first, whether a wrong method gets a
+# real 405 -- were reachable from outside today, and modelling api.sumsub.com
+# as answering "Unauthorized (cfb)" to everything would describe Cloudflare's
+# bot rule, not Sumsub's API, to every integration that reads this Recipe.
+# Every case below is therefore sourced from Sumsub's published reference
+# and carries no verified date, and the ordering question in particular is
+# left unanswered rather than guessed at.
+#
+# **The three-header signature scheme is documented with six named error
+# codes and no worked JSON example of any of them.** X-App-Token,
+# X-App-Access-Sig (hex HMAC-SHA256 of timestamp + method + URI + body) and
+# X-App-Access-Ts are all required on every request. Sumsub's error-codes
+# reference names six failures for this scheme, all 401:
+#
+#   4000  app-token-invalid-format               token present, wrong shape
+#   4001  app-token-not-found                     token present, not registered
+#   4002  app-token-private-part-mismatch         token's own two halves disagree
+#   4003  app-token-signature-mismatch            signature does not match
+#   4004  app-token-request-expired               X-App-Access-Ts outside the window
+#   4006  app-token-not-all-auth-params-provided  one of the three headers absent
+#
+# Only two of those six are reachable through Cauldron's ordinary credential
+# check as it exists today. auth.absent_error and auth.rejected_error can
+# stand for "no token at all" and "a token that is not one this Recipe
+# holds" respectively -- both real verdicts the runtime already computes.
+# 4000's shape check has nothing to attach to: this Recipe declares no
+# prefix and no pattern for X-App-Token (the true shape of a Sumsub token is
+# not documented beyond "a dot separates its public and private parts," which
+# is too little to check honestly), so Cauldron's own malformed verdict is
+# structurally unreachable here, the same gap Alloy's Recipe in this batch
+# hits from the opposite direction. 4002, 4003 and 4004 are not about
+# presence or membership at all -- they are about whether a signature this
+# Recipe never computes matches, and nothing in a credential check that
+# compares against a fixed key list can be wrong about a signature. Those
+# four are declared below and proved servable with arm, which shows the
+# shape is real and does not claim the ordinary request path reaches it --
+# see case.go's own warning against arming an ordering. No worked JSON body
+# was found for any of the six, so every message below is the description
+# column of Sumsub's own table, wrapped in this Recipe's own best guess at
+# the envelope (the {code, description} shape the Cloudflare block
+# incidentally shares), not a confirmed one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No route is declared for creating an applicant, starting a check or
+#     uploading a document. This Recipe was written under an explicit
+#     instruction not to create anything against a live identity API, and
+#     Sumsub's own worked examples for those endpoints are sparse enough
+#     that modelling their success shape would mean inventing one. Persona's
+#     Recipe in this same collection makes the identical choice for the
+#     identical reason.
+#   - No list-applicants route. Nothing found in the reference gives a full
+#     worked example of one, and every fixture below is instead reached by
+#     the id a single applicant example already carries.
+#   - No 404-applicant-not-found case. No worked example of that response
+#     exists in what this Recipe could read, and the live host cannot be
+#     asked.
+#   - auth.malformed_error is left unset. See the header above: with no
+#     prefix or pattern declared for X-App-Token, Cauldron's credential
+#     check cannot produce a Malformed verdict for this scheme, so there is
+#     no request this Recipe could send through the ordinary path that
+#     would exercise 4000 honestly.
+#   - No upstream.spec. Nothing at docs.sumsub.com fingerprints as a single
+#     fetchable machine-readable description; the reference is a set of
+#     individual pages.
+#
+# Tokens below are fixtures, not secrets, and every person here is invented.
+
+recipe: sumsub
+capability: identity
+version: 0.1.0
+
+upstream:
+  api: unversioned
+  docs: https://docs.sumsub.com/reference
+
+auth:
+  scheme: header
+  header: X-App-Token
+  keys:
+    - sbx:cauldron0000000000.cauldronsecret000000
+  # No token at all. Sumsub's own name for this failure, app-token-not-all-
+  # auth-params-provided, covers all three required headers alike -- see
+  # required_headers below, which reuses the same error for the other two.
+  absent_error: missing_auth_params
+  # A token that is not one this Recipe holds. app-token-not-found is
+  # Sumsub's own wording for exactly this case: right shape, not registered.
+  rejected_error: token_not_found
+
+# X-App-Access-Sig and X-App-Access-Ts are required on every request
+# alongside X-App-Token, and Sumsub's own docs give them no separate
+# sentence: the same app-token-not-all-auth-params-provided message covers
+# whichever of the three a caller left off.
+required_headers:
+  X-App-Access-Sig: missing_auth_params
+  X-App-Access-Ts: missing_auth_params
+
+responses:
+  resource:
+    style: bare
+  # {code, description}. This Recipe's own inference -- see the header --
+  # not a confirmed Sumsub envelope. code carries the symbolic name
+  # (app-token-not-found, ...), which is what Sumsub's reference calls the
+  # "Error Name" column; description carries the sentence beside it.
+  error:
+    style: flat
+    message_field: description
+    code_field: code
+    type_field: "-"
+
+resources:
+  # GET .../one. The full applicant record. id is the 24-character hex
+  # string Sumsub's own documentation uses in its curl example for this
+  # endpoint, "5b594ade0a975a36c9349e66" -- Mongo-derived, which is what
+  # id.style: hex exists to describe.
+  applicant:
+    id:
+      style: hex
+      length: 24
+    fields:
+      externalUserId:
+        type: string
+      email:
+        type: string
+      type:
+        type: string
+        default: individual
+      createdAt:
+        type: string
+      # reviewStatus reaches completed only once a decision exists -- there
+      # is no state here meaning "finished, undecided" the way Persona's
+      # completed or Onfido's in_progress-then-complete does. See the header.
+      review_status:
+        type: string
+        in: review
+        as: reviewStatus
+      # Populated only once review_status is completed; absent, not null,
+      # otherwise -- the same absent-rather-than-null shape Onfido's result
+      # carries on a running check.
+      review_answer:
+        type: string
+        in: review.reviewResult
+        as: reviewAnswer
+      # FINAL or RETRY, and it is the only field on this resource that says
+      # whether a RED answer might still move. See the header: no version,
+      # no revision counter, just this word sitting beside the answer it
+      # qualifies.
+      review_reject_type:
+        type: string
+        in: review.reviewResult
+        as: reviewRejectType
+      reject_labels:
+        type: list
+        in: review.reviewResult
+        as: rejectLabels
+      moderation_comment:
+        type: string
+        in: review.reviewResult
+        as: moderationComment
+      client_comment:
+        type: string
+        in: review.reviewResult
+        as: clientComment
+
+  # GET .../status. A narrower, poll-shaped view of the same review: no
+  # applicant fields at all, but attemptCnt and elapsedSincePendingMs, which
+  # .../one does not carry. reviewId "anGLu", attemptId "MAnCa" and every
+  # other field below are Sumsub's own worked example for this endpoint,
+  # copied whole rather than assembled from separate pages.
+  review:
+    id:
+      style: opaque
+      field: reviewId
+    fields:
+      attemptId:
+        type: string
+      attemptCnt:
+        type: integer
+      elapsedSincePendingMs:
+        type: integer
+      levelName:
+        type: string
+      createDate:
+        type: string
+      reviewDate:
+        type: string
+      reviewStatus:
+        type: string
+        default: init
+      reviewAnswer:
+        type: string
+        in: reviewResult
+      rejectLabels:
+        type: list
+        in: reviewResult
+      reviewRejectType:
+        type: string
+        in: reviewResult
+      moderationComment:
+        type: string
+        in: reviewResult
+      clientComment:
+        type: string
+        in: reviewResult
+      priority:
+        type: integer
+
+routes:
+  - method: GET
+    path: /resources/applicants/{id}/one
+    resource: applicant
+    operation: get
+
+  - method: GET
+    path: /resources/applicants/{id}/status
+    resource: review
+    operation: get
+
+errors:
+  missing_auth_params:
+    status: 401
+    code: app-token-not-all-auth-params-provided
+    message: "Not all required authorization headers were provided"
+
+  token_not_found:
+    status: 401
+    code: app-token-not-found
+    message: "App token does not exist (for example, test env. token used on production)"
+
+  # Reachable only through arm -- see the header for why this Recipe's
+  # credential check cannot reach a shape verdict for X-App-Token.
+  invalid_token_format:
+    status: 401
+    code: app-token-invalid-format
+    message: "Invalid format of the X-App-Token value"
+
+  # Reachable only through arm. Nothing here computes a signature to be
+  # wrong about, so nothing on the ordinary request path can trigger this
+  # honestly.
+  private_part_mismatch:
+    status: 401
+    code: app-token-private-part-mismatch
+    message: "Private part of the token (after dot) does not match public part"
+
+  signature_mismatch:
+    status: 401
+    code: app-token-signature-mismatch
+    message: "Signature encoded value does not match the request content"
+
+  # The stale-timestamp case the brief for this batch asks about by name.
+  # Reachable only through arm: nothing here reads X-App-Access-Ts as a
+  # clock, so nothing on the ordinary path can be honestly wrong about it.
+  request_expired:
+    status: 401
+    code: app-token-request-expired
+    message: "X-App-Access-Ts does not match the number of seconds since Unix Epoch in UTC"
+
+fixtures:
+  empty: {}
+
+  small-account:
+    applicant:
+      # Approved. Sumsub's own applicantReviewed "Approval" webhook example,
+      # id and all -- reviewResult carries only reviewAnswer, nothing else,
+      # exactly as documented: no rejectLabels, no reviewRejectType, no
+      # comments on a GREEN answer.
+      - id: 5cb56e8e0a975a35f333cb83
+        externalUserId: externalUserId
+        type: individual
+        createdAt: "2020-02-21 13:20:00"
+        review_status: completed
+        review_answer: GREEN
+
+      # Rejected, RETRY. Sumsub's own "Temporary Rejection" webhook example.
+      # The applicant can walk the failed steps again -- see the header --
+      # and nothing else on this record says so.
+      - id: 69e5d579e37291e569b75ce5
+        externalUserId: dash-6ccde837-640a-49b9-a2f9-f096f561744c
+        type: individual
+        createdAt: "2026-04-30 08:00:00"
+        review_status: completed
+        review_answer: RED
+        review_reject_type: RETRY
+        reject_labels:
+          - BAD_PROOF_OF_IDENTITY
+
+      # Rejected, FINAL. Sumsub's own "Final Rejection" webhook example --
+      # moderationComment, clientComment, rejectLabels and reviewRejectType
+      # copied verbatim. The id is not: the docs reuse the retry example's
+      # applicantId for this one too, and giving both fixtures the same id
+      # would collide, so this one is a distinct synthetic id, marked as
+      # such rather than presented as Sumsub's own.
+      - id: 6a0000000000000000000001
+        externalUserId: dash-6ccde837-640a-49b9-a2f9-f096f561744c
+        type: individual
+        createdAt: "2026-04-30 08:00:00"
+        review_status: completed
+        review_answer: RED
+        review_reject_type: FINAL
+        reject_labels:
+          - COMPROMISED_PERSONS
+          - PEP
+          - SANCTIONS
+        moderation_comment: "We couldn't verify your profile. If you have questions, contact support@coolclient.com"
+        client_comment: |-
+          User identity is compromised:
+          - PEP
+          - Sanction lists
+
+      # Still pending. No reviewResult at all -- not GREEN, not RED, not
+      # present -- because reviewStatus has not reached completed. A
+      # synthetic id and externalUserId: nothing in what this Recipe could
+      # read gives a full worked example of a pending applicant, only the
+      # bare fact that "pending" is a real reviewStatus value and that
+      # reviewResult is absent before completion.
+      - id: 6a0000000000000000000002
+        externalUserId: cauldron-pending-0001
+        type: individual
+        createdAt: "2026-08-30 10:00:00"
+        review_status: pending
+
+    review:
+      # Sumsub's own worked example for GET .../status, copied whole.
+      - id: anGLu
+        attemptId: MAnCa
+        attemptCnt: 0
+        elapsedSincePendingMs: 19244
+        levelName: basic-kyc-level
+        createDate: "2024-09-10 13:58:20+0000"
+        reviewDate: "2024-09-10 13:58:39+0000"
+        reviewStatus: completed
+        reviewAnswer: RED
+        rejectLabels:
+          - GRAPHIC_EDITOR
+          - UNSATISFACTORY_PHOTOS
+          - FORGERY
+        reviewRejectType: FINAL
+        moderationComment: "We could not verify your profile. If you have any questions, please contact the Company where you try to verify your profile"
+        clientComment: "Suspected fraudulent account."
+        priority: 0
+
+# Every case below is sourced from Sumsub's published reference rather than
+# observed against a live account -- see the header for why api.sumsub.com
+# could not be reached today -- and none carries a verified date.
+conformance:
+  - name: completed is never ambiguous, unlike Persona and Onfido
+    source: https://docs.sumsub.com/sumsub/docs/applicant-statuses
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 200
+      body:
+        review.reviewStatus: completed
+        review.reviewResult.reviewAnswer: GREEN
+      absent:
+        - review.reviewResult.rejectLabels
+        - review.reviewResult.reviewRejectType
+
+  - name: RED and RETRY together mean this can still change
+    source: https://docs.sumsub.com/sumsub/docs/user-verification-webhooks
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/69e5d579e37291e569b75ce5/one
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 200
+      body:
+        # Same reviewStatus and same reviewAnswer as the FINAL case below.
+        # reviewRejectType is the only field that says this one can still
+        # flip to GREEN on resubmission.
+        review.reviewStatus: completed
+        review.reviewResult.reviewAnswer: RED
+        review.reviewResult.reviewRejectType: RETRY
+        "review.reviewResult.rejectLabels[0]": BAD_PROOF_OF_IDENTITY
+
+  - name: RED and FINAL together mean it cannot
+    source: https://docs.sumsub.com/sumsub/docs/user-verification-webhooks
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/6a0000000000000000000001/one
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 200
+      body:
+        review.reviewStatus: completed
+        review.reviewResult.reviewAnswer: RED
+        review.reviewResult.reviewRejectType: FINAL
+        review.reviewResult.moderationComment: "We couldn't verify your profile. If you have questions, contact support@coolclient.com"
+
+  - name: a pending applicant carries no reviewResult at all
+    source: https://docs.sumsub.com/sumsub/docs/applicant-statuses
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/6a0000000000000000000002/one
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 200
+      body:
+        review.reviewStatus: pending
+      # Not null: absent. Nobody has decided anything yet, and the field
+      # that would carry a decision is not on the object at all.
+      absent:
+        - review.reviewResult
+
+  - name: the status endpoint is narrower and carries attempt bookkeeping .../one does not
+    source: https://docs.sumsub.com/reference/get-applicant-review-status
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/anGLu/status
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 200
+      body:
+        reviewStatus: completed
+        attemptCnt: 0
+        elapsedSincePendingMs: 19244
+        levelName: basic-kyc-level
+      absent:
+        - externalUserId
+        - email
+
+  - name: no token at all names all three headers together
+    source: https://docs.sumsub.com/reference/error-codes-description
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+    expect:
+      status: 401
+      body:
+        code: app-token-not-all-auth-params-provided
+      matches:
+        description: "Not all required authorization headers"
+
+  - name: the signature header missing gets the identical sentence
+    source: https://docs.sumsub.com/reference/error-codes-description
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+      headers:
+        X-App-Token: sbx:cauldron0000000000.cauldronsecret000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      # Sumsub's own reference gives one code for "one of the three is
+      # missing," not three -- so the token being present changes nothing.
+      status: 401
+      body:
+        code: app-token-not-all-auth-params-provided
+
+  - name: a token in the right shape and not registered is told so plainly
+    source: https://docs.sumsub.com/reference/error-codes-description
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+      headers:
+        X-App-Token: sbx:notaregisteredtoken0.notregisteredsecret00
+        X-App-Access-Sig: cauldron-fixture-signature-0000000000000000000000000000000000000000000000000000000000000000
+        X-App-Access-Ts: "1900000000"
+    expect:
+      status: 401
+      body:
+        code: app-token-not-found
+
+  - name: a token in the wrong shape gets its own sentence -- shape servable, not reachable
+    # Armed: see the header and errors.invalid_token_format. Nothing in this
+    # Recipe's credential check inspects X-App-Token's shape, so this proves
+    # the error's body is servable and claims nothing about which requests
+    # reach it live.
+    source: https://docs.sumsub.com/reference/error-codes-description
+    arm: invalid_token_format
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+    expect:
+      status: 401
+      body:
+        code: app-token-invalid-format
+
+  - name: a stale timestamp gets its own sentence too -- shape servable, not reachable
+    # Armed, for the same reason: nothing here reads X-App-Access-Ts as a
+    # clock. This is the case the brief for this batch asks about by name.
+    source: https://docs.sumsub.com/reference/error-codes-description
+    arm: request_expired
+    fixture: small-account
+    request:
+      method: GET
+      path: /resources/applicants/5cb56e8e0a975a35f333cb83/one
+    expect:
+      status: 401
+      body:
+        code: app-token-request-expired

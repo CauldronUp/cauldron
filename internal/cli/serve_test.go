@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	projectconfig "github.com/CauldronUp/cauldron/internal/project"
 )
 
 func projectWith(t *testing.T, composer string) string {
@@ -92,15 +94,22 @@ func TestPlanDetectsRecipesFromTheProject(t *testing.T) {
 	}
 }
 
-// A detected provider Cauldron cannot emulate must be reported, never silently
-// dropped, or the developer believes it is faked when it is not.
+// A provider Cauldron cannot emulate must be reported, never silently dropped,
+// or the developer believes it is faked when it is not.
 //
-// Anthropic is used here precisely because no Recipe ships for it. If one ever
-// does, this test should fail and be repointed rather than deleted, which is
-// what happened to the Adyen it used to name and to the OpenAI that replaced
-// it.
-func TestPlanReportsDetectedRecipesItCannotServe(t *testing.T) {
-	dir := projectWith(t, `{"require":{"stripe/stripe-php":"^17.0","mozex/anthropic-php":"^1.0"}}`)
+// These two used to reach that state through detection, naming a package whose
+// Recipe did not ship: Adyen first, then OpenAI, then Anthropic, each repointed
+// as its Recipe landed. There is nobody left to repoint to. Every mapping in
+// the table now resolves to a Recipe that ships, which is what emptying the
+// unshipped map means, and a test enforces it -- so the detection path can no
+// longer produce an unservable name at all.
+//
+// The behaviour is unchanged and still needs proving, so both tests reach it
+// through the other door: a project that names its own Recipes. That path
+// answers the same question -- what happens to a name nothing can serve -- and
+// it is the one a developer hits after editing the file by hand.
+func TestPlanReportsRecipesItCannotServe(t *testing.T) {
+	dir := projectNaming(t, "stripe", unshipped)
 
 	mount, missing, err := plan(serveOptions{dir: dir})
 	if err != nil {
@@ -111,13 +120,13 @@ func TestPlanReportsDetectedRecipesItCannotServe(t *testing.T) {
 		t.Errorf("mount = %v", mount)
 	}
 
-	if len(missing) != 1 || missing[0] != "anthropic" {
-		t.Errorf("missing = %v, want [anthropic]", missing)
+	if len(missing) != 1 || missing[0] != unshipped {
+		t.Errorf("missing = %v, want [%s]", missing, unshipped)
 	}
 }
 
 func TestPlanFailsWhenNothingCanBeServed(t *testing.T) {
-	dir := projectWith(t, `{"require":{"mozex/anthropic-php":"^1.0"}}`)
+	dir := projectNaming(t, unshipped)
 
 	_, missing, err := plan(serveOptions{dir: dir})
 	if err == nil {
@@ -127,6 +136,25 @@ func TestPlanFailsWhenNothingCanBeServed(t *testing.T) {
 	if len(missing) != 1 {
 		t.Errorf("the unservable providers should still be reported; got %v", missing)
 	}
+}
+
+// projectNaming writes a project that names its Recipes rather than leaving
+// them to be detected.
+func projectNaming(t *testing.T, recipes ...string) string {
+	t.Helper()
+
+	root := t.TempDir()
+
+	body := "recipes:\n"
+	for _, name := range recipes {
+		body += "  - " + name + "\n"
+	}
+
+	if err := os.WriteFile(filepath.Join(root, projectconfig.FileName), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", projectconfig.FileName, err)
+	}
+
+	return root
 }
 
 func TestPlanFailsOutsideAProject(t *testing.T) {

@@ -1,0 +1,375 @@
+# Reddit Recipe for Cauldron
+#
+# Reddit answers the group's opening question about as bluntly as a provider
+# can: for a script with no account, the honest surface is one endpoint, and
+# it is the one that hands out credentials rather than any that reads a post.
+#
+# Three hosts were probed live on 2026-09-02, with no account, no sign-up and
+# no credential ever more real than a fixture:
+#
+#   oauth.reddit.com/*        -> 403 "Blocked" on every single request this
+#                                 Recipe sent it -- with no Authorization
+#                                 header, with a junk bearer token, with PUT
+#                                 in place of GET, against a real path and a
+#                                 made-up one alike. Same status, and two
+#                                 different bodies depending on nothing this
+#                                 Recipe could vary (see below).
+#   www.reddit.com/*.json     -> 403 "Blocked" for every shape this Recipe's
+#                                 requests took -- a real subreddit, a
+#                                 fabricated one, a default curl User-Agent
+#                                 and a full desktop Chrome one. The failure
+#                                 is keyed on the URL pattern (anything
+#                                 ending .json under /r/), not on identity:
+#                                 a path this Recipe made up gets the
+#                                 byte-identical 189908-byte block page a
+#                                 real subreddit's .json does.
+#   old.reddit.com/*          -> 302 to /login/?reason=lor2&dest=<original
+#                                 path>, empty body, for a real subreddit
+#                                 page, a real subreddit's .json, a
+#                                 fabricated subreddit, a fabricated path
+#                                 entirely, and PATCH in place of GET. Five
+#                                 requests, five shapes of "you asked for
+#                                 something," one answer: a login wall, not
+#                                 a 401, applied before anything about the
+#                                 path or the method was ever examined.
+#
+# None of those three is a JSON API answering "unauthorized." One is an
+# anti-automation edge block, one is the identical block on the same
+# company's second domain, and one is a web application's own logged-out
+# redirect. That is the honest shape of "Reddit now requires OAuth for most
+# things and rate-limits anonymous access aggressively": not a rate limit
+# header anywhere in these three, and not a 401 either.
+#
+# **One thing on this host answers cleanly, and it is the one thing a script
+# actually needs first: the token endpoint.** POST /api/v1/access_token on
+# www.reddit.com -- the real OAuth2 endpoint Reddit's own wiki documents
+# (github.com/reddit-archive/reddit/wiki/OAuth2: "https://www.reddit.com/api/v1/access_token",
+# HTTP Basic with client_id and client_secret, grant_type=client_credentials)
+# -- was checked four ways, live, and it never once returned the "Blocked"
+# page:
+#
+#   no Authorization header at all       -> 401 {"message":"Unauthorized","error":401}
+#   Basic, well-formed, wrong client_id   -> 401, byte-identical body
+#   Authorization: Bearer junktoken12345  -> 403 "Blocked" (the WAF page)
+#   GET in place of POST, no credential   -> 401, byte-identical body
+#
+# That is the sharp finding this Recipe carries: absent and rejected are the
+# same sentence here, which is the common case in this collection, but the
+# verdict that is genuinely different is malformed, not either of the usual
+# two. A credential that is missing the "Basic " shape entirely -- which is
+# exactly what "Authorization: Bearer junktoken12345" is, on an endpoint
+# that wants HTTP Basic -- does not fall through to the endpoint's own 401
+# at all. It trips the same edge rule that blocks every unauthenticated
+# request to oauth.reddit.com, on www.reddit.com, on the one path that
+# otherwise behaves like an ordinary API. auth.malformed_error is the field
+# this collection built for exactly this shape (see firehydrant/recipe.yaml
+# and the together/fireworks pair); it has never before had to point at a
+# different *mechanism* rather than a different sentence from the same one,
+# and it does here.
+#
+# The www.reddit.com/*.json block and the www.reddit.com token endpoint are
+# the same host disagreeing with itself. GET /api/v1/totally-bogus-endpoint-xyz
+# (no credential, no real route) answered a plain 404 -- Reddit's own legacy
+# "reddit.com: page not found" page (text/html, the old Reddit template, not
+# the shreddit one that everything else on this host renders), with real
+# x-ratelimit-used / x-ratelimit-remaining / x-ratelimit-reset headers on
+# it, none of which any "Blocked" response ever carries. So this host
+# genuinely routes before it blocks, for a path shaped like nothing Reddit
+# has ever served -- and only refuses outright for path shapes ending .json
+# under /r/, and for the credential-checked shape at /api/v1/access_token.
+# Two different "this path is not real" answers on one host, kept apart by
+# what the path looks like rather than by any single ordering rule, which is
+# the honest reading rather than a sixth entry beside auth.after_routing's
+# five recorded in internal/recipe/auth.go: what is being gated here is a
+# URL shape, not a route in Cauldron's sense, and no combination of routing
+# order and credential order this format has produces that split. Cauldron's
+# own runtime checks the credential unconditionally before it ever asks the
+# router anything (auth.after_routing defaults to false), which reproduces
+# the token endpoint's own "wrong method still 401s" behaviour exactly and
+# cannot reproduce the "genuinely unrouted path 404s with no credential"
+# half at the same time -- the same tension Rootly's Recipe in this
+# collection names for its own router-before-auth path, and the same fix:
+# the case below demonstrating the 404 has to carry a valid fixture
+# credential to reach it through this runtime, which is a request this
+# Recipe never had to send live to see that exact body.
+#
+# old.reddit.com is a third answer again, and it is worth recording even
+# though nothing here routes through it: a well-formed cookie that is wrong
+# -- "Cookie: reddit_session=junkjunkjunk12345" -- reaches the *same*
+# "Blocked" page the .json block does (403, identical 1522-byte body to the
+# one oauth.reddit.com's malformed-bearer case gets), where no cookie at all
+# reaches the 302 login redirect instead. So old.reddit.com draws exactly
+# the absent/malformed line the token endpoint does, on a completely
+# different transport (a session cookie rather than a bearer token), and
+# lands both of its wrong answers on the same edge block the other two
+# hosts share.
+#
+# **Identifiers.** Reddit's own wiki (github.com/reddit-archive/reddit/wiki/JSON,
+# read here rather than observed -- every host that could confirm it live
+# was blocked) documents a fullname as a kind prefix and a base36 id joined
+# by an underscore -- "t1_c3v7f8u" for a comment, its own worked example --
+# and states plainly that a "thing" has three fields in common: kind, and
+# inside a nested "data" object, id ("this item's identifier, e.g. '8xwlg'")
+# and name ("Fullname of comment, e.g. 't1_c3v7f8u'"). The one complete
+# worked object the wiki shows is an account:
+#
+#   {"kind": "t2", "data": {"has_mail": false, "name": "fooBar",
+#    "created": 123456789.0, "link_karma": 31, "comment_karma": 557}}
+#
+# quoted here rather than turned into a route, because no case in this
+# Recipe can prove the shape -- see the fidelity gaps. Two structural
+# things follow from the wiki's own words rather than from any live call:
+# the identifier is permanent (id and name are what a thing IS, minted
+# once, the same way this collection has found for every other provider
+# whose id is not a slug), and it is not portable across accounts the way
+# Bluesky's DID is across handles -- Reddit has no rename-and-keep-the-id
+# mechanism documented anywhere for a subreddit or a fullname, only for a
+# username's display, and a fullname says nothing about who posted it once
+# that account is gone. What a deleted post's fullname answers with when
+# the account behind it is deleted -- reportedly the literal string
+# "[deleted]" in the author field, which is Reddit's long-public,
+# widely-documented convention -- could not be independently confirmed
+# against a live endpoint in this session, because every endpoint that
+# would show it answered "Blocked" instead. It is stated here, unmodelled,
+# rather than pinned as a fixture with a status this Recipe never watched
+# happen.
+#
+# Rate limiting is the one place the wiki and the wire agree exactly.
+# github.com/reddit-archive/reddit/wiki/API: "Clients connecting via OAuth2
+# may make up to 60 requests per minute," tracked by X-Ratelimit-Used /
+# X-Ratelimit-Remaining / X-Ratelimit-Reset -- the identical three header
+# names this Recipe's own 404 case carries, live, on a request that reached
+# no OAuth2 client at all.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No route here reads a post, a comment, a subreddit or a user. Every
+#     endpoint that would answer one of those was blocked on every live
+#     attempt this session made, on all three hosts, regardless of
+#     credential -- see the header above. Modelling one from the wiki's
+#     field lists alone, with no worked example for a link or a comment
+#     (the wiki has field lists for both and a complete object for
+#     neither), is exactly the guess Step 3 of this format's own discipline
+#     exists to refuse.
+#   - The token endpoint's success body -- a real access_token, token_type,
+#     expires_in and scope -- is declared as fields, typed from OAuth2's own
+#     standard vocabulary, and never fixtured or asserted: this Recipe held
+#     no client_id and no client_secret that Reddit would have accepted, so
+#     no 200 from this route was ever observed, and none is claimed.
+#   - Cauldron's basic scheme compares the presented username (the
+#     client_id) against auth.keys and does not examine the password (the
+#     client_secret) at all, the same half-a-credential limitation Twilio's
+#     Recipe in this collection already states for its own account SID.
+#   - oauth.reddit.com and www.reddit.com/*.json are described in this
+#     header and demonstrated by nothing: this Recipe's one wired auth
+#     scheme (Basic, for the token endpoint) is not the Bearer scheme a real
+#     reader of either host would present, and every live call to both
+#     answered "Blocked" regardless of what this Recipe sent -- the same
+#     reasoning Mezmo's Recipe in this collection gives for leaving its own
+#     second host, and second credential scheme, out of routes entirely.
+#   - old.reddit.com's cookie-based login wall is recorded in the header and
+#     routed nowhere, for the same reason.
+#   - No upstream.spec: Reddit publishes no machine-readable OpenAPI
+#     description anywhere this session could reach. reddit.com/dev/api,
+#     which would be the natural place, is itself under the same block as
+#     everything else on www.reddit.com.
+
+recipe: reddit
+capability: chat
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://github.com/reddit-archive/reddit/wiki/OAuth2
+
+auth:
+  scheme: basic
+  keys:
+    - cauldron_reddit_fixture_client_id_00000
+  # Absent and rejected answer the identical sentence, live -- the ordinary
+  # case in this collection, so both stay unset and fall through to
+  # authentication_error together. malformed is the verdict that is
+  # actually different here, and it is different by *mechanism* rather than
+  # by sentence: see the header. A credential with no "Basic " shape at all
+  # never reaches this endpoint's own 401; it trips the same edge block that
+  # answers every request to oauth.reddit.com.
+  malformed_error: waf_blocked
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    # The live body repeats the HTTP status as a JSON number under "error" --
+    # {"message": "Unauthorized", "error": 401} -- which is exactly what
+    # status_field renders, so nothing here is a fixture value; it is the
+    # real response's status echoed back the way Reddit's own endpoint does.
+    status_field: error
+    code_field: "-"
+
+resources:
+  # The OAuth2 grant this one working endpoint answers with, on success --
+  # never observed. See the header and the fidelity gaps: no case asserts
+  # any of these, and no fixture holds one.
+  token:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      access_token:
+        type: string
+      token_type:
+        type: string
+      expires_in:
+        type: integer
+      scope:
+        type: string
+
+routes:
+  - method: POST
+    path: /api/v1/access_token
+    resource: token
+    operation: create
+
+errors:
+  # What this endpoint answers, live, for no credential, for a well-formed
+  # wrong one, and for the wrong HTTP method with no credential -- the same
+  # 41-byte body every time.
+  authentication_error:
+    status: 401
+    headers:
+      Content-Type: "application/json; charset=UTF-8"
+      www-authenticate: 'Basic realm="reddit"'
+    message: Unauthorized
+
+  # The edge block every unauthenticated or malformed-credential request to
+  # oauth.reddit.com answers with, live, and the one a non-Basic-shaped
+  # Authorization header on the token endpoint reaches too -- text/html, not
+  # this Recipe's JSON envelope, because that is what actually arrives. The
+  # real page is a full HTML document carrying a per-request ticket code
+  # (a UUID, unique to each response) after this paragraph; only the stable
+  # heading and first sentence are reproduced here, because the ticket
+  # cannot be and a fixture claiming one would be inventing it.
+  waf_blocked:
+    status: 403
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |-
+      <h1>whoa there, pardner!</h1>
+
+      <p>Your request has been blocked due to a network policy.</p>
+
+  # Reddit's own legacy "page not found" template, reached by a path this
+  # Recipe made up under /api/v1/ with a valid fixture credential attached --
+  # see the header for why the credential has to be there for Cauldron's
+  # runtime to reach this at all, when the live probe that produced this
+  # exact body carried none. The real page is roughly 32KB of the old
+  # reddit.com chrome; only the title, which is what a client checking
+  # response text against a known string would actually match, is
+  # reproduced.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: "text/html; charset=UTF-8"
+    message: "<title>reddit.com: page not found</title>"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all is 401, with a number under "error"
+    source: https://www.reddit.com/api/v1/access_token
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/access_token
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=UTF-8"
+        www-authenticate: 'Basic realm="reddit"'
+      body:
+        message: Unauthorized
+        error: 401
+      absent:
+        - errors
+        - error_description
+
+  - name: a well-formed wrong client_id answers the identical body
+    source: https://www.reddit.com/api/v1/access_token
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/access_token
+      headers:
+        Authorization: Basic anVua2NsaWVudGlkOmp1bmtjbGllbnRzZWNyZXQ=
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+        error: 401
+
+  - name: a credential with no Basic shape trips the edge block, not the endpoint's own 401
+    # "Authorization: Bearer junktoken12345" -- present, and not parseable as
+    # HTTP Basic, which is Cauldron's own definition of malformed for this
+    # scheme (internal/runtime/auth.go). Live, this never reaches the token
+    # endpoint's 401 at all; it gets the same "Blocked" page every
+    # unauthenticated request to oauth.reddit.com gets.
+    source: https://www.reddit.com/api/v1/access_token
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/v1/access_token
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 403
+      headers:
+        Content-Type: text/html
+      body_matches: "Your request has been blocked due to a network policy\\."
+
+  - name: the wrong HTTP method still answers the credential failure, not a routing one
+    # GET in place of POST, no credential: live, this is 401, byte-identical
+    # to the POST case above -- not 404, not 405. The credential is checked
+    # regardless of method, which is what Cauldron's default (non
+    # after_routing) ordering already does unconditionally, so this needed
+    # no extra declaration to reproduce.
+    source: https://www.reddit.com/api/v1/access_token
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/access_token
+    expect:
+      status: 401
+      body:
+        message: Unauthorized
+        error: 401
+
+  - name: a path this Recipe made up under /api/v1/ answers Reddit's own page-not-found template
+    # Live, with no credential at all, GET /api/v1/totally-bogus-endpoint-xyz
+    # answered exactly this title, in text/html, carrying real
+    # X-Ratelimit-* headers no "Blocked" response ever has -- see the header.
+    # Reaching it through this runtime needs a valid fixture credential,
+    # because Cauldron's own credential check runs unconditionally before
+    # the router does; that is a request this Recipe never had to send live
+    # to see this exact body, so it carries no verified date even though the
+    # title string it asserts is the literal one observed.
+    source: https://www.reddit.com/api/v1/totally-bogus-endpoint-xyz
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/totally-bogus-endpoint-xyz
+      headers:
+        Authorization: Basic Y2F1bGRyb25fcmVkZGl0X2ZpeHR1cmVfY2xpZW50X2lkXzAwMDAwOmZpeHR1cmVfc2VjcmV0XzAwMDAwMA==
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/html; charset=UTF-8"
+      body_matches: "reddit\\.com: page not found"

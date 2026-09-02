@@ -1,0 +1,401 @@
+# Genius Recipe for Cauldron
+#
+# Same collection as recipes/spotify/recipe.yaml, recipes/discogs/recipe.yaml
+# and recipes/lastfm/recipe.yaml. The other three all answer, in some form,
+# "does an unauthenticated read work at all." Genius does not let this
+# Recipe ask that question: docs.genius.com says plainly "All API requests
+# must be authenticated," and this project confirmed it by trying --
+# /artists/1421, /songs/1, a plainly nonexistent id, all refused the same
+# way. Every route below is therefore an error-shape Recipe: what the
+# credential gate itself looks like, in Genius' own words, is the entire
+# observable surface a project with no registered client can reach.
+#
+# Checked live against api.genius.com on 2026-09-02, with no account, no
+# registered client and no access token ever sent:
+#
+#   GET /artists/1421            (no header at all)     -> 401
+#     {"meta":{"status":401,"message":"This call requires an access_token.
+#     Please see: https://genius.com/developers"}}
+#   GET /artists/1421            Authorization: junktoken123456789
+#     (present, no "Bearer " prefix)                     -> 401, byte-
+#     identical to the case above
+#   GET /artists/1421            Authorization: Bearer junktoken123456789
+#     (present, "Bearer " prefix, wrong value)            -> 401
+#     {"error":"invalid_token","error_description":"The access token
+#     provided is expired, revoked, malformed or invalid for other
+#     reasons."}
+#   GET /artists/1421            Authorization: Bearer  (prefix, nothing
+#     after it)                                           -> 401, byte-
+#     identical to the wrong-value case above, not to the no-header case
+#   GET /artists/notanumber      (no header)              -> 401, identical
+#     meta shape -- the route accepts any non-empty segment, no shape check
+#   GET /songs/1                 (no header)              -> 401, identical
+#     meta shape -- both declared routes gate the same way
+#   GET /nosuchpath-xyz          (no header)               -> 403
+#     {"meta":{"status":403,"message":"Action forbidden for current
+#     scope"}}
+#   DELETE /artists/1421         (no header)               -> 403, byte-
+#     identical to the unrouted-path case above
+#   GET /nosuchpath-xyz          Authorization: Bearer junktoken123456789
+#                                                           -> 401, byte-
+#     identical to the wrong-value case on a real route
+#   DELETE /artists/1421         Authorization: Bearer junktoken123456789
+#                                                           -> 401, byte-
+#     identical again
+#
+# **Two failures, and they are not the same failure wearing two status
+# codes -- they are two different pieces of software.** The meta-shaped
+# 401 and 403 above both carry Content-Type: application/json; charset=
+# utf-8 and no WWW-Authenticate header at all: Genius' own Rails
+# application, answering in its own documented envelope (meta.status,
+# meta.message -- the shape docs.genius.com's error examples elsewhere on
+# the same site use). The {"error", "error_description"} 401 carries
+# Content-Type: application/json with no charset and a WWW-Authenticate:
+# Bearer realm="Rack::OAuth2" header naming the gem by name. That is a
+# Rack middleware answering before Genius' own routing or application code
+# is ever reached -- the standard body shape the rack-oauth2 gem itself
+# emits, not anything genius.com's developers wrote a message for. So the
+# answer to "is the error shape nested under a meta object" is genuinely
+# both: yes, for the failure this project's own application logic
+# produces, and no, for the failure a bearer-shaped credential draws
+# regardless of whether Genius' code ever sees the request.
+#
+# **Genius draws its absent/wrong line at whether the header looks like a
+# bearer attempt at all, and that line falls inside what this format calls
+# malformed.** No header, and a header with no "Bearer " prefix, both draw
+# the meta 401 -- checked live, byte-identical bodies. "Bearer " with
+# nothing after it, and "Bearer " followed by a wrong value, both draw the
+# Rack::OAuth2 401 -- also checked live, also byte-identical. Cauldron's
+# own credential check (internal/runtime/auth.go) draws its absent/
+# malformed/rejected lines differently: no header is Absent, a header
+# without the declared prefix is Malformed, and "Bearer " with nothing
+# after the prefix is *also* Malformed, sharing a verdict with a case
+# whose real answer belongs with Rejected instead. One of this format's
+# three verdicts is doing the work of two different real answers here, and
+# auth.malformed_error below is pointed at the meta shape -- matching the
+# more common real mistake, a raw token pasted with no scheme prefix at
+# all -- which means the rarer "Bearer " -with-nothing-after-it shape is
+# misrepresented in this emulator; see the gaps list.
+#
+# **The two failures are refused at different points relative to routing,
+# and it is the opposite of what a reader might guess.** A route that
+# exists (a real path pattern, any id shape) with no credential draws the
+# meta 401 asking for a token; a route that does not exist, or an
+# undeclared method against a route that does, with no credential draws a
+# *different* meta failure, 403 "Action forbidden for current scope" --
+# checked live for both a nonsense path and a DELETE against a real one,
+# byte-identical to each other and distinct from the 401. So the absent-
+# credential answer depends on routing having already happened. A *wrong*
+# credential does not: the identical Rack::OAuth2 401 answers a real path,
+# a fake one and a wrong method alike, checked live all three ways. Two
+# credential states on one API, and only one of them is routing-aware.
+# This is the same shape of finding auth.go's own comment records for
+# Timescale -- "the order depends on how badly you got the credential
+# wrong" -- with Genius splitting on exactly the axis Timescale does, in
+# the same direction: the more-wrong credential (a real bearer attempt
+# that is simply invalid) is the one refused without waiting for routing,
+# and the less-wrong one (nothing offered at all) is the one that does.
+#
+# **auth.after_routing is not declared, and that is a deliberate choice
+# between two gaps rather than the absence of one.** Left at its default
+# (false, credential checked before routing, for every verdict), this
+# Recipe correctly reproduces every live-checked case where the credential
+# is wrong or malformed, on any path, existing or not -- the routing-
+# independent half of the finding above. What it cannot reproduce is the
+# routing-dependent half: an absent credential against a genuinely
+# unrouted path in this emulator draws the same 401 a real route would,
+# not the real API's 403. Turning after_routing on would invert which half
+# is faithful, not add a second one: it would make the unrouted-path
+# absent case correct and would then intercept a wrong credential against
+# an unrouted path or wrong method with this Recipe's own unknown_route
+# answer before the credential is ever examined, contradicting the live-
+# checked routing-independence of that case instead. Five providers this
+# collection had already found needed their own named exception in
+# internal/recipe/auth.go's comment on this field; Genius needs a sixth,
+# and forcing one boolean to cover a split that runs the opposite way for
+# each of two verdicts would misrepresent whichever half lost. The 403
+# shape is real and cited above, and demonstrated below with arm rather
+# than asked to arrive through a pipeline ordering this format cannot
+# express for both verdicts at once.
+#
+# **No identifier this project could reach is anything but a bare Genius
+# id, and nothing published names a second one.** /artists/:id and
+# /songs/:id both address their resource by "id" per docs.genius.com's own
+# parameter tables -- "id: ID of the artist", "id: ID of the song" -- a
+# plain integer in the one form observable from outside an authenticated
+# session (1421, 1, both accepted by the router without a shape check; see
+# above). The reference page fetched for this Recipe (docs.genius.com, all
+# seven resource sections and the full authentication guide) was searched
+# for "musicbrainz", "mbid" and "isrc" and contains none of the three, so
+# there is no cross-catalogue identifier documented anywhere Genius
+# publishes -- the same negative result Discogs' own developer reference
+# gave, checked the same way, in recipes/discogs/recipe.yaml. Nor does it
+# say anything about id stability across an edit, a merge or a duplicate
+# removal -- "merge" and "duplicate" both return zero matches on the same
+# page -- so unlike Discogs, which volunteers "may have been deleted" in
+# its own 404 wording, Genius' documentation is simply silent on the
+# question rather than answering it either way.
+#
+# **The API does not return lyric text, and this project checked rather
+# than assumed.** The word "lyrics" appears exactly once on the reference
+# page, in a sentence describing what a song *is* -- "A song is a document
+# hosted on Genius. It's usually music lyrics." -- not as a response field
+# or a parameter anywhere in any of the seven resource sections. No fixture
+# in this Recipe contains lyric text, by construction: this Recipe declares
+# no field for it at all, because the API this project read has none to
+# declare.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No route was ever reachable past its credential gate. Every field on
+#     an artist or a song beyond its bare id -- name, url, image, whatever
+#     Genius' own object actually carries -- is unknown to this Recipe.
+#     docs.genius.com's own resource pages describe their example requests
+#     and responses through an interactive, JavaScript-rendered panel this
+#     project's plain HTTP fetch of the page could not read (the raw HTML
+#     carries the panel's markup and none of its data), so there is no
+#     citable worked example to build a fixture from either. Rather than
+#     type a plausible name and url this project did not read anywhere,
+#     both resources below declare id and nothing else.
+#   - No conformance case models the true not-found behaviour for a
+#     well-formed but nonexistent artist or song id. Reaching it needs a
+#     credential past the access-token gate, which this project will not
+#     obtain.
+#   - auth.malformed_error is pointed at the meta/absent shape rather than
+#     the Rack::OAuth2 one; see the header for which real input this
+#     misrepresents and why.
+#   - The routing-dependence of the absent-credential verdict (401 on a
+#     real route, 403 off one) is not reproduced; see the header. The 403
+#     shape itself is demonstrated with arm.
+#   - Annotations, referents, web_pages, search and account -- five of the
+#     seven sections this project read on docs.genius.com -- are not
+#     modelled as routes at all. All five need the same credential this
+#     project does not have to demonstrate anything beyond the identical
+#     auth gate the two routes below already cover.
+#   - No upstream.spec. docs.genius.com is a single interactive reference
+#     page, not a machine-readable document; checked directly for
+#     "openapi" and "swagger", both absent.
+
+recipe: genius
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.genius.com/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldrongeniusaccesstoken0000000000000000
+  # The meta shape -- Genius' own application layer. See the header: this
+  # is also what a header with no "Bearer " prefix at all draws, live,
+  # byte-identical.
+  absent_error: requires_access_token
+  malformed_error: requires_access_token
+  # The Rack::OAuth2 shape -- a gem answering ahead of Genius' own code.
+  rejected_error: invalid_token
+
+responses:
+  error:
+    # {"meta": {"status": ..., "message": "..."}} -- Genius' own envelope,
+    # the Recipe-wide default. The Rack::OAuth2 shape overrides this per
+    # error; see errors.invalid_token below.
+    style: nested
+    key: meta
+    message_field: message
+    status_field: status
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # id only -- see the header and the gaps list for why nothing else is
+  # declared. fields.id restates what id: already addresses this record
+  # by, which this format requires at least one declared field to do;
+  # nothing beyond the identifier itself is claimed about either resource.
+  artist:
+    id:
+      style: numeric
+      type: number
+    fields:
+      id:
+        type: integer
+
+  song:
+    id:
+      style: numeric
+      type: number
+    fields:
+      id:
+        type: integer
+
+routes:
+  - method: GET
+    path: /artists/{id}
+    resource: artist
+    operation: get
+
+  - method: GET
+    path: /songs/{id}
+    resource: song
+    operation: get
+
+errors:
+  requires_access_token:
+    status: 401
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+    message: "This call requires an access_token. Please see: https://genius.com/developers"
+
+  # The Rack::OAuth2 gem's own shape, overriding the Recipe-wide meta
+  # envelope for this failure alone. code_field points at the literal
+  # key "error", which here carries the OAuth2 error code as a string
+  # ("invalid_token"), not a message.
+  invalid_token:
+    status: 401
+    style: flat
+    message_field: error_description
+    code_field: error
+    code: invalid_token
+    headers:
+      WWW-Authenticate: 'Bearer realm="Rack::OAuth2", error="invalid_token", error_description="The access token provided is expired, revoked, malformed or invalid for other reasons."'
+    message: "The access token provided is expired, revoked, malformed or invalid for other reasons."
+
+  # Reachable only via arm -- see the header for why the ordinary pipeline
+  # cannot reach this in this emulator.
+  forbidden_scope:
+    status: 403
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+    message: "Action forbidden for current scope"
+
+fixtures:
+  empty: {}
+
+conformance:
+  # Observed. No Authorization header at all.
+  - name: no credential asks for an access_token, nested under meta
+    source: https://api.genius.com/artists/1421
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /artists/1421
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+      body:
+        meta.status: 401
+        meta.message: "This call requires an access_token. Please see: https://genius.com/developers"
+      absent:
+        - error
+        - error_description
+
+  # Observed. A header that is present and does not even attempt the
+  # "Bearer " scheme draws the byte-identical answer -- see the header.
+  - name: a header with no Bearer scheme is treated the same as none at all
+    source: https://api.genius.com/artists/1421
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /artists/1421
+      headers:
+        Authorization: junktoken123456789
+    expect:
+      status: 401
+      body:
+        meta.status: 401
+        meta.message: "This call requires an access_token. Please see: https://genius.com/developers"
+
+  # Observed. A well-formed bearer attempt that is simply wrong draws a
+  # completely different envelope, with a WWW-Authenticate header neither
+  # meta case carries.
+  - name: a wrong bearer token draws the OAuth2 gem's own shape, not meta's
+    source: https://api.genius.com/artists/1421
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /artists/1421
+      headers:
+        Authorization: Bearer junktoken123456789
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json"
+        WWW-Authenticate: 'realm="Rack::OAuth2"'
+      body:
+        error: invalid_token
+        error_description: "The access token provided is expired, revoked, malformed or invalid for other reasons."
+      absent:
+        - meta
+
+  # Observed. The identical Rack::OAuth2 answer for the identical wrong
+  # token, against a path this Recipe declares no route for at all --
+  # proving the routing-independence half of the header's ordering finding.
+  - name: a wrong token draws the same answer whether the path exists or not
+    source: https://api.genius.com/nosuchpath-xyz
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /nosuchpath-xyz
+      headers:
+        Authorization: Bearer junktoken123456789
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+        error_description: "The access token provided is expired, revoked, malformed or invalid for other reasons."
+
+  # Observed. Same wrong token, a real path, a method this Recipe declares
+  # no route for -- the third leg of the same routing-independence finding.
+  - name: and the same again against a real path with an undeclared method
+    source: https://api.genius.com/artists/1421
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /artists/1421
+      headers:
+        Authorization: Bearer junktoken123456789
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+
+  # Observed. A second declared resource gates identically to the first.
+  - name: songs gate the same way artists do
+    source: https://api.genius.com/songs/1
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /songs/1
+    expect:
+      status: 401
+      body:
+        meta.status: 401
+        meta.message: "This call requires an access_token. Please see: https://genius.com/developers"
+
+  # Shape only -- see the header and errors.forbidden_scope for why the
+  # ordinary pipeline cannot reach this in this emulator, and why it is
+  # real: checked live, byte-identical, for both an unrouted path and an
+  # undeclared method against a real one, both with no credential at all.
+  - name: an absent credential against no real route is forbidden, not unauthorized
+    source: https://api.genius.com/nosuchpath-xyz
+    verified: "2026-09-02"
+    fixture: empty
+    arm: forbidden_scope
+    request:
+      method: GET
+      path: /nosuchpath-xyz
+    expect:
+      status: 403
+      body:
+        meta.status: 403
+        meta.message: "Action forbidden for current scope"

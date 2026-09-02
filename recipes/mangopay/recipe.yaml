@@ -1,0 +1,464 @@
+# Mangopay Recipe for Cauldron
+#
+# Where this sits beside the other payment Recipes in this collection: Adyen,
+# Checkout.com and Klarna each authenticate every route the same one way.
+# Mangopay does not. Getting a token is Basic auth with the platform's
+# ClientId and secret ApiKey; every other call is a Bearer token, minted by
+# that first call, against a URL that repeats the ClientId again as a path
+# segment. Two mechanisms, one host, and -- struck live -- two different
+# JSON envelopes for what is structurally the same mistake.
+#
+# **The PayIn is the flattest state machine of the three Recipes in this
+# batch, genuinely.** `Status` is CREATED, SUCCEEDED or FAILED and nothing
+# else -- three values, no Received-or-Pending middle tier the way Adyen's
+# resultCode has, no sub-array of actions the way Checkout.com's does. A
+# caller reads GET .../payins/{id} once and has the answer: no second
+# endpoint, no warning in the documentation not to trust it. ResultCode and
+# ResultMessage sit beside Status exactly the way Adyen's refusalReasonCode
+# and refusalReason do -- a stable code and human prose that Mangopay's own
+# examples show changing independently of each other -- and ExecutionDate is
+# null until the moment Status becomes SUCCEEDED and stays null forever if it
+# becomes FAILED instead, the same "the timestamp's presence is the signal"
+# pattern Mollie's paidAt carries. Both worked examples below are
+# Mangopay's own, quoted from its View a PayIn reference page: a CREATED
+# payin mid-3-D-Secure with SecureModeRedirectURL populated and ResultCode
+# null, and a SUCCEEDED one with ResultCode "000000", ResultMessage
+# "Success", and SecureModeRedirectURL null rather than the URL -- present
+# and empty once there is nothing left to redirect for, rather than omitted
+# the way Mollie's _links.checkout disappears for a different provider.
+# Mangopay's own example spells this out explicitly:
+# "SecureModeRedirectURL": null sits right there in the SUCCEEDED body
+# rather than being left out of it, which is the shape NullWhenUnset exists
+# to distinguish from an absent key.
+#
+# **A wrong ClientId in the path and a wrong secret answer two different
+# ways, and one of those ways gives up more information than the other.**
+# Struck live against api.sandbox.mangopay.com, 2026-09-02, on the general
+# resource gateway (a path carrying a fabricated ClientId,
+# /v2.01/fakeclientid12345/users/12345):
+#
+#   no Authorization header at all                 -> 401 invalid_auth
+#   Authorization: junktoken12345 (no Bearer)       -> 401 invalid_auth (same)
+#   Authorization: Bearer junktoken12345            -> 401 invalid_credentials
+#
+# where invalid_auth is
+#   {"Message":"The authorization header was malformed or not recognized",
+#    "Type":"invalid_auth","Date":<unix>}
+# and invalid_credentials is
+#   {"Message":"The authorization credentials are not valid",
+#    "Type":"invalid_credentials","Date":<unix>}
+#
+# So absent and malformed collapse into one verdict here -- a header with no
+# "Bearer " scheme is called the same thing as no header at all, exactly the
+# line Together AI's Recipe draws for a different API -- and rejected gets
+# its own, more specific sentence. What the fabricated ClientId in the path
+# did *not* do, in any of these three requests, is change the answer at all:
+# the same invalid_auth message came back whether the path named a ClientId
+# that has never existed or a route this Recipe never declared at all (see
+# below), because the credential is examined before the path is ever
+# resolved. That answers half of what this Recipe was asked to establish --
+# a wrong ClientId with no working credential gets exactly what an absent
+# credential gets, nothing more -- and leaves the other half open: what a
+# *valid* Bearer token minted for one ClientId gets when used against a
+# different ClientId's path could not be struck without a real account, and
+# is recorded as unobserved rather than guessed.
+#
+# **Two auth mechanisms on one host answer the same category of mistake in
+# two unrelated shapes, and the general gateway gives up less than the token
+# endpoint does for the same absent-vs-wrong distinction.** POST
+# /v2.01/oauth/token, struck live the same day:
+#
+#   no Authorization header at all                        -> 401
+#     {"error":"invalid_client",
+#      "error_description":"The authorization header was malformed or not
+#      recognized"}
+#   Authorization: Basic <base64 of "junkclient:junksecret">   -> 401
+#     {"error":"invalid_client"}                        (no error_description)
+#   Authorization: Basic  (present, nothing after the scheme) -> 401, the
+#     same body as no header at all -- treated as absent, not malformed,
+#     which is the opposite of the line Cauldron's own credential() function
+#     draws by default (see auth.go: "'Bearer ' with nothing after it...is
+#     malformed rather than absent") and is recorded rather than forced
+#     through it.
+#
+# Both answers are named invalid_client, on every one of these three
+# requests: the OAuth-standard error code never varies. What varies is
+# whether error_description is there at all, and it is the *absent* case
+# that gets the fuller sentence, backwards from how this collection usually
+# finds it -- FireHydrant's Recipe records the more complete failure getting
+# the *better* diagnosis, and here it is the emptiest failure, sending
+# nothing at all, that gets told why.
+#
+# This second envelope -- lowercase error/error_description, no Type, no
+# Date -- is a different shape from the general gateway's Message/Type/Date
+# above, on the same host, for what is categorically the same mistake
+# (nobody presented a workable credential). Cauldron's auth block is one
+# scheme for a whole Recipe; there is no field for "this one route checks a
+# different kind of credential and answers a different shape." So this
+# Recipe declares the Bearer gateway, because every payin route uses it, and
+# does not declare /oauth/token as a route at all -- the same trade Auth0's
+# Recipe in this collection makes for its own management-token endpoint.
+# What was struck against it is recorded here instead of forced into a shape
+# the format cannot hold faithfully.
+#
+# **Idempotency, added to the comparison checkoutcom/recipe.yaml opens.**
+# The header is Idempotency-Key -- the same literal name Stripe uses, for a
+# stricter rule (docs.mangopay.com/api-reference/overview/idempotency.md,
+# checked 2026-09-02): reuse a key within 24 hours and Mangopay "block[s] all
+# but the first request," and says so explicitly for the case the other two
+# providers split apart -- "Idempotent requests are blocked regardless of
+# the HTTP response code of the first API call. This means you can't re-use
+# an idempotency key that was used on a failed call." Checkout.com forgets a
+# failed attempt and reattempts it fresh; Stripe replays the identical
+# failure back; Mangopay refuses to run anything at all a second time,
+# success or failure, until a brand new key is minted. Of three providers
+# that all call the same header something adjacent to "idempotency key,"
+# none of them handle a failed first attempt the same way. The block itself
+# is a 409, in the same Message/Type/Date shape the general gateway's auth
+# failures use:
+#   {"Message":"A resource has already been created with this Idempotency Key",
+#    "Type":"idempotent_creation_conflict","Id":"...","Date":...,"errors":null}
+# Documented, not verified: reaching it needs a real create call, which this
+# Recipe never made.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Only GET is modelled. No PayIn is ever created here: doing so needs a
+#     real ClientId, a real Bearer token and, for the card flows, a
+#     tokenized card source this Recipe would have to invent -- the same
+#     read-only line Increase's Recipe draws for moving money it cannot
+#     safely rehearse.
+#   - {ClientId} is a declared path parameter and is not scoped: the PayIn
+#     object itself carries no field naming which platform it belongs to,
+#     the same absence Fireworks' Recipe records for its own resource name
+#     having no account_id anywhere to filter by. Every ClientId here
+#     answers from the same small fixture.
+#   - Cauldron's basic-auth and bearer-auth checks each compare one
+#     presented value against a fixed list; oauth/token's real ClientId:ApiKey
+#     PAIR and the Bearer gateway's ClientId-scoped token are not modelled at
+#     all, because /oauth/token itself is not a declared route -- see above.
+#   - FAILED is a real, documented third value of Status and is not in
+#     either fixture: no worked example anywhere in Mangopay's View a PayIn
+#     reference gives a FAILED payin a ResultCode or ResultMessage, and
+#     inventing plausible-looking ones would be exactly the fabrication this
+#     collection's brief warns against.
+#   - CardInfo, Billing, Shipping, BrowserInfo, SecurityInfo,
+#     AuthenticationResult and FlowDescriptor are real, documented, and
+#     shown in the same worked examples this Recipe draws from; none of them
+#     are declared, because the fields this Recipe does model are the ones
+#     that carry the state-machine question it was asked to answer, and
+#     twenty-odd more nested objects would not sharpen that answer.
+#   - Oceania and the two mTLS hosts (api-mtls.mangopay.com and its sandbox
+#     twin) are real and were not struck.
+#
+# Keys and identifiers below are fixtures, not secrets, and match no
+# platform Mangopay has ever issued.
+
+recipe: mangopay
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v2.01
+  provider: mangopay
+  docs: https://docs.mangopay.com/api-reference/payins/view-payin
+  spec: https://docs.mangopay.com/openapi.json
+  spec_hash: a8cdfb7bfa61e4cbd37335642759489b47fe942dab7e49d91331404f9fae1317
+  spec_seen: "2026-09-02"
+
+auth:
+  # The Bearer gateway every payin route uses -- see the header for why
+  # /oauth/token's own Basic exchange is not a declared route.
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-mangopay-bearer-0000000000000000
+  # A header with no "Bearer " scheme is answered the same as no header at
+  # all -- verified live, see the header -- so malformed_error is left unset
+  # to fall through to the same authentication_error absent uses.
+  rejected_error: invalid_credentials
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: Message
+    code_field: "-"
+    type_field: Type
+
+resources:
+  payin:
+    id:
+      # "wt_" followed by a UUID -- Mangopay's own worked examples, e.g.
+      # wt_370e1720-3591-42d1-9393-d1382d6e74ac.
+      style: prefixed
+      prefix: wt_
+      length: 36
+      field: Id
+    fields:
+      # CREATED, SUCCEEDED, FAILED -- Mangopay's own enum, and the flattest
+      # of the three Recipes in this batch: no middle tier, no sub-array.
+      # See the header.
+      Status:
+        type: string
+        default: CREATED
+      # A stable code and human prose that move independently, the same
+      # split Adyen's refusalReasonCode/refusalReason makes. Null until the
+      # transaction has an outcome.
+      ResultCode:
+        type: string
+        null_when_unset: true
+      ResultMessage:
+        type: string
+        null_when_unset: true
+      CreationDate:
+        type: timestamp
+      # Null until Status becomes SUCCEEDED, and stays null forever if it
+      # becomes FAILED instead -- Mangopay's own words for the field, and
+      # the same "presence is the signal" shape Mollie's paidAt has.
+      ExecutionDate:
+        type: timestamp
+        null_when_unset: true
+      AuthorId:
+        type: string
+      CreditedUserId:
+        type: string
+      CreditedWalletId:
+        type: string
+      DebitedFunds_Amount:
+        type: integer
+        in: DebitedFunds
+        as: Amount
+      DebitedFunds_Currency:
+        type: string
+        in: DebitedFunds
+        as: Currency
+      CreditedFunds_Amount:
+        type: integer
+        in: CreditedFunds
+        as: Amount
+      CreditedFunds_Currency:
+        type: string
+        in: CreditedFunds
+        as: Currency
+      Fees_Amount:
+        type: integer
+        in: Fees
+        as: Amount
+      Fees_Currency:
+        type: string
+        in: Fees
+        as: Currency
+      PaymentType:
+        type: string
+        default: CARD
+      ExecutionType:
+        type: string
+        default: DIRECT
+      Tag:
+        type: string
+      SecureModeNeeded:
+        type: boolean
+      # A URL while a 3-D Secure challenge is unresolved, and null rather
+      # than absent once the payin has an outcome -- Mangopay's own
+      # SUCCEEDED example carries "SecureModeRedirectURL": null explicitly,
+      # present and empty rather than omitted, the same distinction
+      # NullWhenUnset exists to make and the opposite of Mollie's
+      # _links.checkout for a different provider, which disappears rather
+      # than nulling.
+      SecureModeRedirectURL:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v2.01/{ClientId}/payins/{id}
+    resource: payin
+    operation: get
+
+errors:
+  # Verified live, 2026-09-02: no Authorization header, and a header with no
+  # "Bearer " scheme, both answer this on the general resource gateway --
+  # collapsed into one verdict, see the header.
+  authentication_error:
+    status: 401
+    type: invalid_auth
+    message: The authorization header was malformed or not recognized
+
+  # Verified live: a well-formed "Bearer <token>" that is simply wrong gets
+  # this instead -- the one verdict this host does tell apart from the two
+  # above.
+  invalid_credentials:
+    status: 401
+    type: invalid_credentials
+    message: The authorization credentials are not valid
+
+  # Documented, not observed -- see the header's idempotency paragraph.
+  # Reaching this needs a real create call this Recipe never made.
+  idempotency_conflict:
+    status: 409
+    type: idempotent_creation_conflict
+    message: A resource has already been created with this Idempotency Key
+
+fixtures:
+  empty: {}
+
+  small-platform:
+    payin:
+      # Mangopay's own worked example: mid 3-D-Secure, ResultCode still
+      # null, SecureModeRedirectURL populated because the challenge is
+      # unresolved.
+      - id: wt_370e1720-3591-42d1-9393-d1382d6e74ac
+        Status: CREATED
+        AuthorId: user_m_01KHRMAQT1ZPVBWK2KYM6S0N7M
+        CreditedUserId: user_m_01KHRMAQT1ZPVBWK2KYM6S0N7M
+        CreditedWalletId: wlt_m_01KH8RY6BKXD2ZT7F76XH2TS7Z
+        CreationDate: 1771580095
+        DebitedFunds_Amount: 10000
+        DebitedFunds_Currency: EUR
+        CreditedFunds_Amount: 9900
+        CreditedFunds_Currency: EUR
+        Fees_Amount: 100
+        Fees_Currency: EUR
+        PaymentType: CARD
+        ExecutionType: DIRECT
+        Tag: Created using Mangopay API Postman Collection
+        SecureModeNeeded: true
+        SecureModeRedirectURL: https://api.sandbox.whenthen.co/payment-gateway/whenthen/threeDS/54b0c206-0a67-43d4-ace6-14a25697cf85/challenge?id=370e1720-3591-42d1-9393-d1382d6e74ac
+
+      # Mangopay's own second worked example: succeeded, ResultCode
+      # "000000", and the redirect is gone -- see the header.
+      - id: wt_2da30870-9786-45f5-96fa-8b6442e818e7
+        Status: SUCCEEDED
+        ResultCode: "000000"
+        ResultMessage: Success
+        AuthorId: user_m_01KHXAHEBRWSZXJY85TPPR56TK
+        CreditedUserId: user_m_01KHXAHEBRWSZXJY85TPPR56TK
+        CreditedWalletId: wlt_m_01KHXAHH2NA3AAMPGE1SJPHJDJ
+        CreationDate: 1771584873
+        ExecutionDate: 1771584873
+        DebitedFunds_Amount: 10000
+        DebitedFunds_Currency: EUR
+        CreditedFunds_Amount: 9000
+        CreditedFunds_Currency: EUR
+        Fees_Amount: 1000
+        Fees_Currency: EUR
+        PaymentType: CARD
+        ExecutionType: DIRECT
+        Tag: Created using Mangopay API Postman Collection
+        SecureModeNeeded: true
+
+# Every case below carries source. A verified date means this exact request
+# was sent to api.sandbox.mangopay.com on that date and this is exactly what
+# came back; its absence means the case is read from Mangopay's own View a
+# PayIn reference page and never called, because calling it needs a real
+# ClientId and Bearer token this Recipe never held.
+conformance:
+  - name: no credential answers invalid_auth, not invalid_credentials
+    source: https://api.sandbox.mangopay.com/v2.01/fakeclientid12345/users/12345
+    verified: "2026-09-02"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/fakeclientid12345/payins/wt_370e1720-3591-42d1-9393-d1382d6e74ac
+    expect:
+      status: 401
+      body:
+        Type: invalid_auth
+        Message: The authorization header was malformed or not recognized
+
+  - name: a header with no Bearer scheme is called the same thing as absent
+    source: https://api.sandbox.mangopay.com/v2.01/fakeclientid12345/users/12345
+    verified: "2026-09-02"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/fakeclientid12345/payins/wt_370e1720-3591-42d1-9393-d1382d6e74ac
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        Type: invalid_auth
+        Message: The authorization header was malformed or not recognized
+
+  - name: a well-formed Bearer token that is simply wrong gets a sharper verdict
+    source: https://api.sandbox.mangopay.com/v2.01/fakeclientid12345/users/12345
+    verified: "2026-09-02"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/fakeclientid12345/payins/wt_370e1720-3591-42d1-9393-d1382d6e74ac
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        Type: invalid_credentials
+        Message: The authorization credentials are not valid
+
+  - name: a fabricated ClientId with no credential answers no differently than a real path would
+    # The path names a ClientId this Recipe never declares, and the answer
+    # is identical to the two cases above: the credential is examined before
+    # the path is ever resolved. See the header for what this does and does
+    # not establish about a wrong ClientId.
+    source: https://api.sandbox.mangopay.com/v2.01/fakeclientid12345/users/12345
+    verified: "2026-09-02"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/totally-different-clientid/payins/wt_370e1720-3591-42d1-9393-d1382d6e74ac
+    expect:
+      status: 401
+      body:
+        Type: invalid_auth
+
+  - name: an unrouted path answers the identical invalid_auth with no credential sent
+    source: https://api.sandbox.mangopay.com/v2.01/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/no-such-route-xyz
+    expect:
+      status: 401
+      body:
+        Type: invalid_auth
+        Message: The authorization header was malformed or not recognized
+
+  - name: created is null on ResultCode and carries a live redirect
+    source: https://docs.mangopay.com/api-reference/payins/view-payin
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/cauldron-platform/payins/wt_370e1720-3591-42d1-9393-d1382d6e74ac
+      headers:
+        Authorization: Bearer cauldron-mangopay-bearer-0000000000000000
+    expect:
+      status: 200
+      body:
+        Status: CREATED
+        ResultCode: null
+        SecureModeNeeded: true
+      matches:
+        SecureModeRedirectURL: '^https://'
+
+  - name: succeeded carries a stable code and the redirect is null, not gone
+    source: https://docs.mangopay.com/api-reference/payins/view-payin
+    fixture: small-platform
+    request:
+      method: GET
+      path: /v2.01/cauldron-platform/payins/wt_2da30870-9786-45f5-96fa-8b6442e818e7
+      headers:
+        Authorization: Bearer cauldron-mangopay-bearer-0000000000000000
+    expect:
+      status: 200
+      body:
+        Status: SUCCEEDED
+        ResultCode: "000000"
+        ResultMessage: Success
+        # Present and null, exactly as Mangopay's own worked example shows
+        # it -- not omitted. See the header.
+        SecureModeRedirectURL: null

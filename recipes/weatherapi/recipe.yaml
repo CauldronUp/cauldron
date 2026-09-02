@@ -1,0 +1,622 @@
+# WeatherAPI.com Recipe for Cauldron
+#
+# This Recipe, tomorrowio/recipe.yaml and visualcrossing/recipe.yaml were
+# written together as one group, on the same day, against a question the
+# rest of this collection's weather Recipes only half answer: Open-Meteo and
+# the National Weather Service (nationalweatherservice/recipe.yaml) are both
+# free and governmental or research-run, and neither carries a real
+# commercial billing relationship. These three do. The question is what a
+# forecast's age looks like once money is attached to the call: does the
+# response say when it was computed, is there a cache header, and does the
+# vendor tell a caller what units it is using rather than making the caller
+# assume.
+#
+# WeatherAPI's answer to the first question is an observation time, not a
+# forecast one, on the one endpoint this Recipe models. current.json is the
+# Realtime API -- "current or realtime weather information for a given
+# city" -- and it carries last_updated and last_updated_epoch, documented as
+# "Local time when the real time data was updated." There is no
+# model-run-time field anywhere in this response: WeatherAPI is a resale and
+# blend of underlying model and station data, and the only freshness signal
+# it exposes is when its own cache of that data last changed. That is a real
+# answer to the question this group of Recipes exists to ask, and it is a
+# thinner one than a model run timestamp would be: last_updated says data
+# changed at some moment, and says nothing about which model, which run, or
+# how far in the future forecast.json's own daily figures reach.
+#
+# **And that timestamp lies about its own timezone, in the exact shape the
+# unix-time epoch exists to prevent.** WeatherAPI's own field-description
+# table calls last_updated_epoch "Local time when the real time data was
+# updated in unix time" -- and the same phrase, verbatim, describes two other
+# fields: location.localtime_epoch is "Local date and time in unix time,"
+# and forecastday.date_epoch is "Forecast date as unix time." A Unix
+# timestamp is seconds since 1970-01-01 UTC by construction; there is no such
+# thing as a "local" one, and calling it that three separate times in three
+# separate tables is not a typo, it is the vendor's own vocabulary for a
+# field type it evidently does not think of as what it is. A client that
+# takes "local" at face value and applies location.tz_id's offset to
+# last_updated_epoch a second time, on top of the UTC math new Date() already
+# does correctly, gets an hour count that is wrong by exactly that offset --
+# the same double-conversion trap Open-Meteo's Recipe in this collection
+# documents for a bare ISO string with no zone marker at all, produced here
+# by a field type that is supposed to make the question moot.
+#
+# **Units are not ambiguous, and they are not declared in a separate object
+# either -- they are baked into the field name, and there is no request
+# parameter that changes what comes back.** temp_c and temp_f are both
+# always present, at the same time, on every call; so are wind_mph and
+# wind_kph, pressure_mb and pressure_in, precip_mm and precip_in, vis_km and
+# vis_miles, gust_mph and gust_kph. No documented query parameter selects a
+# unit system -- the request parameter table has key, q, days, dt, unixdt,
+# end_dt, unixend_dt, hour, alerts, aqi, pollen and lang, and nothing else --
+# so there is no request-parameter-controlled unit to get wrong, and no
+# separate units object to read from the other side of the document the way
+# Open-Meteo's hourly_units is. This is the third design this collection has
+# now seen for the same problem: Open-Meteo answers with one number and a
+# units map elsewhere; the National Weather Service answers with a unitCode
+# object in one place, a bare number beside a separate field in another, and
+# prose with the unit inside the string in a third; WeatherAPI answers with
+# two numbers, named for their own units, and asks nothing of the caller at
+# all.
+#
+# **The credential travels in the query string, the structural fact the
+# here/recipe.yaml and what3words/recipe.yaml header comments already name
+# for HERE and what3words.** WeatherAPI is the third data point for the same
+# question -- is a missing key a validation failure or an authentication
+# one -- and it gives the cleanest possible answer, because it is the one
+# provider of the three whose own documented error catalogue draws that line
+# explicitly. Struck live, with no account and no key, against
+# api.weatherapi.com:
+#
+#   GET /v1/current.json?q=London                          -> 401 {"error":{"code":1002,"message":"API key is invalid or not provided."}}
+#   GET /v1/current.json?q=London&key=junkkey12345           -> 401 {"error":{"code":2006,"message":"API key is invalid."}}
+#   GET /v1/current.json?q=London&key=                       -> 401, byte-identical to the first (code 1002)
+#   GET /v1/current.json?q=London&key=x                      -> 401, byte-identical to the second (code 2006)
+#   GET /v1/current.json                (no q, no key)        -> 401, byte-identical to the first
+#
+# Two different numeric codes, two different sentences, checked five separate
+# ways: an omitted key and an explicitly empty one (key= with nothing after
+# the equals sign) both land on 1002, "invalid or not provided" -- WeatherAPI's
+# own words hedge between the two rather than pick one -- while any non-empty
+# value at all, from a single garbage character up, lands on 2006, "invalid,"
+# full stop. That is also exactly where Cauldron's own query-scheme credential
+# check draws the identical line (r.URL.Query().Get(param) == "" is Absent,
+# anything else that fails the key list is Rejected), so nothing here needed
+# arming and no malformed_error is declared: this provider's two-tier answer
+# and this runtime's two-tier check are the same shape by construction, not
+# by luck.
+#
+# And the fifth line above answers the validation-versus-authentication
+# question directly, for the one case this Recipe could actually reach: a
+# request missing both its business parameter and its credential is refused
+# for the credential, every time, never for the missing q. WeatherAPI's own
+# error-code table documents a real, distinct validation failure for that
+# other case -- 400, code 1003, "Parameter 'q' not provided" -- and it is a
+# different HTTP status and a different code entirely from either credential
+# sentence above, which is a genuine three-way split this format can
+# describe (auth.absent_error, auth.rejected_error, and an ordinary route
+# error for a validation failure) rather than the two-way collapse most
+# providers give it. But 1003 is reachable only with a credential this
+# Recipe was never going to hold -- the key gate runs first, unconditionally,
+# for every request this Recipe could send -- so it is recorded here from the
+# documented table and not wired as a route: no case below claims it, and
+# none carries a verified date for it.
+#
+# **A path this host has no route for answers before the key is ever
+# examined, and answers with nothing at all.** Struck live, both ways:
+#
+#   GET /v1/nosuchroute                                       -> 404, zero bytes, no Content-Type header
+#   GET /v1/nosuchroute?key=junkkey12345                       -> 404, byte-identical: zero bytes, no Content-Type
+#
+# Not an empty JSON object, not text/plain -- literally no body and no
+# Content-Type header on the response at all, next to every other answer on
+# this host (every 401 above, and the 200 case below) carrying
+# Content-Type: application/json without exception. That absence, plus the
+# BunnyCDN pull-zone headers present on every response from this host
+# (CDN-PullZone, CDN-RequestPullCode, CDN-Status), is what marks this as an
+# edge-level rejection rather than anything the API application produced: a
+# path that does not match a known pull rule is refused by the CDN in front
+# of the origin, before a request for it is ever forwarded to whatever
+# checks the key. auth.after_routing carries that ordering, and both cases
+# below send exactly what the live probes sent.
+#
+# **And once a path does match, the HTTP method stops mattering entirely --
+# there is no 405 anywhere on this host that could be found.** Struck live,
+# three separate ways, all against the same real path:
+#
+#   PATCH   /v1/current.json?q=London                         -> 401 {"error":{"code":1002,...}}, identical to a GET with no key
+#   PATCH   /v1/current.json?q=London&key=junkkey12345          -> 401 {"error":{"code":2006,...}}, identical to a GET with a wrong key
+#   OPTIONS /v1/current.json?q=London                          -> 401, identical to the PATCH case above
+#   HEAD    /v1/current.json?q=London                          -> 401, identical again (and no body, which HEAD never sends regardless)
+#
+# A PATCH with no key gets exactly the sentence a GET with no key gets; a
+# PATCH with a wrong key gets exactly the sentence a GET with a wrong key
+# gets. The credential check runs the same way for every verb probed, which
+# means this application does not appear to dispatch on HTTP method at all --
+# it is most likely one script per path, invoked identically regardless of
+# what verb reached it, the same shape Turso's Recipe in this collection
+# names for a different host ("no 405 anywhere on this host that was
+# findable without a credential... a mistyped path and a mistyped method are
+# the same failure"). WeatherAPI's version of that finding is sharper still:
+# it is not that a wrong method collapses into the same 404 a wrong path
+# gets, the way Turso's does -- it is that a wrong method is not wrong at
+# all, from this API's own point of view, and reaches the identical
+# credential-gated answer a right one does. Rather than declare a
+# method_not_allowed error this host has never sent, PATCH is wired here as
+# a second real route pointing at the same resource and operation GET does,
+# because that is the literal, observed behaviour: not an approximation of a
+# 405 that never came, but the same gate.
+#
+# **The API marks its own answers non-cacheable, on a host that caches
+# everything else.** Every response this Recipe struck from
+# api.weatherapi.com -- every 401, the blank 404 -- carries
+# Cache-Control: no-cache. The bare root page on the same CDN pull zone,
+# https://api.weatherapi.com/, answers a static 200 with
+# Cache-Control: public, max-age=180 and an ETag and a Last-Modified header,
+# all three genuinely absent from every API response this Recipe struck. So
+# the vendor's own infrastructure is capable of real HTTP caching and
+# chooses not to apply it to data responses -- deliberate, not an oversight
+# of the CDN layer -- while documenting no refresh cadence anywhere this
+# Recipe could find for how often "real time" data actually changes underneath
+# that header. A caller is told, correctly, not to cache the answer, and is
+# never told how long an answer stays true before the next one differs from
+# it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 401 and the blank 404 below are struck live and carry a
+#     verified date; the one 200 case is WeatherAPI's own documented example
+#     and carries none.
+#   - The 200 case is quoted from the "Bulk Request Example" on WeatherAPI's
+#     docs page, not from a plain current.json call: no worked example of a
+#     bare, unwrapped current.json response exists anywhere on that page,
+#     only field-by-field tables with no values. The bulk endpoint's own
+#     response wraps each location's answer under bulk[].query, with
+#     location and current nested one level deeper than a plain call
+#     documents them (location and current sit at the top level per the
+#     field tables) -- but the location and current objects themselves are
+#     declared, by the same field tables, to be the identical shape a plain
+#     current.json call returns, and the values inside them are WeatherAPI's
+#     own, not invented. The fixture below uses the London entry from that
+#     example (lat 51.52, lon -0.11, temp_c 11.0) rather than the Boston or
+#     zip-code entries in the same block.
+#   - forecast.json, search.json, astronomy.json, history.json, future.json,
+#     marine.json, sports.json, timezone.json, ip.json and the bulk endpoint
+#     itself are not modelled. forecast.json shares current.json's location
+#     and current objects and adds a forecastday array; its own "day" and
+#     "astro" element tables document no field that says when a forecast was
+#     generated, which is itself worth recording, but no worked JSON example
+#     of the array exists on the documentation page this Recipe read, and
+#     inventing max/min temperatures or a condition code for a day nobody
+#     asked about would be exactly the fabrication Step 3 rules out. Left
+#     out rather than guessed at.
+#   - Of current's roughly 28 documented fields, this Recipe declares 22.
+#     short_rad, diff_rad, dni and gti are paid-plan-only per their own
+#     description and carry no worked value anywhere free documentation
+#     shows; air_quality and pollen are each a nested element this Recipe
+#     has no worked example for either.
+#   - No fetchable OpenAPI or Swagger document exists at a stable URL for
+#     this API; docs.weatherapi.com [sic, www.weatherapi.com/docs/] is a
+#     hand-written reference page. upstream.spec is not recorded for that
+#     reason.
+#   - Quota and plan errors (403 codes 2007, 2008, 2009) and the bulk-specific
+#     9000/9001 codes are documented in WeatherAPI's own error-code table and
+#     never triggered; no route in this Recipe can reach them, since every
+#     one of this Recipe's routes answers 401 before any of those checks
+#     would run, so none is wired.
+
+recipe: weatherapi
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.weatherapi.com/docs/
+
+auth:
+  # In the query string -- see the header, and here/recipe.yaml and
+  # what3words/recipe.yaml for the rest of this group's comparison.
+  scheme: query
+  param: key
+  keys:
+    - cauldron_weatherapi_fixture_key_0000000000000
+  # The route is resolved before the key is looked at: a path this host does
+  # not have answers 404 with no body at all, checked both with and without a
+  # key. See the header.
+  after_routing: true
+  # A key that is present and does not match this Recipe's own gets
+  # WeatherAPI's second sentence. Absent -- and, live-confirmed, an explicitly
+  # empty key= as well -- falls through to the default authentication_error,
+  # whose wording is already WeatherAPI's first one. No malformed_error: this
+  # provider's own two-tier split lands exactly where Cauldron's query-scheme
+  # check already draws the absent/rejected line, so there is no third
+  # sentence to lose.
+  rejected_error: invalid_key
+
+responses:
+  resource:
+    style: bare
+  error:
+    # {"error": {"code": ..., "message": "..."}} on every failure this
+    # Recipe struck. code is numeric, not a string constant, and there is no
+    # "type" field anywhere in it.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  conditions:
+    id:
+      # q is never echoed on the wire under its own name -- location.name is
+      # a resolved value ("London" answers "London" here, but a postcode or
+      # a lat,lon pair resolves to a place name that is not the string sent)
+      # -- so the identifier this format can name is not one the response
+      # carries. See openmeteo/recipe.yaml's identical reasoning for its own
+      # id, and nationalweatherservice/recipe.yaml's for its point.
+      style: opaque
+      field: "-"
+    fields:
+      location_name:
+        type: string
+        in: location
+        as: name
+      location_region:
+        type: string
+        in: location
+        as: region
+      location_country:
+        type: string
+        in: location
+        as: country
+      location_lat:
+        type: number
+        in: location
+        as: lat
+      location_lon:
+        type: number
+        in: location
+        as: lon
+      location_tz_id:
+        type: string
+        in: location
+        as: tz_id
+      # Documented as "Local date and time in unix time" -- see the header
+      # for why that phrase does not describe a real thing.
+      location_localtime_epoch:
+        type: timestamp
+        in: location
+        as: localtime_epoch
+      location_localtime:
+        type: string
+        in: location
+        as: localtime
+      # Documented as "Local time when the real time data was updated in
+      # unix time." The one freshness signal this response carries at all --
+      # see the header. Not a forecast model-run time; an observation-update
+      # time.
+      current_last_updated_epoch:
+        type: timestamp
+        in: current
+        as: last_updated_epoch
+      current_last_updated:
+        type: string
+        in: current
+        as: last_updated
+      # The unit is the field name. No separate units object, and no request
+      # parameter selects one or the other -- see the header.
+      current_temp_c:
+        type: number
+        in: current
+        as: temp_c
+      current_temp_f:
+        type: number
+        in: current
+        as: temp_f
+      current_is_day:
+        type: integer
+        in: current
+        as: is_day
+      current_condition_text:
+        type: string
+        in: current.condition
+        as: text
+      current_condition_icon:
+        type: string
+        in: current.condition
+        as: icon
+      current_condition_code:
+        type: integer
+        in: current.condition
+        as: code
+      current_wind_mph:
+        type: number
+        in: current
+        as: wind_mph
+      current_wind_kph:
+        type: number
+        in: current
+        as: wind_kph
+      current_wind_degree:
+        type: integer
+        in: current
+        as: wind_degree
+      current_wind_dir:
+        type: string
+        in: current
+        as: wind_dir
+      current_pressure_mb:
+        type: number
+        in: current
+        as: pressure_mb
+      current_pressure_in:
+        type: number
+        in: current
+        as: pressure_in
+      current_precip_mm:
+        type: number
+        in: current
+        as: precip_mm
+      current_precip_in:
+        type: number
+        in: current
+        as: precip_in
+      current_humidity:
+        type: integer
+        in: current
+        as: humidity
+      current_cloud:
+        type: integer
+        in: current
+        as: cloud
+      current_feelslike_c:
+        type: number
+        in: current
+        as: feelslike_c
+      current_feelslike_f:
+        type: number
+        in: current
+        as: feelslike_f
+
+routes:
+  - method: GET
+    path: /v1/current.json
+    resource: conditions
+    operation: get
+    id_from: query:q
+
+  # Live evidence: PATCH on this exact path answers the identical
+  # credential-gated 401 a GET does, with no method-specific failure of any
+  # kind -- see the header. Wired to the same resource and operation rather
+  # than left to Cauldron's own default 405, which would claim a status this
+  # host has never sent for this path.
+  - method: PATCH
+    path: /v1/current.json
+    resource: conditions
+    operation: get
+    id_from: query:q
+
+errors:
+  # The default, absent-credential shape -- also what an explicitly empty
+  # key= gets, live-confirmed. See the header and the auth block above.
+  authentication_error:
+    status: 401
+    code: 1002
+    message: "API key is invalid or not provided."
+
+  # A key that is present, non-empty, and not one this Recipe holds. Live,
+  # from a single garbage character up.
+  invalid_key:
+    status: 401
+    code: 2006
+    message: "API key is invalid."
+
+  # Overrides Cauldron's own built-in name so a routing miss gets exactly
+  # what the live host sends: nothing. No headers block here at all, which
+  # is the point -- see the header for the Content-Type this host omits
+  # entirely on this one response, next to carrying it on every other.
+  unknown_route:
+    status: 404
+    empty: true
+
+fixtures:
+  empty: {}
+
+  # WeatherAPI's own "Bulk Request Example" on its docs page, the London
+  # entry -- quoted, not observed. See the header for why this is the
+  # closest thing to a worked plain current.json example this Recipe could
+  # find, and why its values are trustworthy anyway: location and current
+  # are documented as the identical shape a plain call returns, one level
+  # shallower.
+  london:
+    conditions:
+      - id: London
+        location_name: London
+        location_region: "City of London, Greater London"
+        location_country: "United Kingdom"
+        location_lat: 51.52
+        location_lon: -0.11
+        location_tz_id: Europe/London
+        location_localtime_epoch: 1673620218
+        location_localtime: "2023-01-13 14:30"
+        current_last_updated_epoch: 1673620200
+        current_last_updated: "2023-01-13 14:30"
+        current_temp_c: 11.0
+        current_temp_f: 51.8
+        current_is_day: 1
+        current_condition_text: Partly cloudy
+        current_condition_icon: "//cdn.weatherapi.com/weather/64x64/day/116.png"
+        current_condition_code: 1003
+        current_wind_mph: 23.0
+        current_wind_kph: 37.1
+        current_wind_degree: 270
+        current_wind_dir: W
+        current_pressure_mb: 1010.0
+        current_pressure_in: 29.83
+        current_precip_mm: 0.0
+        current_precip_in: 0.0
+        current_humidity: 58
+        current_cloud: 75
+        current_feelslike_c: 8.1
+        current_feelslike_f: 46.5
+
+conformance:
+  - name: no credential at all is told it might just be missing
+    source: https://api.weatherapi.com/v1/current.json?q=London
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json?q=London
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        error.code: 1002
+        error.message: "API key is invalid or not provided."
+      absent:
+        - error.type
+
+  - name: a key that is present and wrong is told plainly that it is wrong
+    source: https://api.weatherapi.com/v1/current.json?q=London&key=junkkey12345
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json?q=London&key=junkkey12345
+    expect:
+      status: 401
+      body:
+        error.code: 2006
+        error.message: "API key is invalid."
+
+  - name: an explicitly empty key answers the same as no key at all
+    source: https://api.weatherapi.com/v1/current.json?q=London&key=
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json?q=London&key=
+    expect:
+      status: 401
+      body:
+        error.code: 1002
+
+  - name: a single garbage character is already enough to be called wrong rather than missing
+    source: https://api.weatherapi.com/v1/current.json?q=London&key=x
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json?q=London&key=x
+    expect:
+      status: 401
+      body:
+        error.code: 2006
+
+  - name: a missing q parameter never gets a chance to matter either
+    # Compare here/recipe.yaml's identical case for q=Berlin -- and see the
+    # header for why WeatherAPI's own documented validation failure for this
+    # exact mistake (400, code 1003) is never reachable without a key this
+    # Recipe does not hold, and so is not wired as a route.
+    source: https://api.weatherapi.com/v1/current.json
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json
+    expect:
+      status: 401
+      body:
+        error.code: 1002
+
+  - name: an unrouted path answers with nothing at all, before the key is examined
+    source: https://api.weatherapi.com/v1/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/nosuchroute
+    expect:
+      status: 404
+      no_body: true
+      absent_headers:
+        - Content-Type
+
+  - name: and a key changes nothing about that answer
+    source: https://api.weatherapi.com/v1/nosuchroute?key=junkkey12345
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/nosuchroute?key=junkkey12345
+    expect:
+      status: 404
+      no_body: true
+      absent_headers:
+        - Content-Type
+
+  - name: a wrong method on a real path is not wrong at all, and gets the same missing-key sentence a GET does
+    source: https://api.weatherapi.com/v1/current.json?q=London
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: PATCH
+      path: /v1/current.json?q=London
+    expect:
+      status: 401
+      body:
+        error.code: 1002
+        error.message: "API key is invalid or not provided."
+
+  - name: and the same wrong method with a wrong key gets the same wrong-key sentence a GET does
+    source: https://api.weatherapi.com/v1/current.json?q=London&key=junkkey12345
+    verified: "2026-09-02"
+    fixture: london
+    request:
+      method: PATCH
+      path: /v1/current.json?q=London&key=junkkey12345
+    expect:
+      status: 401
+      body:
+        error.code: 2006
+        error.message: "API key is invalid."
+
+  - name: an authenticated call answers a bare, unwrapped location and current object
+    # WeatherAPI's own Bulk Request Example, London entry -- see the header
+    # for why the bulk envelope's location and current objects are trusted
+    # as the plain call's own shape.
+    source: https://www.weatherapi.com/docs/#intro-bulk
+    fixture: london
+    request:
+      method: GET
+      path: /v1/current.json?q=London&key=cauldron_weatherapi_fixture_key_0000000000000
+    expect:
+      status: 200
+      body:
+        location.name: London
+        location.lat: 51.52
+        location.lon: -0.11
+        location.tz_id: Europe/London
+        # No offset and no seconds -- see the header for the "local ... in
+        # unix time" phrase describing the field beside it.
+        location.localtime: "2023-01-13 14:30"
+        location.localtime_epoch: 1673620218
+        current.last_updated: "2023-01-13 14:30"
+        current.last_updated_epoch: 1673620200
+        # Both units, always, on every call -- see the header.
+        current.temp_c: 11.0
+        current.temp_f: 51.8
+        current.condition.text: Partly cloudy
+        current.condition.code: 1003
+        current.wind_mph: 23.0
+        current.wind_kph: 37.1
+        current.humidity: 58
+      absent:
+        - data
+        - result
+        - bulk
+        - query

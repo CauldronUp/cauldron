@@ -1,0 +1,341 @@
+# Klarna Recipe for Cauldron
+#
+# Where this sits beside the other payment Recipes in this collection: Adyen
+# and Checkout.com both use a bearer-shaped secret and Mollie a Bearer token
+# with a "test_" prefix. Klarna uses none of that -- HTTP Basic, over a pair
+# of credentials issued per merchant per region, on one of six regional
+# hosts. What makes it worth a Recipe of its own is not the auth scheme; it
+# is that Klarna's own documentation, in the middle of explaining how to read
+# an order back, tells an integrator not to.
+#
+# **Klarna's own docs say the thing this collection's opening question is
+# about, in so many words.** GET .../orders/{order_id} answers with a flat
+# `status` (AUTHORIZED, CAPTURED, CANCELLED, EXPIRED, CLOSED, per Klarna's
+# own Order Management reference) beside amount fields --
+# captured_amount, refunded_amount, remaining_authorized_amount -- and
+# nothing that looks like a sub-array of events. That would read as "the
+# resource carries its own current state, done." Klarna's own page on
+# viewing and changing orders, one paragraph away from documenting that same
+# call, says otherwise, verbatim (docs.klarna.com/payments/after-payments/
+# order-management/manage-orders-with-the-api/view-and-change-orders/,
+# checked 2026-09-02): "Use only [the] getOrder endpoint when it's strictly
+# required by your business logic. Don't rely on this operation to confirm
+# that an order was placed or that other operations succeeded. Instead, use
+# the responses returned by each operation itself -- if an operation returns
+# a successful response, you can consider it successful." That is Klarna
+# telling integrators to reconstruct correctness from the sequence of
+# operation responses -- the event log -- rather than trust a second read of
+# the resource, on the one provider in this trio whose resource looks
+# flattest on the wire. The field is there. The document sitting next to its
+# own reference says not to lean on it.
+#
+# **Absent, malformed and wrong are the same message, on every host and
+# every method.** Struck live 2026-09-02 against api.playground.klarna.com,
+# api-na.klarna.com and api.klarna.com: no Authorization header at all,
+# HTTP Basic with "junkuser:junkpass", GET, POST and PATCH against both a
+# real order path and a path Klarna has no route for -- every combination
+# answered
+#   {"error_code": "PERMISSION_DENIED",
+#    "error_message": "Authentication failed or permission not granted"}
+# byte for byte, with `WWW-Authenticate: Basic realm="very closed site"` on
+# the ones with a credential problem. Not one of the three verdicts this
+# collection tracks -- absent, malformed, rejected -- gets a sentence the
+# other two do not, on any of the three hosts checked. auth.absent_error,
+# malformed_error and rejected_error are all left unset because there is
+# nothing to name apart.
+#
+# **What that means for the region question this Recipe was asked to
+# answer.** Klarna partitions accounts by host rather than by an id that
+# carries a region marker the way a Cognito user pool id does -- there are
+# six hosts (Europe, North America and Oceania, each with a production and a
+# playground twin), and a merchant's Username/Password pair is issued for
+# exactly one of them. No credential this Recipe holds is real, so a
+# genuinely wrong-region *valid-shaped* credential -- the right merchant,
+# the wrong host -- could not be struck live; that specific case is reasoned
+# from what was struck, not observed, and is recorded as such. What the
+# three collapsed verdicts above make close to certain is that Klarna would
+# not tell it apart either: a provider that refuses to distinguish "you sent
+# nothing" from "you sent a credential we have never issued" has no sentence
+# left over for "you sent a credential we issued to somebody else's region."
+# Cognito's Recipe in this collection found a wrong-region user pool id
+# answering the identical ResourceNotFoundException a pool that never
+# existed gets. Klarna's version of the same finding is one step blunter:
+# every failure this API produces, region-related or not, is the one
+# sentence above, so a wrong region is not merely indistinguishable from a
+# nonexistent resource here -- it is indistinguishable from every mistake a
+# caller can make.
+#
+# **Routing is checked before the credential, on every method tried.**
+# GET on a real order path with no credential: 401, the sentence above. GET
+# on /no-such-route-xyz with no credential: 404,
+# {"error_code": "NOT_FOUND", "error_message": "Not found"} -- a different
+# shape, meaning the router answered before any credential was examined.
+# Sending the same junk Basic credential to the unrouted path changes
+# nothing: still 404, still NOT_FOUND. auth.after_routing: true, verified
+# both ways.
+#
+# What that flag cannot say -- the same gap checkoutcom/recipe.yaml records
+# for its own provider -- is PATCH and DELETE against the *real* order path,
+# no credential at all: both answered the 401 sentence above rather than a
+# 405, live. Cauldron's after_routing resolves method and path together, so
+# a path this Recipe declares only for GET answers PATCH with a 405 --
+# correct for Fireworks, whose 405 truly carries no credential either, and
+# wrong for Klarna, which asks for a credential before it has said anything
+# about the method. This Recipe's known path resolves before the credential
+# and the credential resolves before the method, one ordering finer than the
+# boolean expresses; recorded here rather than forced into a failing case,
+# alongside CloudTalk, Timescale and Northflank in auth.go's own list of the
+# ones that needed prose instead of the flag.
+#
+# **Idempotency: searched for and not found.** Checkout.com, Stripe and
+# Adyen each document a dedicated idempotency-key header and a stated
+# retention window -- see checkoutcom/recipe.yaml for the three-way
+# comparison. Klarna's documentation index (docs.klarna.com/llms.txt, and
+# the Order Management and Payments API reference pages linked from it) was
+# searched for "idempoten" and related terms on 2026-09-02 and named no such
+# mechanism anywhere in the Order Management API this Recipe models. That
+# silence is recorded rather than filled in with a guess: a provider whose
+# public materials do not surface an idempotency contract at all is a
+# different animal from one whose contract is merely undocumented in the one
+# place this Recipe looked, and this Recipe does not know which Klarna is.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Only GET is modelled. Capture, cancel, refund and the authorization
+#     extension calls are real, documented in Klarna's Order Management
+#     reference and its own error-code tables (error-handling/
+#     error-codes-and-messages-for-order-management.md), and were neither
+#     called nor modelled here -- read-only, on purpose, the same choice
+#     Increase's Recipe makes for money it cannot safely move in a test.
+#   - Cauldron's basic-auth check compares one half of the pair against a
+#     fixed list (auth.credential selects which); this Recipe checks the
+#     password and never looks at the username at all. A request presenting
+#     the right password with any username is Accepted here, where the real
+#     API almost certainly ties a specific Username to a specific Password
+#     and would refuse a mismatched pair. The same gap Auth.Credential's own
+#     doc comment names for Twilio and Mailgun.
+#   - The order fixture's id is a UUID minted for this Recipe, not Klarna's
+#     own. The one worked getOrder example this Recipe found
+#     (docs.klarna.com/payments/after-payments/order-management/
+#     manage-orders-with-the-api/view-and-change-orders/) redacts its real
+#     id as "7849fd84-47dc-4919-a7ce-xxxxxxxxxx" -- filling in the redacted
+#     half would be inventing digits Klarna never published, so this Recipe
+#     mints its own instead and says so here.
+#   - fraud_status is declared as a string and only one of its values --
+#     ACCEPTED -- appears in a worked example anywhere this Recipe found;
+#     PENDING and REJECTED are named in prose elsewhere in Klarna's fraud
+#     documentation and are not backed by a numeric example, so no fixture
+#     claims them.
+#   - order_lines, shipping_address, customer and merchant_data are real,
+#     documented fields on this same resource and are not declared: the one
+#     worked example this Recipe has is a partial code sample rather than a
+#     complete response body, and declaring fields the example does not
+#     actually show them a value for would be a guess about their shape
+#     dressed as an observation.
+#   - Oceania (api-oc.klarna.com / api-oc.playground.klarna.com) is a real
+#     third region and was not struck; only Europe and North America were,
+#     because they are the two this Recipe was asked to model.
+#   - No upstream.spec. docs.klarna.com/openapi.json and
+#     docs.klarna.com/api-reference/openapi.json both 404; Klarna's
+#     reference is rendered from a source this Recipe could not find a
+#     machine-readable copy of on 2026-09-02, the same gap Fireworks'
+#     Recipe records for its own provider's page-embedded-fragment
+#     documentation.
+#
+# Keys below are fixtures, not secrets, and match no merchant Klarna has
+# ever issued.
+
+recipe: klarna
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: klarna
+  docs: https://docs.klarna.com/payments/after-payments/order-management/manage-orders-with-the-api/view-and-change-orders/
+
+auth:
+  scheme: basic
+  # The shared secret is the password; the username is a merchant-specific
+  # UID Cauldron's basic-auth check never inspects -- see the header's
+  # fidelity gap.
+  credential: password
+  keys:
+    - cauldron-klarna-shared-secret-0000
+  # A real order path answers 401 with no credential; an unrouted one 404s
+  # regardless of credential. Verified on all three hosts checked,
+  # 2026-09-02.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_message
+    code_field: error_code
+    type_field: "-"
+
+resources:
+  order:
+    id:
+      style: uuid
+      field: order_id
+    fields:
+      # AUTHORIZED, CAPTURED, CANCELLED, EXPIRED, CLOSED -- Klarna's own
+      # enum. See the header for why Klarna's own docs say not to trust this
+      # field alone to mean an operation succeeded.
+      status:
+        type: string
+        default: AUTHORIZED
+      # ACCEPTED is the only value this Recipe found in a worked example.
+      # See the header.
+      fraud_status:
+        type: string
+      order_amount:
+        type: integer
+      original_order_amount:
+        type: integer
+      captured_amount:
+        type: integer
+        default: 0
+      refunded_amount:
+        type: integer
+        default: 0
+      # What is left of the authorization and has not been captured or
+      # released. Zero once an order is fully captured, same signal Mollie's
+      # checkout link disappearing is for a different provider: its absence
+      # is the fact, not a word.
+      remaining_authorized_amount:
+        type: integer
+      purchase_currency:
+        type: string
+
+routes:
+  - method: GET
+    path: /ordermanagement/v1/orders/{id}
+    resource: order
+    operation: get
+
+errors:
+  # Verified live, 2026-09-02, on api.playground.klarna.com, api-na.klarna.com
+  # and api.klarna.com: absent, malformed and wrong credentials all answer
+  # this, byte for byte, on GET, POST and PATCH alike. See the header for why
+  # auth.absent_error, malformed_error and rejected_error are all unset.
+  authentication_error:
+    status: 401
+    code: PERMISSION_DENIED
+    message: Authentication failed or permission not granted
+    headers:
+      WWW-Authenticate: 'Basic realm="very closed site"'
+
+  # Verified live: an unrouted path answers this regardless of credential,
+  # which is what shows routing runs before the credential check on this
+  # host.
+  unknown_route:
+    status: 404
+    code: NOT_FOUND
+    message: Not found
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    order:
+      # The one worked example this Recipe found a complete body for --
+      # captured, with amounts that reconcile: order_amount equals
+      # captured_amount and remaining_authorized_amount is zero. The id is
+      # this Recipe's own; see the header for why.
+      - id: 8f14e45f-ceea-467e-bd76-15b1b1b1b1b1
+        status: CAPTURED
+        fraud_status: ACCEPTED
+        order_amount: 200
+        original_order_amount: 200
+        captured_amount: 200
+        refunded_amount: 0
+        remaining_authorized_amount: 0
+        purchase_currency: PLN
+
+# Every case below carries source. A verified date means this exact request
+# was sent to the named Klarna host on that date and this is exactly what
+# came back; its absence means the case is read from Klarna's own
+# documentation and never called, because calling it needs a real
+# Username/Password pair this Recipe never held.
+conformance:
+  - name: no credential answers the same sentence on every host
+    source: https://api.playground.klarna.com/ordermanagement/v1/orders/abc123
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /ordermanagement/v1/orders/8f14e45f-ceea-467e-bd76-15b1b1b1b1b1
+    expect:
+      status: 401
+      headers:
+        Www-Authenticate: 'Basic realm="very closed site"'
+      body:
+        error_code: PERMISSION_DENIED
+        error_message: Authentication failed or permission not granted
+
+  - name: a junk credential answers the identical sentence, not a different one
+    source: https://api.playground.klarna.com/ordermanagement/v1/orders/abc123
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /ordermanagement/v1/orders/8f14e45f-ceea-467e-bd76-15b1b1b1b1b1
+      headers:
+        # Basic base64("junkuser:junkpass"), sent live exactly this way.
+        Authorization: Basic anVua3VzZXI6anVua3Bhc3M=
+    expect:
+      status: 401
+      body:
+        error_code: PERMISSION_DENIED
+        error_message: Authentication failed or permission not granted
+
+  - name: the North America host answers exactly the same as the EU one
+    source: https://api-na.klarna.com/ordermanagement/v1/orders/abc123
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /ordermanagement/v1/orders/8f14e45f-ceea-467e-bd76-15b1b1b1b1b1
+    expect:
+      status: 401
+      body:
+        error_code: PERMISSION_DENIED
+        error_message: Authentication failed or permission not granted
+
+  - name: an unrouted path 404s before any credential is examined
+    source: https://api.playground.klarna.com/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /no-such-route-xyz
+    expect:
+      status: 404
+      body:
+        error_code: NOT_FOUND
+        error_message: Not found
+
+  - name: captured is a flat status and Klarna's own docs say not to trust it alone
+    source: https://docs.klarna.com/payments/after-payments/order-management/manage-orders-with-the-api/view-and-change-orders/
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /ordermanagement/v1/orders/8f14e45f-ceea-467e-bd76-15b1b1b1b1b1
+      headers:
+        # Basic base64("cauldron-merchant:cauldron-klarna-shared-secret-0000").
+        # The username is not checked -- see the header -- only the password
+        # half has to match a declared key.
+        Authorization: Basic Y2F1bGRyb24tbWVyY2hhbnQ6Y2F1bGRyb24ta2xhcm5hLXNoYXJlZC1zZWNyZXQtMDAwMA==
+    expect:
+      status: 200
+      body:
+        status: CAPTURED
+        fraud_status: ACCEPTED
+        order_amount: 200
+        captured_amount: 200
+        remaining_authorized_amount: 0
+        purchase_currency: PLN

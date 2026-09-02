@@ -1,0 +1,477 @@
+# Fal.ai Recipe for Cauldron
+#
+# Differs from openai/recipe.yaml and replicate/recipe.yaml in which of the
+# two the queue actually resembles. Replicate's prediction is one address:
+# create it, GET the same URL back, and the id, the status and the output
+# all live at that one place as it changes underneath you. Fal's queue is
+# three addresses on purpose -- submit, poll, fetch -- and treats that as a
+# feature rather than a compromise: the SDK's own BaseQueueStatus type
+# carries status_url, response_url and cancel_url on every state, so a
+# client is handed the next place to go rather than expected to have
+# memorised how to build it. Replicate's Recipe already states the same
+# instruction is implicit in its own get_url; Fal makes it explicit and
+# gives it three names instead of one.
+#
+# THE THREE URLS, AND WHAT A POLL SAYS ABOUT POSITION IN THE QUEUE.
+#
+#   submit  POST https://queue.fal.run/{owner}/{app}
+#   status  GET  https://queue.fal.run/{owner}/{app}/requests/{id}/status
+#   result  GET  https://queue.fal.run/{owner}/{app}/requests/{id}
+#
+# all on the SAME host, unlike this collection's other queue-shaped
+# providers: Anthropic's Batches API keeps its results_url on the same host
+# too, but Pinecone's data plane and Replicate's file storage both move to a
+# different one for the payload. Fal keeps the address stable and changes
+# only the path suffix -- no suffix for the finished output, /status for a
+# progress check, /cancel for a stop request.
+#
+# What a status poll answers, quoted directly from @fal-ai/client's own
+# published TypeScript (github.com/fal-ai/fal-js, libs/client/src/types
+# /common.ts, MIT licensed, read on 2026-09-02 -- not observed, because
+# every request this Recipe could make without running a real generation
+# answered about an id that does not exist):
+#
+#   interface BaseQueueStatus { status; request_id; response_url; status_url; cancel_url }
+#   InQueueQueueStatus extends BaseQueueStatus  { status: "IN_QUEUE"; queue_position: number }
+#   InProgressQueueStatus extends BaseQueueStatus { status: "IN_PROGRESS"; logs: RequestLog[] }
+#   CompletedQueueStatus extends BaseQueueStatus  { status: "COMPLETED"; logs: RequestLog[]; metrics?: Metrics }
+#
+# queue_position exists on exactly one of the three states and is gone by
+# the time there is anything else to report -- once a request starts
+# running, its place in line is not a question with an answer any more, and
+# the type system says so by removing the field rather than zeroing it.
+# Anthropic's Batches API, in the same collection, answers the identical
+# question with processing_status (a three-value state machine) and
+# request_counts (a tally), and has no number anywhere that means "how many
+# ahead of you" -- Fal's queue_position is the sharper instrument the two
+# recipes in this collection can be read against each other for.
+#
+# metrics.inference_time is Fal's answer to "what did this cost", nullable
+# and optional even on a finished request, and it is a DURATION rather than
+# a credit count -- the same proxy-for-cost shape Replicate's predict_time
+# has elsewhere in this collection, not a number of tokens or dollars
+# anywhere in this envelope.
+#
+# THREE ROUTES, THREE DIFFERENT ANSWERS TO WHETHER THE CREDENTIAL IS EVEN
+# CHECKED.
+#
+# All three were struck live against a nonexistent request id
+# (11111111-1111-1111-1111-111111111111, under the real app fal-ai/flux, on
+# 2026-09-02):
+#
+#   GET .../requests/{id}/status, no credential   -> 404 {"status":"NOT_FOUND"}
+#   GET .../requests/{id}/status, Authorization: Key <junk> -> 401 {"detail":"Authentication is required"}
+#   GET .../requests/{id}, no credential (no /status suffix) -> 401 {"detail":"Authentication is required"}
+#
+# The status route answers about an id that plainly does not exist without
+# ever being told who is asking, and only refuses once something is
+# actually presented and it is wrong -- Absent skips the gate that Rejected
+# still has to pass. The bare result route, addressing the SAME id, does not
+# extend that courtesy: no credential there is refused before the id is ever
+# looked up. Two routes, one resource, one id, and the credential is
+# examined at a different point in each -- not a difference auth.go's five
+# recorded orderings cover, because those are differences between hosts and
+# this is a difference between two paths on the identical host answering
+# about the identical thing. Whether an id that DOES exist and belongs to
+# someone else would answer its real status to an anonymous caller is a real
+# question this finding raises and this Recipe does not have the credential
+# to answer -- recorded as what was observed about a nonexistent id, not
+# extended into a claim about a real one.
+#
+# Submission has its own ordering, and it is the one Cauldron's
+# after_routing can actually express. A nonexistent app answers 404 with or
+# without a credential -- app existence resolves before the credential is
+# examined at all -- and only once the app is real does the credential get
+# checked, collapsing absent and wrong into one sentence:
+#
+#   POST /totally-bogus-owner/totally-bogus-app-xyz, no credential
+#     -> 404 {"detail":"Application \"totally-bogus-app-xyz\" not found"}
+#   POST /fal-ai/flux/schnell, no credential
+#     -> 401 {"detail":"Cannot access application \"fal-ai/flux\". Authentication is required to access this application."}
+#   POST /fal-ai/flux/schnell, Authorization: Key <junk>
+#     -> 401, byte-identical message
+#
+# That collapsed sentence is app-specific -- it names the application in the
+# refusal -- and is not the sentence this Recipe's wired auth check serves
+# by default; see auth.absent_error below for which of Fal's three real
+# sentences this Recipe picked as the one every route gets automatically,
+# and why the submission sentence is armed rather than wired.
+#
+# A wrong scheme word gets a third sentence again, on the status route:
+# "Authorization: Bearer <token>" rather than "Key <token>" answers 401
+# {"detail":"bearer: unable to decode issuer"} -- Fal tries to read it as a
+# JWT and says so, rather than treating an unrecognised scheme as absent the
+# way Together's Recipe elsewhere in this collection does. Not modelled:
+# Cauldron's auth scheme is one prefix per Recipe and "Key " is the one
+# nearly every integration actually sends.
+#
+# ROUTING RESOLVES BEFORE EVEN AN ABSENT CREDENTIAL IS QUESTIONED, ON EVERY
+# METHOD.
+#
+# GET on the submit path and DELETE on the status path both answered live,
+# with no credential sent at all: 405, an Allow header naming the real
+# methods (POST; GET,HEAD respectively), and a completely empty body --
+# Content-Length: 0, no Content-Type, nothing this Recipe's JSON error
+# envelope could serve without inventing a body the wire never sent. This
+# Recipe declares no HEAD route, so its own computed Allow on the status
+# path reads GET alone -- stated on that case rather than here.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No generation was ever run and no key was ever created, by explicit
+#     instruction. Every fixture record showing a real queue_position, logs
+#     entry or metrics value is built from @fal-ai/client's own published
+#     type definitions rather than a captured response, and carries no
+#     verified date.
+#   - The bare result route (GET .../requests/{id}, no /status suffix) is
+#     not declared. Its success body is the model's own output schema,
+#     which differs per app and this Recipe holds no worked example of any
+#     one app's shape -- declaring it would mean inventing generated
+#     content, which this Recipe was explicitly told not to produce. Its
+#     live-observed refusal shape is recorded above in prose instead.
+#   - The status route's absent-credential bypass (404 rather than a
+#     credential refusal) is not reproduced -- see the header above. This
+#     Recipe's status route answers the ordinary credential check like every
+#     other route here; only the prose records the live exception.
+#   - logs defaults to omitted unless the caller asks with ?logs=true,
+#     documented in @fal-ai/client's own QueueStatusOptions. The fixture
+#     records below carry logs unconditionally rather than modelling the
+#     query parameter, which would need a second route per state to express
+#     cleanly and adds a second axis to a Recipe already carrying three.
+#   - /cancel (PUT .../requests/{id}/cancel) is not routed. Checked live
+#     against a nonexistent id with no credential: 404, the identical
+#     {"status":"NOT_FOUND"} the status route gives the same id -- consistent
+#     with the rest of the queue rather than a new finding, so it is stated
+#     here rather than given its own route.
+#   - No upstream.spec. Fal's reference is a hosted interactive page this
+#     Recipe could not fetch as a document (it answers a Vercel bot
+#     challenge to an automated client rather than content), so the type
+#     definitions above are cited to the SDK source that implements them
+#     instead of to a fetchable machine-readable description.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: falai
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.fal.ai/model-apis/quick-start/queue-api
+
+auth:
+  scheme: header
+  header: Authorization
+  prefix: "Key "
+  keys:
+    - cauldron-falai-fixture-key-0000000000000000000000
+  # "Authentication is required" -- the sentence this host serves on the
+  # status route once a credential is present and wrong, and on the result
+  # route (not declared here, see the fidelity gaps) when nothing is
+  # presented at all. Picked as the wired default because it is the one
+  # sentence this Recipe observed live on two different routes; submission's
+  # own app-specific sentence is real, different, and armed rather than
+  # wired -- see application_access_required below and the header above.
+  absent_error: authentication_required
+  rejected_error: authentication_required
+  # Verified live: a nonexistent application 404s with or without a
+  # credential, and a wrong method 405s the same way -- both examined before
+  # the credential is. See the header for the one route (status, by id) that
+  # goes further than this flag can express in the other direction.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    # {"detail": "..."} on every failure this Recipe struck that carried a
+    # body at all -- FastAPI's own default shape, one field, no code.
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  queue_request:
+    id:
+      style: uuid
+      field: request_id
+    fields:
+      # IN_QUEUE, IN_PROGRESS, COMPLETED -- confirmed as the complete set by
+      # @fal-ai/client's own QueueStatus union type.
+      status:
+        type: string
+        default: IN_QUEUE
+      # Present only in the IN_QUEUE state -- see the header. No default:
+      # absent is the correct answer once a request has started running,
+      # the same "absent rather than null" shape Replicate's own output
+      # field has for a different reason.
+      queue_position:
+        type: integer
+      response_url:
+        type: string
+      status_url:
+        type: string
+      cancel_url:
+        type: string
+      # Present only once the request has started running. See the fidelity
+      # gaps for the query parameter this Recipe does not model.
+      logs:
+        type: list
+      # Present only on a completed request, and even then only sometimes --
+      # Metrics is declared optional on CompletedQueueStatus itself.
+      metrics:
+        type: map
+
+routes:
+  - method: POST
+    path: /fal-ai/flux/schnell
+    resource: queue_request
+    operation: create
+    fields:
+      queue_position: 0
+      response_url: https://queue.fal.run/fal-ai/flux/requests/{id}
+      status_url: https://queue.fal.run/fal-ai/flux/requests/{id}/status
+      cancel_url: https://queue.fal.run/fal-ai/flux/requests/{id}/cancel
+
+  - method: GET
+    path: /fal-ai/flux/requests/{id}/status
+    resource: queue_request
+    operation: get
+
+errors:
+  # Wired -- see auth.absent_error above for why this sentence, observed on
+  # two different routes, was picked over submission's app-specific one.
+  authentication_required:
+    status: 401
+    message: Authentication is required
+
+  # Real and live-observed, and reachable only by arming it -- see the
+  # header for why submission's own sentence cannot also be this Recipe's
+  # wired default.
+  application_access_required:
+    status: 401
+    message: 'Cannot access application "fal-ai/flux". Authentication is required to access this application.'
+
+  # A nonexistent app, checked before any credential -- the one live finding
+  # this Recipe's after_routing: true reproduces directly rather than only
+  # stating.
+  application_not_found:
+    status: 404
+    message: 'Application "totally-bogus-app-xyz" not found'
+
+  # A route or an id-shaped path segment this host has nothing registered
+  # for. {"status":"NOT_FOUND"} rather than the {"detail": ...} shape every
+  # credential failure here uses -- a second envelope on the same host,
+  # keyed apart below because Cauldron's error style is one setting for the
+  # whole Recipe and this failure needs the other one.
+  route_not_found:
+    status: 404
+    style: flat
+    message_field: "-"
+    fields:
+      status: NOT_FOUND
+
+  # A real 405, verified live with no body at all -- not even the "detail"
+  # envelope every other failure on this host carries.
+  method_not_allowed:
+    status: 405
+    empty: true
+
+fixtures:
+  empty: {}
+
+  # A synthetic, UUID-shaped id (the same shape x-fal-request-id echoed live
+  # on an unrelated call) standing in for a request just accepted. Not a
+  # real generation.
+  small-queue:
+    queue_request:
+      - id: 6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a
+        status: IN_QUEUE
+        queue_position: 3
+        response_url: https://queue.fal.run/fal-ai/flux/requests/6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a
+        status_url: https://queue.fal.run/fal-ai/flux/requests/6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a/status
+        cancel_url: https://queue.fal.run/fal-ai/flux/requests/6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a/cancel
+
+      # Running: no queue_position any more (it stopped meaning anything the
+      # moment the request left the queue), logs now present.
+      - id: 9d3b6f2a-8c1e-4f0a-b7d5-3e9a2c8f1b04
+        status: IN_PROGRESS
+        response_url: https://queue.fal.run/fal-ai/flux/requests/9d3b6f2a-8c1e-4f0a-b7d5-3e9a2c8f1b04
+        status_url: https://queue.fal.run/fal-ai/flux/requests/9d3b6f2a-8c1e-4f0a-b7d5-3e9a2c8f1b04/status
+        cancel_url: https://queue.fal.run/fal-ai/flux/requests/9d3b6f2a-8c1e-4f0a-b7d5-3e9a2c8f1b04/cancel
+        logs:
+          - message: Starting inference
+            level: INFO
+            source: USER
+            timestamp: "2026-09-01T10:00:00.000Z"
+
+      # Finished. metrics.inference_time is the duration this cost, the same
+      # proxy-for-cost shape Replicate's predict_time carries -- not a
+      # credit or token count anywhere in this envelope.
+      - id: f4a7c2e9-1b6d-4a3f-8e2c-6d9b3a7f0c15
+        status: COMPLETED
+        response_url: https://queue.fal.run/fal-ai/flux/requests/f4a7c2e9-1b6d-4a3f-8e2c-6d9b3a7f0c15
+        status_url: https://queue.fal.run/fal-ai/flux/requests/f4a7c2e9-1b6d-4a3f-8e2c-6d9b3a7f0c15/status
+        cancel_url: https://queue.fal.run/fal-ai/flux/requests/f4a7c2e9-1b6d-4a3f-8e2c-6d9b3a7f0c15/cancel
+        logs:
+          - message: Starting inference
+            level: INFO
+            source: USER
+            timestamp: "2026-09-01T10:00:00.000Z"
+          - message: Inference complete
+            level: INFO
+            source: USER
+            timestamp: "2026-09-01T10:00:02.000Z"
+        metrics:
+          inference_time: 1.92
+
+conformance:
+  - name: a nonexistent application 404s whether or not a credential was sent
+    source: https://queue.fal.run/totally-bogus-owner/totally-bogus-app-xyz
+    verified: "2026-09-02"
+    arm: application_not_found
+    fixture: empty
+    request:
+      method: POST
+      path: /totally-bogus-owner/totally-bogus-app-xyz
+    expect:
+      status: 404
+      body:
+        detail: 'Application "totally-bogus-app-xyz" not found'
+
+  - name: a real application refuses an absent credential in its own words
+    # Real and live-observed -- see the header and auth.absent_error above
+    # for why this Recipe's automatic credential check cannot also serve
+    # this sentence, and arm is what reaches it instead.
+    source: https://queue.fal.run/fal-ai/flux/schnell
+    verified: "2026-09-02"
+    arm: application_access_required
+    fixture: empty
+    request:
+      method: POST
+      path: /fal-ai/flux/schnell
+    expect:
+      status: 401
+      body:
+        detail: 'Cannot access application "fal-ai/flux". Authentication is required to access this application.'
+
+  - name: a wrong method on the submit path 405s with an empty body
+    source: https://queue.fal.run/fal-ai/flux/schnell
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /fal-ai/flux/schnell
+    expect:
+      status: 405
+      headers:
+        allow: POST
+      no_body: true
+
+  - name: and so does a wrong method on the status path
+    # Live, the Allow header read "GET,HEAD" -- this Recipe declares only
+    # GET, so Cauldron's own computed Allow names GET alone rather than a
+    # HEAD route this Recipe never wires. The status and the empty body are
+    # both the live-observed shape either way.
+    source: https://queue.fal.run/fal-ai/flux/requests/11111111-1111-1111-1111-111111111111/status
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /fal-ai/flux/requests/11111111-1111-1111-1111-111111111111/status
+    expect:
+      status: 405
+      headers:
+        allow: GET
+      no_body: true
+
+  - name: a wrong credential on the status route says only that it is required
+    # Real and live-observed, and this is the half of the header's ordering
+    # finding this emulator DOES reproduce: once a credential is presented
+    # and wrong, the status route refuses it the ordinary way. The other
+    # half -- an ABSENT credential bypassing this check entirely for an id
+    # that does not exist -- is stated in the header and not reproduced.
+    source: https://queue.fal.run/fal-ai/flux/requests/11111111-1111-1111-1111-111111111111/status
+    verified: "2026-09-02"
+    fixture: small-queue
+    request:
+      method: GET
+      path: /fal-ai/flux/requests/11111111-1111-1111-1111-111111111111/status
+      headers:
+        Authorization: Key cauldron-junk-0000000000000000000000000000
+    expect:
+      status: 401
+      body:
+        detail: Authentication is required
+
+  - name: a request still in the queue reports where it is, and nothing else yet
+    source: https://github.com/fal-ai/fal-js/blob/main/libs/client/src/types/common.ts
+    fixture: small-queue
+    request:
+      method: GET
+      path: /fal-ai/flux/requests/6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a/status
+      headers:
+        Authorization: Key cauldron-falai-fixture-key-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: IN_QUEUE
+        queue_position: 3
+        status_url: https://queue.fal.run/fal-ai/flux/requests/6c2f1a4e-0e8b-4a2f-9b1d-2f6a1c0e4b7a/status
+      absent:
+        - logs
+        - metrics
+
+  - name: once it is running, the queue position is gone rather than zeroed
+    source: https://github.com/fal-ai/fal-js/blob/main/libs/client/src/types/common.ts
+    fixture: small-queue
+    request:
+      method: GET
+      path: /fal-ai/flux/requests/9d3b6f2a-8c1e-4f0a-b7d5-3e9a2c8f1b04/status
+      headers:
+        Authorization: Key cauldron-falai-fixture-key-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: IN_PROGRESS
+        "logs[0].message": Starting inference
+      absent:
+        - queue_position
+        - metrics
+
+  - name: a finished request reports how long it ran, not how much it cost
+    source: https://github.com/fal-ai/fal-js/blob/main/libs/client/src/types/common.ts
+    fixture: small-queue
+    request:
+      method: GET
+      path: /fal-ai/flux/requests/f4a7c2e9-1b6d-4a3f-8e2c-6d9b3a7f0c15/status
+      headers:
+        Authorization: Key cauldron-falai-fixture-key-0000000000000000000000
+    expect:
+      status: 200
+      body:
+        status: COMPLETED
+        "metrics.inference_time": 1.92
+        "logs[1].message": Inference complete
+      absent:
+        - queue_position
+
+  - name: submitting mints a fresh id and starts at the front of this Recipe's own queue
+    source: https://github.com/fal-ai/fal-js/blob/main/libs/client/src/queue.spec.ts
+    fixture: empty
+    request:
+      method: POST
+      path: /fal-ai/flux/schnell
+      headers:
+        Authorization: Key cauldron-falai-fixture-key-0000000000000000000000
+      json:
+        prompt: a cauldron on a hill
+    expect:
+      status: 200
+      body:
+        status: IN_QUEUE
+        queue_position: 0
+      matches:
+        request_id: '^[0-9a-f-]+$'
+        status_url: '/status$'
