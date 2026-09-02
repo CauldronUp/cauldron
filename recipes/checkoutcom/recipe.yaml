@@ -1,0 +1,612 @@
+# Checkout.com Recipe for Cauldron
+#
+# Where this sits beside the other payment Recipes in this collection: Adyen
+# spells success the British way and puts its key on X-API-Key; Mollie writes
+# money as a decimal string and tells you a webhook's identifier and nothing
+# else. Checkout.com does neither. Its key goes on the bare Authorization
+# header with no scheme word in front of it -- not "Bearer sk_...", just
+# "sk_..." -- and money is an integer in the currency's minor unit, same as
+# Adyen. What is genuinely its own is how little information a failure
+# carries, and how the state of a payment is split across two shapes rather
+# than one.
+#
+# **A payment answers with a thirteen-word status and a boolean, and the
+# thing that produced it does not live at the same address twice.** GET
+# /payments/{id} returns `status` (Pending, Authorized, Card Verified,
+# Voided, Partially Captured, Captured, Partially Refunded, Refunded,
+# Declined, Canceled, Expired, Paid, Retry Scheduled -- Checkout.com's own
+# enum, checked against its published OpenAPI description) beside `approved`,
+# a separate boolean. The two are not redundant: an authorized payment has
+# approved: true and status: Authorized, and no money has settled -- capture
+# is a second step days later, the same trap Increase's Recipe describes for
+# "submitted" not meaning "arrived." Reading `approved` alone collapses
+# Authorized and Captured into one signal that means two different things
+# about whether the platform has been paid.
+#
+# What the resource does NOT carry, most of the time, is how it got there.
+# PaymentDetails -- the schema GET /payments/{id} answers with -- has no
+# response_code, no response_summary, no auth_code and no action_id anywhere
+# on it: those four exist only on PaymentResponse, the leaner shape a create
+# gets back synchronously, and once that response is gone the only way to see
+# them again is a second call. Checkout.com's own description says exactly
+# when the array shows up on a GET at all: PaymentDetails.actions is
+# "returned when a session ID is used to get the payment details" -- meaning
+# GET /payments/{sid_...} (the redirect-back identifier a 3DS flow hands you)
+# embeds a *summary* of the actions inline, and GET /payments/{pay_...} (the
+# payment's own permanent id) does not embed anything -- _links.actions is a
+# required sibling of _links.self on every payment precisely because the
+# full log lives at its own address, GET /payments/{id}/actions, ordered
+# newest first, and is never inlined there either. So the answer to "does the
+# resource carry its own history or a flat status" is neither of this
+# collection's two clean answers: which one you get depends on which of two
+# valid identifiers you address the same payment by, and the fuller log is
+# always a second call away. This Recipe models both: `payment` carries the
+# flat status a permanent id answers with, and `payment_action` is the
+# separate ordered log GET .../actions returns, exactly as Checkout.com's own
+# description of when each appears says to.
+#
+# **Every unauthenticated or wrongly authenticated request gets zero bytes.**
+# Probed live against api.sandbox.checkout.com, 2026-09-02: no Authorization
+# header, a header holding "totallyNotAKeyAtAll12345" with no sk_ shape at
+# all, "Authorization: Bearer sk_test_junk..." with the scheme word Checkout.com's
+# own docs never ask for, and a well-formed-looking "sk_test_junk..." with no
+# scheme word -- four different mistakes, GET/POST/PATCH/DELETE/OPTIONS, on a
+# path that exists and one that does not -- and every single one answered
+# HTTP 401 with Content-Length: 0. No Content-Type. No JSON. No error_type,
+# no request_id, nothing at all to read. So the *malformed vs rejected*
+# question this collection tracks has one answer for Checkout.com: there is
+# no wire-visible line between them, because there is no wire-visible
+# anything. The sk_ prefix is not validated separately from the key lookup in
+# any way an outside caller can observe -- a string that cannot possibly be a
+# secret key and a string shaped exactly like one and simply wrong get the
+# identical empty response. auth.absent_error, malformed_error and
+# rejected_error are all left unset here on purpose: naming three errors that
+# answer with the same zero bytes would be decoration, and the honest
+# declaration is authentication_error with empty: true, once.
+#
+# **Routing is checked before the credential, and the credential answers
+# before the method does.** GET /payments/{id} with no key: 401, empty. GET
+# /no-such-route-xyz with no key: 404, empty, Content-Type: text/plain on the
+# sandbox host and application/json on the live one -- the header lies about
+# there being a body either way, since Content-Length is 0 on both. GET
+# /tokens/{id}, a path this Recipe's account has never created a token
+# under: also 404, which only makes sense if the router -- not a resource
+# lookup -- is what answered, because no credential was ever presented that
+# could have proven a token does or does not exist. So auth.after_routing:
+# true, verified both ways: an unrouted path never reaches the credential
+# check, and a routed one always does.
+#
+# What that flag cannot say is the sixth ordering this collection has found:
+# PATCH, DELETE and OPTIONS against /payments/{id} -- a path this Recipe
+# does declare, for other methods -- all came back the identical 401 rather
+# than a 405, live. Cauldron's own after_routing resolves method and path
+# together, the same way its matcher always has, so a route this Recipe
+# declares only for GET and POST answers a PATCH with 405 here once
+# after_routing is on -- correct for Fireworks, whose 405 carries no
+# credential either, and wrong for Checkout.com, which asks for a
+# credential first and has said nothing about the method by the time it
+# does. Declaring the flag any other way breaks the verified 404 case above
+# instead. So the PATCH/DELETE/OPTIONS finding is recorded here rather than
+# turned into a case: this Recipe's known path resolves before the
+# credential and the credential resolves before the method, which is one
+# ordering finer than the boolean expresses, in the company of CloudTalk,
+# Timescale and Northflank in auth.go's own list of the ones that needed
+# prose instead of the flag.
+#
+# **Idempotency, and the comparison this collection exists to make.** The
+# header is Cko-Idempotency-Key, and Checkout.com's own idempotency page
+# (docs.checkout.com/docs/developer-resources/api/idempotency, checked
+# 2026-09-02) states the rule in three sentences: a key is cached "if the
+# request returns a 2xx response code"; "if the original request returns a
+# 4xx or 5xx response code, we don't save an idempotent result, and we
+# reattempt the payment"; keys expire after 72 hours. Stripe and Adyen both
+# answer the same three questions differently, and the three together are
+# the point:
+#
+#   - Stripe (docs.stripe.com/api/idempotent_requests): caches the status and
+#     body of the FIRST request "regardless of whether it succeeds or fails,"
+#     including a 500 -- replay a key that got a server error and you get the
+#     identical 500 back, not a fresh attempt. Reused with different
+#     parameters, the request errors rather than running. Removed after "at
+#     least" 24 hours.
+#   - Checkout.com caches only success. A failed first attempt is not
+#     remembered at all -- replay the same key after a 4xx and Checkout.com
+#     runs it again, fresh, rather than handing back the failure. Window: 72
+#     hours.
+#   - Adyen (docs.adyen.com/development-resources/api-idempotency/): the
+#     header is Idempotency-Key, and keys are "valid for a period of 7 to 14
+#     days," longer than either of the other two. Adyen's own page does not
+#     state whether a failed first attempt is cached the way Stripe's is or
+#     skipped the way Checkout.com's is -- which is itself worth recording,
+#     since it means an integration cannot learn Adyen's answer to the
+#     question this paragraph is about from the page that documents the
+#     mechanism.
+#
+#   So of the two providers this collection already ships, Stripe replays a
+#   failure and Checkout.com does not, and that is the load-bearing
+#   difference for a retry loop: code that assumes a repeated key is always
+#   safe to fire blindly gets Stripe's identical error back twice and
+#   Checkout.com's fresh, possibly-different one. This mechanism is not
+#   simulated by the runtime -- Cauldron's idempotency support across this
+#   whole collection is a documented header, not stateful replay -- so
+#   nothing below asserts a second call's body; the finding is recorded here
+#   because the three pages disagree in a way worth knowing before writing
+#   the retry logic, not because a case proves it.
+#
+# **Checkout.com's own documentation disagrees with itself about what a
+# repeated request answers.** The idempotency page says a concurrent
+# duplicate is refused with 409 "with another request being processed." The
+# OpenAPI description for POST /payments, three lines above the 401 in the
+# same responses block, documents 429 for "Too many requests or duplicate
+# request detected," with a worked example body -- request_id:
+# "0HL80RJLS76I7", error_type: "request_invalid", error_codes:
+# ["duplicate_request"] -- naming the identical scenario. Two parts of one
+# provider's own materials give a duplicate submission two different status
+# codes. Neither is modelled as verified, because reaching either needs a
+# real key; both are recorded, because the disagreement is the finding.
+#
+# **Sandbox and live are different hosts, and neither is the real one.**
+# api.sandbox.checkout.com and api.checkout.com both answered every probe
+# above identically. A real account's base URL carries an account-specific
+# {prefix} subdomain -- {prefix}.api.sandbox.checkout.com -- which
+# Checkout.com's own docs say is "the first eight characters of each of your
+# environments' unique client_id." This Recipe routes against the bare host,
+# which is what every probe above actually reached and answered from; the
+# per-account prefix is not modelled, the same trade Adyen and Mollie's
+# Recipes make for the parts of their own auth that are genuinely per-tenant.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no sk_ key was ever issued. Every 200
+#     and every documented (non-auth) failure below is read from Checkout.com's
+#     own OpenAPI description at api-reference.checkout.com/v1/swagger.yaml
+#     and carries no verified date; only the auth and routing cases, which
+#     needed no credential to observe, are verified.
+#   - OAuth client-credentials auth is real on this API (security:
+#     ApiSecretKey or OAuth, on every payments route) and is not modelled.
+#     ApiSecretKey is what every worked example in the description actually
+#     uses, and it is what this Recipe's own probes exercised.
+#   - Only get and create are modelled, both from the description's own
+#     worked examples. Capture, void, refund and cancel are real, documented,
+#     and were neither called nor modelled, the same choice Increase's Recipe
+#     makes for moving money it cannot safely rehearse.
+#   - The `payment_action` fixture is stitched from two separately-documented
+#     examples -- PaymentResponse's create example (action_id
+#     act_mbabizu24mvu3mela5njyhpit4) and PaymentActionsResponse's own
+#     worked array (three different act_ ids, illustrating Authorization,
+#     Capture and Refund) -- because the description does not show one
+#     worked flow spanning both calls. Attached to one fixture payment for a
+#     readable example rather than left unmodelled; the ids genuinely do not
+#     match between the two, and that mismatch is Checkout.com's description
+#     being read honestly rather than smoothed over.
+#   - _links is real (self and actions are required on every payment) and
+#     not modelled: the href values carry the per-account {prefix} subdomain
+#     above, which this Recipe does not mint.
+#   - 3ds, risk, customer, source and the rest of PaymentDetails' deeper
+#     nesting are declared only where the one worked example gives them a
+#     value; card networks, recipient and instruction are not modelled at
+#     all.
+#
+# Keys and identifiers below are fixtures, not secrets, and match nothing
+# Checkout.com has ever issued.
+
+recipe: checkoutcom
+capability: payments
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api-reference.checkout.com
+  spec: https://api-reference.checkout.com/v1/swagger.yaml
+  spec_hash: 964f8ccc1a72fe2295395bb6670536e2e753b75a84f6697ddf871aa67daacdb9
+  spec_seen: "2026-09-02"
+
+auth:
+  # No "Bearer " in front of it anywhere in Checkout.com's own examples --
+  # the secret key sits on Authorization by itself. Confirmed live: wrapping
+  # it in "Bearer " changed nothing about the answer.
+  scheme: header
+  header: Authorization
+  keys:
+    - sk_sbox_cauldron00000000000000
+  # A path that exists answers 401 with no credential; a path that does not
+  # answers 404 regardless of credential. Verified both ways, live, 2026-09-02.
+  after_routing: true
+
+responses:
+  # PaymentActionsResponse is "type: array" in Checkout.com's own
+  # description, with no wrapper of any kind -- the same shape Together's
+  # Recipe records OpenAI's model list NOT having.
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Documented shape for the failures this Recipe never reached live: a
+  # category and a request id, no message anywhere. The auth failures below
+  # override this per-error with empty: true, because that is what was
+  # actually observed -- zero bytes, not this envelope.
+  error:
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    type_field: error_type
+
+resources:
+  payment:
+    id:
+      # "^(pay|sid)_(\w{26})$" is Checkout.com's own pattern for this path
+      # parameter. Only pay_ is minted here; sid_ is the session identifier a
+      # 3DS redirect hands back, and PaymentDetails.actions appears inline
+      # only when a payment is addressed that way -- see the header.
+      style: prefixed
+      prefix: pay_
+      length: 26
+    fields:
+      # Minor units, same convention as Adyen and unlike Mollie's decimal
+      # string.
+      amount:
+        type: integer
+        required: true
+      currency:
+        type: string
+        required: true
+      # A separate boolean beside status, not derived from it: Authorized
+      # carries approved: true and no money has moved yet. See the header.
+      approved:
+        type: boolean
+        default: true
+      status:
+        type: string
+        default: Authorized
+      reference:
+        type: string
+      description:
+        type: string
+      requested_on:
+        type: datetime
+      risk_flagged:
+        type: boolean
+        in: risk
+        as: flagged
+      risk_score:
+        type: number
+        in: risk
+        as: score
+      customer_id:
+        type: string
+        in: customer
+        as: id
+      customer_email:
+        type: string
+        in: customer
+        as: email
+      customer_name:
+        type: string
+        in: customer
+        as: name
+      source_type:
+        type: string
+        in: source
+        as: type
+      source_id:
+        type: string
+        in: source
+        as: id
+      source_scheme:
+        type: string
+        in: source
+        as: scheme
+      source_last4:
+        type: string
+        in: source
+        as: last4
+      # Present on PaymentResponse, the create route's own answer, and not on
+      # PaymentDetails, what a later GET returns -- see the header. Declared
+      # here because the create route needs them and trimmed off the get
+      # route with returns.
+      action_id:
+        type: string
+      auth_code:
+        type: string
+      response_code:
+        type: string
+        default: "10000"
+      response_summary:
+        type: string
+        default: Approved
+      processed_on:
+        type: datetime
+
+  # The ordered log GET /payments/{id}/actions answers with -- see the
+  # header for when it is this and when it is a status word instead. Not
+  # scoped to a payment: the objects Checkout.com's own description shows
+  # carry no field naming which payment they belong to, the same absence
+  # Fireworks' Recipe records for its own resource name carrying no
+  # account_id anywhere to scope by. One fixture collection stands in for
+  # every payment's log.
+  payment_action:
+    id:
+      style: prefixed
+      prefix: act_
+      length: 26
+    fields:
+      type:
+        type: string
+        required: true
+      amount:
+        type: integer
+      approved:
+        type: boolean
+      auth_code:
+        type: string
+      response_code:
+        type: string
+      response_summary:
+        type: string
+      reference:
+        type: string
+      processed_on:
+        type: datetime
+
+routes:
+  - method: POST
+    path: /payments
+    resource: payment
+    operation: create
+    status: 201
+
+  - method: GET
+    path: /payments/{id}
+    resource: payment
+    operation: get
+    # response_code, response_summary, auth_code and action_id are the
+    # create route's own answer and do not persist onto a later GET -- see
+    # the header. Trimming them here rather than declaring two resources
+    # keeps one fixture id meaning one payment throughout.
+    returns:
+      - amount
+      - currency
+      - approved
+      - status
+      - reference
+      - description
+      - requested_on
+      - risk_flagged
+      - risk_score
+      - customer_id
+      - customer_email
+      - customer_name
+      - source_type
+      - source_id
+      - source_scheme
+      - source_last4
+
+  - method: GET
+    path: /payments/{id}/actions
+    resource: payment_action
+    operation: list
+
+errors:
+  # Verified live, 2026-09-02, on api.sandbox.checkout.com and
+  # api.checkout.com: no credential, a credential with no sk_ shape, a
+  # credential wrapped in "Bearer ", and a well-formed-looking but wrong
+  # sk_test_ value all answered this, byte for byte -- zero bytes. See the
+  # header for why absent_error, malformed_error and rejected_error are all
+  # left unset: there is nothing to tell apart.
+  authentication_error:
+    status: 401
+    empty: true
+
+  # Verified live: an unrouted path, with or without a credential, answers
+  # this with no body either -- Content-Length: 0 on both hosts, though the
+  # Content-Type header itself differs between them (text/plain on sandbox,
+  # application/json on live) despite neither actually carrying bytes.
+  unknown_route:
+    status: 404
+    empty: true
+
+  # Documented, not observed: Checkout.com's OpenAPI description for
+  # GET /payments/{id} names this shape for a payment id that parses but
+  # does not exist. No real key was ever held to call it.
+  resource_missing:
+    status: 404
+
+  # Documented, not observed, and disputed by Checkout.com's own second page
+  # -- see the header. This is the OpenAPI description's own worked example
+  # for POST /payments, not the idempotency page's 409.
+  duplicate_request:
+    status: 429
+    type: request_invalid
+    fields:
+      error_codes: [duplicate_request]
+
+fixtures:
+  empty: {}
+
+  small-merchant:
+    payment:
+      # Checkout.com's own worked example for a synchronous card payment,
+      # from the OpenAPI description's PaymentResponse example. Authorized
+      # and approved: true, and not yet captured -- see the header for why
+      # those are not the same fact.
+      - id: pay_mbabizu24mvu3mela5njyhpit4
+        amount: 6540
+        currency: USD
+        approved: true
+        status: Authorized
+        reference: ORD-5023-4E89
+        requested_on: "2019-09-10T10:11:12Z"
+        risk_flagged: true
+        customer_id: cus_udst2tfldj6upmye2reztkmm4i
+        customer_email: johnsmith@example.com
+        customer_name: John Smith
+        source_type: card
+        source_id: src_nwd3m4in3hkuddfpjsaevunhdy
+        source_scheme: Visa
+        source_last4: "6584"
+        action_id: act_mbabizu24mvu3mela5njyhpit4
+        auth_code: "770687"
+        response_code: "10000"
+        response_summary: Approved
+        processed_on: "2019-09-10T10:11:12Z"
+
+    # Checkout.com's own worked example for PaymentActionsResponse -- three
+    # actions, newest first, none of them sharing an id with the payment's
+    # own action_id above. See the header for why the two examples do not
+    # line up: they are two separately-documented worked responses, stitched
+    # onto one fixture payment rather than left unmodelled.
+    payment_action:
+      - id: act_fd3h6evhpn3uxdoqbuu3lqnqbm
+        type: Refund
+        amount: 1000
+        approved: true
+        response_code: "10000"
+        response_summary: Approved
+        processed_on: "2018-01-20T10:30:48Z"
+      - id: act_gefycn3jcvuupboxfmqrhk2aym
+        type: Capture
+        amount: 6540
+        approved: true
+        response_code: "10000"
+        response_summary: Approved
+        processed_on: "2018-01-17T10:30:48Z"
+      - id: act_y3oqhf46pyzuxjbcn2giaqnb44
+        type: Authorization
+        amount: 6540
+        approved: true
+        auth_code: "643381"
+        response_code: "10000"
+        response_summary: Approved
+        reference: ORD-5023-4E89
+        processed_on: "2018-01-17T09:30:48Z"
+
+# Every case below carries source. A verified date means this exact request
+# was sent to api.sandbox.checkout.com or api.checkout.com on that date and
+# this is exactly what came back; its absence means the case is read from
+# Checkout.com's own OpenAPI description at
+# api-reference.checkout.com/v1/swagger.yaml and never called, because
+# calling it needs a real sk_ key this Recipe never held.
+conformance:
+  - name: no credential answers 401 with nothing in it at all
+    source: https://api.sandbox.checkout.com/payments/pay_test_0000000000000000000
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4
+    expect:
+      status: 401
+      body_matches: "^$"
+
+  - name: a credential with no sk_ shape at all answers the identical nothing
+    source: https://api.sandbox.checkout.com/payments/pay_test_0000000000000000000
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4
+      headers:
+        Authorization: totallyNotAKeyAtAll12345
+    expect:
+      status: 401
+      body_matches: "^$"
+
+  - name: and so does a well-formed-looking key that is simply wrong
+    # The prefix is not checked separately from the key lookup in any way
+    # this probe could see: shaped right and shaped wrong get one answer.
+    source: https://api.sandbox.checkout.com/payments/pay_test_0000000000000000000
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4
+      headers:
+        Authorization: sk_test_not-a-real-key-at-all
+    expect:
+      status: 401
+      body_matches: "^$"
+
+  - name: wrapping the key in Bearer changes nothing
+    # Checkout.com's own examples never use a scheme word. Sending one
+    # anyway is refused exactly like every other shape.
+    source: https://api.sandbox.checkout.com/payments/pay_test_0000000000000000000
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4
+      headers:
+        Authorization: Bearer sk_test_not-a-real-key
+    expect:
+      status: 401
+      body_matches: "^$"
+
+  - name: an unrouted path 404s with no credential sent at all
+    source: https://api.sandbox.checkout.com/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /no-such-route-xyz
+    expect:
+      status: 404
+      body_matches: "^$"
+
+  - name: authorized is not captured
+    source: https://api-reference.checkout.com/v1/swagger.yaml
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4
+      headers:
+        Authorization: sk_sbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        status: Authorized
+        approved: true
+        amount: 6540
+        currency: USD
+      absent:
+        # Real on the create response and not on a later GET -- see the
+        # header.
+        - response_code
+        - response_summary
+        - action_id
+
+  - name: the create response answers with the code a later read will not repeat
+    source: https://api-reference.checkout.com/v1/swagger.yaml
+    fixture: small-merchant
+    request:
+      method: POST
+      path: /payments
+      headers:
+        Authorization: sk_sbox_cauldron00000000000000
+      json:
+        amount: 6540
+        currency: USD
+        reference: ORD-5023-4E89
+    expect:
+      status: 201
+      body:
+        approved: true
+        status: Authorized
+        response_code: "10000"
+        response_summary: Approved
+
+  - name: the actions log is newest first and shares no id with the payment's own
+    source: https://api-reference.checkout.com/v1/swagger.yaml
+    fixture: small-merchant
+    request:
+      method: GET
+      path: /payments/pay_mbabizu24mvu3mela5njyhpit4/actions
+      headers:
+        Authorization: sk_sbox_cauldron00000000000000
+    expect:
+      status: 200
+      body:
+        "[0].type": Refund
+        "[1].type": Capture
+        "[2].type": Authorization
+      matches:
+        "[0].id": '^act_'
