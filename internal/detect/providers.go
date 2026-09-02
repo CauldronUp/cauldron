@@ -5452,9 +5452,14 @@ func providers() []provider {
 // It exists so that a typo cannot pass for an intention. Without it, a mapping
 // naming "postmarkk" would quietly become a warning about a provider nobody has
 // heard of, and nothing would fail.
-var unshipped = map[string]string{
-	"anthropic": "worth a Recipe on its own merits; until then the warning is the value",
-}
+//
+// It is empty now, and was not always. Anthropic was mapped here long before a
+// Recipe existed for it, on the reasoning that warning a developer their calls
+// would reach the real network was worth more than saying nothing. A Recipe
+// ships for it as of this batch, so the entry is gone and the mechanism is
+// unused rather than unnecessary: the next mapping written ahead of its Recipe
+// goes here, and the next typo still fails.
+var unshipped = map[string]string{}
 
 // suspectedAPIClient matches dependency names that look like third-party API
 // clients we have no Recipe for. These are reported rather than ignored so the

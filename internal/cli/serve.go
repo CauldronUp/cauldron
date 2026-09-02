@@ -118,7 +118,11 @@ func plan(opts serveOptions) ([]string, []string, error) {
 		}
 
 		if len(mount) == 0 {
-			return nil, nil, fmt.Errorf("%s names only recipes that do not ship: %s", projectconfig.FileName, strings.Join(missing, ", "))
+			// The names come back with the error, not instead of it. The
+			// detection path below already does this, and the two disagreeing
+			// meant a caller reading the second return value got everything
+			// that could not be served in one case and nothing in the other.
+			return nil, missing, fmt.Errorf("%s names only recipes that do not ship: %s", projectconfig.FileName, strings.Join(missing, ", "))
 		}
 
 		return mount, missing, nil
