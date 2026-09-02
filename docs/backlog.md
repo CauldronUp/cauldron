@@ -95,8 +95,8 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | ~~ShipEngine~~ | Shipped. A rate request half-fails behind a 200: some carriers quote, some refuse, both in one body |
 | ~~AfterShip~~ | Shipped. A tracking number does not identify a parcel; Delivered is not terminal |
 | ~~Easyship~~ | Shipped, rating. The cheapest rate is cheapest because the customer pays the duty on the doorstep |
-| USPS | Addresses, rates, tracking. Blocked on evidence rather than on interest -- see "A description of requests is not a description" below |
-| UPS | Rating, labels, tracking |
+| ~~USPS~~ | Shipped. Three credential verdicts, and a gateway seam where a path outside the registered prefix never reaches the authorizer |
+| ~~UPS~~ | Shipped. The token endpoint separates absent from wrong and the API behind it does not |
 | ~~FedEx~~ | Shipped, tracking. An unknown tracking number answers 200 with the error two arrays deep, because one call can ask about thirty parcels |
 | ~~DHL~~ | Shipped, Express tracking. The UTC offset is a field beside the timestamp rather than inside it |
 
@@ -131,7 +131,7 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 | Provider | Why |
 |---|---|
 | ~~OpenAI~~ | Shipped, written against the OpenAPI document OpenAI publishes and generates its own SDKs from. The refusal is not in the answer: content and refusal are two sibling nullable strings on the message, only one is ever filled in, and a declined request is a 200 with finish_reason stop -- so the obvious read gets null and logs an outage while the model answered in the field beside it. Also: completion_tokens counts tokens that never arrive ("like reasoning tokens, these tokens are still counted in the total completion tokens for purposes of billing"), max_completion_tokens is spent on reasoning before a word is emitted, max_tokens is deprecated and "not compatible with o-series models", store defaults to false so the completion you just made cannot be fetched, and content_filter is a stopping reason rather than an error. Streaming and the Responses API are stated as not modelled |
-| Anthropic | Messages, content blocks, tool use, streaming |
+| ~~Anthropic~~ | Shipped. One route resolves an identifier's shape and existence before the credential, and its sibling on the same host does not |
 | ~~Google Gemini~~ | Shipped, and the section near the end of this file that recorded it as unservable is now the story of how it was unblocked. A blocked prompt is a 200 with the candidates taken away -- promptFeedback.blockReason is "If set, the prompt was blocked and no candidates are returned" -- so candidates[0] throws where OpenAI's refusal hands back a null. Serving the contrast needed one path to answer two shapes chosen by the request body, which selects could not do, so selects_body was added beside it as a separate field. Also: an empty finishReason means the model "has not stopped generating tokens", from one schema serving the streaming and non-streaming calls; totalTokenCount is documented as "prompt + thoughts + response candidates"; and promptTokenCount "is still the total effective prompt size" when content is cached |
 | ~~Pinecone~~ | Shipped. The response to "make me an index" is an address somewhere else. Pinecone is two APIs with two base URLs: the control plane at `api.pinecone.io` creates and lists indexes, and the data plane -- query, upsert, fetch, which is every operation an application actually performs -- lives at the index's own host, which you cannot know until the control plane tells you. The data plane's own OpenAPI document says so by being unable to name its server: `url: https://{index_host}` with the variable's `default: unknown`, so a client generated from it and left unconfigured posts to `https://unknown/query`. `host` is required on every IndexModel because there is no other way to find the thing you just made. Also pinned: `ready` and `state` are two fields and the vendor's own example has them disagreeing -- `{"ready": true, "state": "ScalingUpPodSize"}`, ready and not in the state called Ready, out of nine states; a create answers 201 with `host` filled in and `ready` false, so the address exists before the index does; a delete is a **202** ("The request to delete the index has been accepted") and `Terminating` is one of the nine states, so the index you deleted answers describe for a while afterwards; a sparse index has no `dimension` at all rather than a null one; and the error vocabulary is gRPC's -- the seventeen canonical status codes with FORBIDDEN, UNPROCESSABLE_ENTITY and PAYMENT_REQUIRED bolted on, which is why **`OK` is a documented value of a field called "The error code"** -- with the HTTP status repeated inside the body. `X-Pinecone-Api-Version` is `required: true` on every operation in both documents. Stated and not served: the data plane itself, because it is a second base URL and this emulator is one address, and serving `/query` here would teach the exact mistake the Recipe describes |
 | ~~Replicate~~ | Shipped. A created prediction has no output property at all rather than a null one, succeeded is not the same as produced something, a cold start is a minute with no signal but a boot_time, and the output is a link to a file deleted after an hour |
@@ -149,12 +149,12 @@ as a gap, needs deciding before the first of these ships rather than after.
 | Provider | Why |
 |---|---|
 | ~~Supabase~~ | Shipped. Auth, storage, database REST and realtime |
-| Redis Cloud | Keys, TTLs, streams, pub/sub |
+| ~~Redis Cloud~~ | Shipped, and not what this row imagined: the control plane, not the data plane. Half a credential answers a bare nginx 500 |
 | ~~Upstash~~ | Shipped. Three different requests to the same endpoint with no valid credential answer three different 401s -- an empty body with no Content-Type, a JSON-Web-Token parser's own error text for a bearer token, and `{"error": "Unauthorized"}` for the documented Basic scheme -- and this format can only reproduce one of them at a time. Also: `region` is a one-member enum, `"global"`, so it says nothing about where a database actually runs, which is `primary_region` instead; `db_acl_enabled` is a string `"true"`/`"false"` beside ordinary booleans on the same object; and a database delete answers 200 with the bare JSON string `"OK"`, not an object |
 | ~~MongoDB Atlas~~ | Shipped, the Administration API, written against the OpenAPI document MongoDB publishes. The version of the API you are talking to is a date inside a content type: GET /groups/{groupId}/clusters documents one 200 with three content types under it -- vnd.atlas.2023-01-01+json, 2023-02-01+json and 2024-08-05+json -- resolving to three separately named schemas, all current. And the difference is not cosmetic: the legacy view carries mongoURI, srvAddress, diskSizeGB and providerSettings and the newest carries none of them, so the field an application connects with is present under one date and absent under the next, same URL, same credentials, same instant. Also: the schema names carry the date (ClusterDescription20240805), failure is better documented than success (more operations describe a 401 than a 200), and the credential is HTTP Digest -- challenge-response, on a cloud API written in the 2020s. Digest is stated and not served, and so is the Content-Type echo |
 | ~~Neon~~ | Shipped. Branches, databases, endpoints |
 | ~~PlanetScale~~ | Shipped, written against the Swagger 2.0 document PlanetScale serves from its own API host. The field called state is not the state of the deployment: a deploy request carries state -- "Whether the deploy request is open or closed" -- beside deployment_state, "The deployment state of the deploy request", so a request abandoned after review and one whose migration ran an hour ago both read closed. Also: the id is "The ID of the deploy request" and every path takes the number instead, which is per database, so the globally unique identifier addresses nothing; a request outlives the branch it came from, still naming it while branch_deleted says it is gone; and next_page is "null when this is the last page" where Confluence omits the field entirely. The ten deploy-lifecycle endpoints are stated as not modelled, because each advances a state machine this format cannot express |
-| CockroachDB Cloud | Clusters, SQL users, operations |
+| ~~CockroachDB Cloud~~ | Shipped as `cockroachdb`. The state enum has no word for deleting |
 | ~~Turso~~ | Shipped. **It answers a missing header with a JWT parsing error** -- "token contains an invalid number of segments" when no token was sent at all, so the message describes the shape of a credential the caller never supplied, and a junk string answers identically. Its create is a different failure from Temporal's: not an unfinished operation but a **truncated projection**, three fields where a read gives eight, and among the missing is `group`, which the create request was required to supply. There is no state field in the schema to be pending. Also pinned: `DbId` is a real UUID that nothing addresses by, since every path takes the name; a delete answers a bare string under the key a create wraps an object under; and **no 405 exists on this host at all**, where SingleStore's Recipe records a real one with an `Allow` header |
 | Confluent Cloud | Kafka topics, schemas, consumers |
 | Aiven | Managed databases, Kafka, service lifecycle |
@@ -258,9 +258,9 @@ the header says so.
 | ~~Dwolla~~ | Shipped. A create answers 201 with no body and the id only in a Location header, nothing has an id field at all, and micro-deposit verification has three attempts before the funding source is permanently unverifiable |
 | Unit | Assess — accounts, cards, authorisations. An authorisation is not a transaction and the two have separate ids |
 | ~~Marqeta~~ | Shipped. An authorization and its clearing are two transactions for different amounts; three balances and only one is spendable; the PAN never leaves. JIT funding is not modelled and the Recipe says why |
-| Checkout.com | Assess — payments, 3DS, the difference between authorised and captured |
+| ~~Checkout.com~~ | Shipped. Every credential failure is 401 with zero bytes and no Content-Type |
 | Authorize.Net | Assess — the XML-shaped API and its own result codes, which are not HTTP statuses |
-| Klarna | Assess — order lifecycle across authorise, capture and refund, with a session that expires |
+| ~~Klarna~~ | Shipped. Its own reference tells integrators not to rely on the status field it publishes |
 | Affirm | Assess — checkout, capture, partial refunds |
 | ~~RevenueCat~~ | Shipped. Assess — mobile subscriptions and entitlements, where the entitlement is the thing an app reads and the subscription is the thing that renews, and they can disagree for a whole billing period |
 | Firebase Auth | Assess — identity, and the emulator Google already ships for it is the question: a Recipe has to be better than the official one to earn its place |
@@ -423,9 +423,9 @@ the header says so.
 |---|---|
 | ~~Cal.com~~ | Shipped. A slot listing is a view rather than a reservation and has no identifier to hold on to, so booking one that was free is a 400 that reads like your bug; cancelling does not delete; and pending holds the slot without anybody agreeing |
 | Acuity Scheduling | Assess — appointments, types, intake forms |
-| Daily.co | Assess — rooms, meeting tokens, recordings that finish after the call |
-| LiveKit | Assess — rooms, participants, egress |
-| Agora | Assess — channels, tokens, recording |
+| ~~Daily.co~~ | Shipped as `daily`. An expired room is not deleted, it becomes what the reference calls a zombie |
+| ~~LiveKit~~ | Shipped. A bad credential outranks routing and an absent one does not |
+| ~~Agora~~ | Shipped. Five broken credential shapes collapse into the rejected sentence and only a truly absent header gets its own |
 | Stream | Assess — chat channels, members, the message that is soft-deleted and still returned |
 | SendBird | Assess — channels and messages |
 
@@ -447,10 +447,10 @@ the header says so.
 
 | Provider | Why |
 |---|---|
-| Reddit | Assess — listings page by fullname rather than offset, and a deleted comment is still in the tree with its body replaced by a marker |
+| ~~Reddit~~ | Shipped, and small, because the reachable surface is small. Every endpoint that would answer a question about a post was blocked live on all three hosts |
 | ~~Twitch~~ | Shipped. **It needs two credentials and checks one of them first** -- a correct `Client-Id` with no token answers byte-identically to sending nothing at all, so getting half of it right earns no acknowledgement. The last page of a listing carries `pagination` as an empty object rather than omitting it or nulling the cursor, so a client testing for the key loops forever and one testing the cursor does not |
-| Bluesky | Assess — the AT Protocol is its own model with DIDs and records rather than REST resources, so it may belong in the not-done table |
-| Mastodon | Assess — pagination is Link-header based and instance behaviour varies, which is itself the interesting part |
+| ~~Bluesky~~ | Shipped, and it did belong here after all. The same profile by handle and by DID returns byte-identical documents |
+| ~~Mastodon~~ | Shipped. The reference and the wire disagree about what a missing status says, on the same server, on the same day |
 | Telegram Bot API | Assess — every method is both GET and POST, errors come back with HTTP 200 in some client libraries, and updates arrive by long polling or webhook but never both |
 | Buffer | Assess — profiles, updates, scheduling |
 | ~~Spotify~~ | Shipped. **The body cannot tell two failures apart and the header can** -- a missing and a bogus token give identical JSON naming three possible causes at once, while `WWW-Authenticate` carries `missing_token` against `invalid_token`, so the diagnosis exists one layer above where anyone reading JSON looks. An unknown path answers **410 Gone**, a status meaning the resource existed and was removed, for one that never existed. Its description marks two endpoints deprecated while the wire sends no `Deprecation` or `Sunset` header at all. The token-refresh path this row asked about needs an account and is not modelled |
@@ -462,9 +462,9 @@ the header says so.
 |---|---|
 | ~~Persona~~ | Shipped. The decision arrives by webhook minutes after the inquiry is created |
 | ~~Onfido~~ | Shipped. A check is complete and its report can still be consider rather than clear |
-| Veriff | Assess — sessions and decisions |
+| ~~Veriff~~ | Shipped. The signature is never examined until the client identifier passes |
 | Middesk | Assess — business verification and its partial matches |
-| Alloy | Assess — evaluations and their outcomes |
+| ~~Alloy~~ | Shipped. Three unauthenticated failures across two statuses |
 | Sift | Assess — scores, decisions, the workflow that runs server side |
 
 ## Travel
@@ -472,8 +472,8 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~Duffel~~ | Shipped, and this row's premise is confirmed and unmodelled. **Offers do expire**, typically within thirty minutes, after which they answer 422 `offer_expired` -- and there is no way to expire an identifier on a clock here, so one fixture offer always answers expired and the real timer is described rather than simulated. What was verified instead: Duffel **refuses you for not naming a version before it checks who you are**, with distinct codes separating not saying from saying something retired |
-| Amadeus | Assess — self-service against enterprise APIs, and the test environment carrying different inventory from production |
-| Hotelbeds | Assess — availability, rates, the rate that changes between check and book |
+| ~~Amadeus~~ | Shipped, with no live case. Both hosts are in DNS and carry no address record |
+| ~~Hotelbeds~~ | Shipped. The stale-rate rejection publishes the tolerance the price was allowed to move within |
 
 ## Health
 
@@ -1076,7 +1076,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**290 more listings across 185 Recipes declare no paging at all**, and the
+**304 more listings across 196 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1134,8 +1134,8 @@ transfers alone, and say so in the header.
 | ~~Modern Treasury~~ | Shipped. Every amount appears twice and cancels, one direction means opposite things on two accounts, three balances disagree on purpose |
 | ~~Marqeta~~ | Shipped, without the JIT funding path. It puts a webhook in the authorisation with a response deadline on it, so a slow test is a declined payment, and Cauldron delivers webhooks without waiting for an answer. The Recipe states the gap rather than pretending to close it |
 | ~~Dwolla~~ | Shipped. Three attempts and then the funding source is finished, not rate limited and not retryable tomorrow |
-| Checkout.com | Authorised is not captured, and the two have separate identifiers |
-| Klarna | Blocked on documentation, like Sift. The premise is good -- an authorization token expires while the order it approved has not been created, so a customer can be approved and unpayable -- and docs.klarna.com renders its API reference through a portal that serves navigation rather than schemas, so the response bodies cannot be read or cited. Revisit with an account or a published spec |
+| ~~Checkout.com~~ | Shipped. The payment's action log is a separate resource, which is what this row was circling |
+| ~~Klarna~~ | Shipped anyway, from live probing rather than from the portal. The documentation is still unreadable and both published locations for a machine-readable description answer 404, so the Recipe records none. What it found instead is better than the premise this row had: Klarna's own reference tells integrators not to rely on the status field it publishes |
 | ~~Airwallex~~ | Shipped. The settlement currency is not the charge currency and the rate was fixed at a moment nobody picked, there is a separate balance per currency so a payout can fail on a funded account, and a partial capture leaves two amounts different forever |
 | ~~Column~~ | Shipped. A notification of change is not a failure, and R01 and R07 are two characters apart with opposite obligations |
 | ~~Moov~~ | Shipped. **Every wrong path is a 403** -- unknown path, wrong method and the bare root, checked four ways, never a 404 or 405 -- so the API declines to say that anything does not exist and a client cannot tell a typo from a permission it lacks. A missing credential and a well-formed fake token are indistinguishable in turn: identical 401, zero bytes, no content type. The payment-method polymorphism this row was queued for is real and models cleanly, because it is not a discriminated union at all -- every shape is declared as a sibling and one is populated. What is **not** expressible is the agreement between them: nothing here, and nothing in Moov's own schema, requires the populated sibling to match what `paymentMethodType` claims |
@@ -1575,7 +1575,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Seventy-eight Recipes send at least one identifier as a number now, and each
+Eighty-two Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
