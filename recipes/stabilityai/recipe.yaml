@@ -1,0 +1,463 @@
+# Stability AI Recipe for Cauldron
+#
+# Differs from openai/recipe.yaml and replicate/recipe.yaml in the shape of
+# the answer to this collection's question, not just in vendor. OpenAI keeps
+# a completion if store: true said to; Replicate's prediction id always
+# outlives the request that made it. Stability's v1 generation endpoints
+# (POST /v1/generation/{engine_id}/text-to-image and its siblings) mint
+# nothing at all: the response schema is an Image -- base64, finishReason,
+# seed -- with no id field anywhere in it, confirmed by reading Stability's
+# own published OpenAPI document rather than by calling one, because calling
+# one is exactly what this Recipe was told not to do. A dropped connection to
+# a v1 generation call has nothing to reconnect to, the same "nothing at all"
+# answer Anthropic's synchronous Messages endpoint gives elsewhere in this
+# collection, reached by a completely different provider for the same
+# architectural reason: nobody minted an id.
+#
+# TWO GETS, BOTH GATED THE SAME WAY, ANSWERED DIFFERENTLY.
+#
+# GET /v1/engines/list and GET /v1/user/balance were struck live on
+# 2026-09-02, with no account and no key ever created:
+#
+#   no Authorization header at all      -> 401 {"message": "missing authorization header"}
+#   Authorization: Bearer <junk, 47 chars> -> 401 {"message": "Incorrect API key provided: sk-junk************************************0000. You can find your API key at https://stability.ai."}
+#
+# byte-identical on both routes, and byte-identical to Stability's own
+# worked example for this exact failure in its published OpenAPI document
+# (components.responses.401 there gives the literal example message
+# "missing authorization header" too -- the rare case in this collection
+# where a spec's worked example and the live wire agree word for word). So:
+# is the credit balance readable without a credential? No, in the same words
+# and the same shape a request for the engine catalogue is refused in --
+# there is nothing about /v1/user/balance that answers more openly than any
+# other route on this host.
+#
+# THE WRONG-KEY MESSAGE ECHOES THE KEY YOU SENT, MASKED, AND THE MASK LEAKS
+# ITS LENGTH.
+#
+# Three credentials were sent live to establish the algorithm precisely:
+#
+#   "sk-junk0000000000000000000000000000000000000000" (47 chars)
+#     -> "sk-junk************************************0000."
+#   "totallydifferentformatkey1234567890abcdefgh" (44 chars, no "sk-" at all)
+#     -> "totally********************************efgh."
+#   "abc" (3 chars)
+#     -> "abc." -- unmasked, in full
+#
+# First seven characters shown, last four shown, one asterisk per character
+# hidden in between, masked length identical to input length every time --
+# and a credential too short to have a middle (eleven characters or fewer)
+# is echoed back whole. None of this depends on the value looking like a key
+# at all: "Basic anVuazpqdW5r" (a Basic-scheme credential, sent to a route
+# that never asked for one) is echoed as "Basic a*******dW5r", meaning
+# Stability strips exactly the literal string "Bearer " if it is there and
+# otherwise treats the entire header value, scheme word included, as the key
+# to mask and reject. Cauldron's error table serves one fixed string
+# regardless of what was actually sent -- there is no mechanism here to
+# parameterise a submitted credential into a message, and Fireworks' Recipe
+# elsewhere in this collection states the identical limitation for its own
+# per-request X-Request-Id. rejected_error below carries this Recipe's own
+# probe credential's masked form, verbatim from the live response; a
+# consumer of this emulator who sends a different wrong key will read this
+# Recipe's fixed sentence about someone else's key, which is the honest
+# extent of what a static message table can promise.
+#
+# ABSENT AND MALFORMED ARE THE SAME VERDICT HERE, WHICH IS A REAL FINDING
+# ABOUT WHERE STABILITY DRAWS ITS LINE.
+#
+# No case in this collection's auth.go writeup records a provider that
+# treats "Bearer " with nothing useful after it as though a credential had
+# been fully evaluated and found wanting, rather than as a shape failure --
+# but that is what the masking above already proves: a header with no
+# "Bearer " prefix at all, or "Bearer " with nothing following it, both
+# land in the identical "Incorrect API key provided" sentence a
+# well-formed, wrong key gets. Stability does not have a third, more
+# specific sentence for "you sent something that cannot even be a
+# credential" the way Make and SingleStore do elsewhere in this collection.
+# malformed_error names the same entry as rejected_error below, which is a
+# claim (that the provider does not tell the two apart) verified live in
+# three different ways, not a shortcut taken for lack of a better one.
+#
+# THREE REQUESTS ESTABLISH THE ORDERING, AND IT IS TIMESCALE'S SHAPE, NOT
+# FIREWORKS' OR TOGETHER'S.
+#
+#   GET /v1/nosuchroute, no credential            -> 401 missing authorization header
+#   DELETE /v1/engines/list, no credential        -> 401 missing authorization header
+#   DELETE /v1/engines/list, Authorization: Bearer <junk> -> 404 {"message":"Not Found","name":"not_found"}
+#
+# An absent credential is refused before routing is even attempted -- the
+# first two lines, both live, both with nothing in the Authorization header,
+# answer identically whether or not the path or method exists at all. A
+# credential that is present and simply wrong reaches the router, and once
+# there, a method this host does not register for /v1/engines/list answers
+# a plain 404 rather than a 405 -- meaning the key's VALIDITY is never
+# checked for a route that does not exist to check it against. That is
+# auth.go's Timescale pattern in these exact words: "An absent or malformed
+# credential is refused before routing; a well-formed one that is simply
+# wrong reaches the router." Cauldron's after_routing is one boolean for
+# the whole Recipe and can express "credential first, always" or "routing
+# first, always" -- not "absence first, badness second," which is what
+# Stability actually does. after_routing stays at its default (false)
+# below, because every case this Recipe can verify without inventing a
+# combination it did not observe is the ABSENT half of that split; the
+# rejected-credential-reaches-the-router half is recorded here rather than
+# reproduced, the same acknowledgement Timescale's own Recipe makes for
+# itself.
+#
+# THE NEWER SURFACE DOES NOT SPEAK THE SAME LANGUAGE, AND IS NOT ROUTED HERE.
+#
+# /v2beta/stable-image/generate/core answers a completely different
+# envelope to the identical mistake, verified live:
+#
+#   no Authorization header                        -> 401
+#     {"errors":["authorization: authorization: invalid or missing header value"],"id":"...","name":"unauthorized"}
+#   GET /v2beta/nosuchroute, no credential           -> 404, text/plain, body "404 Not Found"
+#   Authorization: Bearer <junk>, no content-type    -> 400
+#     {"errors":["content-type: required","accept: expected image/* or application/json, but received: */*"],"id":"...","name":"bad_request"}
+#
+# Four differences from v1, all struck the same day: the error key is
+# "errors", an ARRAY of strings, not v1's singular "message"; the same
+# no-credential mistake is a 401 on v1 and STILL a 401 on v2beta, but a
+# genuinely UNROUTED path answers plain text on v2beta ("404 Not Found",
+# Content-Type: text/plain) where v1 answers its own JSON envelope for the
+# identical situation -- so the 404 comes from a different layer entirely,
+# one that has never heard of Stability's own error shape; and a credential
+# that is merely PRESENT (garbage, unvalidated) is enough to get PAST the
+# auth check and into body-shape validation, which never happens on v1 at
+# all. Cauldron's error envelope and its after_routing flag are both one
+# setting for the whole Recipe, the same limitation Mezmo's Recipe in this
+# collection states for its own two-hosts-two-schemes API, and for the
+# identical reason: any route declared here under /v2beta/ would be checked
+# against v1's flat message envelope and refuse every one of the "errors"
+# array responses a real v2beta caller gets. Recorded above as evidence,
+# not reproduced by a route.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No key was ever created and no image was ever generated, by explicit
+#     instruction. Every 200 case below is built from Stability's own
+#     published OpenAPI description (id.spec below) rather than observed,
+#     and carries no verified date.
+#   - v2beta is not modelled at all -- see the header above.
+#   - The generation endpoints (text-to-image, image-to-image, upscale,
+#     masking) are entirely absent. Their request and response shapes are
+#     real and documented; declaring even the shape without ever calling
+#     the endpoint would be the closest this Recipe could come to the thing
+#     it was told not to do, so the finding is stated in prose instead.
+#   - The per-error "id" field (a fresh UUID on every failure, confirmed
+#     live and in the spec's own examples) is not modelled, for the same
+#     reason Anthropic's and Fireworks' Recipes in this collection state for
+#     their own per-request identifiers: there is no mechanism here to
+#     generate and echo one.
+#   - The organization query parameter, accepted on /v1/engines/list and
+#     /v1/user/balance per the spec, is not modelled: no worked example
+#     shows a response that differs by it.
+#
+# The key below is a fixture and belongs to no account.
+
+recipe: stabilityai
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://platform.stability.ai/docs/api-reference
+  spec: https://raw.githubusercontent.com/Stability-AI/rest-api-support/main/spec/v1.yaml
+  spec_hash: 22b9c337c113fada33a5887ffb3493214277c3da0b755c50c05d4a3a4ff797af
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - sk-cauldron-stabilityai-fixture-0000000000000000
+  absent_error: missing_authorization_header
+  rejected_error: incorrect_api_key
+  # Verified live, three ways -- a header with no "Bearer " prefix, "Bearer "
+  # with nothing following it, and a Basic-scheme credential -- all land in
+  # incorrect_api_key rather than a third, more specific sentence. See the
+  # header for why that is a real claim about Stability rather than a
+  # shortcut.
+  malformed_error: incorrect_api_key
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # {"id", "message", "name"} -- flat, no nesting. "name" is the
+    # discriminator (unauthorized, bad_request, not_found, permission_denied,
+    # server_error); "id" is a fresh per-occurrence identifier this Recipe
+    # does not reproduce, see the header.
+    style: flat
+    message_field: message
+    code_field: name
+    type_field: "-"
+
+resources:
+  engine:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+        required: true
+      # AUDIO, CLASSIFICATION, PICTURE, STORAGE, TEXT, VIDEO per Stability's
+      # own enum. Typed as a free string rather than repeating the enum here,
+      # the same choice census/recipe.yaml makes for a field whose vocabulary
+      # is not this Recipe's to police.
+      type:
+        type: string
+        required: true
+
+  # No path identifier at all -- the response is about whoever the
+  # credentials belong to, Stripe's /v1/account shape, named here with
+  # id_from: auth on the route below.
+  account:
+    id:
+      style: opaque
+    fields:
+      email:
+        type: string
+        required: true
+      organizations:
+        type: list
+      profile_picture:
+        type: string
+        null_when_unset: true
+
+  # Also id_from: auth, and carries no identifier of any kind -- not even
+  # an internal one the provider echoes. field: "-" is Mezmo's own event
+  # resource's device for exactly this: Cauldron still keys the record to
+  # find it, and nothing about that key goes on the wire.
+  balance:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      credits:
+        type: number
+        required: true
+
+routes:
+  - method: GET
+    path: /v1/engines/list
+    resource: engine
+    operation: list
+
+  - method: GET
+    path: /v1/user/account
+    resource: account
+    operation: get
+    id_from: auth
+
+  - method: GET
+    path: /v1/user/balance
+    resource: balance
+    operation: get
+    id_from: auth
+
+errors:
+  # Verified live on both routes this Recipe declares, and byte-identical to
+  # the worked example in Stability's own OpenAPI document -- see the header.
+  missing_authorization_header:
+    status: 401
+    code: unauthorized
+    message: missing authorization header
+
+  # This Recipe's own probe credential's masked form, verified live -- see
+  # the header for the masking algorithm and for why a different wrong key
+  # would not actually get this exact sentence from the real API.
+  incorrect_api_key:
+    status: 401
+    code: unauthorized
+    message: "Incorrect API key provided: sk-junk************************************0000. You can find your API key at https://stability.ai."
+
+  # What a genuinely unrouted path or method answers once a credential has
+  # been presented (right or wrong) and the router has nothing to match it
+  # to. See the header: this is reached only after the absent-credential
+  # gate, which is the half of Stability's ordering this Recipe's
+  # after_routing default (false) can actually reproduce; the case below
+  # exercises it with no credential at all for exactly that reason.
+  route_not_found:
+    status: 404
+    code: not_found
+    message: Not Found
+
+fixtures:
+  empty: {}
+
+  account:
+    # All three engines are Stability's own worked example for
+    # ListEnginesResponseBody, quoted verbatim.
+    engine:
+      - id: stable-diffusion-v1-5
+        name: Stable Diffusion v1.5
+        description: Stability-AI Stable Diffusion v1.5
+        type: PICTURE
+      - id: stable-diffusion-512-v2-1
+        name: Stable Diffusion v2.1
+        description: Stability-AI Stable Diffusion v2.1
+        type: PICTURE
+      - id: stable-diffusion-768-v2-1
+        name: Stable Diffusion v2.1-768
+        description: Stability-AI Stable Diffusion 768 v2.1
+        type: PICTURE
+
+    # Stability's own worked example for AccountResponseBody.
+    account:
+      - id: user-1234
+        email: example@stability.ai
+        organizations:
+          - id: org-5678
+            name: Another Organization
+            role: MEMBER
+            is_default: true
+          - id: org-1234
+            name: My Organization
+            role: MEMBER
+            is_default: false
+        profile_picture: https://api.stability.ai/example.png
+
+    # One of three different illustrative numbers Stability's own spec gives
+    # this same field across its schema and its per-response examples; this
+    # Recipe picked one rather than average them into a fourth, invented
+    # figure. Not a real balance.
+    balance:
+      - credits: 0.41122252265928866
+
+conformance:
+  - name: no credential at all is refused in the same words the spec's own example uses
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/engines/list
+    expect:
+      status: 401
+      body:
+        name: unauthorized
+        message: missing authorization header
+
+  - name: the credit balance is refused the identical way, not read openly
+    source: https://api.stability.ai/v1/user/balance
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/user/balance
+    expect:
+      status: 401
+      body:
+        name: unauthorized
+        message: missing authorization header
+
+  - name: a wrong key is echoed back to you, masked, with its length intact
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/engines/list
+      headers:
+        Authorization: Bearer sk-junk0000000000000000000000000000000000000000
+    expect:
+      status: 401
+      body:
+        name: unauthorized
+        message: "Incorrect API key provided: sk-junk************************************0000. You can find your API key at https://stability.ai."
+
+  - name: a header with no Bearer prefix is refused the same way as a wrong key, not a third way
+    # Live, the third of the header's three malformed probes: a value that
+    # cannot even be a credential lands in the identical sentence a
+    # well-formed wrong one does. The specific text served here is this
+    # Recipe's fixed incorrect_api_key entry, not a live echo of
+    # "justastringnobearer" -- see the header for why a static table cannot
+    # do that.
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/engines/list
+      headers:
+        Authorization: justastringnobearer
+    expect:
+      status: 401
+      body:
+        name: unauthorized
+        message: "Incorrect API key provided: sk-junk************************************0000. You can find your API key at https://stability.ai."
+
+  - name: an unrouted path is refused before routing is even attempted
+    source: https://api.stability.ai/v1/nosuchroute
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v1/nosuchroute
+    expect:
+      status: 401
+      body:
+        name: unauthorized
+        message: missing authorization header
+
+  - name: and so is a wrong method, with no credential at all
+    source: https://api.stability.ai/v1/engines/list
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: DELETE
+      path: /v1/engines/list
+    expect:
+      status: 401
+      body:
+        message: missing authorization header
+
+  - name: the engine catalogue is a bare array, no wrapper of any kind
+    source: https://raw.githubusercontent.com/Stability-AI/rest-api-support/main/spec/v1.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /v1/engines/list
+      headers:
+        Authorization: Bearer sk-cauldron-stabilityai-fixture-0000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": stable-diffusion-v1-5
+        "[0].type": PICTURE
+        "[2].id": stable-diffusion-768-v2-1
+
+  - name: the account answers about whoever the key belongs to, at no id in the path
+    source: https://raw.githubusercontent.com/Stability-AI/rest-api-support/main/spec/v1.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /v1/user/account
+      headers:
+        Authorization: Bearer sk-cauldron-stabilityai-fixture-0000000000000000
+    expect:
+      status: 200
+      body:
+        email: example@stability.ai
+        "organizations[0].id": org-5678
+        "organizations[1].is_default": false
+
+  - name: the balance is one field, and it is only reachable with a key
+    source: https://raw.githubusercontent.com/Stability-AI/rest-api-support/main/spec/v1.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /v1/user/balance
+      headers:
+        Authorization: Bearer sk-cauldron-stabilityai-fixture-0000000000000000
+    expect:
+      status: 200
+      body:
+        credits: 0.41122252265928866
