@@ -1,0 +1,491 @@
+# CockroachDB Cloud Recipe for Cauldron
+#
+# Read alongside Neon and Tiger Data's Recipes in this collection, because
+# CockroachDB Cloud disagrees with both of them on the two questions this
+# group exists to answer.
+#
+#   - Neon's create answers 201 with the branch AND the operations that will
+#     make it usable, plus a connection string with a live password sitting
+#     right in the body. Tiger Data's create answers 200 with the FULL
+#     service record and a one-time password beside it -- no separate
+#     operation at all. CockroachDB Cloud's create answers 200 (not 201) with
+#     the cluster alone, in state CREATING, and nothing that connects to it:
+#     no operation id, no connection string, no password. A caller who wants
+#     to connect has to call a THIRD, separate endpoint --
+#     GET /clusters/{cluster_id}/connection-string -- after the cluster
+#     exists, and that endpoint is not modelled here; see the fidelity gaps.
+#     Three providers in one collection, three different amounts disclosed at
+#     creation: everything at once, resource-plus-password, and nothing but
+#     a resource in a state that says wait.
+#   - Neon's branch has eight-ish states and Tiger Data's service has eleven,
+#     both enumerated in their own descriptions. CockroachDB Cloud's own
+#     OpenAPI description enumerates ClusterState.Type as exactly five
+#     values: CREATING, CREATED, CREATION_FAILED, DELETED, LOCKED. There is
+#     no DELETING. A cluster that is in the middle of being deleted has to be
+#     represented some other way than a state word that says so -- most
+#     plausibly LOCKED, the same value the description assigns to "an
+#     exclusive operation is being performed on this cluster" for any
+#     exclusive operation at all, deletion included. So a caller polling
+#     state cannot tell "this cluster is being deleted" apart from "this
+#     cluster is being resized" or any other locked operation; the only
+#     state word that is deletion-specific is the terminal one, DELETED,
+#     with nothing before it that says so. This is the sharpest answer this
+#     Recipe has to the collection's own question about whether "deleting"
+#     and "deleted" are distinguishable: here, they are not even both named.
+#
+# Four requests, no account, struck live against cockroachlabs.cloud on
+# 2026-09-02, establish the 401 sentence and the routing order in one pass:
+#
+#   GET /api/v1/clusters, no header at all
+#     -> {"code":16,"message":"missing authorization header; see
+#         https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.html#call-the-api"}
+#   GET /api/v1/clusters, Authorization: junktoken12345 (no Bearer prefix)
+#     -> {"code":16,"message":"invalid authorization header format; expected
+#         'Bearer (secret)'"}
+#   GET /api/v1/clusters, Authorization: Bearer  (prefix, nothing after it)
+#     -> the identical malformed-format message the line above gets, so a
+#        bare prefix is grouped with no-prefix-at-all rather than with a
+#        credential that was actually looked at
+#   GET /api/v1/clusters, Authorization: Bearer junktoken12345
+#     -> {"code":16,"message":"invalid secret provided in authorization
+#         header; expected either an API key or a JWT"}
+#
+# Three sentences for three verdicts -- absent, malformed, rejected -- never
+# collapsed, which is the credential-verdict question in Step 2a's terms
+# answered as cleanly as this batch gets. code is always 16, which is the
+# gRPC status code for UNAUTHENTICATED: this API is fronted by Google's own
+# infrastructure (every response here carries Via: 1.1 google), and its
+# error shape is gRPC's Status message -- {code, message, details} -- wearing
+# a REST face rather than anything CockroachDB wrote for this endpoint.
+#
+# The same four requests repeated against a path this host has no route for
+# at all (/api/v1/no-such-route-xyz), against PATCH and POST on a real path,
+# and against a syntactically fine but made-up cluster id all answered
+# exactly the sentence the credential earned and nothing route-shaped --
+# checked live in every combination Step 2a asks for. The credential is
+# examined before routing, unconditionally, for every path and method; there
+# is no ordering to declare, because nothing here ever varies with the path
+# or the verb, only with what was or was not presented as a credential. That
+# is the same arrangement FireHydrant's and Together's Recipes in this
+# collection record for their own hosts, and the opposite of Tiger Data's,
+# whose Recipe in this same batch found a split between verdicts that this
+# host does not have: every one of CockroachDB Cloud's three verdicts is
+# refused before the router runs, not just two of the three.
+#
+# Cluster ids are UUIDs -- confirmed from two independent fields in the
+# description's own worked example, id and creator_id, both
+# canonically-formatted UUIDs -- but that is read, not observed: no
+# credential exists here to call an authenticated route and see one on the
+# wire, so no case below carries a verified date for an id's literal value.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - GET .../connection-string is real, documented, and not modelled. Its
+#     response schema (GetConnectionStringResponse: connection_string, a
+#     full string with parameters formatted inline, plus a params object)
+#     carries no worked example anywhere in the description, and inventing
+#     one would be asserting the one field this Recipe most needs to get
+#     right rather than checking it. See Step 3: no worked example, no
+#     invented value, so the route is left out and said so here.
+#   - DELETE /clusters/{cluster_id} is real, documented, and answers 200 with
+#     the full Cluster resource -- but no worked example of that response
+#     exists either, and building one would mean inventing exactly the
+#     deleted_at timestamp and the state transition this Recipe's header
+#     already draws its sharpest conclusion from the enum alone. Not
+#     modelled for the same reason.
+#   - The request body's nested dedicated/serverless spec object
+#     (CreateClusterSpecification, region node counts, machine types, disk
+#     IOPS, CMEK, private networking) is real, documented, and not modelled.
+#     This Recipe is about what a create response discloses and when, not a
+#     full port of the provisioning surface.
+#   - Pagination is real -- pagination.page and pagination.limit as query
+#     parameters, next_page/previous_page as opaque response tokens in a
+#     sibling "pagination" object -- and is declared here as the mechanism
+#     the description specifies. No worked example shows what a token looks
+#     like, so no case asserts one; the cursor case below asserts only that
+#     paging narrows the page, the same restraint Neon's Recipe in this
+#     collection uses for its own cursor.
+#   - api-keys, cluster-versions, databases, networking (allowlists, AWS/GCP
+#     private endpoints, transit gateways), backups, CMEK, log and metric
+#     export, maintenance windows and SCIM are all real, documented paths on
+#     this host and are not modelled. This Recipe is scoped to the
+#     create/state/credential/routing questions this group exists to answer.
+#
+# The token below is a fixture and belongs to no organization.
+
+recipe: cockroachdb
+capability: database
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.cockroachlabs.com/docs/api/cloud/v1
+  spec: https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json
+  spec_hash: c93829b686cbb30bfee9839b01a42e3748f9c0ae0ccceaaca8b7836c7387575f
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-cockroachdb-fixture-secret-key-0000000000000000
+  absent_error: missing_authorization_header
+  malformed_error: invalid_authorization_header_format
+  rejected_error: invalid_secret
+
+responses:
+  list:
+    style: wrapped
+    cursor_field: pagination.next_page
+  resource:
+    style: bare
+  error:
+    # {"code":16,"message":"..."} -- gRPC's Status shape, not a bespoke
+    # CockroachDB envelope. See the header.
+    style: flat
+    code_field: code
+    code_type: number
+    message_field: message
+
+resources:
+  cluster:
+    collection: clusters
+    id:
+      style: uuid
+    fields:
+      cockroach_version:
+        type: string
+        null_when_unset: true
+      plan:
+        type: string
+        default: STANDARD
+      cloud_provider:
+        type: string
+      # CREATING, CREATED, CREATION_FAILED, DELETED or LOCKED. See the
+      # header: there is no sixth value for "being deleted."
+      state:
+        type: string
+        default: CREATING
+      # Unrelated to provisioning: this tracks ongoing maintenance
+      # operations (upgrades, scaling, CMEK rotation) on an already-existing
+      # cluster, and UNSPECIFIED is its own "nothing is happening" -- the
+      # description's worked example shows a fully CREATED cluster still
+      # carrying UNSPECIFIED here, which is why a freshly CREATING cluster
+      # carries the identical value rather than one that names creation.
+      operation_status:
+        type: string
+        default: UNSPECIFIED
+      upgrade_status:
+        type: string
+        null_when_unset: true
+      creator_id:
+        type: string
+      regions:
+        type: list
+      cidr_range:
+        type: string
+        null_when_unset: true
+      labels:
+        type: map
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      deleted_at:
+        type: datetime
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/v1/clusters
+    resource: cluster
+    operation: list
+    pagination:
+      style: cursor
+      limit: 20
+      limit_param: pagination.limit
+      cursor_param: pagination.page
+
+  - method: GET
+    path: /api/v1/clusters/{id}
+    resource: cluster
+    operation: get
+
+  # 200, not 201 -- see the header. The cluster comes back alone, in
+  # CREATING (the resource's own default), with no operation id and no
+  # connection string anywhere in the body.
+  - method: POST
+    path: /api/v1/clusters
+    resource: cluster
+    operation: create
+    status: 200
+
+errors:
+  missing_authorization_header:
+    status: 401
+    code: "16"
+    message: "missing authorization header; see https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.html#call-the-api"
+
+  invalid_authorization_header_format:
+    status: 401
+    code: "16"
+    message: "invalid authorization header format; expected 'Bearer (secret)'"
+
+  invalid_secret:
+    status: 401
+    code: "16"
+    message: "invalid secret provided in authorization header; expected either an API key or a JWT"
+
+fixtures:
+  empty: {}
+
+  small-org:
+    cluster:
+      # The description's own worked example, quoted field for field: id,
+      # creator_id, cockroach_version, the region's own sql_dns, cidr_range
+      # and labels are all exactly what the ClusterEntity schema's "example"
+      # shows, not this Recipe's invention.
+      - id: 35c4abb2-bb66-46d7-afed-25ebef5ed2aa
+        cockroach_version: v21.2.4
+        plan: STANDARD
+        cloud_provider: GCP
+        state: CREATED
+        operation_status: UNSPECIFIED
+        upgrade_status: UPGRADE_AVAILABLE
+        creator_id: 7cde0cd9-0d8a-4008-8f90-45092ce8afc1
+        regions:
+          - name: us-central1
+            node_count: 0
+            sql_dns: free-tier7.gcp-us-central1.crdb.io
+            private_endpoint_dns: private-free-tier7.gcp-us-central1.crdb.io
+            internal_dns: internal-free-tier7.gcp-us-central1.crdb.io
+            ui_dns: ""
+        cidr_range: 172.28.0.0/14
+        labels:
+          cost_center: "12345"
+          env: prod
+        created_at: "2022-03-22T20:23:11.285067Z"
+        updated_at: "2022-03-22T20:23:11.879593Z"
+
+      # A second cluster, so a page limit of one has a second page to point
+      # at -- see the cursor case below. Everything on it past the id is
+      # this Recipe's own fixture data, not a documented example: the
+      # description has only one worked Cluster to quote.
+      - id: 6e2f7e2a-2222-4d2a-9a2a-2222222222aa
+        cockroach_version: v23.1.11
+        plan: BASIC
+        cloud_provider: AWS
+        state: CREATING
+        operation_status: UNSPECIFIED
+        creator_id: 7cde0cd9-0d8a-4008-8f90-45092ce8afc1
+        regions:
+          - name: us-east-1
+            node_count: 0
+            sql_dns: ""
+            private_endpoint_dns: ""
+            internal_dns: ""
+            ui_dns: ""
+        cidr_range: ""
+        labels: {}
+        created_at: "2026-08-30T10:00:00Z"
+        updated_at: "2026-08-30T10:00:00Z"
+
+# Every case below carries source. A verified date means this exact request
+# was sent to cockroachlabs.cloud today and this is exactly what came back;
+# its absence means the case is read from the description's own worked
+# example and a real credential was never available to call it.
+conformance:
+  - name: no credential names the missing header, not a generic word
+    source: https://cockroachlabs.cloud/api/v1/clusters
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "missing authorization header; see https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.html#call-the-api"
+
+  - name: a header with no Bearer prefix is a different verdict, not the same one
+    source: https://cockroachlabs.cloud/api/v1/clusters
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "invalid authorization header format; expected 'Bearer (secret)'"
+
+  - name: Bearer with nothing after it is the identical malformed verdict
+    source: https://cockroachlabs.cloud/api/v1/clusters
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "invalid authorization header format; expected 'Bearer (secret)'"
+
+  - name: a well-formed wrong secret is told a third thing again
+    source: https://cockroachlabs.cloud/api/v1/clusters
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "invalid secret provided in authorization header; expected either an API key or a JWT"
+
+  - name: an unrouted path gets the missing-credential sentence, not a 404
+    source: https://cockroachlabs.cloud/api/v1/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/no-such-route-xyz
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "missing authorization header; see https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.html#call-the-api"
+
+  - name: and so does a wrong method on a real path, still no 405
+    source: https://cockroachlabs.cloud/api/v1/clusters
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: PATCH
+      path: /api/v1/clusters
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "missing authorization header; see https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.html#call-the-api"
+
+  - name: a rejected credential is checked before routing too
+    # A syntactically fine but made-up bearer on an unrouted path still gets
+    # the rejected-secret sentence, not a routing-shaped answer -- confirming
+    # the ordering holds for all three verdicts, not just the absent one.
+    source: https://cockroachlabs.cloud/api/v1/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/no-such-route-xyz
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        code: 16
+        message: "invalid secret provided in authorization header; expected either an API key or a JWT"
+
+  - name: a created cluster is not a usable cluster
+    # 200 (not 201), and the cluster is in CREATING with nothing beside it
+    # that connects to it -- no operation, no connection string, no
+    # password. Compare Neon's Recipe (both, plus a password) and Tiger
+    # Data's (the full record, plus a password) in this same collection.
+    source: https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json
+    fixture: small-org
+    request:
+      method: POST
+      path: /api/v1/clusters
+      headers:
+        Authorization: Bearer cauldron-cockroachdb-fixture-secret-key-0000000000000000
+      json:
+        name: cauldron-newcluster
+        provider: GCP
+        spec:
+          serverless:
+            regions:
+              - us-central1
+            usage_limits:
+              provisioned_virtual_cpus: "2"
+    expect:
+      status: 200
+      body:
+        state: CREATING
+        operation_status: UNSPECIFIED
+      absent:
+        - operations
+        - connection_uris
+        - connection_string
+        - initial_password
+      matches:
+        id: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+  - name: a settled cluster's id is the description's own worked example
+    source: https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters/35c4abb2-bb66-46d7-afed-25ebef5ed2aa
+      headers:
+        Authorization: Bearer cauldron-cockroachdb-fixture-secret-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        id: 35c4abb2-bb66-46d7-afed-25ebef5ed2aa
+        state: CREATED
+        regions[0].sql_dns: free-tier7.gcp-us-central1.crdb.io
+      matches:
+        creator_id: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+  - name: a listing is wrapped under clusters, beside pagination
+    source: https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+      headers:
+        Authorization: Bearer cauldron-cockroachdb-fixture-secret-key-0000000000000000
+      query:
+        pagination.limit: "1"
+    expect:
+      status: 200
+      body:
+        clusters[0].id: 35c4abb2-bb66-46d7-afed-25ebef5ed2aa
+      absent:
+        - data
+        - results
+      matches:
+        # A second cluster exists, so the page this Recipe's own query
+        # parameters name -- pagination.page and pagination.limit, read off
+        # the description's own ListClusters parameters -- leaves a token
+        # behind rather than nothing.
+        pagination.next_page: "."
+
+  - name: the cursor resumes after the cluster it names
+    source: https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json
+    fixture: small-org
+    request:
+      method: GET
+      path: /api/v1/clusters
+      headers:
+        Authorization: Bearer cauldron-cockroachdb-fixture-secret-key-0000000000000000
+      query:
+        pagination.limit: "1"
+        pagination.page: 35c4abb2-bb66-46d7-afed-25ebef5ed2aa
+    expect:
+      status: 200
+      body:
+        # The second cluster, not the first one over again.
+        clusters[0].id: 6e2f7e2a-2222-4d2a-9a2a-2222222222aa
