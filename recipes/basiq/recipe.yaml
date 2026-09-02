@@ -1,0 +1,538 @@
+# Basiq Recipe for Cauldron
+#
+# One of a group of Recipes answering the same question about five bank
+# aggregators: when a connection breaks silently -- a changed password, a
+# bank-added challenge, an expired consent -- does the connection carry a
+# health state distinct from its data, and does a stale balance look any
+# different from a fresh one? Read plaid/recipe.yaml and
+# truelayer/recipe.yaml first, for the same question asked of two other
+# providers, and belvo/recipe.yaml, written alongside this one, for a third.
+# Where this Recipe differs from all three:
+#
+#   - Basiq is the only one of the group whose credential is genuinely
+#     two-step: a Basic-encoded API key exchanged at POST /token for a
+#     short-lived bearer, with a second mandatory header (basiq-version) on
+#     that same exchange. This Recipe establishes the exchange's failure
+#     order live -- see "THE TWO-STEP CREDENTIAL" below -- and then models
+#     the bearer-protected data API the exchange leads to, the same split
+#     TrueLayer's Recipe already makes for its own OAuth front door.
+#   - Basiq's connection resource carries the sharpest documented answer to
+#     "does the data look different when it is stale" in this whole group:
+#     an Account's balance is defined, in Basiq's own schema, as "the
+#     user's account balance right now" and its freshness is a *separate*
+#     field, lastUpdated, that this Recipe's fixtures make disagree with
+#     the connection's own health signal on purpose. See "CONNECTION
+#     HEALTH" below.
+#   - Two objects on this host answer "is this connection broken" two
+#     different ways at once -- a connection-level status enum and an
+#     account-level status enum, checked independently, and neither
+#     implies the other.
+#
+# ---------------------------------------------------------------------------
+# What was checked live, 2026-09-02, no account, no API key ever created.
+# ---------------------------------------------------------------------------
+#
+# THE TWO-STEP CREDENTIAL. POST https://au-api.basiq.io/token exchanges
+# "Authorization: Basic <base64 of an API key>" for a bearer token, and
+# also requires "basiq-version" on the same request. Four requests, same
+# endpoint, establish the order between them:
+#
+#   nothing at all
+#     -> 400 {"data":[{"code":"parameter-not-valid","title":"Required
+#             parameter not valid","detail":"Authorization header
+#             parameter is required", "source":{"parameter":
+#             "Authorization"}}]}
+#   basiq-version present, Authorization absent
+#     -> byte-identical to the line above
+#   Authorization present (any value, valid-looking or not), basiq-version absent
+#     -> 400, same code and title, detail changes to "Invalid authorization
+#        header"
+#   Authorization present, basiq-version present but wrong ("99.9")
+#     -> byte-identical to the line above
+#
+# So Authorization is checked first, unconditionally: basiq-version's
+# presence or value never changes the answer until Authorization has
+# already passed. And "detail" -- the field most integrations do not print
+# -- is the only field distinguishing an absent key from a merely
+# unacceptable one; code and title are identical in both cases. This is the
+# same second-mandatory-header shape a parallel group of Recipes checks for
+# Anthropic's own API, and the two orders happen to agree here: the
+# credential wins before the version header is ever consulted.
+#
+# What could not be established: what a *validly shaped* API key does,
+# because this Recipe has none. Every "Authorization present" case above
+# used a fabricated value that never got past Basiq's own shape check, so
+# whether basiq-version matters once Authorization is merely well-formed
+# and simply wrong is unknown, and not guessed at.
+#
+# Not modelled as a route. /token issues a Basic-scheme credential and this
+# Recipe's global auth.scheme is bearer, for the data API the token
+# unlocks -- Cauldron has one credential scheme per Recipe, with no
+# per-route override, so describing both halves faithfully needs two
+# Recipes' worth of auth or one Recipe that gets the busier half right.
+# truelayer/recipe.yaml makes the identical call for its OAuth exchange, in
+# its own words: "Exchanging a code for a token is where the consent's
+# expiry is first stated, and this Recipe describes the data endpoints that
+# come after." Every fact above about /token is real, checked today, and
+# lives here rather than in a case that cannot fire.
+#
+# THE BEARER-PROTECTED DATA API. GET /institutions and GET /users both
+# answer identically to a missing or a merely-wrong credential -- checked
+# on both paths -- which puts this host's failure vocabulary at two
+# sentences, not three:
+#
+#   no Authorization header at all
+#     -> 401 {"data":[{"code":"invalid-authorization-token","title":
+#             "Invalid authorization token.","detail":"","source":null}]}
+#   Authorization: Bearer junktoken123
+#   Authorization: Bearer                (empty value)
+#   Authorization: junktoken123          (no "Bearer " prefix at all)
+#     -> 401, all three byte-identical:
+#        {"data":[{"code":"access-denied","title":"Access denied.",
+#         "detail":"invalid token","source":null}]}
+#
+# All three "present" shapes above collapse onto the same sentence, so
+# malformed_error and rejected_error name the same entry below -- there is
+# no live evidence they are told apart on this host, so this Recipe does
+# not claim they are.
+#
+# ROUTING MISS, AND A GENUINE INFRASTRUCTURE LEAK. A path this Recipe has
+# no route for, and a disallowed method on one it does, both answer *before
+# the application's own credential check runs* -- confirmed by sending
+# neither a credential nor a real path:
+#
+#   GET /v99/nosuchroute, no credential
+#   DELETE /institutions, no credential
+#     -> both 403 {"data":[{"code":"request-not-valid","title":
+#        "Invalid request","detail":"Missing Authentication Token",
+#        "source":null}]}
+#
+# That is auth.after_routing: true, and it is documented as a first-class
+# code in Basiq's own error reference (docs/PLatform/errors/codes.md:
+# 403 request-not-valid, "Missing Authentication Token", example endpoint
+# "DELETE /users/{userId}") -- not this Recipe's guess about what an AWS
+# API Gateway default looks like. What is not modelled: the same routing
+# miss with a *credential present* answers a wholly different, undocumented
+# body -- "Invalid key=value pair (missing equal-sign) in Authorization
+# header (hashed with SHA-256 and encoded with Base64): '<hash of whatever
+# was sent>'." -- confirmed live, and it is API Gateway's own IAM-authorizer
+# fallback leaking through, keyed on the literal bytes of the request's own
+# Authorization header. Reproducing it would mean hashing the caller's own
+# credential inside an emulator to describe a routing miss, which is out of
+# proportion to what this case is for; the clean, documented,
+# credential-independent half above is what is modelled.
+#
+# CONNECTION HEALTH, from Basiq's own published OpenAPI description
+# (basiqio-oss/Basiq-docs, reference/connect.json -- Basiq's own
+# documentation repository) and never exercised live, because doing that
+# needs a real bank connection this Recipe cannot create:
+#
+#   - A Connection carries its own status, independent of any account
+#     underneath it: active, pending, invalid, pre-init. The description's
+#     own words: "Indicates the connection status, available only for
+#     SERVER_SCOPE." invalid is the direct answer to "does this connection
+#     know it is broken" -- pending and pre-init are two more states this
+#     collection's other four providers do not distinguish at all: a
+#     connection that has never finished connecting is not the same fact
+#     as one that is mid-refresh.
+#   - expiryDate is documented on the Connection and its presence depends
+#     on how the connection was made: "This date is only set for
+#     open-banking connections... For web connections, the expiry date
+#     field will be empty." The same object, two access methods
+#     (method: open-banking vs method: web, Basiq's own field), one with a
+#     stated consent deadline and one -- the older, screen-scraping style
+#     of connection -- with none at all.
+#   - Each Account nested under a connection carries its own status too --
+#     available, unavailable -- entirely separate from the connection's:
+#     the description gives no rule tying the two together, so a
+#     connection can be active while one of its accounts individually is
+#     not. This Recipe's fixture makes exactly that combination true, on
+#     purpose.
+#   - lastUpdated is the account-level freshness clock, and it is not the
+#     same field as the connection's own lastUsed ("available only for
+#     SERVER_SCOPE"). Two clocks again, on two objects, the same shape as
+#     the imported_at/updated_at split mx/recipe.yaml documents for a
+#     different provider entirely.
+#   - balance and availableFunds are both declared "nullable: true" on the
+#     same schema line as their numeric example -- a balance can be absent
+#     outright, not merely stale, and nothing in the description says which
+#     account states make that happen.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No transaction resource. This collection's providers already cover
+#     pending-versus-posted transaction splits more than once each
+#     (plaid, truelayer, gocardlessbank); this Recipe's reason to exist is
+#     the two-step credential and the two independent status enums, and a
+#     transaction list would add fixture volume rather than a finding.
+#   - No connection or job ever changes state while Cauldron is running.
+#     Which of the four connection states or two account states a fixture
+#     is in is what the fixture says.
+#   - Only one connection method (open-banking) is modelled in the
+#     fixtures; the web/screen-scraping method and its empty expiryDate are
+#     described in this header rather than given a second fixture, because
+#     no worked example of that shape exists in the description this
+#     Recipe was checked against.
+#
+# Keys below are fixtures, not secrets. Every connection and account field
+# value is taken verbatim from an "example:" in Basiq's own published
+# OpenAPI description; the correlationId in every error and success example
+# is an obviously-synthetic placeholder, because the real field is random
+# per request and was never going to be a fixed value.
+
+recipe: basiq
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://api.basiq.io/reference/getconnection
+  spec: https://raw.githubusercontent.com/basiqio-oss/Basiq-docs/v3.0/reference/connect.json
+  spec_hash: d70bdf6fd0a84fe0c89cab934800e04f08836eab97eca67a8219468f99dacfd5
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-basiq-access-token
+  absent_error: invalid_authorization_token
+  # No live evidence separates a malformed shape from a well-formed, wrong
+  # one on this host -- see the header. Both verdicts share one sentence.
+  malformed_error: access_denied
+  rejected_error: access_denied
+  # A path this Recipe has no route for, or a method a real one does not
+  # take, both answer this way with no credential in play at all -- the
+  # data API's own front door, documented in Basiq's own error reference
+  # rather than guessed at. See the header for what a credential being
+  # present does instead, and why it is not modelled.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    fields:
+      type: list
+  resource:
+    style: bare
+  error:
+    style: list
+    key: data
+    message_field: title
+    code_field: code
+    type_field: type
+    fields:
+      type: list
+      correlationId: cauldron00000000-0000-0000-0000-000000000000
+
+resources:
+  # The connection to one institution. status is the field this whole
+  # Recipe exists to model -- see the header.
+  connection:
+    id:
+      # "61723" in Basiq's own worked example -- a bare numeric-looking
+      # string with no declared prefix or fixed length.
+      style: opaque
+    fields:
+      method:
+        type: string
+      createdDate:
+        type: string
+      # Only set for open-banking connections -- see the header. This
+      # Recipe's one fixture is open-banking, so this is always present
+      # here; the empty-for-web-connections half is documented above
+      # rather than given a fixture with no worked example behind it.
+      expiryDate:
+        type: string
+      lastUsed:
+        type: string
+        null_when_unset: true
+      # active, pending, invalid, pre-init. No enum beyond these four is
+      # declared in Basiq's own machine-readable description -- see the
+      # header for why this Recipe does not extend the list from memory.
+      status:
+        type: string
+
+  # Nested one level down under a connection, addressed on its own route
+  # too. Carries its own status, independent of the connection's.
+  account:
+    id:
+      # "319ae910" in Basiq's own worked example -- opaque, no declared
+      # prefix.
+      style: opaque
+    fields:
+      name:
+        type: string
+      currency:
+        type: string
+      accountNo:
+        type: string
+      # Nullable on the same schema line as its numeric example -- a
+      # balance can be absent outright, not merely stale.
+      balance:
+        type: string
+        null_when_unset: true
+      availableFunds:
+        type: string
+        null_when_unset: true
+      # available, unavailable. Independent of the connection's own status
+      # -- see the header for the fixture that makes the two disagree.
+      status:
+        type: string
+      # The freshness clock for this specific balance. Not the same field
+      # as connection.lastUsed, and not guaranteed to agree with it.
+      lastUpdated:
+        type: string
+
+routes:
+  - method: GET
+    path: /institutions
+    resource: connection
+    operation: list
+
+  - method: GET
+    path: /users/{userId}/connections/{id}
+    resource: connection
+    operation: get
+
+  - method: GET
+    path: /users/{userId}/accounts
+    resource: account
+    operation: list
+
+  - method: GET
+    path: /users/{userId}/accounts/{id}
+    resource: account
+    operation: get
+
+errors:
+  # Nothing was sent at all. Checked live, twice, on two different paths.
+  invalid_authorization_token:
+    status: 401
+    code: invalid-authorization-token
+    type: error
+    message: Invalid authorization token.
+    fields:
+      detail: ""
+      source: null
+
+  # A credential was present -- any shape, valid-looking or not -- and
+  # this is the one sentence this host gives for all of it. Checked live
+  # against a garbled bearer, an empty one, and one with no "Bearer "
+  # prefix at all: byte-identical every time.
+  access_denied:
+    status: 401
+    code: access-denied
+    type: error
+    message: Access denied.
+    fields:
+      detail: invalid token
+      source: null
+
+  # Documented (docs/PLatform/errors/codes.md) and checked live, credential
+  # absent: a routing miss or a disallowed method, answered before the
+  # application's own credential check ever runs. See the header for the
+  # undocumented, credential-dependent variant this entry does not cover.
+  # Named unknown_route and method_not_allowed, the two names Cauldron's
+  # own runtime reaches for on a routing miss and a disallowed method
+  # respectively (internal/runtime/handler.go) -- declaring them by those
+  # names is what makes auth.after_routing's deferred credential check
+  # observable at all, rather than falling through to a generic 404/405
+  # this host never actually sends.
+  unknown_route:
+    status: 403
+    code: request-not-valid
+    type: error
+    message: Invalid request
+    fields:
+      detail: Missing Authentication Token
+      source: null
+
+  method_not_allowed:
+    status: 403
+    code: request-not-valid
+    type: error
+    message: Invalid request
+    fields:
+      detail: Missing Authentication Token
+      source: null
+
+fixtures:
+  empty: {}
+
+  # One user, one open-banking connection, two accounts on it -- one
+  # healthy, one not, on purpose, to make the point that an account's own
+  # status does not follow from its connection's. Every value is an
+  # "example:" in Basiq's own published OpenAPI description.
+  connected-user:
+    connection:
+      - id: "61723"
+        method: open-banking
+        createdDate: "2019-07-29T07:34:09Z"
+        expiryDate: "2020-07-29T07:34:09Z"
+        lastUsed: "2020-06-22T11:15:09Z"
+        status: active
+
+    account:
+      # Available, and its lastUpdated agrees with the connection's own
+      # lastUsed above -- the ordinary case.
+      - id: 319ae910
+        name: Business account
+        currency: AUD
+        accountNo: "105148119695"
+        balance: "100.12"
+        availableFunds: "200.54"
+        status: available
+        lastUpdated: "2017-09-28T11:15:09.756Z"
+
+      # The same connection, the same status: active -- and this account is
+      # unavailable, with no balance at all and a lastUpdated far older
+      # than the connection's own lastUsed. Nothing on the connection
+      # object says so.
+      - id: 5c8f2b41
+        name: Everyday Saver
+        currency: AUD
+        accountNo: "105148119702"
+        status: unavailable
+        lastUpdated: "2019-01-04T02:11:00.000Z"
+
+# Every case not carrying a verified date was read from Basiq's own
+# published OpenAPI description (basiqio-oss/Basiq-docs, reference/
+# connect.json) and never called against a live connection. Cases with a
+# verified date were called against au-api.basiq.io on 2026-09-02 with no
+# account and no API key ever created.
+conformance:
+  - name: no credential at all
+    source: https://au-api.basiq.io/institutions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /institutions
+    expect:
+      status: 401
+      body:
+        data[0].code: invalid-authorization-token
+        data[0].title: Invalid authorization token.
+        data[0].detail: ""
+      absent:
+        - data[1]
+
+  - name: a garbled bearer token, an empty one, and no scheme at all answer identically
+    source: https://au-api.basiq.io/institutions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /institutions
+      headers:
+        Authorization: Bearer junktoken123
+    expect:
+      status: 401
+      body:
+        data[0].code: access-denied
+        data[0].title: Access denied.
+        data[0].detail: invalid token
+
+  - name: a credential with no Bearer prefix at all gets the identical sentence
+    source: https://au-api.basiq.io/institutions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /institutions
+      headers:
+        Authorization: junktoken123
+    expect:
+      status: 401
+      body:
+        data[0].code: access-denied
+        data[0].title: Access denied.
+
+  - name: a routing miss answers before the credential is ever examined
+    # No credential in this request at all, and the failure is Basiq's own
+    # documented gateway-level code, not the application's -- see the
+    # header for the different, undocumented body a credential's mere
+    # presence produces here instead.
+    source: https://au-api.basiq.io/v99/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v99/nosuchroute
+    expect:
+      status: 403
+      body:
+        data[0].code: request-not-valid
+        data[0].detail: Missing Authentication Token
+
+  - name: a disallowed method answers the identical routing-level failure, not a 405
+    source: https://au-api.basiq.io/institutions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /institutions
+    expect:
+      status: 403
+      body:
+        data[0].code: request-not-valid
+        data[0].detail: Missing Authentication Token
+
+  - name: a connection's status is independent of any account underneath it
+    source: https://raw.githubusercontent.com/basiqio-oss/Basiq-docs/v3.0/reference/connect.json
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/cd6fbd92/connections/61723
+      headers:
+        Authorization: Bearer cauldron-basiq-access-token
+    expect:
+      status: 200
+      body:
+        method: open-banking
+        status: active
+        expiryDate: "2020-07-29T07:34:09Z"
+        lastUsed: "2020-06-22T11:15:09Z"
+
+  - name: an account's own status does not follow from its connection's
+    # Same connection (status active, checked in the case above), and this
+    # account is unavailable with no balance at all -- proof the two
+    # objects' health signals are independent rather than one implying the
+    # other.
+    source: https://raw.githubusercontent.com/basiqio-oss/Basiq-docs/v3.0/reference/connect.json
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/cd6fbd92/accounts/5c8f2b41
+      headers:
+        Authorization: Bearer cauldron-basiq-access-token
+    expect:
+      status: 200
+      body:
+        status: unavailable
+        lastUpdated: "2019-01-04T02:11:00.000Z"
+        # null, not omitted -- both fields are declared nullable on the same
+        # schema line as their numeric example, and a client checking
+        # `"balance" in account` before checking the value finds the key
+        # there regardless.
+        balance: null
+        availableFunds: null
+
+  - name: a healthy account's lastUpdated is its own clock, not the connection's
+    source: https://raw.githubusercontent.com/basiqio-oss/Basiq-docs/v3.0/reference/connect.json
+    fixture: connected-user
+    request:
+      method: GET
+      path: /users/cd6fbd92/accounts/319ae910
+      headers:
+        Authorization: Bearer cauldron-basiq-access-token
+    expect:
+      status: 200
+      body:
+        balance: "100.12"
+        availableFunds: "200.54"
+        status: available
+        lastUpdated: "2017-09-28T11:15:09.756Z"
