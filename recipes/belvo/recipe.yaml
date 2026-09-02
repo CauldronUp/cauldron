@@ -1,0 +1,579 @@
+# Belvo Recipe for Cauldron
+#
+# One of a group of Recipes answering the same question about five bank
+# aggregators: when a connection breaks silently -- a changed password, a
+# bank-added challenge, an expired consent -- does the connection carry a
+# health state distinct from its data, and does a stale balance look any
+# different from a fresh one? Read plaid/recipe.yaml and
+# truelayer/recipe.yaml first, for the same question asked of two other
+# providers. Where this Recipe differs from both:
+#
+#   - Plaid and TrueLayer both fold "needs re-authentication" into one
+#     field that also carries other meanings (an error type, a consent
+#     status). Belvo gives the connection -- called a Link -- its own
+#     four-word status vocabulary, and one of the four words means nothing
+#     except "re-authenticate this": valid, invalid, unconfirmed,
+#     token_required. invalid is documented, in Belvo's own words, as "the
+#     user credentials are no longer valid" -- the closest thing to a
+#     direct, unambiguous answer to this collection's question that any of
+#     the three providers in this batch gives.
+#   - TrueLayer's consent has one clock (consent_expires_at) that a caller
+#     reads once at token time and has to remember. Belvo's Link has none:
+#     no consent_expires_at, no documented recurring-link duration, only
+#     last_accessed_at -- when the connection last worked, not when it
+#     stops working. Where TrueLayer tells you the deadline in advance,
+#     Belvo tells you, after the fact, how long it has been since anything
+#     worked.
+#   - Belvo answers a genuinely wrong credential differently from a
+#     credential that was never presented, and differently again from a
+#     credential that was present but not shaped like one -- three distinct
+#     sentences, checked live. See "The credential contract" below.
+#
+# ---------------------------------------------------------------------------
+# What was checked live against api.belvo.com, 2026-09-02, no account, no
+# key ever created.
+# ---------------------------------------------------------------------------
+#
+# THE CREDENTIAL CONTRACT. Belvo is Django REST Framework underneath (the
+# error envelope and the exact wording give it away), and DRF's own
+# multi-backend authentication produces four different sentences for four
+# different ways of getting this wrong, not two:
+#
+#   no Authorization header at all
+#     -> 401 [{"message":"Authentication credentials were not provided.",
+#              "code":"not_authenticated", ...}]
+#   Authorization: junk                 (no recognised scheme at all)
+#     -> 401, byte-identical to the sentence above
+#   Authorization: Basic                (the right scheme, nothing after it)
+#     -> 401 [{"message":"Invalid basic header. No credentials provided.",
+#              "code":"authentication_failed", ...}]
+#   Authorization: Basic <well-formed, wrong secret_id:secret_password>
+#     -> 401 [{"message":"Invalid Secret Keys.",
+#              "code":"authentication_failed", ...}]
+#   Authorization: Bearer sometoken     (a different scheme entirely)
+#     -> 401 [{"message":"Given token is not valid.",
+#              "code":"invalid_token", ...}]
+#
+# The last one is the surprise: Belvo's documented scheme is Basic only,
+# and this Recipe models Basic only, but the live host clearly also has a
+# JWT/Bearer authentication backend wired into the same endpoint -- a
+# Bearer-shaped credential gets its own dedicated rejection sentence rather
+# than being told it sent nothing recognisable. Not modelled: Cauldron's
+# basic scheme has no way to recognise a second scheme and answer it
+# differently, and this Recipe's job is the documented Basic contract.
+# Recorded here because a caller who guesses wrong about which scheme this
+# API wants gets an answer that sounds like it was heard, not ignored.
+#
+# Of the remaining four, three are within reach of Cauldron's absent /
+# malformed / rejected verdicts, and one is not. "Authorization: junk"
+# matches the absent sentence exactly, live -- but under Cauldron's own
+# verdict computation (internal/runtime/auth.go), any Authorization header
+# that is present and does not parse as Basic is malformed, never absent,
+# whichever sentence the real provider happens to reuse for it. So the
+# malformed verdict here is pointed at the sentence that is actually
+# Basic-specific ("Invalid basic header...") rather than at the one that
+# happens to match this one sub-case; "Authorization: junk" itself is not
+# asserted as a conformance case for that reason -- see
+# firehydrant/recipe.yaml and together/recipe.yaml for the same kind of
+# call made elsewhere in this collection, where a provider's failure
+# vocabulary splits more ways than the runtime's three verdicts hold.
+#
+# ROUTING ORDER. auth.after_routing is left at its default (checked first).
+# A method the collection endpoint does not allow (DELETE, PUT on
+# /api/links/) answers with the credential's verdict, not a 405, whether or
+# not a credential was sent -- checked both ways. A real resource with a
+# fabricated id (/api/links/00000000-0000-0000-0000-000000000000/) answers
+# the credential's verdict too, not a 404 -- so id lookup never happens
+# before authentication either. What could not be checked: a genuinely
+# unrouted top level path (/api/nosuchroute/) never reaches Belvo's
+# application at all. Cloudflare answers first, with its own interstitial
+# "Attention Required!" challenge page (403, text/html, no application
+# headers) -- infrastructure in front of the API, not the API's own
+# answer, and not modelled for the same reason together/recipe.yaml does
+# not model Together's Next.js 404 page. Because of this, unknown_route is
+# left undeclared: this Recipe cannot show what Belvo's own router would
+# have said, because nothing this Recipe could send ever got that far.
+#
+# CONNECTION HEALTH, which is the whole reason this Recipe exists. All of
+# the following is read from Belvo's own OpenAPI description -- the
+# konfig-dev/belvo-sdks mirror of it (see upstream.spec; Belvo's own
+# developers.belvo.com is a client-rendered app with no fetchable static
+# document, and this mirror's every belvo-api-errors URL resolves back to
+# that same host, which is the cross-check this Recipe could actually run)
+# -- and none of it was exercised against a live Link, because doing that
+# needs an account.
+#
+#   - A Link's status is one of four words, and only one of them works:
+#     valid, invalid, unconfirmed, token_required.
+#       - invalid: "the user credentials are no longer valid" -- 400,
+#         code invalid_link. This is the direct, first-class answer to
+#         "does the connection know it needs re-authenticating": yes, and
+#         it says so without a caller having to infer it from an error
+#         category.
+#       - unconfirmed: the user never finished creating the Link (a bad
+#         MFA token during setup, for instance) -- 400, code
+#         unconfirmed_link. Not the same failure as invalid even though
+#         both are 400s: one is a connection that broke, the other is one
+#         that never finished being made.
+#       - token_required: the institution wants an MFA token mid-session --
+#         428 Precondition Required, code token_required. The only one of
+#         the four with its own dedicated HTTP status rather than sharing
+#         400 with the others.
+#       - valid: works. No error, nothing to check.
+#   - No consent_expires_at, unlike TrueLayer. The nearest thing Belvo
+#     documents is last_accessed_at on the Link -- "the ISO-8601 timestamp
+#     of Belvo's most recent successful access to the institution for the
+#     given link" -- which says how long a connection has been failing,
+#     not when it is due to fail.
+#   - An Account carries two timestamps, not one: collected_at ("when this
+#     data point was collected") and last_accessed_at (repeated from the
+#     Link, described in the identical words). Belvo's own schema ties the
+#     balance to the first one explicitly -- AccountsBalance.current is
+#     documented as "the user's account balance at the collected_at
+#     timestamp" -- so collected_at is the field a caller reads to answer
+#     "how old is this number", and last_accessed_at is a second,
+#     differently-scoped clock that happens to often agree with it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Only Links and Accounts are modelled. Balances, owners, transactions
+#     and every write endpoint are not: the connection-health question this
+#     Recipe exists to answer is fully contained in these two objects, and
+#     a third resource would add fixture volume rather than a finding.
+#   - No Link ever changes status while Cauldron is running. Which of the
+#     four words a fixture is in is what the fixture says, the same
+#     limitation truelayer/recipe.yaml states for consent_status.
+#   - The 400/428 error bodies for invalid_link, unconfirmed_link and
+#     token_required are all documented and none is verified: reaching one
+#     for real needs a Link this Recipe cannot create.
+#
+# Keys and identifiers below are fixtures, not secrets. Every Link and
+# Account field value is either taken verbatim from an "example:" in
+# Belvo's own published OpenAPI description or, where marked, invented as
+# an obviously-synthetic placeholder consistent with that description's
+# documented shape -- account numbers here are CLABE-shaped strings that do
+# not correspond to any real account, per Belvo's own example.
+
+recipe: belvo
+capability: banking
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.belvo.com/reference/retrievelinks
+  spec: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+  spec_hash: 49cf25da64b93742696d617e370010e648568561ed79703cecdd0002007bf6d0
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: basic
+  # Belvo's own words: secretId as the username, secretPassword as the
+  # password. Both are minted together and both are effectively secret --
+  # unlike Twilio's account SID or MX's client id, neither half is a public
+  # identifier -- and Cauldron's basic scheme checks one side regardless, so
+  # this follows the same convention Mailgun's Recipe in this collection
+  # uses for a similarly-paired secret.
+  credential: password
+  keys:
+    - cauldron-belvo-secret-password
+  # Present, right scheme, no value at all: DRF's own dedicated sentence
+  # for this specific shape.
+  malformed_error: invalid_basic_header
+  # Present, right scheme, well-formed, and simply wrong.
+  rejected_error: invalid_secret_keys
+  # Nothing sent at all.
+  absent_error: not_authenticated
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+    # A full URL to the next page, null on the last one -- Belvo's own
+    # words, and its own worked example: "https://sandbox.belvo.com/api/
+    # {endpoint}/?page=2".
+    cursor_field: next
+    cursor_url: absolute
+    # Belvo's own words: "If there are not enough results for an additional
+    # page, the value is null" -- null, not omitted.
+    cursor_null: true
+  resource:
+    style: bare
+  error:
+    # A bare top-level array holding one object -- DRF's default failure
+    # detail, wrapped in a list because DRF always can return more than
+    # one. Checked live: every failure this Recipe reached returned exactly
+    # one entry.
+    style: list
+    key: "-"
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  # The connection. Belvo calls it a Link, and its status is the health
+  # signal this whole Recipe exists to model -- see the header.
+  link:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      institution:
+        type: string
+      access_mode:
+        type: string
+        null_when_unset: true
+      # valid, invalid, unconfirmed, token_required -- see the header for
+      # what each one means and which HTTP status a caller meets it under.
+      status:
+        type: string
+      # When this connection last successfully talked to the institution.
+      # Not a deadline: a connection nobody has touched in months and one
+      # used hourly report the same thing here right up until one of them
+      # breaks.
+      last_accessed_at:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: string
+      external_id:
+        type: string
+        null_when_unset: true
+      institution_user_id:
+        type: string
+        null_when_unset: true
+      refresh_rate:
+        type: string
+        null_when_unset: true
+
+  account:
+    collection: results
+    id:
+      style: uuid
+    fields:
+      link:
+        type: string
+      institution:
+        type: map
+      category:
+        type: string
+        null_when_unset: true
+      balance_type:
+        type: string
+        null_when_unset: true
+      type:
+        type: string
+        null_when_unset: true
+      name:
+        type: string
+        null_when_unset: true
+      number:
+        type: string
+        null_when_unset: true
+      currency:
+        type: string
+        null_when_unset: true
+      public_identification_name:
+        type: string
+        null_when_unset: true
+      public_identification_value:
+        type: string
+        null_when_unset: true
+      current:
+        type: number
+        in: balance
+      available:
+        type: number
+        in: balance
+      # When this data point was collected. Belvo's own schema ties the
+      # balance to this exact timestamp -- "the user's account balance at
+      # the collected_at timestamp" -- so this is the field that answers
+      # "how old is this number", not last_accessed_at below.
+      collected_at:
+        type: string
+      # Repeated from the Link, in Belvo's own identical wording. A second
+      # clock on the same object, answering a connection-wide question
+      # rather than a per-balance one.
+      last_accessed_at:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: string
+
+routes:
+  - method: GET
+    path: /api/links/
+    resource: link
+    operation: list
+    # Belvo's own words: "Each page consists of up to 100 items", paged by a
+    # full URL under "next" -- see responses.list.cursor_field. No
+    # caller-adjustable page-size parameter is documented alongside it, and
+    # Cauldron's page style requires naming one, so this Recipe leaves
+    # pagination undeclared here rather than invent a parameter name Belvo
+    # never published. The cursor itself is still modelled, and asserted,
+    # through cursor_field.
+
+  - method: GET
+    path: /api/links/{id}/
+    resource: link
+    operation: get
+
+  - method: GET
+    path: /api/accounts/
+    resource: account
+    operation: list
+
+  - method: GET
+    path: /api/accounts/{id}/
+    resource: account
+    operation: get
+
+errors:
+  # Nothing was sent at all. Belvo's own wording, checked live, twice.
+  not_authenticated:
+    status: 401
+    code: not_authenticated
+    message: Authentication credentials were not provided.
+
+  # Right scheme, nothing after it. Also checked live, twice, and it is a
+  # different sentence and a different code from both of its neighbours.
+  invalid_basic_header:
+    status: 401
+    code: authentication_failed
+    message: Invalid basic header. No credentials provided.
+
+  # Right shape, wrong values.
+  invalid_secret_keys:
+    status: 401
+    code: authentication_failed
+    message: Invalid Secret Keys.
+
+  # Documented (konfig-dev/belvo-sdks api.yaml, InvalidLinkError), never
+  # observed live -- reaching it needs a Link this Recipe cannot create.
+  # "the user credentials are no longer valid, prompting an error from the
+  # institution" is the schema's own description of when this fires.
+  invalid_link:
+    status: 400
+    code: invalid_link
+    message: The link has been invalidated. You may need to update link credentials
+
+  # Documented, not observed. The user never finished creating the Link.
+  unconfirmed_link:
+    status: 400
+    code: unconfirmed_link
+    message: The link creation has not been completed yet
+
+  # Documented, not observed. The only one of the four link states with its
+  # own dedicated HTTP status rather than sharing 400 with the others.
+  token_required:
+    status: 428
+    code: token_required
+    message: A MFA token is required by the institution to login
+
+fixtures:
+  empty: {}
+
+  # One working connection and its one account. Every field value is an
+  # "example:" in Belvo's own published OpenAPI description; the account
+  # number is CLABE-shaped, matching that description's own example, and
+  # does not correspond to any real account.
+  connected-user:
+    link:
+      - id: 30cb4806-6e00-48a4-91c9-ca55968576c8
+        institution: erebor_mx_retail
+        access_mode: recurrent
+        status: valid
+        last_accessed_at: "2019-09-27T13:02:03.584Z"
+        created_at: "2022-02-09T08:45:50.406032Z"
+        external_id: 56ab5706-6e00-48a4-91c9-ca55968678d9
+        refresh_rate: 7d
+
+    account:
+      - id: 0d3ffb69-f83b-456e-ad8e-208d0998d71d
+        link: 30cb4806-6e00-48a4-91c9-ca55968576c8
+        institution:
+          name: erebor_mx_retail
+        category: CHECKING_ACCOUNT
+        balance_type: ASSET
+        type: Cuentas de efectivo
+        name: Cuenta Perfiles- M.N. - MXN-666
+        number: "4057068115181"
+        currency: MXN
+        public_identification_name: CLABE
+        public_identification_value: "150194683119900273"
+        current: 5874.13
+        available: 5874.13
+        collected_at: "2019-09-27T13:01:41.941Z"
+        last_accessed_at: "2021-03-09T10:28:40.000Z"
+        created_at: "2022-02-09T08:45:50.406032Z"
+
+# Every case not carrying a verified date was read from Belvo's own
+# published OpenAPI description (konfig-dev/belvo-sdks mirror, api.yaml)
+# and never called against a live Link. Cases with a verified date were
+# called against api.belvo.com on 2026-09-02 with no account and no key
+# ever created.
+conformance:
+  - name: no credential at all
+    source: https://api.belvo.com/api/links/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/links/
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        "[0].message": Authentication credentials were not provided.
+        "[0].code": not_authenticated
+      absent:
+        - "[1]"
+
+  - name: the right scheme with nothing after it is a different sentence and a different code
+    source: https://api.belvo.com/api/links/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/links/
+      headers:
+        Authorization: Basic
+    expect:
+      status: 401
+      body:
+        "[0].message": Invalid basic header. No credentials provided.
+        "[0].code": authentication_failed
+
+  - name: a well-formed, wrong secret pair gets a third sentence again
+    source: https://api.belvo.com/api/links/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/links/
+      headers:
+        Authorization: "Basic anVua2lkOmp1bmtwYXNzd29yZA=="
+    expect:
+      status: 401
+      body:
+        "[0].message": Invalid Secret Keys.
+        "[0].code": authentication_failed
+
+  - name: a method this route does not allow answers with the credential's verdict, not a 405
+    source: https://api.belvo.com/api/links/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/links/
+    expect:
+      status: 401
+      body:
+        "[0].message": Authentication credentials were not provided.
+        "[0].code": not_authenticated
+
+  - name: a fabricated id on a real resource answers with the credential's verdict, not a 404
+    # /api/links/{id}/ is a route this Recipe has; the id inside it does
+    # not exist, and authentication is still checked first -- confirmed
+    # live against a well-formed, non-existent UUID.
+    source: https://api.belvo.com/api/links/00000000-0000-0000-0000-000000000000/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/links/00000000-0000-0000-0000-000000000000/
+    expect:
+      status: 401
+      body:
+        "[0].message": Authentication credentials were not provided.
+        "[0].code": not_authenticated
+
+  - name: a link listing counts the whole account, and pages by a full URL
+    source: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /api/links/
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tYmVsdm8tc2VjcmV0LXBhc3N3b3Jk"
+    expect:
+      status: 200
+      body:
+        count: 1
+        results[0].status: valid
+        # null on the last page rather than omitted -- Belvo's own
+        # description says so explicitly -- and there is exactly one link in
+        # this fixture, so the last page is the only page.
+        next: null
+
+  - name: a link's status is one of four words, and only one of them works
+    source: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /api/links/30cb4806-6e00-48a4-91c9-ca55968576c8/
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tYmVsdm8tc2VjcmV0LXBhc3N3b3Jk"
+    expect:
+      status: 200
+      body:
+        status: valid
+        access_mode: recurrent
+        last_accessed_at: "2019-09-27T13:02:03.584Z"
+      absent:
+        - consent_expires_at
+        - expiry_date
+
+  - name: an account's balance is tied to collected_at, not to the link's own clock
+    source: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+    fixture: connected-user
+    request:
+      method: GET
+      path: /api/accounts/0d3ffb69-f83b-456e-ad8e-208d0998d71d/
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tYmVsdm8tc2VjcmV0LXBhc3N3b3Jk"
+    expect:
+      status: 200
+      body:
+        balance:
+          current: 5874.13
+          available: 5874.13
+        collected_at: "2019-09-27T13:01:41.941Z"
+        last_accessed_at: "2021-03-09T10:28:40.000Z"
+      # The two clocks disagree by roughly eighteen months in this fixture
+      # on purpose: they are not aliases for the same moment, whatever a
+      # fixture that set them equal would suggest.
+      absent:
+        - balance.updated_at
+
+  - name: an invalidated link says so by name, with its own code
+    source: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+    fixture: connected-user
+    arm: invalid_link
+    request:
+      method: GET
+      path: /api/accounts/0d3ffb69-f83b-456e-ad8e-208d0998d71d/
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tYmVsdm8tc2VjcmV0LXBhc3N3b3Jk"
+    expect:
+      status: 400
+      body:
+        "[0].code": invalid_link
+        "[0].message": The link has been invalidated. You may need to update link credentials
+
+  - name: an institution asking for an MFA token mid-session is a 428, not a 400
+    # The one link state with its own dedicated HTTP status rather than
+    # sharing 400 with the other three.
+    source: https://raw.githubusercontent.com/konfig-dev/belvo-sdks/main/api.yaml
+    fixture: connected-user
+    arm: token_required
+    request:
+      method: GET
+      path: /api/accounts/0d3ffb69-f83b-456e-ad8e-208d0998d71d/
+      headers:
+        Authorization: "Basic Y2F1bGRyb246Y2F1bGRyb24tYmVsdm8tc2VjcmV0LXBhc3N3b3Jk"
+    expect:
+      status: 428
+      body:
+        "[0].code": token_required
+        "[0].message": A MFA token is required by the institution to login
