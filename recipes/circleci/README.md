@@ -6,6 +6,12 @@ Emulates the CircleCI API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its fixture carries a workflow waiting on approval -- neither a pass nor a
+failure, and the state most likely to be missing from a client that branches on
+success.
+
 ## Sources
 
 - Documentation: https://circleci.com/docs/api/v2/
