@@ -6294,6 +6294,723 @@ func providers() []provider {
 			recipe:   "estated",
 			composer: []string{"forward-force/estated-api-sdk"},
 		},
+		{
+			// Canvas the LMS loses the popularity contest by design: "canvas"
+			// on npm is the Cairo-backed graphics library, thirty-three
+			// million downloads a month, and Packagist's top hits for the
+			// bare word are unrelated too. The two mapped here are the ones
+			// that actually build requests against a Canvas instance's REST
+			// API with a Bearer token, confirmed in source rather than
+			// assumed from the name.
+			//
+			// jjuanrivvera/canvas-lms-kit calls itself "the most
+			// comprehensive PHP SDK for Canvas LMS API," and its
+			// HttpClient.php sets
+			// $options['headers']['Authorization'] = 'Bearer ' . $token on
+			// every request, this Recipe's scheme exactly.
+			//
+			// @mwhepworth/canvas-lms-core is smaller and still in beta --
+			// fifteen installs a month, no repository listed on the
+			// registry -- and its canvas-api.js does the identical thing:
+			// axios.create with Authorization: `Bearer ${this.accessToken}`.
+			// Confirmed by reading the published tarball rather than
+			// trusted on the name.
+			recipe:   "canvas",
+			composer: []string{"jjuanrivvera/canvas-lms-kit"},
+			npm:      []string{"@mwhepworth/canvas-lms-core"},
+		},
+		{
+			// Moodle has no single host -- every installation is
+			// self-hosted -- so the dependency a project holds is a generic
+			// Web Services client pointed at whichever instance's
+			// webservice/rest/server.php, the wstoken query parameter
+			// carried on every call.
+			//
+			// llagerlof/moodlerest is the dominant Composer client by a
+			// wide margin, a hundred thousand downloads against low
+			// hundreds for the rest, and its MoodleRest.php builds the
+			// request as '?wstoken=' . $this->getToken() against exactly
+			// that endpoint name.
+			//
+			// moodle-client on npm does the same: client.js sets
+			// uri: self.wwwroot + "/webservice/rest/server.php" and
+			// request_options.qs.wstoken = self.token. Both checked in
+			// source rather than the package description.
+			//
+			// Neither is Moodle HQ's own -- it publishes the API, not a
+			// client for it -- which is why neither carries a vendor-scoped
+			// package name.
+			recipe:   "moodle",
+			composer: []string{"llagerlof/moodlerest"},
+			npm:      []string{"moodle-client"},
+		},
+		{
+			// "Clever" collides with two much larger unrelated products on
+			// both registries -- Clever Cloud, the French PaaS, and
+			// CleverReach, the email marketing platform -- and
+			// hwi/oauth-bundle turns up first on Packagist for the bare
+			// word regardless, a generic OAuth bundle with twenty-two
+			// million downloads that supports dozens of providers. None of
+			// those are the education rostering API this Recipe models.
+			//
+			// The Go module is the one this Recipe's own spec is fetched
+			// from: upstream.spec names
+			// github.com/Clever/clever-go/master/swagger.yml directly, and
+			// that repository's client/clever_client.go sets
+			// DefaultHost string = "api.clever.com", this Recipe's host.
+			//
+			// @gmacko/clever on npm is a small, dedicated match beside it
+			// -- "TypeScript client for the Clever Data API v3.1" -- and
+			// its built source sets
+			// baseURL: axiosConfig.baseURL || "https://api.clever.com".
+			//
+			// Packagist has nothing for the education product at all.
+			recipe: "clever",
+			npm:    []string{"@gmacko/clever"},
+			gomod:  []string{"github.com/Clever/clever-go"},
+		},
+		{
+			// The public surface -- GET /states/all, no credential at all
+			// -- has not changed, and every client below reaches it at
+			// opensky-network.org/api regardless of when it was written.
+			// What has changed is /states/own: OpenSky's own docs, quoted
+			// in this Recipe's header, say "OpenSky exclusively supports
+			// the OAuth2 client credentials flow. Basic authentication with
+			// username and password is no longer accepted" -- and every
+			// client found here, in all three ecosystems, still sends
+			// Basic. A Basic header on /states/own is not refused; it is
+			// silently treated as no credential at all and answered at the
+			// anonymous tier, confirmed live in this Recipe's own header.
+			// That is a real gap between what these clients believe they
+			// are doing and what the live host does with it, worth stating
+			// rather than discovering once: the host match is exact, the
+			// private-endpoint auth is not.
+			//
+			// rubin/opensky's OpenSkyApi.php sets
+			// 'base_uri' => 'https://opensky-network.org/api' and reaches
+			// /states/all and /states/own. openskyjs (npm) builds the same
+			// base URL from username:password embedded ahead of the
+			// hostname, the old HTTP-Basic-in-URL shape.
+			// navidys/gopensky's connection.go sets
+			// openSkyAPIURL = "https://opensky-network.org:443/api" and
+			// req.Header.Add("Authorization", "Basic "+c.auth).
+			recipe:   "opensky",
+			composer: []string{"rubin/opensky"},
+			npm:      []string{"openskyjs"},
+			gomod:    []string{"github.com/navidys/gopensky"},
+		},
+		{
+			// Reached only through RapidAPI's marketplace, and both mapped
+			// clients show it: the header this Recipe checks,
+			// X-RapidAPI-Key, next to X-RapidAPI-Host naming
+			// aerodatabox.p.rapidapi.com, hardcoded in each.
+			//
+			// flight/aerodatabox is thin -- ten downloads, a single
+			// service class, a student project by its own repository's
+			// shape -- and its AeroDataBoxService.php still builds the
+			// exact request:
+			// 'https://aerodatabox.p.rapidapi.com/flights/'.$searchby.'/'.$parameter
+			// with 'X-RapidAPI-Key' => env('RAPID_API_KEY'). Small does
+			// not mean wrong when the source reads this unambiguous.
+			//
+			// deanstalker-stream/aerodatabox-client (Go) is the more
+			// complete of the two -- separate files per resource, aircraft,
+			// airport, flight, flight_alert, healthcheck, industry, misc,
+			// statistical -- and its client.go declares
+			// HeaderRapidAPIKey = "X-RapidAPI-Key" and
+			// HeaderRapidAPIHost = "X-RapidAPI-Host" directly.
+			//
+			// Nothing on npm answers the name at all.
+			recipe:   "aerodatabox",
+			composer: []string{"flight/aerodatabox"},
+			gomod:    []string{"github.com/deanstalker-stream/aerodatabox-client"},
+		},
+		{
+			// The provider's own npm package is dead code. "nutritionix"
+			// on npm, published from
+			// github.com/nutritionix/nodejs-client-library and named
+			// "Official Nutritionix NodeJS Client Library" in its own
+			// description, builds every request against
+			// PRO_URL = 'https://api.nutritionix.com' -- the v1_1 API,
+			// retired. That host answers nothing at all now, checked live:
+			// no HTTP response whatsoever, while trackapi.nutritionix.com
+			// -- the host this Recipe models, current -- answers a real
+			// 401 the same day. adcuz/nutritionix-api-php, the one
+			// Composer candidate, has the identical problem: its
+			// Client.php builds requests against the same dead
+			// api.nutritionix.com/v1_1/ host. Official does not mean
+			// current, and current is what a working dependency requires.
+			//
+			// The package that actually reaches the live host is
+			// nutritionix-api on npm, published by jodacame in 2020 and
+			// unaffiliated with the vendor: its index.js sets
+			// base_url: 'https://trackapi.nutritionix.com/v2/' and sends
+			// both 'x-app-id' and 'x-app-key' as headers, this Recipe's
+			// scheme exactly.
+			//
+			// No Composer package reaches trackapi.nutritionix.com at all,
+			// and there is no Go module for this provider on either
+			// registry.
+			recipe: "nutritionix",
+			npm:    []string{"nutritionix-api"},
+		},
+		{
+			// Edamam sells three separate APIs behind one host and one
+			// query-param shape -- app_id and app_key -- and each product
+			// issues its own separate credential pair, the trap
+			// ProPublica's entry in this file already describes for its
+			// Congress API and Nonprofit Explorer. This Recipe models
+			// Nutrition Analysis (nutrition-data and nutrition-details);
+			// kylemilloy/edamam-php and artback/edamamWrapper, the only two
+			// dedicated clients this search turned up, both wrap the Food
+			// Database API instead -- a sibling product, same host, wrong
+			// credential.
+			//
+			// The one client that reaches the right product is edamam-api
+			// on npm, a fork of jankdc/edamam-node published separately by
+			// cwilby with a dedicated NutritionAnalysisClient.js added:
+			// analyzeRecipe() posts to 'nutrition-details' and
+			// getNutritionData() gets 'nutrition-data', both against
+			// api.edamam.com/api/, both carrying app_id and app_key
+			// exactly as this Recipe's header names them.
+			//
+			// No Composer package and no Go module reach Nutrition
+			// Analysis at all.
+			recipe: "edamam",
+			npm:    []string{"edamam-api"},
+		},
+		{
+			// The vendor publishes its own multi-language client generator
+			// -- github.com/ddsky/spoonacular-api-clients, "I'd be happy
+			// to hear from you" in its own README, linking straight to
+			// spoonacular.com/contact -- and the Go client inside it is
+			// real and tagged: go/configuration.go sets
+			// URL: "https://api.spoonacular.com", and the npm package
+			// "spoonacular" is maintained by the same person, ddsky
+			// (davidurbansky@hotmail.com), Spoonacular's founder.
+			//
+			// The vendor's own php/ subdirectory in that repository has no
+			// composer.json name set, so it was never published to
+			// Packagist under any name a project could require.
+			// pxgamer/spoonacularapi fills that gap -- APIMatic-generated,
+			// sixty downloads, but published once by a known individual
+			// developer rather than mass-produced, and its own
+			// Configuration.php sets
+			// $BASEURI = 'https://api.spoonacular.com', this Recipe's host
+			// exactly.
+			recipe:   "spoonacular",
+			composer: []string{"pxgamer/spoonacularapi"},
+			npm:      []string{"spoonacular"},
+			gomod:    []string{"github.com/ddsky/spoonacular-api-clients/go"},
+		},
+		{
+			// The obvious npm candidate, "googleapis," is the entire
+			// Google API surface in one package -- Drive, Sheets,
+			// Calendar, Books, hundreds of services -- and a dependency on
+			// it says nothing about which one a project calls, the
+			// jira.js problem this file already declines to solve by
+			// guessing. The same is true of Google's own
+			// google.golang.org/api module in Go, one module for every
+			// service. Neither is mapped here for that reason.
+			//
+			// scriptotek/google-books is dedicated and dominant on
+			// Packagist -- seventeen thousand downloads -- and its
+			// GoogleBooks.php sets
+			// $baseUri = 'https://www.googleapis.com/books/v1/' and
+			// $params['key'] = $this->key, this Recipe's host and
+			// credential exactly. google-books-search on npm does the
+			// same: API_BASE_URL = 'https://www.googleapis.com/books/v1'
+			// with query.key = options.key.
+			//
+			// No dedicated Go module for this API exists on either search
+			// surface.
+			recipe:   "googlebooks",
+			composer: []string{"scriptotek/google-books"},
+			npm:      []string{"google-books-search"},
+		},
+		{
+			// Unambiguous in all three ecosystems, and each one reads the
+			// credential the same unusual way: the whole Authorization
+			// header value is the key, no Bearer prefix, this Recipe's own
+			// scheme.
+			//
+			// verbanent/isbndb-client's IsbndbClient.php sets
+			// BASE_URL = 'https://api2.isbndb.com/' and
+			// ->withHeader('Authorization', trim($this->apiKey)), with a
+			// comment in its own source noting "ISBNdb expects raw API
+			// key, not 'Bearer'." isbndb-client on npm
+			// (Krister-Johansson) and boookshelf/isbndb in Go both set the
+			// identical host, api2.isbndb.com, and both send
+			// Authorization: apiKey with no prefix, confirmed in each
+			// one's built or published source.
+			recipe:   "isbndb",
+			composer: []string{"verbanent/isbndb-client"},
+			npm:      []string{"isbndb-client"},
+			gomod:    []string{"github.com/boookshelf/isbndb"},
+		},
+		{
+			// Toggl the company now sells two products under variations of
+			// one name, and the collision is worth stating precisely
+			// because it looks like the right answer at a glance.
+			// @togglhq/cli and @togglhq/mcp are real, current, and
+			// published from the vendor's own npm scope -- and both are
+			// for "Toggl 2.0" at focus.toggl.com, an entirely different
+			// product from Toggl Track, the time tracker this Recipe's v9
+			// API documents. @togglhq/cli's own README confirms it:
+			// "Command-line interface for Toggl 2.0," OAuth sign-in, and
+			// it ships an agent skill its own README tells you to install
+			// -- disqualified twice, wrong product and agent tooling both.
+			//
+			// For Toggl Track itself: ixudra/toggl is Composer's dominant
+			// client, and its TogglService.php sets
+			// $this->baseUrl = 'https://api.track.toggl.com' with
+			// $this->apiVersionUrl = '/api/v9', authenticating with
+			// USERPWD, $this->apiToken .':api_token' -- HTTP Basic, token
+			// as username, the literal string "api_token" as password,
+			// this Recipe's scheme exactly. toggl-track on npm (garyhtou)
+			// matches it verbatim, down to the same 'token:api_token'
+			// Basic construction.
+			//
+			// toggl-api (7eggs), a larger but older npm package, is left
+			// out deliberately: its client.js calls
+			// apiUrl: 'https://api.track.toggl.com' but requests
+			// /api/v8/me -- the wrong version, one behind what this
+			// Recipe models.
+			recipe:   "toggl",
+			composer: []string{"ixudra/toggl"},
+			npm:      []string{"toggl-track"},
+		},
+		{
+			// Unambiguous and dominant in two ecosystems at once.
+			// wearerequired/harvest-api-php-client is Packagist's clear
+			// leader -- a hundred and forty-six thousand downloads -- and
+			// its Client.php sets a BaseUriPlugin against
+			// 'https://api.harvestapp.com/v2', while
+			// HarvestAuthentication.php sends both
+			// Authorization: Bearer <token> and
+			// Harvest-Account-Id: <id>, this Recipe's exact pair.
+			//
+			// harvest-v2 on npm reaches the identical host and required
+			// header. sergeykuzmich/harvestapp-sdk in Go declares
+			// const harvestDomain = "api.harvestapp.com" and sets both
+			// headers the same way, confirmed in api.go.
+			recipe:   "harvest",
+			composer: []string{"wearerequired/harvest-api-php-client"},
+			npm:      []string{"harvest-v2"},
+			gomod:    []string{"github.com/sergeykuzmich/harvestapp-sdk"},
+		},
+		{
+			// jdecool/clockify-api's ClientBuilder.php declares
+			// ENDPOINT_V1 = 'https://api.clockify.me/api/v1/' and
+			// authenticates with new Header('X-Api-Key', $apiKey) as an
+			// HTTP plugin, this Recipe's host and header exactly.
+			// clockify-ts on npm matches it:
+			// baseURL: "https://api.clockify.me/api/v1" with
+			// 'X-Api-Key': apiKey. Both confirmed by reading the built
+			// source rather than the package description.
+			recipe:   "clockify",
+			composer: []string{"jdecool/clockify-api"},
+			npm:      []string{"clockify-ts"},
+		},
+		{
+			// Mixpanel's own official clients are split across two
+			// different Mixpanel endpoints with two different auth
+			// shapes, and only two of the three ecosystems' official
+			// clients have caught up. This Recipe models /import -- HTTP
+			// Basic, a project's service-account credential -- not
+			// /track, which takes a project token with no Authorization
+			// header at all.
+			//
+			// The official npm package, "mixpanel"
+			// (mixpanel/mixpanel-node), supports both: mixpanel-node.js
+			// declares host: "api.mixpanel.com" and has an explicit
+			// .import() method building endpoint === "/import" with
+			// request_options.headers["Authorization"] = "Basic " +
+			// credentials.toHttpBasicAuth(). The official Go SDK,
+			// mixpanel/mixpanel-go, matches it: ingestion.go's
+			// importURL = "/import" and http.go's importAuthOptions()
+			// calls
+			// req.SetBasicAuth(m.serviceAccount.Username, m.serviceAccount.Secret).
+			//
+			// The official PHP client, mixpanel/mixpanel-php, does not
+			// have this yet. Its stable 2.9.0 release only wraps the
+			// /engage and /track producers -- checked in
+			// Producers/MixpanelEvents.php, which returns
+			// $this->_options['events_endpoint'] and nothing about
+			// /import -- and import support exists only on an unmerged
+			// dev branch (dev-santigracia-import-support) in the same
+			// repository, not a tagged release a composer require would
+			// resolve to. No Composer mapping follows from that.
+			recipe: "mixpanel",
+			npm:    []string{"mixpanel"},
+			gomod:  []string{"github.com/mixpanel/mixpanel-go"},
+		},
+		{
+			// Amplitude's dominant PHP client sends the deprecated
+			// request. zumba/amplitude-php (ten million downloads, easily
+			// the most installed) targets
+			// AMPLITUDE_API_URL = 'https://api.amplitude.com/httpapi' --
+			// the V1 HTTP API -- while this Recipe's header establishes
+			// the live host as V2, api2.amplitude.com/2/httpapi, and
+			// checks the exact refusal V2 sends back for an unrecognised
+			// key. A V1 client and a V2 emulator do not agree about where
+			// the request even goes.
+			//
+			// viezel/amplitude-php-sdk is a fork of the same code that
+			// did update: its Amplitude.php sets
+			// AMPLITUDE_API_URL = 'https://api.eu.amplitude.com/2/httpapi'
+			// -- the EU zone rather than the US host this Recipe's header
+			// checks live against, but the same /2/httpapi path, and the
+			// constructor accepts an override -- with api_key still sent
+			// in the JSON body, matching this Recipe's ingest routes.
+			//
+			// The official npm and Go SDKs both get the version right on
+			// their own: @amplitude/analytics-node depends on
+			// @amplitude/analytics-core, whose constants.js declares
+			// AMPLITUDE_SERVER_URL = 'https://api2.amplitude.com/2/httpapi'
+			// verbatim. amplitude/analytics-go's constants.go repeats the
+			// identical string for ServerZoneUS.
+			recipe:   "amplitude",
+			composer: []string{"viezel/amplitude-php-sdk"},
+			npm:      []string{"@amplitude/analytics-node"},
+			gomod:    []string{"github.com/amplitude/analytics-go"},
+		},
+		{
+			// heap-js and the bare "heap" on npm are the data structure,
+			// thirty-two and nine million downloads a month, and nothing
+			// this collection's brief was looking for. The one Composer
+			// client that reaches heapanalytics.com/api/track is a fork of
+			// a deleted repository: iagomelanias/heap-php, Packagist's
+			// more-downloaded option, points at a GitHub repository that
+			// returns 404 today and cannot be verified at all.
+			// guidofaecke/heap-php is the fork that survived, and its
+			// Request.php sets
+			// private string $apiUri = 'https://heapanalytics.com/api'
+			// with Client.php's track() posting to that URI with app_id
+			// in the JSON body, this Recipe's own request shape.
+			//
+			// Heap's own npm org publishes only browser and React Native
+			// autocapture SDKs -- @heap/heap-react-native-bridge and
+			// siblings -- client-side instrumentation rather than a
+			// server-side caller of /api/track, so none of them are
+			// mapped here.
+			//
+			// richardknop/go-heapanalytics is the Go match: client.go
+			// declares DefaultURL = "https://heapanalytics.com" and
+			// DefaultPathTrack = "/api/track". It predates Go modules and
+			// carries no go.mod, but resolves through the module proxy by
+			// pseudo-version the same way this file's balldontlie and
+			// zerobounce Go modules do.
+			recipe:   "heap",
+			composer: []string{"guidofaecke/heap-php"},
+			gomod:    []string{"github.com/richardknop/go-heapanalytics"},
+		},
+		{
+			// exa-js is the vendor's own, published from the exa-labs
+			// GitHub organisation that runs docs.exa.ai, and its built
+			// source sets BASE_URL = "https://api.exa.ai" -- this
+			// Recipe's host exactly. The unrelated `exa` ls replacement
+			// lives outside npm and Packagist entirely, so the collision
+			// this file's brief warned about did not actually surface in
+			// either registry's search results.
+			//
+			// sepehr-mohseni/exaravel is the one Composer client, and its
+			// published config sets
+			// 'base_url' => env('EXA_BASE_URL', 'https://api.exa.ai'), the
+			// same host. padosoft/laravel-ai-search-providers is left out
+			// on the Shopify-and-jira.js reasoning already established in
+			// this file: it wraps Brave, Tavily, Exa and Firecrawl behind
+			// one contract, so holding it does not say which provider a
+			// project actually calls.
+			//
+			// Every Go result was an AI agent's own tool plugin -- ketch,
+			// omniserp, aigo -- rather than a client a project would hold
+			// on its own, the agent-tooling exclusion this file already
+			// applies to the openFDA and Europe PMC MCP servers.
+			recipe:   "exa",
+			composer: []string{"sepehr-mohseni/exaravel"},
+			npm:      []string{"exa-js"},
+		},
+		{
+			// @tavily/core is the vendor's official client -- one and a
+			// half million downloads a month -- and its built source sets
+			// headers["Authorization"] = `Bearer ${apiKey}` against
+			// BASE_URL = "https://api.tavily.com", this Recipe's scheme
+			// exactly.
+			//
+			// The Go search turned up mostly AI agent framework plugins --
+			// mcp-client-go, llmux, crush-modules, miso-tavily -- excluded
+			// on the same agent-tooling reasoning as Exa above. Of the two
+			// standalone clients, diverged/tavily-go is the sharper miss:
+			// its client.go posts req.APIKey inside the JSON body rather
+			// than sending it as a Bearer header, the older shape
+			// Tavily's API no longer documents. aiomni/tavily-go gets it
+			// right --
+			// request.Header.Set("Authorization", fmt.Sprintf("Bearer %s",
+			// c.APIKey)) -- and is mapped instead.
+			//
+			// No Composer package for this API exists at all; every PHP
+			// result was either a multi-provider AI search bridge or an
+			// AI-tool integration package, neither of which identifies
+			// this provider on its own.
+			recipe: "tavily",
+			npm:    []string{"@tavily/core"},
+			gomod:  []string{"github.com/aiomni/tavily-go"},
+		},
+		{
+			// SerpApi's own organisation maintains two generations of
+			// client in most ecosystems, and the older generation says so
+			// itself. google-search-results-php (composer, two million
+			// downloads) and google-search-results-golang both carry the
+			// identical notice in their own README: "This package is
+			// deprecated in favor of" the newer one, "Please migrate to
+			// the newer implementation." The current generation is
+			// serpapi/serpapi-php and serpapi/serpapi-golang -- far fewer
+			// downloads only because the deprecation is recent -- and
+			// Client.php sets BASE_URL = 'https://serpapi.com' with
+			// $params['api_key'] = $apiKey, this Recipe's host and query
+			// credential exactly.
+			//
+			// serpapi on npm is the vendor's current JavaScript client, on
+			// the same migration as the other two: utils.js sets
+			// hostname: "serpapi.com" and every search call carries
+			// api_key as a query parameter, confirmed in the published
+			// source rather than assumed from the deprecated pair's shape.
+			recipe:   "serpapi",
+			composer: []string{"serpapi/serpapi-php"},
+			npm:      []string{"serpapi"},
+			gomod:    []string{"github.com/serpapi/serpapi-golang"},
+		},
+		{
+			// Fastly's own organisation publishes and maintains the
+			// client in all three ecosystems, and each one names the
+			// header this Recipe checks directly. go-fastly's client.go
+			// declares const APIKeyHeader = "Fastly-Key" against
+			// const DefaultEndpoint = "https://api.fastly.com". The npm
+			// package "fastly" and Packagist's fastly/fastly, both
+			// published from the vendor's own organisation and both
+			// describing themselves as covering "most facets of the
+			// Fastly API," carry the identical header in their built and
+			// published source.
+			recipe:   "fastly",
+			composer: []string{"fastly/fastly"},
+			npm:      []string{"fastly"},
+			gomod:    []string{"github.com/fastly/go-fastly"},
+		},
+		{
+			// Another vendor-maintained trio, and the credential shape is
+			// the interesting part: KeyCDN's own convention puts the API
+			// key as the HTTP Basic username with the password left
+			// empty, and all three clients build the request that way.
+			// keycdn/php-keycdn-api's KeyCDN.php calls
+			// curl_setopt($ch, CURLOPT_USERPWD, $this->apiKey . ':');
+			// dominikschulz/keycdn's api.go calls
+			// req.SetBasicAuth(c.apikey, "") against
+			// const BaseURL = "https://api.keycdn.com"; and
+			// node-keycdn-api, the npm package "keycdn," is published
+			// from the identical vendor organisation as the PHP one.
+			recipe:   "keycdn",
+			composer: []string{"keycdn/keycdn-api"},
+			npm:      []string{"keycdn"},
+			gomod:    []string{"github.com/dominikschulz/keycdn"},
+		},
+		{
+			// Namecheap does not publish its own SDK in any of these
+			// three ecosystems -- the composer package literally named
+			// namecheap/namecheap turns out to belong to an individual
+			// (its repository is github.com/steve-human/Namecheap, not
+			// the vendor) -- so every mapped client here is a third party
+			// that nonetheless targets the one real API correctly.
+			//
+			// NaturalBuild/namecheap-sdk is Packagist's most-downloaded
+			// genuine option, forked repeatedly under other publishers'
+			// vendor names, and its Api.php sets
+			// $this->endPoint = 'https://api.namecheap.com/xml.response'
+			// with $data['ApiKey'] = $this->apiKey, this Recipe's host
+			// and query credential exactly. namecheap-api on npm
+			// (alastairparagas) and Namecheap-Ecosystem/go-namecheap both
+			// build the identical URL --
+			// "https://api."+(sandbox?'sandbox.':'')+"namecheap.com/xml.response"
+			// and
+			// const defaultBaseURL = "https://api.namecheap.com/xml.response"
+			// respectively -- with ApiKey carried the same way.
+			recipe:   "namecheap",
+			composer: []string{"naturalbuild/namecheap-sdk"},
+			npm:      []string{"namecheap-api"},
+			gomod:    []string{"github.com/Namecheap-Ecosystem/go-namecheap"},
+		},
+		{
+			// This Recipe's own header explains the gap that follows:
+			// Porkbun's documented examples put apikey and secretapikey
+			// inside the JSON request body, a credential shape Cauldron's
+			// auth block has no scheme for (ValidAuthSchemes is bearer,
+			// basic, header, query, none). Porkbun's own OpenAPI spec
+			// names a second, equally real surface -- X-API-Key and
+			// X-Secret-API-Key as headers -- confirmed live, and that is
+			// the shape this Recipe's auth block actually checks. Every
+			// client found here uses the body shape instead, the one the
+			// documentation's own worked examples show, which means a
+			// real dependency on any of them is a genuine Porkbun caller
+			// that this Recipe's emulator will read as having sent
+			// nothing -- the same fidelity gap this file's Kickbox entry
+			// already describes for a header-vs-query mismatch, here a
+			// header-vs-body one instead.
+			//
+			// carmelosantana/porkbun-sdk's PorkbunApi.php sets
+			// $api_url = 'https://api.porkbun.com/api/json/v3' with
+			// $data['apikey'] and $data['secretapikey'] in the POST body.
+			// porkbun-api-client on npm does the same against the
+			// identical host.
+			//
+			// Both Go clients found, blmhemu/porkbun-go and
+			// caiych/porkbun, target the wrong host outright: both
+			// hardcode "https://porkbun.com/api/json/v3" without the api.
+			// subdomain, and that bare host answers a 403 from a
+			// different load balancer (Server: awselb/2.0, unrelated to
+			// the API's own responses), checked live 2026-09-03. Neither
+			// is mapped.
+			recipe:   "porkbun",
+			composer: []string{"carmelosantana/porkbun-sdk"},
+			npm:      []string{"porkbun-api-client"},
+		},
+		{
+			// The clean case in this batch: DNSimple's own organisation
+			// publishes and maintains the client in every ecosystem
+			// searched, all three agreeing on the same host.
+			// dnsimple-go's dnsimple.go sets
+			// defaultBaseURL = "https://api.dnsimple.com".
+			// dnsimple/dnsimple on Packagist (two hundred and forty-four
+			// thousand downloads) and dnsimple on npm (eighty-eight
+			// thousand a month) are the same vendor organisation's PHP
+			// and Node clients.
+			recipe:   "dnsimple",
+			composer: []string{"dnsimple/dnsimple"},
+			npm:      []string{"dnsimple"},
+			gomod:    []string{"github.com/dnsimple/dnsimple-go"},
+		},
+		{
+			// This Recipe's own header records that the free, keyless
+			// tier no longer exists -- api_token is required on every
+			// request now, checked live -- which changes what counts as a
+			// working client rather than what counts as a real one. Both
+			// mapped packages already send the token the way the live
+			// host wants it.
+			//
+			// opencorporates on npm (mikemaccana), last published in 2019
+			// but still correct, sets
+			// var ENDPOINT = `https://api.opencorporates.com/v${API_VERSION}/`
+			// with API_VERSION = '0.4' and query.api_token = apiToken,
+			// this Recipe's host and version exactly.
+			// rvflash/opencorporates in Go matches it: url.go sets
+			// URL = "https://api.opencorporates.com/v%s/" and appends
+			// "&api_token=" + url.QueryEscape(api.Token). It carries no
+			// go.mod -- pre-modules, like this file's balldontlie and
+			// zerobounce Go modules -- but resolves through the proxy by
+			// tagged pseudo-version.
+			//
+			// No Composer package for this provider exists on Packagist
+			// at all.
+			recipe: "opencorporates",
+			npm:    []string{"opencorporates"},
+			gomod:  []string{"github.com/rvflash/opencorporates"},
+		},
+		{
+			// The one provider in this batch with a genuine official
+			// client in every ecosystem, and the host is worth stating
+			// precisely: the vendor's own SDK still defaults to the
+			// retired-sounding api.companieshouse.gov.uk rather than the
+			// newer api.company-information.service.gov.uk this Recipe's
+			// header quotes -- and the older host is not actually
+			// retired, checked live: it answers the identical 401 "Empty
+			// Authorization header" this Recipe's own findings quote,
+			// same backend, same Ch-Authentication-Error header, just an
+			// older domain still pointed at it.
+			//
+			// @companieshouse/api-sdk-node's own README shows
+			// createApiClient("your-api-key") calling
+			// api.companyProfile.getCompanyProfile(...) directly, and its
+			// config.ts sets
+			// API_URL = process.env.API_URL || "https://api.companieshouse.gov.uk".
+			// netsensia/companieshouse-api-php-client's Client.php builds
+			// 'auth' => array($this->apiKey, '') -- HTTP Basic, key as
+			// username, empty password, exactly this Recipe's own quoted
+			// worked example. jimsmart/chapi in Go matches both:
+			// var BaseURL = "https://api.companieshouse.gov.uk" and
+			// req.SetBasicAuth(apiKey, "").
+			recipe:   "companieshouse",
+			composer: []string{"netsensia/companieshouse-api-php-client"},
+			npm:      []string{"@companieshouse/api-sdk-node"},
+			gomod:    []string{"github.com/jimsmart/chapi"},
+		},
+		{
+			// Cloudflare's own unified SDKs -- cloudflare/cloudflare-go,
+			// cloudflare/sdk, and npm's "cloudflare" -- are already
+			// mapped elsewhere in this file, under the general Cloudflare
+			// Recipe, because one client speaks every Cloudflare product
+			// behind the same api.cloudflare.com/client/v4 host and the
+			// same Bearer token. A dependency on any of them does not say
+			// which product a project calls, so none of them can be
+			// mapped here too -- a package answers to exactly one Recipe
+			// in this file. The two official npm packages that do name
+			// Stream specifically, @cloudflare/stream-react and
+			// @cloudflare/stream-angular, are player components for
+			// embedding video playback, not callers of the management
+			// API this Recipe models.
+			//
+			// The one dependency left that actually calls this surface
+			// is punktde/cloudflare-stream, a Neos CMS plugin whose own
+			// description is "Connects the Neos asset management to the
+			// cloudflare stream service" -- framework-coupled, but its
+			// CloudflareClient.php builds real requests:
+			// CLOUDFLARE_API_ENDPOINT = 'https://api.cloudflare.com/client/v4/'
+			// with
+			// 'Authorization' => 'Bearer ' . $this->authentication['token'].
+			//
+			// Nothing on npm or in Go reaches this surface without also
+			// reaching for the general SDK already claimed elsewhere.
+			recipe:   "cloudflarestream",
+			composer: []string{"punktde/cloudflare-stream"},
+		},
+		{
+			// The vendor's own organisation, api-video, publishes and
+			// maintains the client in all three ecosystems, and all three
+			// agree on the same host and scheme. api-video/php-sdk (the
+			// earlier generation) is explicitly marked abandoned on
+			// Packagist in favour of api-video/php-api-client, which is
+			// mapped instead. @api.video/nodejs-client is the current
+			// Node client (eighteen thousand downloads a month against
+			// twenty-six hundred for the retired nodejs-sdk).
+			// api.video-go-client calls itself "The official Go client
+			// library for api.video" in its own GitHub description, and
+			// its client.go sets
+			// defaultBaseURL = "https://ws.api.video/" with
+			// req.Header.Set("Authorization", "Bearer "+c.Token.AccessToken).
+			recipe:   "apivideo",
+			composer: []string{"api-video/php-api-client"},
+			npm:      []string{"@api.video/nodejs-client"},
+			gomod:    []string{"github.com/apivideo/api.video-go-client"},
+		},
+		{
+			// No npm result reaches this API at all -- every hit for the
+			// words "bunny" and "stream" together is an unrelated video
+			// player or streaming SDK. The two clients that do exist, one
+			// per remaining ecosystem, agree on the host and credential.
+			//
+			// serch3/bunny-stream-sdk-php (published on Packagist as
+			// serch3/bunny-stream) is a dedicated SDK with separate
+			// Video, Collection, Statistics and Tus-upload API classes,
+			// and its Client.php sets
+			// API_BASE_URL = 'https://video.bunnycdn.com/library/' with
+			// 'AccessKey' => $this->apiKey. ArabindaSigdel/bunnystream-go
+			// matches it: config.go sets
+			// DefaultBaseURL = "https://video.bunnycdn.com" and client.go
+			// calls req.Header.Set("AccessKey", c.apiKey). It is a small,
+			// zero-star, single-author module, but it is tagged (v0.1.0,
+			// v0.1.1) and the source is unambiguous.
+			recipe:   "bunnystream",
+			composer: []string{"serch3/bunny-stream"},
+			gomod:    []string{"github.com/ArabindaSigdel/bunnystream-go"},
+		},
 	}
 }
 
