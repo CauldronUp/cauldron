@@ -1,0 +1,302 @@
+# Transitland Recipe for Cauldron
+#
+# Third of a group with recipes/mbta/recipe.yaml and recipes/tfl/recipe.yaml.
+# Both of those are scheme: none -- MBTA raises your rate limit with a key
+# and never asks for one, TfL never asks at all. Transitland is the first of
+# the three that actually gates on a credential, and the gate turns out to be
+# the most interesting thing about it: Kong, not the application, and Kong
+# checks it before anything else runs at all.
+#
+# Every case below was struck live against transit.land on 2026-09-03, with
+# no account and no key -- Transitland is an aggregator over other agencies'
+# GTFS feeds and needing one was never in scope for this Recipe. Read
+# transit.land/api/v2/rest/openapi.json, itself fetched live the same day
+# (see upstream.spec below -- it is the one endpoint on this host that answers
+# with no credential at all, and the finding that makes true is its own
+# paragraph further down).
+#
+# **The question this group of three exists to answer has a precise, textual
+# answer here, not an inferred one.** A departure's trip carries
+# `schedule_relationship`, described in the schema in exactly these words:
+# "Real-time status of this trip. `STATIC` means no GTFS-RT data was matched;
+# otherwise reflects the matching TripUpdate's schedule_relationship" -- an
+# enum of SCHEDULED, ADDED, UNSCHEDULED, CANCELED, STATIC, SKIPPED, NO_DATA,
+# REPLACEMENT, DUPLICATED, DELETED. STATIC is the tell: it is the value that
+# means "nobody's live feed has anything to say about this one," which is a
+# different claim from SCHEDULED, "the live feed confirms this one is running
+# as planned." A client that only checks whether the field is present cannot
+# see that distinction -- both are non-null strings -- and has to compare
+# against the literal word STATIC to know whether it is looking at a
+# timetable entry or a live-confirmed one.
+#
+# The same field is declared a second time, one level up, directly on the
+# departure rather than on its trip -- and its own description gives away
+# that the second copy is not independent: "Real-time status of the parent
+# trip." Not a per-stop signal; a duplicate of the trip's. GTFS-RT itself
+# allows a StopTimeUpdate's own schedule_relationship to differ from its
+# trip's (SKIPPED is defined as a per-stop value precisely so one stop on an
+# otherwise-running trip can be skipped without cancelling the whole trip),
+# and Transitland's own schema, in its own words, does not carry that
+# distinction through to this field -- an honest reading of "of the parent
+# trip" is that the per-stop case this format was built to hold is not
+# separately available here. Documentation getting something wrong about
+# itself, per this project's own probing priorities, and this is that.
+#
+# **Scheduled and predicted are two fields with two names, sitting side by
+# side, and one of them is nullable.** Both `arrival` and `departure` on a
+# departure entry are the same StopTimeEvent shape: `scheduled` /
+# `scheduled_local` / `scheduled_utc` beside `estimated` / `estimated_local` /
+# `estimated_utc`, plus `delay`, `estimated_delay` and `uncertainty`. The
+# schema marks every one of the estimated_* fields nullable and none of the
+# scheduled_* fields anything else -- so a trip GTFS-RT has never touched
+# answers with `scheduled_utc` populated and `estimated_utc` null, and a
+# client has exactly one field to check to tell "this is the timetable" from
+# "this is a live prediction," which is the same shape this project's
+# `arrival`/`estimated` pairing already established for MBTA's sibling
+# question about vehicle positions, reached independently by a different
+# provider's schema.
+#
+# **The aggregator staleness question has a named field, not an inference.**
+# `feed_version.fetched_at` is documented as "Time when the file was fetched
+# from the URL" -- the exact per-source-feed fetch timestamp this group of
+# three was built to ask an aggregator for. It sits under `feed.feed_state`
+# on the parent Feed and under `feed_version` on every entity pulled from
+# that version, so a client reading a stop or a departure already has, on the
+# same response, the timestamp of the static file that produced it -- one
+# fetched_at per feed, not one per request, which is the honest granularity
+# for an aggregator over feeds that are each refreshed on their own schedule.
+#
+# **The credential check reports which way it failed -- through a header
+# nobody reads, not through the body.** No Authorization/apikey header at all
+# and a header carrying a value neither key knows answer the identical body,
+# `{"error":"Unauthorized"}`, byte for byte, at 401. What differs, confirmed
+# live and reproduced on four separate unrelated requests: an absent
+# credential gets `WWW-Authenticate: Key realm="kong"` on the response and a
+# present-but-wrong one does not carry that header at all. A client reading
+# the body -- the only thing most HTTP clients surface without being asked --
+# cannot tell "you sent nothing" from "you sent junk"; a client reading
+# headers can. Sending `apikey:` with nothing after the colon behaves as
+# absent (curl drops a header defined that way rather than sending it empty),
+# which this Recipe cannot separately attest as a true empty-string case
+# because of that, and says so rather than claiming more than it saw.
+#
+# **The gate is Kong's, sits in front of everything, and does not care what
+# you asked for.** Checked live: a path this Recipe never declares
+# (`/rest/this-path-does-not-exist`), every one of GET/POST/PATCH/DELETE/
+# OPTIONS on a real path, and a bad-filter query string all answer the
+# identical 401 with no credential, and the identical rejected 401 with a
+# wrong one -- nothing about the path or the method ever changes which of
+# the two bodies comes back. That is Airbyte's arrangement elsewhere in this
+# collection (credential first, always, for every path) and Cauldron's
+# default already reproduces it without auth.after_routing: the engine
+# checks the credential before it ever attempts to match a route, so a case
+# below can send a path this Recipe declares nowhere and still assert the
+# real answer.
+#
+# **One route answers with no credential examined at all, and it is not a
+# resource.** GET /rest/openapi.json -- the schema this whole header is
+# quoting -- returned 200 with the full 352,739-byte document on 2026-09-03,
+# no apikey anywhere in the request. Oddly, the response still carried
+# `WWW-Authenticate: Key realm="kong"`, the same header the absent-credential
+# 401 carries elsewhere on this host -- Kong appears to stamp it regardless
+# of the route's outcome rather than only on a refusal. Genuinely public,
+# genuinely observed, and not declared as a route below: 352KB is not a
+# payload this format exists to pin verbatim (compare Together's Recipe in
+# this collection, which states the same reasoning for not serving a
+# multi-kilobyte Next.js HTML page). The finding is recorded here instead.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful response anywhere in this file. Kong's gate refuses every
+#     request this Recipe could make without a real key, including a request
+#     for a stop that plainly exists -- there is no unauthenticated tier here
+#     the way OpenSky's Recipe in this collection found for a different
+#     provider. `stop` below is declared with real field names read from the
+#     live schema and zero fixture data, because no worked example exists to
+#     build one from honestly: every datetime and time example value in the
+#     openapi.json schema is the identical placeholder
+#     ("2019-11-15T00:45:55.409906", "15:21:04") repeated dozens of times
+#     across unrelated fields, which is a generic type-format sample rather
+#     than anything captured from a real response. No `departure` sub-shape
+#     is declared as its own resource for the same reason; the fields this
+#     header quotes are real names and real descriptions from the schema,
+#     cited rather than modelled, so a fabricated scheduled/estimated pair
+#     is never asserted as passing.
+#   - `apikey` is documented as acceptable in either a query parameter or a
+#     header, and both were tested live with identical results. Cauldron's
+#     auth scheme models exactly one carrier; this Recipe declares the
+#     header form and states the query form's equivalence here rather than
+#     asserting a query-carried case the engine would (wrongly, relative to
+#     the live host) treat as no credential presented at all.
+#   - No malformed_error and no unentitled key: nothing about this scheme has
+#     a declared prefix or pattern for a value to fail, and no evidence of a
+#     valid-but-out-of-plan key exists to cite -- Transitland's own pricing
+#     page was not fetched, and inventing a refusal shape neither observed
+#     nor documented would be the fabrication this project's brief warns
+#     against.
+#   - GET /rest/openapi.json is not served -- see above.
+
+recipe: transitland
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  provider: transitland
+  docs: https://www.transit.land/documentation/rest-api/
+  spec: https://transit.land/api/v2/rest/openapi.json
+  spec_hash: 6dc3bee990791d700753c455c0bac0a0bca1a5278d3b8dcecff25a250efd338a
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: header
+  header: apikey
+  keys:
+    - cauldron-transitland-fixture-key-0000000000000000
+  # Byte-identical body either way -- see the header. What differs is a
+  # header nobody reads by default: WWW-Authenticate is present when nothing
+  # was sent and absent when something wrong was.
+  absent_error: unauthorized_absent
+  rejected_error: unauthorized_rejected
+
+responses:
+  list:
+    style: wrapped
+    key: stops
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # Real field names from the live schema, zero fixture data -- see the
+  # header's fidelity gaps for why no departure/arrival sub-shape is
+  # declared as its own typed resource.
+  stop:
+    id:
+      style: opaque
+      field: onestop_id
+    fields:
+      stop_id:
+        type: string
+      stop_name:
+        type: string
+      stop_desc:
+        type: string
+        null_when_unset: true
+      location_type:
+        type: integer
+        null_when_unset: true
+      # The array this whole Recipe exists to describe the shape of. Left
+      # untyped rather than modelled leaf by leaf -- see the header for the
+      # real field names (schedule_relationship, arrival.scheduled_utc,
+      # arrival.estimated_utc, feed_version.fetched_at) and why none of them
+      # has a fixture value behind it.
+      departures:
+        type: list
+
+routes:
+  - method: GET
+    path: /rest/stops/{stop_key}/departures
+    resource: stop
+    operation: list
+
+errors:
+  unauthorized_absent:
+    status: 401
+    headers:
+      Content-Type: application/json
+      WWW-Authenticate: 'Key realm="kong"'
+    message: Unauthorized
+
+  unauthorized_rejected:
+    status: 401
+    headers:
+      Content-Type: application/json
+    message: Unauthorized
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no credential at all gets a header nobody reads
+    source: https://transit.land/api/v2/rest/stops/f-sf~bay~area~rg:LAKE/departures
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /rest/stops/f-sf~bay~area~rg:LAKE/departures
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Key realm="kong"'
+      body:
+        error: Unauthorized
+
+  - name: and a wrong one gets the identical body without it
+    # The pair to the case above: same path, same method, same body, and the
+    # only live difference is that WWW-Authenticate is not on this response
+    # at all -- this format asserts headers a response carries, not ones it
+    # omits, so the contrast is the point of placing the two cases together.
+    source: https://transit.land/api/v2/rest/stops/f-sf~bay~area~rg:LAKE/departures
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /rest/stops/f-sf~bay~area~rg:LAKE/departures
+      headers:
+        apikey: junk12345
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
+
+  - name: a path this Recipe declares nowhere gets refused the identical way
+    # Kong's gate runs before routing is attempted at all -- confirmed live
+    # against a path with no route anywhere on this host, real or declared
+    # here. Cauldron's default (auth.after_routing unset) already checks the
+    # credential before matching a route, so this path needs no route
+    # declared to answer correctly.
+    source: https://transit.land/api/v2/rest/this-path-does-not-exist
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /rest/this-path-does-not-exist
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Key realm="kong"'
+      body:
+        error: Unauthorized
+
+  - name: a method this Recipe declares nowhere on a real path answers the same
+    source: https://transit.land/api/v2/rest/stops/f-sf~bay~area~rg:LAKE/departures
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /rest/stops/f-sf~bay~area~rg:LAKE/departures
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Key realm="kong"'
+      body:
+        error: Unauthorized
+
+  - name: and combined with a wrong credential it is still the rejected shape
+    source: https://transit.land/api/v2/rest/stops/f-sf~bay~area~rg:LAKE/departures
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /rest/stops/f-sf~bay~area~rg:LAKE/departures
+      headers:
+        apikey: junk12345
+    expect:
+      status: 401
+      body:
+        error: Unauthorized
