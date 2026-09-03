@@ -1,0 +1,482 @@
+# EIA (US Energy Information Administration) v2 Recipe for Cauldron
+#
+# Compare carbonintensity/recipe.yaml, electricitymaps/recipe.yaml and
+# watttime/recipe.yaml in the same batch: all three are one grid-data
+# provider each, reachable at one or two dozen paths. EIA is a different
+# shape of thing -- a general statistical warehouse (electricity, petroleum,
+# coal, natural gas, nuclear, renewables, and more) organised as a tree of
+# self-describing routes, where a GET on almost any prefix answers metadata
+# about its children rather than 404ing, and the query string itself is
+# most of the API surface: facets, a frequency, a start and end, a sort, an
+# offset. What this Recipe can establish about it does not come from
+# walking that tree -- see the fidelity gaps -- it comes from the one wall
+# every path on this host shares, api_key, and from what EIA's own
+# documentation says the tree looks like on the other side of it.
+#
+# That wall is total and it is uniform. Every one of the following was
+# struck live against api.eia.gov, 2026-09-02, with no key registered and
+# no account created: a real dataset's own data route, that same route with
+# a nonsense key, a path this Recipe invented (`/v2/nosuchroute`), a second
+# dataset family entirely (`/v2/petroleum/pri/gnd/data/`), the API's own
+# root (`/v2/`), and a wrong method (PATCH) on the real route. Every single
+# one of the twelve combinations answered one of exactly two bodies, and
+# which of the two depended on nothing but whether a key was present:
+#
+#   (no api_key anywhere)   403 {"error": {"code": "API_KEY_MISSING",
+#                                 "message": "No api_key was supplied.
+#                                 Please register for one at
+#                                 https://www.eia.gov/opendata/register.php"}}
+#   api_key=junk12345       403 {"error": {"code": "API_KEY_INVALID",
+#                                 "message": "An invalid api_key was
+#                                 supplied. Get one at
+#                                 https://api.eia.gov:443"}}
+#
+# Absent and wrong disagree in "code" and in "message" and agree on status
+# -- a real code-level split, if a coarser one than Apollo.io's or
+# WattTime's own status-level splits elsewhere in this collection -- and
+# `?api_key=` with nothing after the equals sign answers the absent
+# sentence, matching Go's own url.Query().Get, which returns "" for a
+# missing parameter and a present-empty one alike: nothing extra to declare
+# for that case. What is genuinely unusual, and the reason so many
+# combinations were struck: every one of them, real route or invented,
+# known dataset family or a different one, right method or wrong, answered
+# through this exact gate before anything else about the request was ever
+# looked at. `X-Api-Umbrella-Request-Id` names the mechanism: this is API
+# Umbrella, a gateway product, sitting in front of the EIA application
+# itself and refusing every unauthenticated or wrongly-authenticated
+# request identically, whatever it was asking for. There is no way to learn
+# anything about EIA's own routing, its own 404s, or its own method
+# handling without a key that actually works, because the gateway never
+# lets a request that far.
+#
+# That also means this Recipe cannot say what EIA's routing order is, only
+# that its AUTH order is the simplest one this whole batch found: the
+# credential is checked first, unconditionally, for every path and every
+# method, the same arrangement Airbyte and Temporal Cloud are named for
+# elsewhere in this collection's own auth.go notes -- except here it is
+# provably true for a genuinely unbounded set of paths, because the gateway
+# does not consult EIA's own router at all before refusing.
+#
+# The application behind that gate answers in a third, incompatible shape,
+# per EIA's own technical documentation (eia.gov/opendata/documentation.php,
+# fetched 2026-09-02), never observed:
+#
+#   {"error": "Invalid frequency 'millenially' provided. The only valid
+#    frequencies are 'monthly', 'quarterly', and 'annual'.", "code": 400}
+#
+# Compare the gateway's shape above: there, "error" is an OBJECT with a
+# string "code" naming a category and a "message" naming the sentence.
+# Here, "error" IS the sentence -- a bare string -- and "code" is a
+# sibling holding the HTTP status as a NUMBER, not a category. Same key
+# name, two incompatible types, from two different programs on one
+# hostname. A client that learned `body.error.message` from the gateway's
+# own answer reads `undefined` off this one; a client that learned
+# `typeof body.error === "string"` from this one gets `false` from the
+# gateway. This Recipe's own error table declares both shapes because both
+# are real, and neither can be reached from the other with a fixed field
+# name.
+#
+# A successful data query's own shape, EIA's own worked example from the
+# same page:
+#
+#   {"response": {"total": "251", "dateFormat": "YYYY-MM",
+#                 "frequency": "monthly",
+#                 "data": [{"period": "2001-01", "stateid": "CO",
+#                           "stateDescription": "Colorado",
+#                           "sectorid": "RES", "sectorName": "residential",
+#                           "price": "6.71",
+#                           "price-units": "cents per kilowatthour"}]},
+#    "request": {"command": "/v2/electricity/",
+#                "params": {"api_key": "xxxxxx"}},
+#    "apiVersion": "2.1.0"}
+#
+# total is a string. price is a string. Every numeric-looking value in this
+# object is quoted, the same trap this collection's FHRS Recipe already
+# names for a British rating scale -- code that reads `response.total` and
+# adds one to it concatenates rather than counts. And the request that
+# produced the data rides back inside the response, api_key included --
+# EIA's own documentation redacts it to "xxxxxx" in the example, and this
+# Recipe echoes that placeholder rather than a real value for the same
+# reason.
+#
+# A path with no `/data` suffix answers metadata instead of a 404 -- the
+# self-describing half this format is actually for, EIA's own second
+# worked example on the same page:
+#
+#   {"response": {"id": "retail-sales",
+#                 "name": "Electricity Sales to Ultimate Customers",
+#                 "frequency": [{"id": "monthly",
+#                                "description": "one data point for each
+#                                month.", "query": "M",
+#                                "format": "YYYY-MM"}],
+#                 "facets": [{"id": "stateid",
+#                             "description": "State / Census Region"},
+#                            {"id": "sectorid", "description": "Sector"}],
+#                 "data": {"revenue": {"alias": "Revenue from Sales to
+#                                       Ultimate Customers",
+#                                       "units": "million dollars"},
+#                          "price": {"alias": "Average Price of
+#                                     Electricity to Ultimate Customers",
+#                                     "units": "cents per kilowatthour"}},
+#                 "startPeriod": "2001-01", "endPeriod": "2022-07"}}
+#
+# facets is what "large faceted data API" means concretely: stateid and
+# sectorid are not fixed columns, they are named filters this dataset
+# happens to expose, and a different dataset under a different prefix
+# declares a different facet set at this same shape of route. Nothing in
+# EIA's own documentation shows whether this metadata node also carries the
+# sibling "request" and "apiVersion" keys the data route's example does --
+# the page's own example for it is elided with an ellipsis past
+# `defaultFrequency` -- so this Recipe declares only the fields it saw in
+# full, rather than assume the two routes share an envelope nobody showed
+# whole.
+#
+# What none of this establishes, and what this whole group of Recipes was
+# written to ask about: whether a value in an EIA response is measured,
+# estimated, or forecast. The generic worked example above has no field for
+# it at all -- no isEstimated, no imputed flag, no revision marker, on the
+# one row EIA's own documentation shows in full. This Recipe did look for
+# the specific place that distinction would matter most for a grid-data
+# collection: EIA's real-time balancing-authority feed
+# (electricity/rto/region-data) is known to expose a "type" facet
+# separating actual demand from day-ahead demand forecasts within one
+# dataset, the same shape of question WattTime's and Electricity Maps'
+# Recipes both answer for their own APIs in this batch -- but the specific
+# facet values and whatever field, if any, marks a row as forecast rather
+# than measured are not shown anywhere in EIA's general API documentation
+# this Recipe could reach, only in a per-dataset technical guide this
+# Recipe could not fetch through the tools available to it. Rather than
+# guess at a facet code or invent a field nobody showed, this Recipe states
+# the gap here and declares only the retail-sales dataset actually quoted
+# above, whose own worked example is silent on the question for the same
+# reason WattTime's /v3/forecast is: nothing in the row says what produced
+# it.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Every route below except the two auth-gate cases is documented, not
+#     observed. No key exists to call any dataset live, and the gateway
+#     above refuses every attempt before EIA's own application is ever
+#     reached -- see the header.
+#   - Only two dataset families are declared (electricity/retail-sales and
+#     the gate-only probe against electricity/rto/region-data and
+#     petroleum/pri/gnd). EIA's own tree has dozens more, each with its own
+#     facets, and nothing about the shape shown above changes from one to
+#     the next except which facets and which data columns a given prefix
+#     names.
+#   - The "warning" pattern for a truncated result -- EIA's own words,
+#     "parameter out of range... The API can only return 5000 rows in JSON
+#     format" -- is a 200 with a sibling warning key rather than an error at
+#     all, and is not modelled: it needs a fixture of more than 5,000 rows
+#     to trigger honestly, which this Recipe does not hold.
+#   - No route models the app-level validation error (invalid frequency,
+#     bad facet, malformed date) as something a request in this Recipe can
+#     actually reach; it is declared and demonstrated by fault injection,
+#     the same device Apollo.io's Recipe in this collection uses for its
+#     own documented-not-triggered 403.
+#   - No upstream.spec. EIA publishes prose documentation rather than a
+#     machine-readable description at any URL this Recipe found.
+#
+# The api_key value below is a fixture and belongs to no account.
+
+recipe: eia
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://www.eia.gov/opendata/documentation.php
+
+auth:
+  scheme: query
+  param: api_key
+  keys:
+    - cauldron00000000000000000000000000000000
+  absent_error: api_key_missing
+  # A key that is present and not one this Recipe holds gets the same
+  # sentence whatever shape it is -- see the header: EIA does not appear to
+  # validate key shape separately from validity.
+  rejected_error: api_key_invalid
+
+responses:
+  resource:
+    style: wrapped
+    key: response
+  error:
+    # {"error": {"code": "...", "message": "..."}} -- the gateway's own
+    # shape, struck live on every path this Recipe tried. The
+    # invalid_frequency entry below overrides this per-error for EIA's own,
+    # incompatible application-level shape -- see the header.
+    style: nested
+    key: error
+    code_field: code
+    message_field: message
+
+resources:
+  # One EIA data query. No natural identifier -- see id_from: auth on the
+  # route below -- and every numeric-looking field is typed as a string,
+  # because that is what the wire actually sends; see the header.
+  retail_sales_query:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      total:
+        type: string
+      dateFormat:
+        type: string
+      frequency:
+        type: string
+      data:
+        type: list
+
+  # The self-describing node one level up from /data/ -- see the header.
+  # facets and frequency name what this dataset can be filtered and grouped
+  # by; they are not fixed across datasets, only this shape of route is.
+  dataset:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      frequency:
+        type: list
+      facets:
+        type: list
+      data:
+        type: map
+      startPeriod:
+        type: string
+      endPeriod:
+        type: string
+
+routes:
+  - method: GET
+    path: /v2/electricity/retail-sales/data/
+    resource: retail_sales_query
+    operation: get
+    id_from: auth
+    fields:
+      apiVersion: "2.1.0"
+      request.command: /v2/electricity/
+      request.params.api_key: xxxxxx
+
+  - method: GET
+    path: /v2/electricity/retail-sales/
+    resource: dataset
+    operation: get
+    id_from: auth
+
+errors:
+  api_key_missing:
+    status: 403
+    code: API_KEY_MISSING
+    message: >-
+      No api_key was supplied.  Please register for one at
+      https://www.eia.gov/opendata/register.php
+    headers:
+      Content-Type: application/json
+
+  api_key_invalid:
+    status: 403
+    code: API_KEY_INVALID
+    message: "An invalid api_key was supplied. Get one at https://api.eia.gov:443"
+    headers:
+      Content-Type: application/json
+
+  # EIA's own application-level shape, documented and never triggered --
+  # see the header for why it cannot be reached live, and for how it
+  # differs in kind, not just in wording, from the gateway's shape above.
+  invalid_frequency:
+    status: 400
+    style: flat
+    message_field: error
+    code_field: code
+    message: >-
+      Invalid frequency 'millenially' provided. The only valid frequencies
+      are 'monthly', 'quarterly', and 'annual'.
+    code: 400
+
+fixtures:
+  empty: {}
+
+  retail-sales:
+    # EIA's own worked examples, eia.gov/opendata/documentation.php, fetched
+    # 2026-09-02. Cited, not observed -- no key exists to call this live;
+    # see the header.
+    retail_sales_query:
+      - total: "251"
+        dateFormat: YYYY-MM
+        frequency: monthly
+        data:
+          - period: "2001-01"
+            stateid: CO
+            stateDescription: Colorado
+            sectorid: RES
+            sectorName: residential
+            price: "6.71"
+            price-units: cents per kilowatthour
+
+    dataset:
+      - id: retail-sales
+        name: Electricity Sales to Ultimate Customers
+        frequency:
+          - id: monthly
+            description: one data point for each month.
+            query: M
+            format: YYYY-MM
+        facets:
+          - id: stateid
+            description: State / Census Region
+          - id: sectorid
+            description: Sector
+        data:
+          revenue:
+            alias: Revenue from Sales to Ultimate Customers
+            units: million dollars
+          price:
+            alias: Average Price of Electricity to Ultimate Customers
+            units: cents per kilowatthour
+        startPeriod: "2001-01"
+        endPeriod: "2022-07"
+
+conformance:
+  - name: no key anywhere is 403 with a code naming the absence
+    source: https://api.eia.gov/v2/electricity/rto/region-data/data/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/electricity/rto/region-data/data/
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json
+      body:
+        error.code: API_KEY_MISSING
+        error.message: >-
+          No api_key was supplied.  Please register for one at
+          https://www.eia.gov/opendata/register.php
+
+  - name: a nonsense key gets a different code and a different sentence, same status
+    source: https://api.eia.gov/v2/electricity/rto/region-data/data/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/electricity/rto/region-data/data/?api_key=junk12345
+    expect:
+      status: 403
+      body:
+        error.code: API_KEY_INVALID
+        error.message: "An invalid api_key was supplied. Get one at https://api.eia.gov:443"
+
+  - name: an empty key value answers the absent sentence, not the invalid one
+    source: https://api.eia.gov/v2/electricity/rto/region-data/data/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/electricity/rto/region-data/data/?api_key=
+    expect:
+      status: 403
+      body:
+        error.code: API_KEY_MISSING
+
+  - name: the same gate refuses a route this Recipe never declared, identically
+    source: https://api.eia.gov/v2/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/nosuchroute
+    expect:
+      status: 403
+      body:
+        error.code: API_KEY_MISSING
+
+  - name: and a wrong method on a real route never gets past it either
+    source: https://api.eia.gov/v2/electricity/rto/region-data/data/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/electricity/rto/region-data/data/
+    expect:
+      status: 403
+      body:
+        error.code: API_KEY_MISSING
+
+  - name: a second, unrelated dataset family answers through the identical gate
+    # petroleum, not electricity -- the same X-Api-Umbrella gateway in
+    # front of every prefix on this host, not something specific to the
+    # electricity tree.
+    source: https://api.eia.gov/v2/petroleum/pri/gnd/data/
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/petroleum/pri/gnd/data/?api_key=junk12345
+    expect:
+      status: 403
+      body:
+        error.code: API_KEY_INVALID
+
+  - name: a data query wraps its rows under response.data, and every number in it is a string
+    source: https://www.eia.gov/opendata/documentation.php
+    fixture: retail-sales
+    request:
+      method: GET
+      path: /v2/electricity/retail-sales/data/?api_key=cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        response.total: "251"
+        response.dateFormat: YYYY-MM
+        "response.data[0].period": "2001-01"
+        "response.data[0].stateid": CO
+        "response.data[0].price": "6.71"
+        "response.data[0].price-units": cents per kilowatthour
+        apiVersion: "2.1.0"
+        request.command: /v2/electricity/
+        request.params.api_key: xxxxxx
+
+  - name: a node without the data suffix describes its own facets instead of erroring
+    source: https://www.eia.gov/opendata/documentation.php
+    fixture: retail-sales
+    request:
+      method: GET
+      path: /v2/electricity/retail-sales/?api_key=cauldron00000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        response.id: retail-sales
+        response.name: Electricity Sales to Ultimate Customers
+        "response.facets[0].id": stateid
+        "response.facets[1].id": sectorid
+        "response.frequency[0].format": YYYY-MM
+        response.startPeriod: "2001-01"
+        response.endPeriod: "2022-07"
+
+  - name: the application's own validation error is a different shape than the gateway's, not just a different sentence
+    # Documented, never triggered -- see the header for why this needs a
+    # key this Recipe does not hold, and for exactly how it differs in kind
+    # from the two gateway shapes above: error here is the sentence itself,
+    # not an object with one inside it, and code is the HTTP status as a
+    # number rather than a category string.
+    source: https://www.eia.gov/opendata/documentation.php
+    arm: invalid_frequency
+    fixture: retail-sales
+    request:
+      method: GET
+      path: /v2/electricity/retail-sales/data/?api_key=cauldron00000000000000000000000000000000&frequency=millenially
+    expect:
+      status: 400
+      body:
+        error: >-
+          Invalid frequency 'millenially' provided. The only valid
+          frequencies are 'monthly', 'quarterly', and 'annual'.
+        code: 400
+      absent:
+        - error.message
+        - error.code
