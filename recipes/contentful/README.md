@@ -6,6 +6,10 @@ Emulates the Contentful API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It keeps the identifier at `sys.id` rather than at the top level.
+
 ## Sources
 
 - Documentation: https://www.contentful.com/developers/docs/references/content-delivery-api/
