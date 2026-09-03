@@ -6,6 +6,11 @@ Emulates the Cloudflare API (v4), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It puts every payload under `result`, success or failure alike, so a client
+branching on the HTTP status is checking the wrong thing.
+
 ## Sources
 
 - Documentation: https://developers.cloudflare.com/api
