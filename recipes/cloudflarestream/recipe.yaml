@@ -1,0 +1,609 @@
+# Cloudflare Stream Recipe for Cauldron
+#
+# Cloudflare Stream sits under the Cloudflare account API this collection
+# already has a Recipe for -- see cloudflare/recipe.yaml -- and the question
+# worth asking about a family member is whether the family resemblance is
+# real. It is, and it stops sooner than a reader of that Recipe would expect.
+#
+# **The envelope really is shared.** Every response, success or failure, on
+# /client/v4/accounts/{account_id}/stream* is the identical four keys --
+# success, errors, messages, result -- struck live today with no account and
+# no key. A failure keeps the envelope and empties the payload exactly the
+# way cloudflare/recipe.yaml's own header describes.
+#
+# **The codes and the statuses are not shared, except in the one place a
+# shared gateway does the checking.** Four requests, struck live today
+# against both /client/v4/zones (cloudflare/recipe.yaml's own path) and
+# /client/v4/accounts/{id}/stream, for direct comparison rather than a
+# recollection of what that Recipe's file says:
+#
+#   no credential at all
+#     zones  -> 403 {"errors":[{"code":9106,"message":"Missing X-Auth-Email
+#               header"},{"code":9107,"message":"Missing X-Auth-Key
+#               header"}]}
+#     stream -> 400 {"errors":[{"code":9106,"message":"Missing X-Auth-Key,
+#               X-Auth-Email or Authorization headers"}]}
+#   Authorization: Bearer junktoken12345 (fourteen characters, the wrong
+#   shape for a real 40-character token)
+#     zones  -> 400 {"errors":[{"code":6003,"message":"Invalid request
+#               headers","error_chain":[{"code":6111,"message":"Invalid
+#               format for Authorization header"}]}]}
+#     stream -> byte-identical, status, codes and message chain alike
+#   Authorization: Bearer <40 wrong hex characters, the right shape>
+#     zones  -> 403 {"errors":[{"code":9109,"message":"Invalid access
+#               token"}]}
+#     stream -> 401 {"errors":[{"code":10000,"message":"Authentication
+#               error"}]}
+#
+# So the envelope is shared and the statuses and codes mostly are not --
+# except for a value that is present and the wrong shape, which answers
+# byte-identical on both products, status included. That is the signature
+# of a check that runs once, ahead of either product's own code, the same
+# way it runs ahead of Stream's own credential check at all (see below):
+# malformed shapes are refused by something both products sit behind, and
+# absence and outright wrongness are each judged by the product's own
+# logic, which is where the two stop agreeing. Code 9106 is reused for a
+# second, unrelated meaning on Stream too -- cloudflare/recipe.yaml's own
+# parameter_missing entry, "Missing required parameter: {detail}," a
+# completely different failure. A client keying an error table off the
+# numeric code alone, rather than the (status, code) pair, collides on this
+# one the day it adds Stream beside DNS.
+#
+# **A bare "Bearer " with nothing after it is treated as though nothing were
+# sent at all** -- struck live, byte-identical to the no-header case above,
+# status and body both. auth.malformed_error names the same entry
+# auth.absent_error does, which is a real claim (this host does not tell the
+# two apart at the credential-check layer -- the malformed-shape answer
+# above comes from somewhere else entirely, ahead of that check, which is
+# exactly why this Recipe cannot reproduce it as an ordinary case; see the
+# next paragraph) rather than an unset field.
+#
+# **The wrong-shape credential this Recipe cannot reproduce as a
+# conformance case is the one place the family resemblance is real.**
+# Cauldron's own credential check (internal/runtime/auth.go) only reaches
+# Malformed for a scheme's prefix being wrong or the value after it being
+# empty; a present, prefixed, non-empty value that is merely the wrong
+# shape falls straight to Rejected once auth.keys is declared, and
+# auth.pattern -- the mechanism that could check a shape -- cannot be
+# declared alongside auth.keys at all, because a Recipe naming both would
+# be saying two different things decide Accepted. So the one answer that
+# actually matches cloudflare/recipe.yaml byte for byte is the one this
+# Recipe's own engine cannot serve through the ordinary mechanism. Stated
+# here, live, dated, rather than forced through an armed case pretending to
+# be organic.
+#
+# **Routing genuinely does two different things depending on what "genuinely
+# unrouted" means, struck live and not modelled as a route.** A path that
+# almost matches -- a nested segment under stream/{id} that looks like it
+# could be a video id -- reaches the identical missing-credential check a
+# real path does, credential or not. A path that shares nothing with any
+# Cloudflare product at all answers before the credential is ever examined,
+# in a different shape, regardless of credential:
+#
+#   GET /accounts/{id}/totally-bogus-endpoint-xyz, no header
+#     -> 400 {"errors":[{"code":7003,"message":"Could not route to
+#        /accounts/{id}/totally-bogus-endpoint-xyz, perhaps your object
+#        identifier is invalid?"},{"code":7000,"message":"No route for that
+#        URI"}], ...}
+#   the identical request with Authorization: Bearer junktoken12345
+#     -> byte-identical
+#
+# That is Rootly's own split, named in internal/recipe/auth.go: credential
+# first for every path this Recipe has, router first for every path it does
+# not, which a caller cannot tell apart in advance. auth.after_routing is one
+# flag for routes and methods together and cannot express "only when the path
+# matches nothing at all," so this is stated rather than forced, the same
+# choice Rootly's own Recipe and Livepeer's make for their own un-reproducible
+# halves.
+#
+# **A malformed account_id is a fourth, narrower axis, and it beats the
+# credential too.** Cloudflare's own account ids are 32 lowercase hex
+# characters. Neither shape ever reaches this Recipe's credential check --
+# struck live, both with no header and with a well-formed wrong bearer
+# token, byte-identical either way:
+#
+#   GET /client/v4/accounts/not-a-real-account-id/stream
+#     -> 404 {"errors":[{"code":7003,"message":"Could not route to
+#        /client/v4/accounts/not-a-real-account-id/stream, perhaps your
+#        object identifier is invalid?"}], ...}
+#
+# A domain constraint on a path parameter running ahead of authentication,
+# checked even with a credential present -- Canada Post's own pattern in
+# auth.go, on a different provider. This Recipe's account_id is a plain
+# string field with no id-pattern mechanism of its own to declare it with
+# (Resource.ID.Pattern governs the resource's own identifier, not a scope
+# segment), so it is stated here and not modelled as a route.
+#
+# **A fifth axis: which method is allowed depends on whether a credential of
+# the right SHAPE was presented at all, not on whether it was accepted.**
+# Struck live, four ways, against the same id-addressed route:
+#
+#   PUT .../stream/{id}, no credential            -> 400, the missing-header
+#                                                     answer above, unchanged
+#   PUT .../stream/{id}, Bearer <40-char wrong>    -> 405 {"errors":[{"code":
+#                                                     10405,"message":"Method
+#                                                     not allowed for this
+#                                                     authentication scheme"}]}
+#   DELETE .../stream/{id}, Bearer <40-char wrong> -> the identical 405
+#   PUT .../stream/{id}, X-Auth-Key/X-Auth-Email   -> 403, code 10000,
+#     (well-formed wrong)                             "Authentication error"
+#
+# A bearer-scheme credential of the right length unlocks a genuine 405 for a
+# method the route does not take, whatever the token validates to; the same
+# route with no credential at all never reaches method resolution, and the
+# legacy X-Auth-Key scheme is not restricted this way at all. Cauldron's own
+# credential check answers Accepted or refuses, with no third state for "the
+# shape was right, and that is enough to unlock routing" -- refuse() in
+# internal/runtime/handler.go returns true for every non-Accepted verdict
+# before method resolution is reached, whatever AfterRouting says, so this
+# runtime cannot produce a 405 for a credential its own Recipe does not hold.
+# That makes this a sixth ordering beside the twelve auth.go already
+# catalogues, and it is stated here rather than forced with a substituted
+# key, because a case built on this Recipe's own accepted fixture would not
+# be evidence of what was actually sent.
+#
+# **The provider's own worked example contradicts its own field
+# description, in the one document this Recipe leans on hardest.** The List
+# Videos reference page (developers.cloudflare.com/api/resources/stream/
+# methods/list/) declares, in prose on the same page: "errorReasonCode ...
+# This field is empty if the video is not in an error state." Its own 200
+# example, on the same page, answers:
+#
+#   "status": {"errorReasonCode": "ERR_NON_VIDEO", "errorReasonText":
+#   "The file was not recognized as a valid video file.", "pctComplete":
+#   "45", "state": "inprogress"}
+#
+# state is inprogress, not error, and errorReasonCode is populated anyway --
+# the published example violates the rule stated four lines above it on the
+# same page. This is the sharpest version of the question this group of
+# Recipes exists to ask: state and error* are the same field's neighbours
+# (unlike Livepeer's asset/task split), so a caller reading state alone can
+# in principle tell "still encoding" from "encoding failed" -- and cannot
+# trust that errorReasonCode being non-empty means the second one, because
+# Cloudflare's own example shows it does not always. This Recipe cites the
+# example verbatim rather than tidying it, which is the point being recorded:
+# reproducing the contradiction is more informative than a clean fixture
+# would be, and inventing a corrected version would be exactly the kind of
+# unread claim this format exists to refuse.
+#
+# **The other worked example, on a different page, spells the same two
+# fields two different ways.** manage-video-library/using-webhooks/ answers a
+# finished video with errorReasonCode/errorReasonText (empty strings, state
+# ready) and answers an errored one with errReasonCode/errReasonText -- one
+# fewer "or" -- plus a "step" key the List Videos schema never declares as a
+# property at all, only in a sentence above it ("If the state is inprogress
+# or error, the step field returns encoding or manifest"). Three pages,
+# three spellings of "why it failed," one of them missing from its own
+# schema. This Recipe declares the schema's own names -- errorReasonCode,
+# errorReasonText, step -- because that page is the authoritative reference
+# rather than a guide, and quotes the other spelling here rather than
+# modelling a field nothing calls that on the surface this Recipe routes to.
+#
+# **pctComplete is a string, and the string is not even consistently
+# shaped.** Declared type: string on the schema page ("Indicates the
+# progress as a percentage between 0 and 100"), and its own examples do not
+# agree what that string looks like: "45" on the List Videos page, "39" on
+# the webhook guide's error example, "39.000000" on the same guide's ready
+# example. A client doing strict string comparison on any one shape breaks
+# against the others; a client that trusts only that it parses to a number
+# between 0 and 100 is the only one all three examples actually support.
+#
+# Does the terminal success word and the terminal failure word share a
+# field? Yes -- ready and error are both values of status.state, unlike
+# Livepeer's asset/task pair. What Cloudflare Stream gets wrong is not a
+# second vocabulary; it is trusting its own single vocabulary's neighbouring
+# fields, in its own published example.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of 26 documented Video fields (result[].name property count on the
+#     List Videos reference) this Recipe declares twelve: created, duration,
+#     input, modified, playback, preview, readyToStream, size, status,
+#     thumbnail, uid, uploaded. watermark, publicDetails, allowedOrigins,
+#     clippedFrom, liveInput, scheduledDeletion, requireSignedURLs,
+#     thumbnailTimestampPct, creator, meta, maxDurationSeconds and
+#     maxSizeBytes are real and absent.
+#   - Direct creator upload (POST .../stream/direct_upload) is not modelled.
+#     Its own response is {uploadURL, uid}, a different small shape from the
+#     Video object this Recipe otherwise describes, and no worked example
+#     anywhere shows a video's fields immediately after that call -- only
+#     the enum names pendingupload, downloading and queued exist to cite,
+#     with no populated JSON beside any of them. Declaring a fixture for
+#     that state would be asserting a shape nobody has published.
+#   - pendingupload, downloading, queued and live-inprogress are real,
+#     documented values of status.state with no worked JSON example
+#     anywhere in Cloudflare's published materials. No fixture uses them,
+#     for the same reason the direct-upload state above is not modelled.
+#   - The genuinely-unrouted-path and malformed-account_id findings above
+#     are stated and not served as conformance cases, because Cauldron's
+#     credential check runs unconditionally before or after routing as one
+#     Recipe-wide setting and cannot skip only for these two shapes. See the
+#     header comments beside each for why.
+#   - The 405-unlocked-by-credential-shape finding is stated and not served,
+#     for the same structural reason -- see above.
+#
+# Credentials below are fixtures, not secrets.
+
+recipe: cloudflarestream
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://developers.cloudflare.com/stream/
+  spec: https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json
+  spec_hash: b6a6d79286dbc83b3e27157a481089e3290baade9a23f91753251262f92ce9c8
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron000000000000000000000000000000a
+  absent_error: missing_credential
+  # A bare "Bearer " collapses to the identical sentence absent gets -- see
+  # the header. Named explicitly rather than left to the generic fallback,
+  # so a reader can see it was checked rather than assuming it was not.
+  malformed_error: missing_credential
+  rejected_error: authentication_error
+
+responses:
+  success:
+    fields:
+      success: true
+      errors: []
+      messages: []
+  resource:
+    style: wrapped
+    key: result
+  list:
+    style: wrapped
+  error:
+    style: list
+    key: errors
+    code_field: code
+    message_field: message
+    fields:
+      success: false
+      messages: []
+      result: null
+
+resources:
+  video:
+    collection: result
+    id:
+      # Cloudflare's own worked examples: 32 lowercase hex characters, the
+      # same shape as an account or zone id.
+      style: hex
+      length: 32
+      field: uid
+    fields:
+      account_id:
+        type: string
+        in: "-"
+      readyToStream:
+        type: boolean
+        default: false
+      duration:
+        type: number
+      size:
+        type: integer
+      thumbnail:
+        type: string
+      preview:
+        type: string
+      created:
+        type: datetime
+      modified:
+        type: datetime
+      uploaded:
+        type: datetime
+      playback_hls:
+        type: string
+        in: playback
+        as: hls
+      playback_dash:
+        type: string
+        in: playback
+        as: dash
+      input_width:
+        type: integer
+        in: input
+        as: width
+      input_height:
+        type: integer
+        in: input
+        as: height
+      # pendingupload, downloading, queued, inprogress, ready, error,
+      # live-inprogress -- the full enum the List Videos reference declares.
+      # ready and error are both reachable from this one field; see the
+      # header for what that does and does not buy a caller.
+      status_state:
+        type: string
+        default: inprogress
+        in: status
+        as: state
+      # A string, not a number, and not even a consistently shaped one --
+      # see the header.
+      status_pctComplete:
+        type: string
+        in: status
+        as: pctComplete
+      # Declared schema property is only step in prose, absent from the
+      # schema's own property list -- see the header. Modelled anyway
+      # because the header's error fixture below is sourced from the one
+      # page that populates it.
+      status_step:
+        type: string
+        in: status
+        as: step
+      status_errorReasonCode:
+        type: string
+        in: status
+        as: errorReasonCode
+      status_errorReasonText:
+        type: string
+        in: status
+        as: errorReasonText
+
+routes:
+  - method: GET
+    path: /client/v4/accounts/{account_id}/stream
+    resource: video
+    operation: list
+    scope: [account_id]
+    pagination:
+      # The List Videos reference names its own size parameter "limit"
+      # (default and max both 1000) and documents no separate cursor
+      # parameter at all -- "range" in the response is "the total number of
+      # remaining videos based on cursor position," with no cursor field
+      # anywhere beside it to hold one. Declared as a plain limit rather
+      # than guessed, because the name is the one this host actually reads.
+      limit: 1000
+      limit_param: limit
+
+  - method: GET
+    path: /client/v4/accounts/{account_id}/stream/{id}
+    resource: video
+    operation: get
+    scope: [account_id]
+
+errors:
+  missing_credential:
+    status: 400
+    code: "9106"
+    message: "Missing X-Auth-Key, X-Auth-Email or Authorization headers"
+
+  # Code and message match cloudflare/recipe.yaml's own authentication_error
+  # entry; the status (401, not that entry's 403) and the request shape that
+  # reaches it do not -- see the header for the freshly-struck comparison.
+  authentication_error:
+    status: 401
+    code: "10000"
+    message: Authentication error
+
+fixtures:
+  empty: {}
+
+  small-account:
+    video:
+      # The webhook guide's own "finished" example (manage-video-library/
+      # using-webhooks/), field for field, spelled with the schema's own
+      # errorReasonCode/errorReasonText -- empty strings, as that page sends
+      # them, rather than omitted, which is itself part of what it is citing.
+      - uid: 6b9e68b07dfee8cc2d116e4c51d6a957
+        account_id: "0000000000000000000000000000000a"
+        readyToStream: true
+        duration: 5.5
+        size: 383631
+        thumbnail: "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/6b9e68b07dfee8cc2d116e4c51d6a957/thumbnails/thumbnail.jpg"
+        preview: "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/6b9e68b07dfee8cc2d116e4c51d6a957/watch"
+        created: "2022-06-30T17:53:12.512033Z"
+        modified: "2022-06-30T17:53:21.774299Z"
+        uploaded: "2022-06-30T17:53:12.511981Z"
+        playback_hls: "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/6b9e68b07dfee8cc2d116e4c51d6a957/manifest/video.m3u8"
+        playback_dash: "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/6b9e68b07dfee8cc2d116e4c51d6a957/manifest/video.mpd"
+        input_width: 560
+        input_height: 320
+        status_state: ready
+        status_pctComplete: "39.000000"
+        status_errorReasonCode: ""
+        status_errorReasonText: ""
+
+      # The List Videos reference page's own 200 example, verbatim -- the
+      # self-contradiction the header describes. state is inprogress and
+      # errorReasonCode/errorReasonText are populated anyway. Cited exactly
+      # as published rather than corrected.
+      - uid: ea95132c15732412d22c1476fa83f27a
+        account_id: "0000000000000000000000000000000a"
+        readyToStream: true
+        duration: 0
+        size: 4190963
+        thumbnail: "https://customer-m033z5x00ks6nunl.cloudflarestream.com/ea95132c15732412d22c1476fa83f27a/thumbnails/thumbnail.jpg"
+        preview: "https://customer-m033z5x00ks6nunl.cloudflarestream.com/ea95132c15732412d22c1476fa83f27a/watch"
+        created: "2014-01-02T02:20:00Z"
+        modified: "2014-01-02T02:20:00Z"
+        playback_hls: "https://customer-m033z5x00ks6nunl.cloudflarestream.com/ea95132c15732412d22c1476fa83f27a/manifest/video.m3u8"
+        playback_dash: "https://customer-m033z5x00ks6nunl.cloudflarestream.com/ea95132c15732412d22c1476fa83f27a/manifest/video.mpd"
+        input_width: 0
+        input_height: 0
+        status_state: inprogress
+        status_pctComplete: "45"
+        status_errorReasonCode: ERR_NON_VIDEO
+        status_errorReasonText: The file was not recognized as a valid video file.
+
+      # manage-video-library/using-webhooks/'s own error-codes example,
+      # re-spelled onto this schema's own field names (errorReasonCode/
+      # errorReasonText rather than that page's errReasonCode/errReasonText
+      # -- see the header) but keeping its enum value and its sentence
+      # verbatim, and its step value, which the List Videos schema never
+      # declares as a property at all.
+      - uid: 0000000000000000000000000000eeee
+        account_id: "0000000000000000000000000000000a"
+        readyToStream: false
+        status_state: error
+        status_step: encoding
+        status_pctComplete: "39"
+        status_errorReasonCode: ERR_MALFORMED_VIDEO
+        status_errorReasonText: The video was deemed to be corrupted or malformed.
+
+conformance:
+  - name: no credential at all is a 400, not the general API's 403
+    source: https://api.cloudflare.com/client/v4/accounts/0000000000000000000000000000000a/stream
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream
+    expect:
+      status: 400
+      body:
+        success: false
+        result: null
+        errors[0].code: 9106
+        errors[0].message: "Missing X-Auth-Key, X-Auth-Email or Authorization headers"
+
+  - name: the id-addressed route is gated by the identical check
+    source: https://api.cloudflare.com/client/v4/accounts/0000000000000000000000000000000a/stream/abc123
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream/abc123
+    expect:
+      status: 400
+      body:
+        errors[0].code: 9106
+
+  - name: a bare Bearer with nothing after it is treated as though nothing were sent
+    # "Authorization: Bearer " -- somebody sent that, and Cloudflare answers
+    # the byte-identical body the no-header case gets, not a distinct
+    # sentence. See the header for the credential this Recipe cannot
+    # reproduce as a case at all: a present, wrong-shaped, non-empty value.
+    source: https://api.cloudflare.com/client/v4/accounts/0000000000000000000000000000000a/stream
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 400
+      body:
+        errors[0].code: 9106
+        errors[0].message: "Missing X-Auth-Key, X-Auth-Email or Authorization headers"
+
+  - name: a well-formed wrong credential gets Stream's own status and sentence, not the general API's
+    # A forty-character Bearer value, held by no account. 401 here, where
+    # the identical shape against /client/v4/zones answers 403 with a
+    # different code (9109, "Invalid access token") -- see the header for
+    # the freshly-struck comparison. Only the message text and the code
+    # 10000 happen to match cloudflare/recipe.yaml's own authentication_error
+    # entry, which that Recipe reaches from a different request shape.
+    source: https://api.cloudflare.com/client/v4/accounts/0000000000000000000000000000000a/stream
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream
+      headers:
+        Authorization: Bearer 0123456789abcdef0123456789abcdef01234567
+    expect:
+      status: 401
+      body:
+        success: false
+        result: null
+        errors[0].code: 10000
+        errors[0].message: Authentication error
+
+  - name: a wrong method with no credential is still refused for the credential, not the method
+    # PUT on the id route with no header at all answers the identical
+    # missing-credential body a GET does, not a 405 -- the credential gate
+    # runs before method resolution here, for the one verdict Cauldron can
+    # reproduce. See the header for the fifth axis this cannot reach.
+    source: https://api.cloudflare.com/client/v4/accounts/0000000000000000000000000000000a/stream/abc123
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PUT
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream/abc123
+    expect:
+      status: 400
+      body:
+        errors[0].code: 9106
+
+  - name: state and error live on the same field, and the provider's own example contradicts its own rule about it
+    # Cited verbatim from the List Videos reference page's 200 example --
+    # see the header. state is inprogress and errorReasonCode is populated,
+    # which the same page's own field description says should not happen
+    # outside state error.
+    source: https://developers.cloudflare.com/api/resources/stream/methods/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream/ea95132c15732412d22c1476fa83f27a
+      headers:
+        Authorization: Bearer cauldron000000000000000000000000000000a
+    expect:
+      status: 200
+      body:
+        result.status.state: inprogress
+        result.status.errorReasonCode: ERR_NON_VIDEO
+        result.status.pctComplete: "45"
+        result.readyToStream: true
+
+  - name: a clean ready video carries empty strings, not absent fields, for the reason it did not fail
+    source: https://developers.cloudflare.com/stream/manage-video-library/using-webhooks/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream/6b9e68b07dfee8cc2d116e4c51d6a957
+      headers:
+        Authorization: Bearer cauldron000000000000000000000000000000a
+    expect:
+      status: 200
+      body:
+        result.status.state: ready
+        result.status.errorReasonCode: ""
+        result.status.errorReasonText: ""
+        result.status.pctComplete: "39.000000"
+
+  - name: an errored video does say why, in the schema's own field names
+    # The webhook guide's error-codes example, re-spelled onto
+    # errorReasonCode/errorReasonText -- see the header for the third
+    # spelling that page itself uses and this Recipe does not model.
+    source: https://developers.cloudflare.com/stream/manage-video-library/using-webhooks/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream/0000000000000000000000000000eeee
+      headers:
+        Authorization: Bearer cauldron000000000000000000000000000000a
+    expect:
+      status: 200
+      body:
+        result.status.state: error
+        result.status.step: encoding
+        result.status.errorReasonCode: ERR_MALFORMED_VIDEO
+        result.status.errorReasonText: The video was deemed to be corrupted or malformed.
+        result.readyToStream: false
+
+  - name: the envelope survives onto a listing, with the collection in result
+    source: https://developers.cloudflare.com/api/resources/stream/methods/list/
+    fixture: small-account
+    request:
+      method: GET
+      path: /client/v4/accounts/0000000000000000000000000000000a/stream
+      headers:
+        Authorization: Bearer cauldron000000000000000000000000000000a
+    expect:
+      status: 200
+      body:
+        success: true
+        errors: []
+        messages: []
+      absent:
+        - data
+        - videos
