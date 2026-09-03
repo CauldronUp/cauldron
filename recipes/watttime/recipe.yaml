@@ -1,0 +1,362 @@
+# WattTime Recipe for Cauldron
+#
+# Compare carbonintensity/recipe.yaml and electricitymaps/recipe.yaml in the
+# same collection: both serve a carbon number over ordinary API-key or no
+# auth at all. WattTime is the two-step one -- HTTP Basic against /login
+# buys a JWT, and every data call after that is Authorization: Bearer
+# <that JWT> -- and it turns out to be two unrelated pieces of software
+# wearing one hostname, which is this Recipe's real subject. /login is a
+# small Express app (x-powered-by: Express, nginx in front). The data
+# routes under /v3/* sit behind a JWT-validating gateway that has never
+# heard of Express and answers in a completely different vocabulary. Mezmo's
+# Recipe elsewhere in this collection makes the same discovery about two
+# HOSTS; WattTime makes it about two LAYERS of one.
+#
+# /login's own two failures, both struck live against api.watttime.org,
+# 2026-09-02:
+#
+#   (no Authorization header)         401 WWW-Authenticate: Basic
+#                                      realm="login required"
+#                                      Content-Type: application/json;
+#                                      charset=utf-8
+#                                      body (12 bytes, no braces, no quotes):
+#                                      Unauthorized
+#   -u baduser:badpass                403 Content-Type: application/json;
+#                                      charset=utf-8
+#                                      body (9 bytes): Forbidden
+#
+# Two different status codes for two different failures -- absent gets 401,
+# wrong gets 403 -- which is the sharpest split this group's brief asked
+# after, and it is Apollo.io's own finding from elsewhere in this
+# collection, reached independently by a second, unrelated provider: a
+# missing credential and a wrong one disagree about the number before the
+# colon, not only the words after it. And in both cases the Content-Type
+# lies: `application/json` is announced and the body is a bare word, no
+# quotes and no braces around it, so `response.json()` throws
+# `SyntaxError: Unexpected token U` on the failure a client is likeliest to
+# hit first. A third request -- `Authorization: Bearer sometoken`, a header
+# that is present and cannot be Basic at all -- also answers 403 Forbidden,
+# byte-identical to the wrong-password case, confirmed live: WattTime's
+# malformed and rejected verdicts are the same verdict here, one status,
+# one body, and this Recipe declares them that way rather than inventing a
+# third sentence nobody sent.
+#
+# The token's lifetime is stated once, in prose, and nowhere on the wire.
+# WattTime's own OpenAPI description (docs.watttime.org/openapi.json,
+# fetched 2026-09-02) gives /login's full text: "Use HTTP basic auth to
+# exchange username and password for an access token... **Note:** Token
+# expires after 30 minutes. If a data call returns `HTTP 401` error code,
+# you will need to call `/login` again to receive a new token." The
+# response schema itself, LoginResponse, has exactly one property -- token,
+# a bare string, example "abcdef0123456789fedcabc" -- no expires_at, no
+# expires_in, nothing dated at all. A client has to have read the sentence,
+# because the object handed back cannot tell it.
+#
+# POST /login -- the wrong method -- leaks the real path underneath the
+# public one. Struck live with no credential: 404, Express's own default
+# page, `<pre>Cannot POST /auth</pre>`. Not `/login`. The public path is a
+# rewrite in front of something mounted at /auth, and an integration
+# grepping its own logs for "/login" after a failed POST would find nothing
+# that explains it. Not modelled as a route -- see the gaps below -- because
+# the body is HTML tied to the method that produced it, the same call this
+# collection's Electricity Maps and Rootly Recipes both make for their own
+# Express and Rails default pages.
+#
+# A path with no route at all does not 404 -- it redirects, before the
+# credential is ever examined. Struck live both with no credential and with
+# `-u baduser:badpass`, byte-identical both times:
+#
+#   GET /nosuchroute -> 302 Found, Location: https://docs.watttime.org/,
+#                        Content-Length: 0, no Content-Type at all
+#
+# This is the same shape internal/recipe/auth.go already names for Flexport,
+# in an unrelated collection entry: "an unrouted GET does not 404 at all:
+# it redirects to the marketing site." It is modelled below with `public:
+# true` and a raw, header-only response, because it needs no credential
+# either way and Cauldron has no route left to check one against.
+#
+# The JWT gateway behind /v3/* is a third program again, and it is not
+# wired into this Recipe's auth scheme -- see the gaps below for why -- but
+# every failure shape it gave was struck live and is worth recording. All
+# four are `text/plain`, correctly labelled this time, and all four are
+# 401, escalating in specificity as the credential gets closer to a real
+# one without ever becoming one:
+#
+#   (no Authorization header)                  Jwt is missing
+#   Authorization: Bearer junktoken12345       Jwt is not in the form of
+#                                               Header.Payload.Signature
+#                                               with two dots and 3 sections
+#   Authorization: Bearer aaaa.bbbb.cccc       Jwt header is an invalid JSON
+#   Authorization: Bearer <a syntactically      Jwt issuer is not configured
+#     valid header.payload.signature,
+#     unsigned, no real claims>
+#
+# Each answer is real and each is more specific than the last, and none of
+# them is a verdict this Recipe could reach with a genuinely signed token,
+# because minting one needs the issuer WattTime's gateway is configured to
+# trust -- which needs a real account. The WWW-Authenticate challenge grows
+# an `error="invalid_token"` parameter starting at the second message, which
+# is the only structured signal any of the four carries; the sentence itself
+# is the only place the specifics live. Also struck live: a wrong method
+# (POST) on a real /v3/ path answers 401 "Jwt is missing" rather than a 404
+# or a 405 -- this gateway checks the credential before it checks anything
+# else, unconditionally, for every method -- and an unknown /v3/ path
+# redirects to docs.watttime.org exactly like the top-level unrouted case
+# above, regardless of credential. Two different ordering rules, in two
+# different layers, on one host: /login's own Express app is router-first
+# for a wrong method and credential-first for everything it does route
+# (Rootly's split, see electricitymaps/recipe.yaml in this same batch for a
+# second example of it); the /v3/ gateway is credential-first for every
+# method on every path it recognises and router-first only when the path is
+# not recognised at all.
+#
+# Free access is explicit and it is not the account's home region -- it is
+# one fixed region, named in WattTime's own OpenAPI description (the
+# `tags[0].description` field, fetched 2026-09-02): "The `/v3/historical`,
+# `/v3/forecast`, and `/v3/maps` endpoints are only available to
+# subscribers. However, if you don't yet have a subscription, you can
+# preview all of the available region-specific data by providing
+# `CAISO_NORTH` as the region for your requests." /v3/signal-index is
+# separately documented as free to everyone in every region ("Data from
+# this endpoint is available for free to all users in all covered
+# regions"). So there are two different entitlement lines on this one API,
+# not one: a region line (CAISO_NORTH only, unless subscribed) that gates
+# three specific endpoints, and no line at all on a fourth. What this
+# Recipe could not establish is the shape of the region line's refusal: all
+# three subscriber-only endpoints declare a 403 in their OpenAPI responses,
+# and all three point it at the same generic ErrorResponse schema also used
+# for their 400 and 422 -- {error, message, docs}, one shared shape for
+# three different HTTP statuses -- whose only worked example
+# ("API_KEY_INVALID"-shaped: {"error": "INVALID_QUERY_PARAMS", ...}) is
+# plainly the validation case, not the entitlement one. The condition is
+# documented; the body it produces is not shown anywhere this Recipe could
+# reach, and reaching it live needs a subscription this Recipe was never
+# going to obtain. Compare apolloio/recipe.yaml in this collection, whose
+# insufficient_scope case has a full worked example to quote; this is the
+# shallower half of the same question, recorded rather than guessed at.
+#
+# Two more things worth having down. First, the schema and its own example
+# disagree about a field's name: ErrorResponse's properties declare `error`,
+# `message` and `docs`, all three required -- and the schema's own example
+# object spells the second one `msg`, not `message`. Second, three separate
+# metadata schemas (signal-index, forecast, historical) all carry the
+# identical placeholder warning in their published examples --
+# `{"warnings": [{"type": "EXAMPLE_WARNING", "message": "This is just an
+# example"}]}` -- copied into all three rather than replaced in any of
+# them, which this header notes and this Recipe declines to serve as though
+# it were a real value.
+#
+# And the value field means three different things depending only on which
+# endpoint sent it. /v3/signal-index's own metadata example gives units:
+# "percentile" (0-100, current index); /v3/historical and /v3/forecast give
+# units: "lbs_co2_per_mwh" (an absolute emissions rate) for the same
+# signal_type, "co2_moer", on the same value field name. A bare number
+# means nothing without reading meta.units first, on every one of these
+# routes.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - /v3/signal-index, /v3/forecast, /v3/historical, /v3/my-access and
+#     /v3/region-from-loc are not routed. Cauldron checks one credential
+#     scheme per Recipe; this one is wired to /login's HTTP Basic, and the
+#     JWT bearer scheme the data routes actually need is a second,
+#     unrelated mechanism this format has no way to declare alongside the
+#     first. Mezmo's Recipe in this collection has the identical shape for
+#     the identical reason -- ingestion's apikey header and export's
+#     Authorization: Token are two credentials on one host, and only one
+#     gets wired. Every finding above about the data routes' own auth
+#     behaviour is recorded as evidence rather than reproduced by a route.
+#   - Because those routes are not declared, the measured/estimated/
+#     forecast finding this whole group exists to answer -- historical rows
+#     carry imputed_data_used (nullable boolean) and last_updated (nullable
+#     datetime) beside point_time and value; forecast rows carry only
+#     point_time and value, nothing marking them as forecasts at all -- is
+#     established in this header from WattTime's own published schemas
+#     (APIV3DataResponseFormat vs BaseAPIV3ResponseFormat,
+#     docs.watttime.org/openapi.json, fetched 2026-09-02) rather than in a
+#     conformance case. It could not become one without routing the data
+#     endpoints, which the auth-scheme limitation above already rules out.
+#   - POST /login's own body ("Cannot POST /auth") is HTML tied to the
+#     literal path it leaks and is quoted in this header rather than served
+#     -- see above.
+#   - The unrouted redirect is modelled once, at /nosuchroute, standing in
+#     for the general case; it is not a claim that every unrouted path on
+#     this host answers identically, only that this one, struck live twice,
+#     does.
+#   - Rate limits are documented in the same OpenAPI description -- 3,000
+#     requests per 5-minute rolling window overall, 100 per 5 minutes for
+#     /login specifically, HTTP 429 on excess -- and never triggered live,
+#     so no 429 is declared.
+#
+# The username/password pair below (freddo / the_frog) is WattTime's own
+# published example from its /login code sample, not a real account, and no
+# call using it was ever made -- see the gap above on what this Recipe did
+# and did not call live.
+
+recipe: watttime
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://docs.watttime.org/
+  spec: https://docs.watttime.org/openapi.json
+
+auth:
+  scheme: basic
+  # Cauldron's basic scheme checks one half of the pair against Keys; see
+  # the header for how WattTime's own example pairs a username with a
+  # password this Recipe cannot also enforce without a second mechanism.
+  credential: username
+  keys:
+    - freddo
+  absent_error: login_required
+  # Struck live as the identical 403 Forbidden for both a wrong password and
+  # a header that cannot be Basic at all -- see the header. One error name
+  # for both verdicts is the honest claim here, not an approximation.
+  malformed_error: invalid_credentials
+  rejected_error: invalid_credentials
+
+responses:
+  resource:
+    style: bare
+  error:
+    # Bare words, not JSON, despite a Content-Type that says otherwise --
+    # see the header. style: text writes the message literally.
+    style: text
+
+resources:
+  login:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      token:
+        type: string
+
+routes:
+  - method: GET
+    path: /login
+    resource: login
+    operation: get
+    id_from: auth
+
+  # Genuinely unrouted -- see the header. public: true because neither a
+  # missing nor a wrong credential changes this answer; raw because the
+  # real response is a redirect with no body Cauldron's ordinary envelopes
+  # could represent.
+  - method: GET
+    path: /nosuchroute
+    public: true
+    status: 302
+    headers:
+      Location: https://docs.watttime.org/
+    raw:
+      empty: true
+
+errors:
+  login_required:
+    status: 401
+    message: Unauthorized
+    headers:
+      Content-Type: application/json; charset=utf-8
+      www-authenticate: 'Basic realm="login required"'
+
+  invalid_credentials:
+    status: 403
+    message: Forbidden
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+fixtures:
+  empty: {}
+
+  demo-account:
+    # WattTime's own worked example, from its /login OpenAPI description
+    # (docs.watttime.org/openapi.json, fetched 2026-09-02). Cited, not
+    # observed -- this pair was never sent live; see the header.
+    login:
+      - token: abcdef0123456789fedcabc
+
+conformance:
+  - name: no credential at all is 401, and the body is not the JSON its own header claims
+    source: https://api.watttime.org/login
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /login
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=utf-8
+        www-authenticate: 'Basic realm="login required"'
+      body_matches: "^Unauthorized$"
+
+  - name: a wrong password is a different status, still not JSON
+    source: https://api.watttime.org/login
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /login
+      headers:
+        Authorization: Basic YmFkdXNlcjpiYWRwYXNz
+    expect:
+      status: 403
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body_matches: "^Forbidden$"
+
+  - name: a header that cannot be Basic at all gets the identical wrong-credential answer
+    # "Authorization: Bearer sometoken" -- present, and not parseable as
+    # Basic. Struck live: byte-identical to the wrong-password case above,
+    # which is why this Recipe names one error for both verdicts rather
+    # than inventing a third sentence nobody sent.
+    source: https://api.watttime.org/login
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /login
+      headers:
+        Authorization: Bearer sometoken
+    expect:
+      status: 403
+      body_matches: "^Forbidden$"
+
+  - name: a path with no route at all redirects before any credential is examined
+    # Struck live both with no credential and with a wrong one -- identical
+    # both times. See the header for the parallel this draws with Flexport,
+    # named in internal/recipe/auth.go.
+    source: https://api.watttime.org/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /nosuchroute
+      headers:
+        Authorization: Basic YmFkdXNlcjpiYWRwYXNz
+    expect:
+      status: 302
+      headers:
+        Location: https://docs.watttime.org/
+
+  - name: a successful login answers a bare token and nothing dated
+    # WattTime's own published example -- see the header for why its
+    # 30-minute lifetime lives only in prose, never on this object.
+    source: https://docs.watttime.org/openapi.json
+    fixture: demo-account
+    request:
+      method: GET
+      path: /login
+      headers:
+        Authorization: Basic ZnJlZGRvOnRoZV9mcm9n
+    expect:
+      status: 200
+      body:
+        token: abcdef0123456789fedcabc
+      absent:
+        - expires_at
+        - expires_in
+        - expiry
