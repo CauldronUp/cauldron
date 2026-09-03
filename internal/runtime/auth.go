@@ -172,6 +172,17 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 		return recipe.Malformed
 	}
 
+	// Checked before the accepted keys, so a Recipe that names one key in both
+	// places gets the refusal rather than the acceptance. The validator
+	// refuses that Recipe outright, and the order here decides what happens
+	// to one already in memory -- a fake that quietly authenticates a key its
+	// own file says is not entitled is the worse of the two failures.
+	for _, key := range auth.Unentitled {
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(key)) == 1 {
+			return recipe.Unentitled
+		}
+	}
+
 	for _, key := range auth.Keys {
 		// Constant time, which matters less here than almost anywhere: the
 		// keys are published fixtures. It is here because this file is read as

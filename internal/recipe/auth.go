@@ -186,6 +186,19 @@ type Auth struct {
 	// token that was genuinely presented. Without this field the interesting
 	// half of that pair is the half that cannot be served.
 	RejectedError string `yaml:"rejected_error"`
+	// Unentitled names the keys that authenticate and are refused anyway,
+	// and UnentitledError names the error they raise.
+	//
+	// A key on the wrong plan, without the scope, or asking for a region its
+	// tier does not include. The provider knows who the caller is and says no
+	// to this particular thing, which is the one refusal the other three
+	// verdicts cannot express -- they are all about the credential, and this
+	// is about the request.
+	//
+	// Keys named here are never accepted, so a Recipe cannot declare the same
+	// key in both places and expect it to work; the validator refuses that.
+	Unentitled      []string `yaml:"unentitled"`
+	UnentitledError string   `yaml:"unentitled_error"`
 	// AfterRouting checks the credential only once the request has matched a
 	// route, so a path the provider does not have answers 404 and a method it
 	// does not support answers 405, whether or not a credential was sent.
@@ -297,6 +310,26 @@ const (
 	Malformed
 	// Rejected: the right shape, and not a credential this Recipe holds.
 	Rejected
+	// Unentitled: a credential this Recipe holds, for something it may not
+	// have. Authentication succeeded and authorisation did not.
+	//
+	// This is a different question from the other three and providers keep
+	// answering it separately. Apollo.io's own description declares a 403 for
+	// a key that is valid and out of scope. Electricity Maps' free tier is
+	// entitled to one zone and refuses the others. Fitbit publishes an
+	// insufficient-scope message whose blanks its own troubleshooting table
+	// never fills in. Three sightings, all documented, none of them reachable
+	// with the three verdicts above -- because every one of those is decided
+	// by the shape or the value of what was sent, and this one is decided by
+	// what the sender is allowed to do.
+	//
+	// A Recipe reaches it by naming those keys in Auth.Unentitled. They
+	// authenticate, so they are not rejected; they are refused anyway, so
+	// they are not accepted. That makes a documented 403 something a
+	// conformance case can send a request for, rather than something only a
+	// fault injection can demonstrate the shape of -- and arming proves a
+	// shape while saying nothing about what triggers it.
+	Unentitled
 )
 
 // ErrorFor names the errors entry a verdict raises.
@@ -317,6 +350,10 @@ func (a Auth) ErrorFor(v Verdict) string {
 	case Rejected:
 		if a.RejectedError != "" {
 			return a.RejectedError
+		}
+	case Unentitled:
+		if a.UnentitledError != "" {
+			return a.UnentitledError
 		}
 	case Accepted:
 	}

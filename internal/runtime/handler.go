@@ -87,7 +87,19 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// credential failed. A Recipe that declares only one gets that one for
 		// every verdict, which is how every Recipe behaved before the
 		// distinction existed.
-		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), 401, "authentication_required", "Invalid API key provided.")
+		//
+		// The fallback status follows the verdict, because the three
+		// credential verdicts and the entitlement one are different answers.
+		// 401 says the caller is unidentified; a key that authenticated and
+		// was refused anyway is identified, and 403 is what says so. Only the
+		// fallback -- a Recipe naming its own error still gets that error's
+		// declared status, whatever it is.
+		status, code := http.StatusUnauthorized, "authentication_required"
+		if verdict == recipe.Unentitled {
+			status, code = http.StatusForbidden, "not_entitled"
+		}
+
+		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), status, code, "Invalid API key provided.")
 
 		return true
 	}
@@ -99,7 +111,13 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// route that is not public still gets refused here, before the 404 or the
 	// 405 below, exactly as it did when the match came after.
 	matched, vars, ok := s.router.matchSelecting(r.Method, r.URL.Path, graphQLQuery(r), rawBody(r), r.URL.Query(), r.Header)
-	public := ok && matched.spec.Public
+	// Resolved once, because a route can be open to a request that presented
+	// nothing and closed to one that presented something wrong -- so how far
+	// the exemption reaches depends on the credential, not only on the route.
+	public := false
+	if ok && matched.spec.Public.Declared() {
+		public = matched.spec.Public.Exempts(s.credential(r))
+	}
 
 	if !s.recipe.Auth.AfterRouting && !public && refuse() {
 		return

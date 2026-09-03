@@ -621,6 +621,20 @@ func (r *Recipe) Validate() error {
 		}
 	}
 
+	// A key cannot both authenticate and be refused for lack of entitlement.
+	// The runtime resolves it by refusing, and a Recipe whose file says both
+	// is not describing a provider -- it is describing a mistake, and the
+	// useful moment to find that is before it boots.
+	for _, key := range r.Auth.Unentitled {
+		if contains(r.Auth.Keys, key) {
+			add("auth lists %q in both keys and unentitled, so nothing can say whether it works", key)
+		}
+	}
+
+	if r.Auth.UnentitledError != "" && len(r.Auth.Unentitled) == 0 {
+		add("auth.unentitled_error names the refusal for a key in auth.unentitled and no key is listed there, so nothing can reach it")
+	}
+
 	if !contains(validCodeTypes, r.Responses.Error.CodeType) {
 		add("responses.error.code_type %q must be one of %s", r.Responses.Error.CodeType, strings.Join(validCodeTypes[1:], ", "))
 	}
