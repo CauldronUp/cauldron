@@ -6,6 +6,11 @@ Emulates the Square API (2026-01-22), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its money is an object in minor units rather than a number, so a client that
+treats an amount as a scalar is wrong twice over.
+
 ## Sources
 
 - Documentation: https://developer.squareup.com/reference/square
