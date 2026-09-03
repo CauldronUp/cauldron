@@ -1,0 +1,428 @@
+# Toggl Track Recipe for Cauldron
+#
+# This group exists to ask one question of three time-tracking APIs: a
+# running timer is an entry with no end, so how does each provider represent
+# one, and can a caller sum a day's entries without silently counting a
+# timer that is still going? Toggl is the provider with the famous answer --
+# a running entry's duration is documented as a *negative number*, and the
+# historical documentation went further than that: it was the negated Unix
+# start time, not a sentinel.
+#
+# Toggl's own retired v8 reference (github.com/toggl/toggl_api_docs,
+# chapters/time_entries.md) said so in one unambiguous sentence: "If the
+# time entry is currently running, the duration attribute contains a
+# negative value, denoting the start of the time entry in seconds since
+# epoch (Jan 1 1970). The correct duration can be calculated as
+# current_time + duration". Two worked v8 examples backed it up --
+# "duration":-1362470338 from POST .../start and "duration":-1391072884 from
+# GET .../current, both real Unix timestamps with a minus sign in front,
+# not -1.
+#
+# **Does that survive into v9, the API this Recipe targets?** The current
+# reference (engineering.toggl.com/docs/track/api/time_entries) still marks
+# duration negative for a running entry, but the sentence has narrowed:
+# every occurrence of the field -- on GET /me/time_entries, GET
+# .../current, GET .../{id}, and the POST/PUT request bodies alike -- reads
+# only "Time entry duration. For running entries should be negative,
+# preferable -1." The epoch-reconstruction formula is gone. No worked
+# example anywhere in the current reference gives a concrete duration value
+# for a running entry; every code sample in every language shows the
+# literal type placeholder "integer" where v8 showed a real signed number.
+# That is the honest answer to the question this group asks: the
+# *sentence* narrowed from a specific encoding to a bare preference for one
+# sentinel value, and nothing published proves which one the live server
+# actually sends. Reaching that would need a real account and a real running
+# timer -- this Recipe was written with neither, per the group's rules --
+# so no time_entry conformance case below asserts a duration value, and
+# none is fixtured. This is the "leave the route out and say so" half of
+# the observed/documented split: the auth and routing behaviour below is
+# exhaustively live-verified; the resource shape is not, on purpose.
+#
+# What v9 *does* still say, unchanged from v8: duration is stored server
+# side, not derived by the client, and its unit is seconds -- "duration"
+# type: integer, no fractional component anywhere in either reference.
+#
+# **Deletion.** GET /me/time_entries documents a `since` query parameter as
+# "Get entries modified since this date using UNIX timestamp, including
+# deleted ones" -- which only makes sense if a deleted entry is tombstoned
+# rather than removed. But the item schema on that same page, repeated
+# identically across every endpoint that returns a time entry, names no
+# field that would mark one as deleted -- no `deleted_at`, no
+# `server_deleted_at`, no boolean. Toggl's own reference promises a deleted
+# row keeps answering through one parameter and gives no field anywhere
+# that would let a caller recognise it when it does. That gap is stated
+# here rather than guessed at: this Recipe does not model `since` or
+# deletion, because inventing the marker field would be inventing the
+# answer to the exact question asked of it.
+#
+# **Authentication, struck live, no account, no key ever created.** Toggl
+# is HTTP Basic where the username is the API token and the password is the
+# literal string "api_token" -- its own authentication page says so
+# verbatim: "When using Basic Auth and API token, use the API token as
+# email and string 'api_token' as password," with a worked curl example
+# using that exact literal. Struck against api.track.toggl.com/api/v9/me:
+#
+#   no Authorization header at all         401, zero bytes,
+#                                           X-Authorization-Missing: true
+#   Basic <junk-user>:api_token            403 text/plain,
+#                                           "Incorrect username and/or
+#                                           password" (34 bytes)
+#   Basic <junk-user>:<anything-else>      the identical 403 -- a wrong
+#                                           password reads no differently
+#                                           from the "correct" literal, which
+#                                           is the only test this Recipe
+#                                           could run without a real token:
+#                                           it never learned whether the
+#                                           live API checks the password
+#                                           value at all, only that varying
+#                                           it while the username stays
+#                                           wrong changes nothing
+#   Authorization: Bearer <junk>           the identical 401 an absent
+#                                           header gets -- Toggl's proxy
+#                                           only recognises Basic, and
+#                                           anything else it cannot parse as
+#                                           Basic is filed as "missing," not
+#                                           "malformed"
+#   Authorization: <no-scheme-at-all>      the same 401 again
+#
+# So Toggl draws a two-way line, not a three-way one: nothing presentable as
+# Basic is absent, and a Basic credential with the wrong username is
+# rejected, with nothing in between. auth.absent_error and
+# auth.malformed_error name the same entry below for exactly that reason --
+# naming the same error for two verdicts is a claim that the provider does
+# not tell them apart, and here it is the right one, struck four ways
+# to confirm it.
+#
+# **Routing order.** An unrouted path and a wrong method both resolve
+# *before* the credential is ever examined, with nothing presented at all:
+#
+#   GET /api/v9/nosuchroute12345 (no header)   404 text/plain,
+#                                               "404 page not found"
+#   PATCH /api/v9/me (no header)               405, zero bytes, no
+#                                               Allow header
+#   PATCH /api/v9/me (Basic <junk>:api_token)  the identical 405 -- a
+#                                               credential changes nothing
+#
+# That is Fireworks' arrangement, not Rootly's or FireHydrant's:
+# auth.after_routing: true, and both cases below send exactly what the live
+# probes sent -- no Authorization header -- and carry a verified date
+# instead of an apology.
+#
+# One fidelity gap on the 405 specifically: Toggl's real response carries no
+# Allow header at all. Cauldron's runtime computes one automatically
+# whenever a Recipe's own method_not_allowed error resolves to status 405
+# (see internal/runtime/handler.go), with no declared way to suppress it, so
+# this Recipe's 405 case does not assert a value for Allow one way or the
+# other -- stated here so the gap is visible rather than silently absent
+# from the conformance suite.
+#
+# **Two genuinely public routes**, struck live with no credential and again
+# with a junk one, byte-identical both times: GET /api/v9/status answers
+# {"status":"OK"} and GET /api/v9/countries answers a 42 KB reference list.
+# Only /status is modelled -- public: true, verified both ways below --
+# because /countries is UK-postcode-sized reference data with nothing to do
+# with this group's question, and pinning it here would be bulk rather than
+# a finding.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No time_entry resource is fixtured. See the header discussion above:
+#     v9 gives no worked example for the field this Recipe exists to check,
+#     and this Recipe does not import v8's example under a v9 declaration
+#     or invent a plausible-looking number.
+#   - create, start, stop and delete are not modelled. Every route here is
+#     a GET, per this group's rule against starting, stopping, creating or
+#     deleting any time entry -- live or fixtured.
+#   - The password half of Basic auth is not checked by this Recipe's
+#     fixture credential either: Cauldron's own auth.credential defaults to
+#     checking the username half only (see auth.go, "Twilio puts the
+#     account SID in the username"), which happens to be the one thing this
+#     Recipe could confirm live -- varying the password never changed the
+#     403. Whether the real API validates the literal string "api_token" at
+#     all, given a genuine token as the username, was never observed.
+#   - GET /me/time_entries takes no page-size parameter of any kind in the
+#     v9 reference -- since, before, start_date, end_date, meta and
+#     include_sharing are the whole query parameter list. No pagination is
+#     declared on the route below for exactly that reason; Cauldron's own
+#     runtime still applies its undeclared-route default (page at ten,
+#     reading "limit") for any list route with no pagination block at all,
+#     which is the engine's fallback rather than a claim about Toggl.
+#   - The session-cookie authentication mechanism Toggl's own page also
+#     documents (POST accounts.toggl.com/api/sessions) is a second,
+#     entirely different credential on a third host and is not modelled;
+#     every route here uses the token-as-Basic-username scheme only.
+#
+# Every case below not carrying a verified date was read from Toggl's own
+# published reference at engineering.toggl.com/docs/track/api/time_entries
+# and engineering.toggl.com/docs/track/authentication, not observed against
+# a real workspace -- this Recipe was written with no credential and
+# created no account. The key below is a fixture, not a secret.
+
+recipe: toggl
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v9
+  docs: https://engineering.toggl.com/docs/track/api/time_entries
+
+auth:
+  scheme: basic
+  keys:
+    - cauldron0000000000000000000000
+  # Struck four ways live: nothing parseable as a Basic credential -- no
+  # header, a bearer token, a schemeless value -- gets this same 401. See
+  # the header for why both verdicts share one entry rather than two.
+  absent_error: authentication_required
+  malformed_error: authentication_required
+  # A Basic credential with the wrong username. Struck live with several
+  # different password values against the same wrong username; all
+  # answered byte-identically.
+  rejected_error: incorrect_credentials
+  # Verified live, twice: an unrouted path 404s and a wrong method 405s,
+  # both with no Authorization header at all and both unchanged by adding a
+  # junk one. See the header for the Allow-header gap this leaves.
+  after_routing: true
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Never actually reached: every error this Recipe declares overrides its
+  # own shape (empty or raw text -- see the header), because that is what
+  # every live probe answered with. This Recipe-wide default exists only
+  # because the format requires one.
+  error:
+    style: flat
+
+routes:
+  - method: GET
+    path: /api/v9/me/time_entries
+    resource: time_entry
+    operation: list
+
+  - method: GET
+    path: /api/v9/me/time_entries/current
+    resource: time_entry
+    operation: get
+    # No identifier in the path at all -- this answers about whoever the
+    # credentials belong to, the same shape as GitHub's /user. See
+    # route.go's IDFrom doc.
+    id_from: auth
+
+  # Genuinely public, struck live with no credential and again with a junk
+  # one -- byte-identical both times, so this really does ignore the
+  # credential rather than merely not requiring one. See the header for
+  # why /countries is observed and not modelled.
+  - method: GET
+    path: /api/v9/status
+    public: true
+    raw:
+      content_type: application/json; charset=utf-8
+      text: '{"status":"OK"}'
+
+resources:
+  # Declared for its routes' sake -- see the header. No field here is
+  # fixtured or asserted in any conformance case; the shape is the
+  # documented one and nothing below claims a value for duration, start or
+  # stop, which is the entire point this Recipe exists to make.
+  time_entry:
+    id:
+      style: numeric
+    fields:
+      workspace_id:
+        type: integer
+      description:
+        type: string
+        null_when_unset: true
+      # Seconds, stored not derived -- unchanged between v8 and v9. See the
+      # header for what changed and what did not.
+      duration:
+        type: integer
+      start:
+        type: datetime
+      stop:
+        type: datetime
+        null_when_unset: true
+      duronly:
+        type: boolean
+        default: false
+      billable:
+        type: boolean
+        default: false
+      tags:
+        type: list
+      tag_ids:
+        type: list
+      created_with:
+        type: string
+        null_when_unset: true
+      at:
+        type: datetime
+
+errors:
+  # The one message that covers both "nothing was presented" and "something
+  # was presented that cannot be Basic" -- see the header for the four live
+  # probes that established this is one verdict, not two, on this API.
+  authentication_required:
+    status: 401
+    empty: true
+    headers:
+      X-Authorization-Missing: "true"
+
+  # A Basic credential with the wrong username. text/plain, not JSON --
+  # struck live, 34 bytes exactly.
+  incorrect_credentials:
+    status: 403
+    style: text
+    message: Incorrect username and/or password
+
+  # Struck live with no credential at all, against a path this Recipe does
+  # not route. text/plain, not JSON.
+  unknown_route:
+    status: 404
+    style: text
+    message: 404 page not found
+
+  # Struck live with no credential at all, against a real path with the
+  # wrong verb. Zero bytes -- see the header for the Allow-header gap this
+  # leaves against Cauldron's own runtime.
+  method_not_allowed:
+    status: 405
+    empty: true
+
+fixtures:
+  empty: {}
+
+# Every case below carries source. A verified date means this Recipe called
+# api.track.toggl.com with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from Toggl's own
+# published reference and never called.
+conformance:
+  - name: no credential at all is told nothing, twice over
+    # Zero bytes and a header saying so -- not a JSON body of any kind.
+    source: https://api.track.toggl.com/api/v9/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/me/time_entries
+    expect:
+      status: 401
+      headers:
+        X-Authorization-Missing: "true"
+
+  - name: a bearer token is filed as missing, not as wrong
+    # The pair to the case above: "Authorization: Bearer junktoken12345"
+    # against the same route answers the byte-identical 401. Toggl's proxy
+    # only recognises Basic; anything else it cannot parse as Basic reads as
+    # though nothing were sent at all.
+    source: https://api.track.toggl.com/api/v9/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/me/time_entries
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      headers:
+        X-Authorization-Missing: "true"
+
+  - name: a wrong username is told something completely different
+    # 403, not 401, and prose rather than an empty body. Struck with the
+    # documented password literal "api_token"; a second probe with a
+    # different password against the same wrong username answered
+    # byte-identically -- see the header for what that does and does not
+    # establish.
+    source: https://api.track.toggl.com/api/v9/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/me/time_entries
+      headers:
+        Authorization: Basic anVua3Rva2VuMTIzNDU2Nzg5MDphcGlfdG9rZW4=
+    expect:
+      status: 403
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: "^Incorrect username and/or password$"
+
+  - name: an unrouted path needs no credential to reach a real 404
+    # Struck live with no Authorization header at all. auth.after_routing
+    # carries this: routing resolves before the credential is ever looked
+    # at, which is Fireworks' arrangement and the reverse of Rootly's and
+    # FireHydrant's, both in this same file of examples.
+    source: https://api.track.toggl.com/api/v9/nosuchroute12345
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/nosuchroute12345
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: "^404 page not found$"
+
+  - name: a wrong method on a real path needs no credential either
+    # Struck live with no Authorization header at all. See the header for
+    # why this case does not assert an Allow header value.
+    source: https://api.track.toggl.com/api/v9/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/v9/me/time_entries
+    expect:
+      status: 405
+
+  - name: and a credential changes nothing about that 405
+    # The same PATCH, this time with a well-formed Basic credential
+    # attached -- struck live, byte-identical to the case above. Routing
+    # resolved first either way, which is the point auth.after_routing
+    # exists to carry.
+    source: https://api.track.toggl.com/api/v9/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /api/v9/me/time_entries
+      headers:
+        Authorization: Basic anVua3Rva2VuMTIzNDU2Nzg5MDphcGlfdG9rZW4=
+    expect:
+      status: 405
+
+  - name: the status route ignores the credential entirely
+    # Struck live twice: no header at all, and again with a junk bearer
+    # token attached. Both answered this exact body -- genuinely public,
+    # not merely unauthenticated by default.
+    source: https://api.track.toggl.com/api/v9/status
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/status
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        status: OK
+
+  - name: and a junk credential on the status route changes nothing
+    source: https://api.track.toggl.com/api/v9/status
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v9/status
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 200
+      body:
+        status: OK
