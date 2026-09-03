@@ -6,6 +6,12 @@ Emulates the Notion API (2022-06-28), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It refuses a request that carries no version header. Forgetting that header is
+the classic Notion integration bug, and a fake that waved it through would let
+code ship that fails on its first real call.
+
 ## Sources
 
 - Documentation: https://developers.notion.com/reference/intro
