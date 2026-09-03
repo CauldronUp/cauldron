@@ -1,0 +1,663 @@
+# Better Stack (Uptime) Recipe for Cauldron
+#
+# This is one of a batch of three uptime/status-page Recipes -- the other two
+# are instatus/recipe.yaml and pingdom/recipe.yaml -- written to answer one
+# question: a monitor that stops reporting is indistinguishable from a
+# service that is up unless the API says when it last checked, and unless a
+# paused monitor is distinguishable from a passing one. See
+# recipes/statuspage/recipe.yaml and recipes/uptimerobot/recipe.yaml for the
+# two Recipes already in this collection nearest in kind, and read on for
+# where Better Stack differs from both.
+#
+# Better Stack answers cleanly: status is a six-word enum -- up, down,
+# validating, paused, pending, maintenance -- and last_checked_at is its own
+# field, distinct from updated_at (the record's own last edit) and from
+# paused_at (when it was paused). A monitor that has been paused for a month
+# keeps whatever last_checked_at its final real check produced; the field
+# does not advance while paused, and status: paused is what tells a caller
+# not to read that frozen timestamp as recent. Two separate facts, two
+# separate fields, and a client checking only "is status down" would still
+# misread paused as fine -- it has to check status against the whole enum,
+# not against a single boolean. Confirmed from Better Stack's own published
+# reference for GET /api/v2/monitors and GET /api/v2/monitors/{id}
+# (last_checked_at, status, paused_at, created_at, updated_at all documented
+# separately with distinct example values); not verified live, because
+# reading a real monitor needs a real Team API token and this Recipe was
+# written with none.
+#
+# incident/status is a different, narrower vocabulary -- "Started" or
+# "Resolved", two words, title-cased, and nothing else -- and a resolved
+# incident keeps started_at sitting beside resolved_at rather than losing it,
+# so the full lifespan of an incident survives its own resolution. That
+# matches Statuspage's incident (resolved_at stamped, started_at kept) and is
+# a plainer vocabulary than Statuspage's five-state one.
+#
+# Every credential failure this Recipe tried -- no Authorization header, a
+# well-formed junk bearer token, a header with no "Bearer " prefix at all,
+# and "Bearer " with nothing after it -- answered the byte-identical body:
+#
+#   {"errors":"Invalid Team API token. How to find your Team API token:
+#   https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token"}
+#
+# Checked live, four ways, against /api/v2/monitors. Better Stack is the
+# collapsed case this format's three-verdict split exists to distinguish from
+# Instatus and Pingdom, its two neighbours in this batch: Instatus tells
+# absent from rejected, and Pingdom tells all three verdicts apart with four
+# different sentences. Better Stack tells none of them apart, and
+# auth.absent_error / malformed_error / rejected_error are left unset here
+# for exactly the reason auth.go gives: naming the same error for every
+# verdict is a real claim, and it is the right one.
+#
+# **The wrong-method message hardcodes the word "GET", regardless of what was
+# actually sent, and regardless of whether the path exists at all.** Checked
+# six ways against api.uptimerobot.com's neighbour on this host,
+# uptime.betterstack.com: GET and POST against a path that does not exist at
+# all, and PATCH, PUT, DELETE and OPTIONS against /api/v2/monitors, a path
+# that only ever answers GET. All six came back
+#
+#   {"errors":"Endpoint GET /api/v2/monitors does not exist.",
+#    "see_docs":"https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/"}
+#
+# (path substituted for the unrouted case). Not "Cannot PATCH", not "Method
+# not allowed" -- the literal word GET, every time, as though the server were
+# naming the one method this path would have accepted rather than the one it
+# received. None of the six needed a credential: a known route with the
+# right method needs one (see below), and everything else -- wrong path,
+# wrong method, or both -- is refused by routing before authentication is
+# ever consulted.
+#
+# **auth.after_routing: true**, and it is the Fireworks arrangement rather
+# than Rootly's: GET /api/v2/monitors and GET /api/v2/monitors/{id} (even
+# with a made-up id) both 401 with no credential, because the route matched
+# and the credential check runs after it; a path with no route at all, or a
+# real path with the wrong method, 404s with no credential examined,
+# because routing refuses the request before authentication gets a turn.
+# All four combinations were checked live.
+#
+# Cauldron's own method_not_allowed override renders {detail} as the
+# request's real method plus path -- "PATCH /api/v2/monitors" -- which is
+# faithful to almost every other Recipe in this collection and unfaithful to
+# this one, because Better Stack's own answer never contains the method that
+# was actually sent. It is declared here anyway, for any wrong method this
+# Recipe did not pin literally, and the header says plainly that its wording
+# will read a real method where Better Stack reads GET. The one route this
+# Recipe checked most thoroughly, PATCH on /api/v2/monitors, is pinned as its
+# own literal route instead, the same way UptimeRobot's Recipe pins its one
+# verified PUT case, so that at least one wrong-method conformance case
+# carries the real bytes rather than an approximation.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of roughly thirty documented monitor attributes this Recipe declares
+#     about seventeen. SMS/call/email/push alerting toggles beyond the
+#     booleans shown, maintenance-window fields, expected_status_codes,
+#     environment_variables and request_headers are entirely absent.
+#   - status-pages and heartbeats, two more top-level resources this API
+#     exposes, are not modelled at all -- this Recipe answers the survey
+#     question with monitors and incidents alone.
+#   - create, update, delete and the bulk-pause PUT are not modelled. Every
+#     route here is a GET.
+#   - Pagination is genuinely link-based -- the documented envelope is
+#     {"data": [...], "pagination": {"first", "last", "prev", "next"}}, each
+#     holding a full URL rather than an opaque cursor or a page number -- but
+#     it is not declared through responses.list.cursor_field, because this
+#     Recipe's own fixture has only two monitors and can never produce a
+#     next page for a case to assert the name against. What query parameter
+#     actually requests a given page was never confirmed against a real
+#     response either, because no credential exists to call one with, so
+#     route-level paging (limit_param, cursor_param) is left undeclared
+#     rather than guessed. Compare the identical gap in
+#     statuspage/recipe.yaml's own comment: "a claim nobody checked is worse
+#     than silence."
+#   - No rate limit is documented anywhere on the pages this Recipe read, and
+#     none of the eight live 401/404 responses it captured carried a
+#     rate-limit header of any kind, so no rate_limit error is declared.
+#   - No upstream.spec. Better Stack's docs are hand-written reference pages,
+#     not a published OpenAPI document this Recipe could find and
+#     fingerprint.
+#
+# Every case below not carrying a verified date was read from Better Stack's
+# own published API reference at betterstack.com/docs/uptime/api/, not
+# observed against a real team -- this Recipe was written with no credential
+# and created no account. The key below is a fixture, not a secret.
+
+recipe: betterstack
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron0000000000000000000000
+  # Every verdict answers the identical sentence -- see the header. Left
+  # unset deliberately: that is the honest claim, not an omission.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    # No key declared: monitor and incident each name their own collection
+    # ("data") below, and a Recipe-wide key here would describe a response
+    # nothing reads. cursor_field is left undeclared too, for a related
+    # reason -- see the header's pagination gap: the documented shape is a
+    # full URL under pagination.next, and this Recipe's two-monitor fixture
+    # is too small to ever produce a next page, so no case could assert the
+    # name where the value exists without a much larger fixture. Declaring
+    # it anyway would be exactly the unused-name claim this format's own
+    # validator refuses.
+  resource:
+    style: wrapped
+    key: data
+  error:
+    # {"errors": "..."} -- a bare string under a key that looks plural and
+    # never holds more than one sentence, on every failure this Recipe
+    # reached.
+    style: flat
+    message_field: errors
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  monitor:
+    collection: data
+    id:
+      # Documented only as a string ("2", "100" in the examples given) with
+      # no format stated anywhere, the same reasoning rootly/recipe.yaml
+      # gives for its own incident id.
+      style: opaque
+    fields:
+      url:
+        type: string
+        in: attributes
+      pronounceable_name:
+        type: string
+        in: attributes
+      monitor_type:
+        type: string
+        in: attributes
+      monitor_group_id:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # The field this Recipe exists to demonstrate -- see the header. Not
+      # the same fact as status, and not the same fact as updated_at.
+      last_checked_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      # up, down, validating, paused, pending, maintenance -- six words, and
+      # paused is one of them rather than a derived absence of the other
+      # five.
+      status:
+        type: string
+        default: up
+        in: attributes
+      # Set only once a monitor is actually paused; null the rest of the
+      # time. Distinct from last_checked_at, which is when it was last
+      # actually checked rather than when checking stopped.
+      paused_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      check_frequency:
+        type: integer
+        in: attributes
+      call:
+        type: boolean
+        default: true
+        in: attributes
+      sms:
+        type: boolean
+        default: true
+        in: attributes
+      email:
+        type: boolean
+        default: true
+        in: attributes
+      push:
+        type: boolean
+        default: true
+        in: attributes
+      http_method:
+        type: string
+        in: attributes
+      request_timeout:
+        type: integer
+        in: attributes
+      recovery_period:
+        type: integer
+        in: attributes
+      regions:
+        type: list
+        in: attributes
+      ssl_expiration:
+        type: integer
+        null_when_unset: true
+        in: attributes
+      domain_expiration:
+        type: integer
+        null_when_unset: true
+        in: attributes
+      created_at:
+        type: datetime
+        in: attributes
+      updated_at:
+        type: datetime
+        in: attributes
+    constants:
+      type: monitor
+
+  incident:
+    collection: data
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        in: attributes
+      # "Started" or "Resolved" -- two words, title-cased, and nothing else.
+      # See the header for the contrast with Statuspage's five-word incident
+      # vocabulary.
+      status:
+        type: string
+        default: Started
+        in: attributes
+      cause:
+        type: string
+        null_when_unset: true
+        in: attributes
+      url:
+        type: string
+        null_when_unset: true
+        in: attributes
+      http_method:
+        type: string
+        null_when_unset: true
+        in: attributes
+      started_at:
+        type: datetime
+        in: attributes
+      acknowledged_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      acknowledged_by:
+        type: string
+        null_when_unset: true
+        in: attributes
+      # Stamped once, and kept beside started_at rather than replacing it --
+      # see the header. A resolved incident's whole lifespan survives its own
+      # resolution.
+      resolved_at:
+        type: datetime
+        null_when_unset: true
+        in: attributes
+      resolved_by:
+        type: string
+        null_when_unset: true
+        in: attributes
+      call:
+        type: boolean
+        default: true
+        in: attributes
+      sms:
+        type: boolean
+        default: true
+        in: attributes
+      email:
+        type: boolean
+        default: true
+        in: attributes
+      push:
+        type: boolean
+        default: true
+        in: attributes
+      critical_alert:
+        type: boolean
+        default: false
+        in: attributes
+    constants:
+      type: incident
+
+routes:
+  - method: GET
+    path: /api/v2/monitors
+    resource: monitor
+    operation: list
+
+  - method: GET
+    path: /api/v2/monitors/{id}
+    resource: monitor
+    operation: get
+
+  - method: GET
+    path: /api/v2/incidents
+    resource: incident
+    operation: list
+
+  - method: GET
+    path: /api/v2/incidents/{id}
+    resource: incident
+    operation: get
+
+  # Pinned literally rather than left to the method_not_allowed override --
+  # see the header. This is the one wrong-method combination this Recipe
+  # checked and can therefore reproduce with the real bytes: status 404, no
+  # Allow header, and the word GET where the request actually said PATCH.
+  # public: when-absent rather than true, because only the no-credential
+  # shape of this request was actually sent live -- whether a junk or
+  # well-formed-but-wrong credential changes anything about this specific
+  # wrong-method 404 was never checked, so this exempts only the verdict
+  # this Recipe actually observed rather than claiming the wider one.
+  - method: PATCH
+    path: /api/v2/monitors
+    public: when-absent
+    error: monitors_get_only
+
+errors:
+  # Served for every credential verdict -- see the header. This is the
+  # literal, live-observed sentence for all four shapes this Recipe tried.
+  authentication_error:
+    status: 401
+    message: >-
+      Invalid Team API token. How to find your Team API token:
+      https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # A truly unrouted path. {detail} is the path alone; GET is a literal word
+  # in the template rather than a substitution, because the real API sends
+  # that word whatever method was actually used -- verified with GET and
+  # POST both, see the header.
+  unknown_route:
+    status: 404
+    message: "Endpoint GET {detail} does not exist."
+    fields:
+      see_docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # The general fallback for any wrong method this Recipe did not pin
+  # literally. {detail} here is Cauldron's own method-plus-path rendering,
+  # which will name the real method where Better Stack always names GET --
+  # see the header and the pinned PATCH route above for the exact case this
+  # Recipe could reproduce faithfully instead.
+  method_not_allowed:
+    status: 404
+    message: "Endpoint {detail} does not exist."
+    fields:
+      see_docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # The literal, live-verified answer for PATCH on /api/v2/monitors -- see
+  # the header and the pinned route above.
+  monitors_get_only:
+    status: 404
+    message: "Endpoint GET /api/v2/monitors does not exist."
+    fields:
+      see_docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+fixtures:
+  empty: {}
+
+  small-team:
+    monitor:
+      - id: "2"
+        url: https://uptime.betterstack.com
+        pronounceable_name: Uptime homepage
+        monitor_type: keyword
+        monitor_group_id: "12345"
+        last_checked_at: "2026-08-31T14:17:46.000Z"
+        status: up
+        check_frequency: 30
+        call: true
+        sms: true
+        email: true
+        push: true
+        http_method: get
+        request_timeout: 15
+        recovery_period: 0
+        regions: [us, eu, as, au]
+        ssl_expiration: 7
+        domain_expiration: 14
+        created_at: "2026-02-18T13:38:16.586Z"
+        updated_at: "2026-08-31T14:17:46.000Z"
+      # Paused, not down -- and last_checked_at is frozen at whatever the
+      # last real check produced rather than advancing, which is the whole
+      # point this Recipe exists to demonstrate. See the header.
+      - id: "3"
+        url: https://status.example.com
+        pronounceable_name: Marketing site
+        monitor_type: status
+        status: paused
+        paused_at: "2026-08-20T10:00:00.000Z"
+        last_checked_at: "2026-08-19T09:55:00.000Z"
+        check_frequency: 180
+        call: false
+        sms: false
+        email: true
+        push: true
+        http_method: get
+        request_timeout: 30
+        recovery_period: 0
+        regions: [us, eu]
+        created_at: "2026-01-05T09:00:00.000Z"
+        updated_at: "2026-08-20T10:00:00.000Z"
+
+    incident:
+      - id: "25"
+        name: Uptime homepage is down
+        status: Started
+        cause: "Status 404"
+        url: https://uptime.betterstack.com/
+        http_method: get
+        started_at: "2026-08-31T14:10:00.000Z"
+        call: true
+        sms: true
+        email: true
+        push: true
+        critical_alert: true
+      - id: "26"
+        name: Marketing site had a brief outage
+        status: Resolved
+        cause: Disk space usage high
+        started_at: "2026-08-30T09:00:45.583Z"
+        acknowledged_at: "2026-08-30T09:02:14.121Z"
+        acknowledged_by: John Smith
+        resolved_at: "2026-08-30T09:51:17.137Z"
+        resolved_by: John Smith
+        call: true
+        sms: false
+        email: true
+        push: true
+        critical_alert: false
+
+# Every case below carries source. A verified date means this Recipe called
+# uptime.betterstack.com with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from Better Stack's own
+# published API reference and never called with a real Team API token.
+conformance:
+  - name: no credential at all is refused for it
+    source: https://uptime.betterstack.com/api/v2/monitors
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors
+    expect:
+      status: 401
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+      body:
+        errors: >-
+          Invalid Team API token. How to find your Team API token:
+          https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token
+
+  - name: a well-formed junk token is told the identical sentence
+    source: https://uptime.betterstack.com/api/v2/monitors
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors: >-
+          Invalid Team API token. How to find your Team API token:
+          https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token
+
+  - name: a header with no Bearer prefix at all gets the same sentence too
+    source: https://uptime.betterstack.com/api/v2/monitors
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        errors: >-
+          Invalid Team API token. How to find your Team API token:
+          https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token
+
+  - name: a made-up id under a real route still needs the credential first
+    # The route matched (auth.after_routing checks the credential only once
+    # it has), so this is refused for its token rather than for the id.
+    source: https://uptime.betterstack.com/api/v2/monitors/999999999
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors/999999999
+    expect:
+      status: 401
+      body:
+        errors: >-
+          Invalid Team API token. How to find your Team API token:
+          https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/#get-an-uptime-api-token
+
+  - name: a path nobody registered needs no credential and always says GET
+    source: https://uptime.betterstack.com/api/v2/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/no-such-route-xyz
+    expect:
+      status: 404
+      body:
+        errors: "Endpoint GET /api/v2/no-such-route-xyz does not exist."
+        see_docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+
+  - name: the same unrouted path answers identically to a POST, still saying GET
+    # Proves the word is hardcoded rather than echoing the request: POST was
+    # sent and GET is what came back. See the header.
+    source: https://uptime.betterstack.com/api/v2/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: POST
+      path: /api/v2/no-such-route-xyz
+    expect:
+      status: 404
+      body:
+        errors: "Endpoint GET /api/v2/no-such-route-xyz does not exist."
+
+  - name: a real path with the wrong method needs no credential either, and still says GET
+    source: https://uptime.betterstack.com/api/v2/monitors
+    verified: "2026-09-03"
+    fixture: small-team
+    request:
+      method: PATCH
+      path: /api/v2/monitors
+    expect:
+      status: 404
+      body:
+        errors: "Endpoint GET /api/v2/monitors does not exist."
+        see_docs: https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/
+
+  - name: paused is its own status, and last_checked_at does not move once it is set
+    # The claim this Recipe exists to check: a monitor's own record carries
+    # both facts, separately, so a caller can tell a paused monitor from a
+    # merely quiet one. Documented shape, not a live pull -- see the header.
+    source: https://betterstack.com/docs/uptime/api/list-all-existing-monitors/
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors/3
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.attributes.status": paused
+        "data.attributes.paused_at": "2026-08-20T10:00:00.000Z"
+        "data.attributes.last_checked_at": "2026-08-19T09:55:00.000Z"
+
+  - name: the id sits outside attributes, JSON:API style
+    source: https://betterstack.com/docs/uptime/api/list-all-existing-monitors/
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/monitors/2
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.id": "2"
+        "data.type": monitor
+        "data.attributes.status": up
+        "data.attributes.url": https://uptime.betterstack.com
+      absent:
+        - "data.status"
+        - id
+        - status
+
+  - name: a resolved incident keeps started_at beside resolved_at
+    source: https://betterstack.com/docs/uptime/api/list-all-incidents/
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/incidents/26
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.attributes.status": Resolved
+        "data.attributes.started_at": "2026-08-30T09:00:45.583Z"
+        "data.attributes.resolved_at": "2026-08-30T09:51:17.137Z"
+
+  - name: an unresolved incident's status is the plain two-word vocabulary
+    # Better Stack's own reference shows acknowledged_at and resolved_at as
+    # null while unset, not omitted -- the field stays on the record, unlike
+    # Statuspage's resolved_at, which this Recipe's neighbour never sends
+    # until it is actually stamped.
+    source: https://betterstack.com/docs/uptime/api/list-all-incidents/
+    fixture: small-team
+    request:
+      method: GET
+      path: /api/v2/incidents/25
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "data.attributes.status": Started
+        "data.attributes.resolved_at": null
+        "data.attributes.acknowledged_at": null
