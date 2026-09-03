@@ -1,0 +1,665 @@
+# Open States v3 Recipe for Cauldron
+#
+# Open States is two surfaces wearing one name, and this task asked which one
+# a Recipe should model and why. The answer, checked live: REST, at
+# v3.openstates.org, because GraphQL is not really the same product any
+# more. GET https://openstates.org/graphql redirects -- 307, checked live --
+# to https://open.pluralpolicy.com/graphql, a different host entirely, under
+# a rebrand (Plural Policy) the REST host never mentions. And the project's
+# own documentation site says outright, in its own navigation, that the page
+# for it is "DEPRECATED - GraphQL API." A Recipe modelling GraphQL here would
+# be modelling a labelled-deprecated interface to a company's product that
+# has since renamed itself, when a live, versioned, fetchable OpenAPI
+# description of the REST surface exists at the same host that answers it.
+#
+# The two surfaces do not even agree on how they refuse you, which is worth
+# recording before moving past GraphQL entirely. Struck live, with no
+# account and no key:
+#
+#   REST (v3.openstates.org):
+#     no key at all      -> 403 {"detail":"Must provide API Key as ?apikey
+#                                 or X-API-KEY. Login and visit
+#                                 https://openstates.org/account/profile/
+#                                 for your API key."}
+#     a wrong key        -> 401 {"detail":"Invalid API Key. Login and visit
+#                                 https://openstates.org/account/profile/
+#                                 for your API key."}
+#
+#   GraphQL (open.pluralpolicy.com, reached via the redirect above):
+#     no key at all      -> 403 {"error":"must provide an API key","note":
+#                                 "Login and visit
+#                                 https://openstates.org/account/profile/
+#                                 for your API key. contact@openstates.org
+#                                 to raise limits"}
+#     a wrong key        -> 403 {"error":"no valid key","note":"..."} --
+#                                 the SAME status the absent case gets,
+#                                 unlike REST, which answers 401 for exactly
+#                                 this case
+#
+# Same account system (both messages point at the identical
+# openstates.org/account/profile/ page), completely different frameworks
+# (uvicorn under REST, an nginx-fronted Django app issuing its own
+# csrftoken cookie under GraphQL) and a genuinely different verdict split:
+# REST tells absent from wrong by status code as well as by sentence;
+# GraphQL tells them apart only by sentence, because both failures share one
+# status. That is recorded here because it was struck live and is real, not
+# because this Recipe routes it -- see "on modelling" below for why.
+#
+# X-API-KEY is a real header on the REST surface, and so is `?apikey=` as a
+# query parameter -- both struck live and both reach the identical 200 (for
+# a real key) or 401 (for a wrong one). What is not the same is an EMPTY
+# credential versus an ABSENT one, and the two collapse together on this
+# host in a way worth being precise about: `?apikey=` (the parameter
+# present, its value the empty string) answers the identical 403 "Must
+# provide API Key" that leaving the parameter off entirely answers -- struck
+# live, byte for byte. That is the "malformed vs missing" question this
+# task asked about, expressed the OPPOSITE way FireHydrant's Recipe in this
+# collection expresses it: there, an absent credential earns the generic
+# wording and a rejected one earns its own sentence; here, a PRESENT BUT
+# EMPTY credential is folded into the absent sentence rather than treated as
+# a rejected one -- which Cauldron's own three-verdict credential check
+# (Absent, Malformed, Rejected -- see internal/recipe/auth.go) cannot
+# express on its own, because a present empty string is not Absent by that
+# check's own definition ("not an empty string -- the header or query
+# parameter is not there at all"). See "on modelling" for how this Recipe
+# handles the gap.
+#
+# Routing beats the credential unconditionally, on every path this Recipe
+# struck, live, with and without a key: GET /this-is-not-a-real-endpoint
+# answers 404 {"detail":"Not Found"} regardless of what Authorization-shaped
+# header is sent, and PUT /jurisdictions -- a method this host does not
+# register -- answers 405 {"detail":"Method Not Allowed"} with a real
+# Allow: GET header, also regardless of credential. Both this API's failure
+# envelope (a bare "detail" string, nothing else) and this ordering
+# (routing first, always) are the SAME shape FastAPI's own defaults produce
+# -- uvicorn is the server header on every response -- so this is a case
+# where the framework's defaults and the provider's own behaviour happen to
+# coincide rather than the provider layering something custom on top, and it
+# is stated here rather than presented as a deliberate design choice.
+#
+# /openapi.json and /docs both answer 200 with no key at all -- the API's
+# own machine-readable description is public even though the data behind it
+# is not, which is how this Recipe was written without ever holding a key:
+# every 200 case below cites a schema `example:` value from that document,
+# and none of them carries a verified date, because no key was ever used to
+# confirm the shape against a real jurisdiction or a real bill.
+#
+# The identifier story is where this API is closer to Fireworks' Recipe in
+# this collection than to any of the other two in this task. A bill's own
+# `id` is Open States' own minted value -- "ocd-bill/f0049138-1ad8-4506-a2a4-
+# f4dd1251bbba", an Open Civic Data identifier -- and `identifier` is the
+# authoritative one: the state's own bill number, "SB 113" in the schema's
+# own worked example, exactly what a citizen, a journalist or the
+# legislature's own website would call the bill. Both are first-class: this
+# API declares TWO separate routes that answer with the identical Bill
+# object, one addressed by Open States' own id
+# (/bills/ocd-bill/{openstates_bill_id}) and one addressed by the
+# authoritative triple of jurisdiction, session and bill number
+# (/bills/{jurisdiction}/{session}/{bill_id}) -- a caller who only ever
+# learned the state's own bill number from a news article can reach the same
+# record a caller who stored the OCD id can, and this task's question --
+# "can a caller get from one to the other" -- is answered here by the
+# provider declaring the crosswalk as an actual second route rather than
+# leaving it to be reconstructed.
+#
+# Stability is where OpenStates' own schema volunteers something the other
+# two providers in this task had to be checked live for: `other_identifiers`
+# on a Bill is documented, in the schema's own words, as an array of past
+# identifiers -- and its own example value, "ocd-bill-mn-2025_2026-sf827",
+# is an OLDER-GENERATION Open States id (the pre-UUID scheme this project
+# used before), not a third-party cross-reference. That is a documented
+# admission that Open States' OWN identifier for a bill has not always been
+# stable across this project's history, and that it keeps the discarded
+# value around rather than letting a caller who cached the old one silently
+# lose the record.
+#
+# Staleness has its own field, at the level of a whole jurisdiction rather
+# than one record: `latest_bill_update` and `latest_people_update`, both
+# required, both dated, on every Jurisdiction object. That is the direct
+# analogue of this collection's own "when was this last touched" question,
+# and it answers it at the coarsest possible grain -- one instant for every
+# bill in a state, not one per bill -- which is a real limitation this
+# Recipe states rather than smooths over: a caller cannot tell from this
+# field alone whether the one bill they care about was re-scraped an hour
+# ago or has not moved in a year, only that SOMETHING in the jurisdiction
+# has.
+#
+# On modelling: auth.scheme is none here, the same trade Census, Turso and
+# CourtListener elsewhere in this task and this collection make, and for a
+# reason specific to this host -- Cauldron's own three-verdict credential
+# check cannot make "a present, empty apikey behaves like an absent one"
+# true while ALSO making "a present, non-empty, wrong apikey gets a
+# different status and sentence" true, because both are the same verdict
+# (Rejected: present, not held) under that check's own binary
+# present/absent split. Every route below says for itself which credential
+# shape it answers.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested,
+#     guessed or used. Every 200 case below cites a schema `example:` value,
+#     several of them spliced together from separate fields of the SAME
+#     schema (the way Together's and Fireworks' Recipes elsewhere in this
+#     collection already do, and say so): the bill fixture's
+#     other_identifiers value is the schema's own MN example on an
+#     otherwise NC-themed bill, and openstates_url is the schema's own
+#     separate field example, not a URL that would actually resolve to the
+#     "SB 113 / Adopting a State Scorpion" example bill. None of it is
+#     invented; all of it is cited, and none of it was observed together on
+#     one real record.
+#   - created_at and updated_at on a Bill are declared, required by the
+#     schema, and carry no `example:` value anywhere in the published
+#     description. Rather than invent one, they are left out of the fixture
+#     and stamped by the sandbox clock instead -- see field.stamped in
+#     internal/recipe/resource.go -- and no case below asserts a specific
+#     value for either.
+#   - /bills/ocd-bill/{openstates_bill_id} -- the OTHER route to the same
+#     Bill object, addressed by Open States' own id -- is real, documented,
+#     and not routed here. Its own path template hard-codes a literal
+#     "ocd-bill" segment before the parameter, and the id it addresses
+#     ("ocd-bill/f0049138-...") already contains that same prefix -- so
+#     whether a caller supplies the bare UUID or the id's own full value,
+#     including its "ocd-bill/" prefix, a second time is genuinely
+#     ambiguous from the published description alone, and no key was ever
+#     available to call it and find out. Declaring a route on a guessed
+#     convention would be a claim about the wire nobody checked; the
+#     natural-key route (/bills/{jurisdiction}/{session}/{bill_id}, which
+#     has no such ambiguity) carries the identifier-crosswalk finding
+#     instead.
+#   - people, committees, events and votes -- all real, documented
+#     endpoints -- are not modelled. This task's own rule is to keep real,
+#     named individuals out of a fixture wherever an organisation, a court
+#     or a bill answers the same question, and jurisdictions and bills
+#     already carry every finding this Recipe was asked to establish.
+#   - No specific anonymous-caller rate limit is recorded. Both failure
+#     sentences point at "contact@openstates.org to raise limits," which
+#     confirms a limit exists; no page this Recipe could find states a
+#     number, so none is served here.
+
+recipe: openstates
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://v3.openstates.org/docs
+  spec: https://v3.openstates.org/openapi.json
+  spec_hash: 510cf3c05cd24398ba5bad23b6b8d8e5d8c24e27e7cbf0540c3b8ece8c5d579d
+  spec_seen: "2026-09-02"
+
+auth:
+  # See the header: a present-but-empty apikey behaves like an absent one,
+  # and Cauldron's own three-verdict check cannot express that alongside a
+  # present-but-wrong key answering differently, so every route below says
+  # for itself which credential shape it answers.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+    count_field: pagination.total_items
+    page_field: pagination.page
+    limit_field: pagination.per_page
+    pages_field: pagination.max_page
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  jurisdiction:
+    collection: results
+    id:
+      # Open States' own Open Civic Data id -- a structured, slash-bearing
+      # string, not minted from a sequence. "ocd-jurisdiction/country:us/
+      # state:nc/government".
+      style: opaque
+    fields:
+      name:
+        type: string
+      classification:
+        # state, municipality or country -- the schema's own closed
+        # enumeration.
+        type: string
+      division_id:
+        type: string
+        default: ""
+      url:
+        type: string
+      # Jurisdiction-wide, not per-record -- see the header for why this
+      # answers the staleness question at a coarser grain than a caller
+      # might expect.
+      latest_bill_update:
+        type: datetime
+      latest_people_update:
+        type: datetime
+
+  bill:
+    collection: results
+    id:
+      # "ocd-bill/f0049138-1ad8-4506-a2a4-f4dd1251bbba" -- Open States' own
+      # minted id, not the authoritative one. See the header.
+      style: opaque
+    fields:
+      # A bare jurisdiction abbreviation, held only to resolve the
+      # /bills/{jurisdiction}/{session}/{id} route below -- not part of the
+      # documented Bill schema, and never sent on the wire. The full
+      # jurisdiction object below (nested, from the schema) is what a real
+      # response actually carries.
+      jurisdiction:
+        type: string
+        in: "-"
+      session:
+        type: string
+      # The court/jurisdiction this bill belongs to, nested the same way
+      # Rootly's severity nests a second document inside one attribute
+      # elsewhere in this collection.
+      jurisdiction_id:
+        type: string
+        in: jurisdiction
+        as: id
+      jurisdiction_name:
+        type: string
+        in: jurisdiction
+        as: name
+      jurisdiction_classification:
+        type: string
+        in: jurisdiction
+        as: classification
+      from_organization_id:
+        type: string
+        in: from_organization
+        as: id
+      from_organization_name:
+        type: string
+        in: from_organization
+        as: name
+      from_organization_classification:
+        type: string
+        in: from_organization
+        as: classification
+      # The authoritative identifier: the legislature's own bill number.
+      # See the header.
+      identifier:
+        type: string
+      title:
+        type: string
+      classification:
+        type: list
+      subject:
+        type: list
+      # No example value exists anywhere in the published schema for
+      # either -- see the gaps below. Left unset so the sandbox clock
+      # stamps them rather than this Recipe inventing one.
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      openstates_url:
+        type: string
+      first_action_date:
+        type: string
+        default: ""
+      latest_action_date:
+        type: string
+        default: ""
+      latest_action_description:
+        type: string
+        default: ""
+      latest_passage_date:
+        type: string
+        default: ""
+      # Open States' own discarded ids for this bill -- see the header for
+      # why this is a documented admission that its own identifier has not
+      # always been stable.
+      other_identifiers:
+        type: list
+
+routes:
+  - method: GET
+    path: /jurisdictions
+    resource: jurisdiction
+    operation: list
+    matches_header:
+      X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    pagination:
+      style: page
+      limit: 52
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  # The same route, the query-parameter transport. Confirmed live: both
+  # reach the identical credential outcome on this host.
+  - method: GET
+    path: /jurisdictions
+    resource: jurisdiction
+    operation: list
+    matches_query:
+      apikey: cauldron-openstates-fixture-key-0000000000000000
+    pagination:
+      style: page
+      limit: 52
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /jurisdictions
+    matches_header:
+      X-API-KEY: junkjunkjunk12345
+    error: invalid_key
+
+  # The query-parameter transport, wrong key. Struck live: identical to the
+  # header transport above.
+  - method: GET
+    path: /jurisdictions
+    matches_query:
+      apikey: junkjunkjunk12345
+    error: invalid_key
+
+  # Present and empty, not absent -- and answered like absent anyway. See
+  # the header.
+  - method: GET
+    path: /jurisdictions
+    matches_query:
+      apikey: ""
+    error: must_provide_key
+
+  - method: GET
+    path: /jurisdictions
+    error: must_provide_key
+
+  - method: GET
+    path: /jurisdictions/{id...}
+    resource: jurisdiction
+    operation: get
+    matches_header:
+      X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+
+  - method: GET
+    path: /jurisdictions/{id...}
+    error: must_provide_key
+
+  - method: GET
+    path: /bills
+    resource: bill
+    operation: list
+    matches_header:
+      X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    pagination:
+      style: page
+      limit: 20
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /bills
+    error: must_provide_key
+
+  # The authoritative-identifier lookup: the same Bill object /bills
+  # answers, reached by jurisdiction, session and the legislature's own
+  # bill number rather than by Open States' own id. Composite, the same
+  # shape AfterShip's Recipe elsewhere in this collection uses for a
+  # carrier-scoped tracking number: jurisdiction and session scope the
+  # lookup, and lookup_by resolves {id} against `identifier` rather than
+  # against Open States' own opaque id. See the header for why the OTHER
+  # lookup route (by Open States' own id) is not modelled.
+  - method: GET
+    path: /bills/{jurisdiction}/{session}/{id}
+    resource: bill
+    operation: get
+    scope: [jurisdiction, session]
+    lookup_by: identifier
+    matches_header:
+      X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+
+  - method: GET
+    path: /bills/{jurisdiction}/{session}/{id}
+    error: must_provide_key
+
+  # Routing wins over the credential unconditionally -- struck live with no
+  # key at all.
+  - method: PUT
+    path: /jurisdictions
+    error: method_not_allowed
+
+  - method: GET
+    path: /this-is-not-a-real-endpoint
+    error: unrouted
+
+errors:
+  must_provide_key:
+    status: 403
+    message: >-
+      Must provide API Key as ?apikey or X-API-KEY. Login and visit
+      https://openstates.org/account/profile/ for your API key.
+
+  invalid_key:
+    status: 401
+    message: >-
+      Invalid API Key. Login and visit https://openstates.org/account/profile/
+      for your API key.
+
+  unrouted:
+    status: 404
+    message: Not Found
+
+  method_not_allowed:
+    status: 405
+    message: Method Not Allowed
+    headers:
+      allow: GET
+
+fixtures:
+  empty: {}
+
+  fifty-states:
+    jurisdiction:
+      - id: ocd-jurisdiction/country:us/state:nc/government
+        name: North Carolina
+        classification: state
+        division_id: ocd-division/country:us/state:nc
+        url: https://nc.gov
+        latest_bill_update: "2026-08-30T04:00:00Z"
+        latest_people_update: "2026-07-15T04:00:00Z"
+
+    bill:
+      # Every value is an "example:" in Open States' own published
+      # OpenAPI description, spliced from several fields of the same
+      # schemas -- see the header for exactly which two do not belong to
+      # the same real bill.
+      - id: ocd-bill/f0049138-1ad8-4506-a2a4-f4dd1251bbba
+        jurisdiction: nc
+        session: "2020"
+        jurisdiction_id: ocd-jurisdiction/country:us/state:nc/government
+        jurisdiction_name: North Carolina
+        jurisdiction_classification: state
+        from_organization_id: ocd-organization/32aab083-d7a0-44e0-9b95-a7790c542605
+        from_organization_name: North Carolina General Assembly
+        from_organization_classification: legislature
+        identifier: SB 113
+        title: Adopting a State Scorpion
+        classification:
+          - resolution
+        subject:
+          - SCORPIONS
+          - SYMBOLS
+        openstates_url: https://openstates.org/nc/bills/2019/HB1105/
+        first_action_date: "2020-01-01"
+        latest_action_date: "2020-02-01"
+        latest_action_description: Introduced in House
+        latest_passage_date: "2020-03-01"
+        other_identifiers:
+          - identifier: ocd-bill-mn-2025_2026-sf827
+
+# Every case below carries source. A verified date means this Recipe called
+# v3.openstates.org (or, for the two GraphQL cases, open.pluralpolicy.com)
+# with exactly the request shown and recorded exactly what came back; its
+# absence means the case was read from Open States' own published OpenAPI
+# description at v3.openstates.org/openapi.json and never called with a key
+# this Recipe held.
+conformance:
+  - name: no key at all is refused with a 403 naming both transports
+    source: https://v3.openstates.org/jurisdictions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /jurisdictions
+    expect:
+      status: 403
+      body:
+        detail: >-
+          Must provide API Key as ?apikey or X-API-KEY. Login and visit
+          https://openstates.org/account/profile/ for your API key.
+
+  - name: a present but empty apikey is refused the identical way, not as a wrong one
+    source: https://v3.openstates.org/jurisdictions?apikey=
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /jurisdictions?apikey=
+    expect:
+      status: 403
+      body:
+        detail: >-
+          Must provide API Key as ?apikey or X-API-KEY. Login and visit
+          https://openstates.org/account/profile/ for your API key.
+
+  - name: a wrong key is a different status and a different sentence
+    source: https://v3.openstates.org/jurisdictions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /jurisdictions
+      headers:
+        X-API-KEY: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        detail: >-
+          Invalid API Key. Login and visit https://openstates.org/account/profile/
+          for your API key.
+
+  - name: the query-parameter transport answers a wrong key exactly the same way
+    source: https://v3.openstates.org/jurisdictions?apikey=junkjunkjunk12345
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /jurisdictions?apikey=junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        detail: >-
+          Invalid API Key. Login and visit https://openstates.org/account/profile/
+          for your API key.
+
+  - name: an unrouted path 404s in JSON regardless of any credential
+    source: https://v3.openstates.org/this-is-not-a-real-endpoint
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body:
+        detail: Not Found
+
+  - name: a wrong method 405s with a real Allow header, also regardless of any credential
+    source: https://v3.openstates.org/jurisdictions
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: PUT
+      path: /jurisdictions
+    expect:
+      status: 405
+      headers:
+        allow: GET
+      body:
+        detail: Method Not Allowed
+
+  - name: a jurisdiction states a staleness instant for the whole state at once
+    source: https://v3.openstates.org/openapi.json
+    fixture: fifty-states
+    request:
+      method: GET
+      path: /jurisdictions
+      headers:
+        X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].id": ocd-jurisdiction/country:us/state:nc/government
+        "results[0].classification": state
+      matches:
+        "results[0].latest_bill_update": "^\\d{4}-\\d{2}-\\d{2}"
+        "results[0].latest_people_update": "^\\d{4}-\\d{2}-\\d{2}"
+
+  - name: the pagination envelope nests all four counters under its own key
+    source: https://v3.openstates.org/openapi.json
+    fixture: fifty-states
+    request:
+      method: GET
+      path: /jurisdictions
+      headers:
+        X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        pagination.page: 1
+        pagination.per_page: 52
+      matches:
+        pagination.total_items: "^\\d+$"
+        pagination.max_page: "^\\d+$"
+
+  - name: a bill carries both its own id and the authoritative one
+    source: https://v3.openstates.org/openapi.json
+    fixture: fifty-states
+    request:
+      method: GET
+      path: /bills
+      headers:
+        X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].id": ocd-bill/f0049138-1ad8-4506-a2a4-f4dd1251bbba
+        "results[0].identifier": SB 113
+        "results[0].session": "2020"
+
+  - name: the same bill is reachable by the authoritative triple instead of the internal id
+    source: https://v3.openstates.org/openapi.json
+    fixture: fifty-states
+    request:
+      method: GET
+      path: /bills/nc/2020/SB 113
+      headers:
+        X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        id: ocd-bill/f0049138-1ad8-4506-a2a4-f4dd1251bbba
+        identifier: SB 113
+
+  - name: other_identifiers is a documented record of Open States' own discarded ids
+    source: https://v3.openstates.org/openapi.json
+    fixture: fifty-states
+    request:
+      method: GET
+      path: /bills
+      headers:
+        X-API-KEY: cauldron-openstates-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].other_identifiers[0].identifier": ocd-bill-mn-2025_2026-sf827
