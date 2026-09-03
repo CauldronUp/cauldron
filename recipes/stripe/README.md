@@ -6,6 +6,16 @@ Emulates the Stripe API (2026-06-30), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Two of the runtime's early bugs were about this provider being treated as the
+default. Errors came back in Stripe's nested shape for providers that send a
+flat one, and the list envelope carried a `next_cursor` field Stripe does not
+send.
+
+That second one is the worst kind of infidelity, because code written against it
+works locally and breaks in production.
+
 ## Sources
 
 - Documentation: https://docs.stripe.com/api
