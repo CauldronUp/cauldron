@@ -1,0 +1,498 @@
+# Porkbun Recipe for Cauldron
+#
+# Compare recipes/cloudflare/recipe.yaml first, since it is the reference
+# point for this whole collection: one envelope, one bearer token, four keys
+# on every response. Porkbun disagrees with it in the one place that matters
+# most for an emulator -- where the credential travels. Every worked example
+# in Porkbun's own documentation puts apikey and secretapikey **in the JSON
+# request body**, on every call including reads: domain/checkDomain,
+# dns/retrieve, all of it. There is no scheme in Cauldron's auth block for
+# that -- ValidAuthSchemes is bearer, basic, header, query, none
+# (internal/recipe/auth.go) -- because the credential this format checks is
+# always something a caller *carries*, on a header or in the URL, never
+# something buried inside a parsed request body. What follows is what could
+# and could not be honestly reproduced given that gap.
+#
+# **The body path was probed live, exhaustively, on 2026-09-03, and it is
+# richer than the brief for this batch describes.** A completely empty POST
+# body (zero bytes, no Content-Type) answers 400
+# {"status":"ERROR","message":"All API requests must provide minimal
+# required data.","code":"INVALID_OR_EMPTY_JSON"} -- a body-parse failure,
+# not a credential one. A syntactically valid but empty JSON object, `{}`,
+# answers a *different* 400: {"status":"ERROR","message":"All API requests
+# require an API key or API token.","code":"API_KEY_REQUIRED"}. An apikey
+# field that is present and non-empty -- even if secretapikey is missing
+# entirely, even if apikey is garbage with spaces in it -- answers a third
+# 400: {"status":"ERROR","message":"Invalid API key. (001)","code":
+# "INVALID_API_KEYS_001", "next_action":{"type":"authenticate","hint":
+# "Your API key or secret is invalid. Verify them, or create a new key.",
+# "retryable":false,"url":"https://porkbun.com/account/api"}}. And an
+# apikey field present as the empty string, `{"apikey":""}`, answers the
+# *same* API_KEY_REQUIRED as no field at all -- confirmed live -- which
+# means Porkbun already draws the absent/present line exactly where
+# Cauldron's own runtime does for a query or header credential (an empty
+# value counts as nothing sent), it just draws it inside a body Cauldron
+# has no mechanism to inspect for this purpose. secretapikey's own presence
+# or absence, on its own, changes nothing this Recipe could find: only
+# apikey's is examined for the absent/present question.
+#
+# **There is a second, real credential surface this batch's brief does not
+# mention, and it is not a guess -- it is Porkbun's own OpenAPI description**
+# (porkbun.com/api/json/v3/spec, fetched 2026-09-03): the top-level
+# `security` block names `X-API-Key` / `X-Secret-API-Key` as request
+# headers, and AuthRequest's own words are "Provide apikey/secretapikey in
+# the request body, OR supply them as X-API-Key/X-Secret-API-Key request
+# headers. One of the two methods is required." Every worked code sample in
+# the same document still uses the body, which is presumably why the brief
+# for this batch describes only that half -- but the header pair is real,
+# confirmed live: X-API-Key alone (no secret header, no body at all) reaches
+# the identical INVALID_API_KEYS_001 a body-based attempt with both fields
+# wrong gets, and a request with headers attached skips the body-parsing
+# gate entirely -- a genuinely empty POST body with X-API-Key attached does
+# NOT answer INVALID_OR_EMPTY_JSON, it goes straight to key validation.
+# **This is the surface this Recipe's auth block actually models**, because
+# it is the one shape Cauldron's scheme: header can check, and because doing
+# so lets every absent/rejected case below run through the engine's own
+# verdict machinery with a genuine, dated, live 2026-09-03 request rather
+# than an approximation. auth.header names X-API-Key alone -- Cauldron
+# checks one header, and X-Secret-API-Key's own presence turned out not to
+# matter here either: X-API-Key present with no secret header at all reached
+# the identical INVALID_API_KEYS_001, live, mirroring the body path exactly.
+#
+# **Every one of these four failures is HTTP 400, never 401.** Absent,
+# malformed-by-emptiness, and rejected all read the same status line; the
+# only way to tell them apart, credential or body, is the JSON code field.
+# auth.absent_error and auth.rejected_error below are both pinned to their
+# own status: 400 for exactly this reason -- the runtime's usual 401
+# default for an unauthenticated request would be a claim about this
+# provider that four separate live requests contradict.
+#
+# **Method is checked before the credential, and before the body is parsed
+# at all.** GET, PUT and DELETE against /domain/checkDomain/{domain} -- with
+# no credential, and separately with a wrong X-API-Key/X-Secret-API-Key pair
+# attached -- all answered the identical 400 {"status":"ERROR","message":
+# "This API request must use POST.","code":"METHOD_NOT_ALLOWED"}, live,
+# credential-blind both ways. That is not a real 405 -- no Allow header, a
+# 400 rather than a 405 -- and it is checked ahead of the JSON-parse gate
+# too: sending no body at all on GET answers this, not
+# INVALID_OR_EMPTY_JSON. Porkbun's own spec calls this out for
+# domain/checkDomain by name: "This API request must use POST" is exactly
+# what "Porkbun also requires POST for operations that read" means on the
+# wire, not only in the brief's own words.
+#
+# **Routing beats the credential too, for a genuinely unrecognised path.**
+# GET and POST against /api/json/v3/nosuchroute, credentialled and not, both
+# answered the identical branded 404 HTML page -- openresty's default error
+# document, restyled with Porkbun's own "Bob Ross" mascot image, not a JSON
+# body at all. auth.after_routing: true reproduces both findings: an
+# unmatched path 404s before any credential is examined, and a matched path
+# with the wrong method answers its own fixed failure before the credential
+# is too.
+#
+# **Public routes exist on the same host as the gated ones, and they answer
+# the availability-adjacent question this whole batch is about.**
+# GET and POST /ping both answer 200 with no credential of any kind,
+# confirmed live -- {"status":"SUCCESS","yourIp":"...",
+# "xForwardedFor":"...","requestId":"..."}. GET and POST
+# /pricing/get also answer 200 uncredentialled with a several-hundred-TLD
+# table of registration/renewal/transfer prices -- verified live, and not
+# modelled as a route below because the payload is 250KB and quoting it in
+# full the way this Recipe's other raw bodies are quoted would be quoting
+# Porkbun's price list rather than describing its behaviour. What it proves,
+# stated rather than routed: a provider can hand out real, current prices
+# with no authentication whatsoever, on the same host that requires a key
+# for the operation that pairs a price with a specific domain's
+# availability.
+#
+# **Does a price accompany availability, and is it per year?** Porkbun's own
+# OpenAPI schema for domain/checkDomain's 200 -- CheckDomainResponse, read
+# 2026-09-03, never observed live because no key exists to reach it -- is
+# the most explicit of any provider in this batch on this exact question.
+# response.price is documented, in the schema's own words, as "Registration
+# price per year in USD" -- period and currency both stated, neither left to
+# be inferred the way Namecheap's and DNSimple's equivalents are elsewhere
+# in this batch. avail, premium and firstYearPromo are each a bare "yes"/
+# "no" string, not a boolean -- a real trap for a client whose type checker
+# expects true/false. additional.renewal and additional.transfer carry the
+# same per-year, per-domain prices for the two other events a client would
+# want to budget for. None of this could be turned into a conformance case:
+# see the fidelity gaps below for why a composite fixture built from these
+# scattered per-field schema examples was rejected rather than risked.
+#
+# **Does the response say when the check happened, and does it distinguish
+# "not registered" from "reserved" or "blocked"?** No timestamp field exists
+# anywhere in CheckDomainResponse -- not on the top level, not inside
+# response, not inside limits. The only time-shaped thing on the whole
+# schema is ttlRemaining, seconds until the *rate limit* resets, which says
+# nothing about when availability was determined. And the schema's own
+# vocabulary is exactly two booleans, avail and premium -- searched across
+# Porkbun's whole OpenAPI description, "reserved" appears once, in an
+# unrelated TLD-transfer-lock passage, and never near checkDomain at all. A
+# domain the registry reserves would have nowhere to say so beyond
+# avail: "no", indistinguishable from one somebody else simply registered
+# first.
+#
+# **checkDomain's own rate limit is the sharpest illustration in this batch
+# of why the timestamp question matters.** Porkbun's spec documents it by
+# name on this one operation: "Default is 1 check per 10 seconds per
+# account," configurable per key, with usage reported back in the response's
+# own limits object (TTL, limit, used, a naturalLanguage summary) --
+# meaning Porkbun's own design already assumes an integration will call this
+# repeatedly to catch a domain the instant it frees up, and throttles
+# exactly that pattern, while never stamping any one answer with when it was
+# true.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No route models a genuine 200 for domain/checkDomain. Porkbun's own
+#     OpenAPI description gives per-field "example" values scattered across
+#     the CheckDomainResponse schema (price: "9.73", premium: "yes"/"no" as
+#     enum members, and so on) and never a single complete worked response
+#     object anywhere this Recipe could find. Assembling one from those
+#     fragments would be exactly the fabrication Step 3 of this batch's
+#     brief warns against -- a plausible-looking composite nobody actually
+#     returned together -- so the route is left out and the schema's own
+#     words are quoted in this header instead.
+#   - The body-based credential (apikey/secretapikey in JSON) is described
+#     at length above and modelled nowhere as a route, because
+#     Cauldron has no scheme for a body-carried credential at all. Every
+#     conformance case below uses the header pair, which is real,
+#     documented and verified, and is not the path any of Porkbun's own
+#     code samples actually show.
+#   - The single finest distinction on the body path -- {"apikey":""} being
+#     treated as absent rather than present-and-empty -- was confirmed live
+#     and is not asserted as a case, for the same reason: no route reaches
+#     it.
+#   - /pricing/get is cited, live-verified, and not routed -- see above.
+#   - checkDomain's terminal route.error is rate_limited, reached in this
+#     file only via arm, because no real key exists to trigger it
+#     genuinely and no route here ever reaches "credential accepted" any
+#     other way (see the empty-success-route gap above). It is Porkbun's
+#     own documented shape for this exact endpoint, not a guess.
+#   - dns/retrieve/{domain} was probed live to confirm the body-credential
+#     pattern generalises beyond checkDomain -- {} answers the identical
+#     API_KEY_REQUIRED -- and is not declared as a route, to avoid a second
+#     path whose only job would be repeating the first one's finding.
+#
+# Every key and header value below is a fixture that authenticates nothing
+# on the real service.
+
+recipe: porkbun
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://porkbun.com/api/json/v3/documentation
+  spec: https://porkbun.com/api/json/v3/spec
+  spec_hash: f2ee19d22d2c3e014867eb808e06d4fe7a0d5dff7eb899ef13a0eaf491d9a7ef
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: header
+  header: X-API-Key
+  keys:
+    - pk1_cauldron00000000000000000000000000000000000000000000000000
+  # Both pinned to 400 -- see the header. The runtime's usual 401 default
+  # for these two verdicts would misrepresent this host.
+  absent_error: api_key_required
+  rejected_error: invalid_api_key
+  after_routing: true
+
+responses:
+  error:
+    style: flat
+    message_field: message
+    code_field: code
+    fields:
+      status: ERROR
+
+routes:
+  - method: GET
+    path: /api/json/v3/ping
+    public: true
+    raw:
+      content_type: application/json
+      text: '{"status":"SUCCESS","yourIp":"216.208.59.51","xForwardedFor":"216.208.59.51","requestId":"01a067f2-a616-736c-abb4-cefd3b24a6f5"}'
+
+  - method: POST
+    path: /api/json/v3/ping
+    public: true
+    raw:
+      content_type: application/json
+      text: '{"status":"SUCCESS","yourIp":"216.208.59.51","xForwardedFor":"216.208.59.51","requestId":"01a067f3-07b4-739b-b668-35ab1cf230fe"}'
+
+  # Method checked before the credential -- see the header. public: true
+  # because this was confirmed credential-blind live, both with no header
+  # and with a wrong X-API-Key/X-Secret-API-Key pair attached.
+  - method: GET
+    path: /api/json/v3/domain/checkDomain/{domain}
+    public: true
+    error: method_not_allowed_porkbun
+
+  - method: PUT
+    path: /api/json/v3/domain/checkDomain/{domain}
+    public: true
+    error: method_not_allowed_porkbun
+
+  - method: DELETE
+    path: /api/json/v3/domain/checkDomain/{domain}
+    public: true
+    error: method_not_allowed_porkbun
+
+  # The credentialled path itself. See the fidelity gaps: no 200 is ever
+  # served here, because no complete, honest worked example exists to serve
+  # one from. route.error fires only for an accepted credential this file
+  # never sends outside of arm -- see errors.rate_limited.
+  - method: POST
+    path: /api/json/v3/domain/checkDomain/{domain}
+    error: rate_limited
+
+errors:
+  # {"status":"ERROR","message":"All API requests require an API key or API
+  # token.","code":"API_KEY_REQUIRED"} -- live, for a valid empty JSON body
+  # `{}` and separately for `{"apikey":""}`. Reached here through the header
+  # scheme's own absent verdict -- see the header for why body and header
+  # collapse absence identically.
+  api_key_required:
+    status: 400
+    code: API_KEY_REQUIRED
+    message: All API requests require an API key or API token.
+
+  # {"status":"ERROR","message":"Invalid API key. (001)","code":
+  # "INVALID_API_KEYS_001", next_action:{...}} -- live, for any non-empty
+  # apikey/X-API-Key this Recipe does not hold, with or without a secret.
+  invalid_api_key:
+    status: 400
+    code: INVALID_API_KEYS_001
+    message: Invalid API key. (001)
+    fields:
+      next_action:
+        type: authenticate
+        hint: Your API key or secret is invalid. Verify them, or create a new key.
+        retryable: false
+        url: https://porkbun.com/account/api
+
+  # {"status":"ERROR","message":"This API request must use POST.","code":
+  # "METHOD_NOT_ALLOWED"} -- live, credential-blind, no Allow header. Not a
+  # real 405 -- see the header.
+  method_not_allowed_porkbun:
+    status: 400
+    code: METHOD_NOT_ALLOWED
+    message: This API request must use POST.
+
+  # Documented, not observed -- see the header's fidelity gaps. Porkbun's
+  # own RateLimitExceeded schema and its own words on domain/checkDomain:
+  # "Default is 1 check per 10 seconds per account."
+  rate_limited:
+    status: 429
+    code: RATE_LIMIT_EXCEEDED
+    message: Rate limit exceeded. Please try again later.
+
+  # openresty's default error document, restyled with Porkbun's own mascot
+  # -- not JSON, on a host whose every gated answer otherwise is. Confirmed
+  # credential-blind live.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=UTF-8
+    message: |
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+      <title>404 Not Found</title>
+      <style type="text/css">
+      </style>
+      <link href="/bootstrap-3.3.5-dist/css/bootstrap.min.css" rel="stylesheet">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body>
+
+      <div class="container-fluid" style="max-width: 600px;">
+        <div class="row">
+          <div class="col-sm-12">
+      <br><br>
+      <p class="lead">Uh oh! You found our happy little 404 page. If you were looking for a sadder page, you're out of luck.</p>
+      <div class="row">
+        <div class="col-sm-10 col-sm-offset-1">
+          <img class="img-responsive" alt="Porkbun, Minecraft" src="https://porkbun-media.s3-us-west-2.amazonaws.com/tld-buns/_bob_ross.svg">
+        </div>
+      </div>
+      <br>
+      <p class="lead">Create your own piece of art by visiting our <a href="/">homepage</a>. Happy little trees not included.</p>
+      </div>
+          </div>
+        </div>
+      </div>
+
+      <br>
+
+          <script nonce="" src="/js/jquery-3.2.1.min.nostrict.js"></script>
+          <script nonce="" src="/bootstrap-3.3.5-dist/js/bootstrap.min.js"></script>
+      </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: ping is genuinely public, GET
+    source: https://api.porkbun.com/api/json/v3/ping
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/json/v3/ping
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        status: SUCCESS
+      matches:
+        requestId: "^[0-9a-f-]+$"
+
+  - name: and POST, with no body at all
+    source: https://api.porkbun.com/api/json/v3/ping
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/json/v3/ping
+    expect:
+      status: 200
+      body:
+        status: SUCCESS
+
+  - name: no credential of any kind is a 400, not a 401, with a machine-readable code
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    expect:
+      status: 400
+      body:
+        status: ERROR
+        code: API_KEY_REQUIRED
+        message: All API requests require an API key or API token.
+
+  - name: a present but wrong key is a different code, same 400 status
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+      headers:
+        X-API-Key: pk1_junktest
+        X-Secret-API-Key: sk1_junktest
+    expect:
+      status: 400
+      body:
+        code: INVALID_API_KEYS_001
+        message: Invalid API key. (001)
+        next_action.type: authenticate
+        next_action.retryable: false
+
+  - name: the key alone is enough to be judged, with no secret header at all
+    # Mirrors the body path exactly: apikey present and secretapikey absent
+    # answers the identical INVALID_API_KEYS_001, live -- see the header.
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+      headers:
+        X-API-Key: pk1_junktest
+    expect:
+      status: 400
+      body:
+        code: INVALID_API_KEYS_001
+
+  - name: GET on the read endpoint is refused for its method, not its credential
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    expect:
+      status: 400
+      body:
+        code: METHOD_NOT_ALLOWED
+        message: This API request must use POST.
+
+  - name: and the identical refusal even with a credential attached
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+      headers:
+        X-API-Key: pk1_junktest
+        X-Secret-API-Key: sk1_junktest
+    expect:
+      status: 400
+      body:
+        code: METHOD_NOT_ALLOWED
+
+  - name: PUT and DELETE get the same method refusal
+    source: https://api.porkbun.com/api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+    expect:
+      status: 400
+      body:
+        code: METHOD_NOT_ALLOWED
+
+  - name: an unrecognised path is a branded HTML 404, not this API's own JSON shape
+    source: https://api.porkbun.com/api/json/v3/nosuchroute
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/json/v3/nosuchroute
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=UTF-8
+      body_matches: "happy little 404 page"
+
+  - name: and the identical page with a credential attached
+    source: https://api.porkbun.com/api/json/v3/nosuchroute
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /api/json/v3/nosuchroute
+      headers:
+        X-API-Key: pk1_junktest
+        X-Secret-API-Key: sk1_junktest
+    expect:
+      status: 404
+      body_matches: "Porkbun, Minecraft"
+
+  - name: checkDomain's own documented throttle, proved as a shape rather than triggered for real
+    # Documented, not observed -- see the header's fidelity gaps. No route
+    # here ever reaches an accepted credential any other way.
+    source: https://porkbun.com/api/json/v3/spec
+    fixture: empty
+    arm: rate_limited
+    request:
+      method: POST
+      path: /api/json/v3/domain/checkDomain/example-cauldron-probe-xyz123.com
+      headers:
+        X-API-Key: pk1_cauldron00000000000000000000000000000000000000000000000000
+    expect:
+      status: 429
+      body:
+        code: RATE_LIMIT_EXCEEDED
+        message: Rate limit exceeded. Please try again later.
