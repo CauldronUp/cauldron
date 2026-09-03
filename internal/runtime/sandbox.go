@@ -160,6 +160,25 @@ func (s *Sandbox) Seed(name string) error {
 				record[key] = value
 			}
 
+			// A fixture may write the identifier under the name the provider
+			// uses for it. The store keys on "id" and knows nothing about
+			// that rename, so a record carrying only the renamed field was
+			// handed a freshly minted identifier and its own was kept as an
+			// ordinary value -- the record served one identifier and was
+			// addressable by another, with nothing reporting it.
+			//
+			// Canvas's key set found this: keyed by kid, it minted a random
+			// id and the fixture's real one never became the key. The
+			// workaround was to write both, which is the same value twice in
+			// a file that should say it once.
+			if named := identifierName(s.recipe.Resources[resource]); named != "id" {
+				if _, pinned := record["id"]; !pinned {
+					if value, ok := record[named]; ok {
+						record["id"] = value
+					}
+				}
+			}
+
 			s.applyDefaults(resource, record)
 
 			if _, err := s.store.Create(resource, record); err != nil {
