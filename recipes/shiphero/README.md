@@ -6,6 +6,11 @@ Emulates the ShipHero API (2020-04), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It ships on the mechanism written for Linear: a route that matches on the field
+a GraphQL query names, rather than on the path alone.
+
 ## Sources
 
 - Documentation: https://developer.shiphero.com/
