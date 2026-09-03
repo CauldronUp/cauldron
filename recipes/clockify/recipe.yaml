@@ -1,0 +1,386 @@
+# Clockify Recipe for Cauldron
+#
+# Third of the group asking the same question as toggl/recipe.yaml and
+# harvest/recipe.yaml: a running timer is an entry with no end, so how does
+# the provider represent one, and can a caller sum a day's entries without
+# silently counting a timer that is still going? Clockify's own published
+# reference (docs.clockify.me, a Redoc rendering of its OpenAPI document)
+# gives the thinnest answer of the three, and the thinness is itself the
+# finding.
+#
+# **Every single response sample the reference shows for an endpoint that
+# returns a time entry -- list, get-by-id, create, the user-scoped
+# listing -- reuses one identical, nonsensical placeholder object:**
+# `"type": "BREAK", "timeInterval": null`, verbatim, byte for byte, on
+# "Get multiple time entries," "Get a specific time entry," "Get time
+# entries for a user" and "Add a new time entry" alike. A BREAK entry with
+# a null timeInterval is not a state Clockify's own UI can produce -- a
+# break has to have started sometime -- so this is a generated
+# placeholder rather than a captured real response, and it is the *only*
+# worked example the reference gives for the object this Recipe exists to
+# describe. Nothing published shows what timeInterval actually looks like
+# for a genuinely running entry, or a genuinely stopped one, anywhere in
+# the document -- not on "Get all in progress time entries on a
+# workspace," whose own name promises exactly that and whose response
+# section carries no example body at all.
+#
+# What the reference *does* commit to, on the request-body property table
+# for "Update time entry on a workspace" rather than in any sample --
+# real per-field schema text, not a placeholder --:
+#
+#   start   required, string <date-time>, "Represents a start date in
+#           yyyy-MM-ddThh:mm:ssZ format"
+#   end     not required, string <date-time>, "Represents an end date in
+#           yyyy-MM-ddThh:mm:ssZ format" -- nullable by omission, the only
+#           one of the pair the schema does not mark required
+#
+# That asymmetry -- start required, end not -- is the shape this Recipe
+# models: a running entry is one whose timeInterval has a start and no
+# end, because that is the only thing about the running/stopped
+# distinction the reference actually commits to in prose rather than in a
+# reused placeholder. **No duration field appears anywhere in a time
+# entry's own schema or samples, on either the object itself or its
+# nested timeInterval** -- unlike Toggl and Harvest, both of which name a
+# field for elapsed time on the record itself (see toggl/recipe.yaml and
+# harvest/recipe.yaml), Clockify's own reference never shows one on this
+# object; duration as an ISO 8601 string (e.g. "PT1H30M") appears
+# elsewhere in the same document, on task estimates and on approval-request
+# totals, but never on a time entry. This Recipe does not invent one.
+#
+# **Deletion looks like a tombstone, on indirect but genuinely documented
+# evidence.** The webhook event enum on this same reference lists
+# `TIME_ENTRY_DELETED` *and* `TIME_ENTRY_RESTORED` side by side, one
+# vocabulary, both real values of the same `webhookEvent` enum. A restore
+# event only means something if the deleted record survived somewhere to
+# be restored from -- a provider that hard-deletes has nothing left to
+# fire that event about. This Recipe does not model delete or restore as
+# callable routes (see this group's rule against deleting any time entry,
+# live or fixtured), but the finding stands on the enum alone and is
+# stated here rather than guessed at from a hard delete assumption the
+# way Harvest's silence on the same question is.
+#
+# **Authentication: X-Api-Key, and the sharpest absent/wrong split in this
+# group.** Struck live against api.clockify.me/api/v1/workspaces, no
+# account, no key ever created:
+#
+#   no X-Api-Key header at all       401 {"message":"Multiple or none
+#                                     auth tokens present","code":1000}
+#   X-Api-Key: <junk>                401 {"message":"Api key does not
+#                                     exist","code":4003}
+#
+# Two different sentences and two different numeric codes for two
+# different mistakes -- not a shared generic 401 the way most of this
+# collection's providers answer both. auth.absent_error and
+# auth.rejected_error name two separate entries below for exactly that
+# reason. auth.malformed_error is left unset on purpose: this scheme has
+# no declared prefix and no pattern, so Cauldron's own credential check
+# can never reach the Malformed verdict for it at all (see auth.go:
+# Malformed exists for a declared prefix or pattern ruling a value out,
+# and this Recipe declares neither) -- naming an entry nothing can reach
+# would be describing a case this Recipe never observed and never could.
+#
+# **Routing order: credential first, always, for every path and every
+# method, with no exception this Recipe found.** Struck live, four ways,
+# all with no credential:
+#
+#   GET /api/v1/nosuchroute12345          401, code 1000 (absent)
+#   POST /api/v1/workspaces               401, code 1000
+#   DELETE /api/v1/workspaces             401, code 1000
+#
+# and the same three requests again with a junk X-Api-Key attached all
+# answered the identical 401, code 4003 (rejected) -- unrouted paths and
+# wrong methods are refused for their credentials before routing is ever
+# consulted, on every combination this Recipe tried, with nothing
+# path-dependent or method-dependent about it. That is Airbyte's
+# arrangement, named in this collection's own auth.go ("checks the
+# credential first, always, and answered a byte-identical 401 to every
+# path real or invented"), and it is Cauldron's own default
+# (auth.after_routing left unset) -- so every case below sends exactly
+# what the live probes sent and needs no workaround to reach.
+#
+# **The wrong-region question this group asked about repeats, and goes
+# further than Cognito's own version of it.** Clockify's reference
+# documents regional API prefixes -- euc1 (EU/Germany), use2 (USA), euw2
+# (UK), apse2 (AU) -- each supposedly the correct host for a workspace
+# provisioned in that region. Struck live, unauthenticated, against five
+# hosts: api.clockify.me, all four documented regional prefixes, and one
+# invented one that appears nowhere in the reference (xx99.clockify.me):
+# every single one resolved and answered the byte-identical 401 body,
+# {"message":"Multiple or none auth tokens present","code":1000}. Cognito's
+# Recipe in this collection found a real user pool id and a wrong-region
+# copy of it indistinguishable; here the DNS layer accepts a subdomain
+# nobody documented at all and hands it to the same backend, which is a
+# strictly wider version of the same finding -- not just "the wrong region
+# looks like no region," but "any string in that position looks like every
+# region." This is stated here and not modelled as a route: Cauldron
+# mounts one Recipe at one address, and there is no mechanism in this
+# format for declaring a second, third, fourth and fifth hostname that all
+# have to answer identically -- the same limitation mezmo/recipe.yaml
+# states for its own second host.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of the roughly twenty documented time entry fields this Recipe
+#     declares about twelve. costRate, hourlyRate, customFieldValues and
+#     kioskId are declared as opaque map or omitted rather than typed,
+#     because the reference's own examples for them are the same reused
+#     placeholder discussed above and this Recipe does not want to dress
+#     up a placeholder as a checked value.
+#   - No duration field is declared on time_entry at all -- see the header.
+#   - create, update, delete and the dedicated stop-timer route
+#     (`PATCH .../user/{userId}/time-entries` with no body, per the
+#     reference) are not modelled, per this group's rule against starting,
+#     stopping, creating or deleting any time entry.
+#   - Workspace scoping ({workspaceId} in every path) is not partitioned:
+#     every workspace id this Recipe is asked about answers with the same
+#     catalogue, the same choice Fireworks' Recipe makes for its own
+#     account-scoped paths and for the same reason -- this Recipe never
+#     held a credential that could prove two workspaces answer
+#     differently.
+#   - The regional hosts discussed above are not modelled as routes -- see
+#     the header.
+#   - No pagination is declared on the user-scoped listing route below.
+#     The reference documents page/page-size parameters on a neighbouring
+#     endpoint ("Get all in progress time entries on a workspace") and
+#     this Recipe could not confirm the same two names apply to the route
+#     it actually models rather than fabricating a match between the two.
+#     Cauldron's own undeclared-route default (page at ten, reading
+#     "limit") applies here, which is the engine's fallback rather than a
+#     claim about Clockify.
+#
+# Every case below not carrying a verified date was read from Clockify's
+# own published reference at docs.clockify.me, not observed against a real
+# workspace -- this Recipe was written with no credential and created no
+# account. The key below is a fixture, not a secret.
+
+recipe: clockify
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://docs.clockify.me/
+
+auth:
+  scheme: header
+  header: X-Api-Key
+  keys:
+    - cauldron0000000000000000000000
+  # Two different sentences for two different mistakes -- struck live, see
+  # the header. malformed_error is deliberately left unset: this scheme
+  # declares no prefix and no pattern, so the Malformed verdict is
+  # unreachable for it and naming an entry nothing can reach would claim a
+  # case this Recipe never saw.
+  absent_error: no_auth_token
+  rejected_error: invalid_api_key
+  # Left at its default (false): struck live on every path/method
+  # combination this Recipe tried, and the credential answered first, every
+  # time, with nothing path- or method-dependent about it. See the header.
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+
+resources:
+  time_entry:
+    id:
+      style: hex
+      length: 24
+    fields:
+      workspaceId:
+        type: string
+      userId:
+        type: string
+      projectId:
+        type: string
+        null_when_unset: true
+      taskId:
+        type: string
+        null_when_unset: true
+      description:
+        type: string
+        null_when_unset: true
+      billable:
+        type: boolean
+        default: false
+      isLocked:
+        type: boolean
+        default: false
+      tagIds:
+        type: list
+      # REGULAR or BREAK -- the one fixed vocabulary the reference gives
+      # for this field, drawn from the webhookEvent-adjacent schema
+      # enumerations rather than a sample.
+      type:
+        type: string
+        default: REGULAR
+      # start is documented required on every write; end is the one field
+      # in the pair the schema does not mark required, which is the
+      # asymmetry this Recipe reads as "running" -- see the header. Nested
+      # because the reference nests both under timeInterval on every read
+      # shape it shows, placeholder or not.
+      start:
+        type: datetime
+        in: timeInterval
+      end:
+        type: datetime
+        null_when_unset: true
+        in: timeInterval
+
+routes:
+  - method: GET
+    path: /api/v1/workspaces/{workspaceId}/time-entries/{id}
+    resource: time_entry
+    operation: get
+
+  - method: GET
+    path: /api/v1/workspaces/{workspaceId}/user/{userId}/time-entries
+    resource: time_entry
+    operation: list
+
+errors:
+  # Nothing presented at all -- no X-Api-Key header on the request. Struck
+  # live, byte for byte, including the numeric code.
+  no_auth_token:
+    status: 401
+    code_field: "-"
+    message: Multiple or none auth tokens present
+    fields:
+      code: 1000
+
+  # A key that was presented and this Recipe does not hold. Struck live,
+  # byte for byte -- a different sentence and a different numeric code
+  # from the absent case above, which is the finding this Recipe exists to
+  # carry for this provider. See the header.
+  invalid_api_key:
+    status: 401
+    code_field: "-"
+    message: Api key does not exist
+    fields:
+      code: 4003
+
+fixtures:
+  empty: {}
+
+  workspace:
+    time_entry:
+      # timeInterval.end omitted -- null_when_unset renders it null, which
+      # is this Recipe's reading of "running" per the header's asymmetry
+      # (start required, end not, on the reference's own request schema).
+      # No id, name or timestamp here is claimed as a vendor worked
+      # example; the reference's only sample for this shape is the reused
+      # BREAK/null placeholder discussed in the header, which this Recipe
+      # declines to serve as though it were a checked value. This entry
+      # proves the field shape and nothing about a specific timer.
+      - id: "64c777ddd3fcab07cfbb210c"
+        workspaceId: "64a687e29ae1f428e7ebe303"
+        userId: "5a0ab5acb07987125438b60f"
+        projectId: "25b687e29ae1f428e7ebe123"
+        description: "This is a sample time entry description."
+        billable: false
+        isLocked: false
+        type: REGULAR
+        tagIds:
+          - "321r77ddd3fcab07cfbb567y"
+        start: "2026-08-21T09:00:00Z"
+
+conformance:
+  - name: no key at all is told nothing was presented
+    source: https://api.clockify.me/api/v1/workspaces
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workspaces/64a687e29ae1f428e7ebe303/time-entries/64c777ddd3fcab07cfbb210c
+    expect:
+      status: 401
+      body:
+        message: Multiple or none auth tokens present
+        code: 1000
+
+  - name: a key that does not exist is told something completely different
+    source: https://api.clockify.me/api/v1/workspaces
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/workspaces/64a687e29ae1f428e7ebe303/time-entries/64c777ddd3fcab07cfbb210c
+      headers:
+        X-Api-Key: junkkey1234567890
+    expect:
+      status: 401
+      body:
+        message: Api key does not exist
+        code: 4003
+
+  - name: an unrouted path needs no route at all to be refused for its credential
+    # Struck live with no header, against a path this Recipe does not
+    # declare -- the identical absent-credential body a real path gets.
+    source: https://api.clockify.me/api/v1/nosuchroute12345
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/v1/nosuchroute12345
+    expect:
+      status: 401
+      body:
+        message: Multiple or none auth tokens present
+        code: 1000
+
+  - name: and neither does a wrong method on a real path
+    # Struck live as DELETE on /api/v1/workspaces with no credential:
+    # identical 401, not a 404 or a 405. Reproduced here against this
+    # Recipe's own declared route.
+    source: https://api.clockify.me/api/v1/workspaces
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /api/v1/workspaces/64a687e29ae1f428e7ebe303/time-entries/64c777ddd3fcab07cfbb210c
+    expect:
+      status: 401
+      body:
+        message: Multiple or none auth tokens present
+        code: 1000
+
+  - name: a running entry has a start and no end
+    source: https://docs.clockify.me/
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v1/workspaces/64a687e29ae1f428e7ebe303/time-entries/64c777ddd3fcab07cfbb210c
+      headers:
+        X-Api-Key: cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "timeInterval.start": "2026-08-21T09:00:00Z"
+        "timeInterval.end": null
+        type: REGULAR
+      absent:
+        - duration
+        - isRunning
+
+  - name: the user-scoped listing is a bare array, not a wrapped envelope
+    source: https://docs.clockify.me/
+    fixture: workspace
+    request:
+      method: GET
+      path: /api/v1/workspaces/64a687e29ae1f428e7ebe303/user/5a0ab5acb07987125438b60f/time-entries
+      headers:
+        X-Api-Key: cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": "64c777ddd3fcab07cfbb210c"
+        "[0].timeInterval.start": "2026-08-21T09:00:00Z"
+      absent:
+        - items
+        - data
