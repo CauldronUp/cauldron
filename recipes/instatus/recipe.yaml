@@ -1,0 +1,607 @@
+# Instatus Recipe for Cauldron
+#
+# One of a batch of three uptime/status-page Recipes -- see
+# recipes/betterstack/recipe.yaml and recipes/pingdom/recipe.yaml for the
+# other two, and recipes/statuspage/recipe.yaml and
+# recipes/uptimerobot/recipe.yaml for the two already in this collection.
+# All five exist to answer one question: a monitor that stops reporting is
+# indistinguishable from a service that is up unless the API says when it
+# last checked, and unless a paused monitor is distinguishable from a
+# passing one.
+#
+# Instatus answers it more sharply than either of its batch-mates, and it
+# does so by keeping two facts on two different fields rather than folding
+# them into one status word. A cron monitor -- Instatus's dead-man's-switch
+# check, the kind that expects to be pinged rather than polled -- carries
+# both status (up, down, unknown, degraded: is the last ping healthy) and
+# state (active, paused, muted: is anyone even looking) as separate,
+# independent properties on the same record:
+#
+#   {"id": "cron-abc123", "status": "UP", "state": "ACTIVE", ...}
+#
+# A monitor can be status: UP and state: PAUSED at once -- its last real
+# ping was healthy and nobody has looked since. Nothing on the cron monitor
+# record itself says how long ago that ping was, either: there is no
+# last-checked field here at all, unlike Better Stack's last_checked_at.
+# Instatus keeps that fact in a separate resource, GET /monitors/{id}/logs,
+# whose entries each carry their own createdAt and a per-check status
+# (SUCCESS, FAILURE). Reconstructing "how stale is this" needs the newest
+# log entry, not the monitor record -- which is not modelled here (see the
+# gaps below), and is worth stating precisely because it is the shape the
+# whole batch is checking for: a paused monitor and a merely quiet one are
+# distinguishable, but only by joining two endpoints, not by reading one.
+# Confirmed from Instatus's own published API reference for GET
+# /:page_id/monitors/cron (id, status, state and the full onFail/onRecover
+# set all shown with concrete example values); not verified live, because
+# reading a real page's monitors needs a real API key and this Recipe was
+# written with none.
+#
+# **Absent and rejected are told apart; two different kinds of malformed
+# collapse into absent rather than getting a third sentence.** Checked live,
+# four ways, against GET /v1/pages:
+#
+#   no Authorization header at all         "API key is not sent in request header."
+#   Authorization: Bearer junktoken12345   "API key does not belong to a user."
+#   Authorization: junktoken12345 (no "Bearer ")   "API key is not sent in request header."
+#   Authorization: Bearer  (nothing after the prefix)  "API key is not sent in request header."
+#
+# Two distinct sentences, and the dividing line is not "was something
+# presented" -- somebody sent "junktoken12345" and somebody sent an empty
+# bearer value, and Instatus calls both of those the same as nothing at all.
+# Pingdom, this batch's third Recipe, draws that line differently again: see
+# pingdom/recipe.yaml for a provider that gives four sentences to the same
+# four shapes.
+#
+# **Routing beats the credential only for a path with no route at all; a
+# matched route with the wrong method still asks for the credential first.**
+# GET /v1/no-such-route-xyz, with or without a credential, answers Express's
+# own unhandled-route page -- "Cannot GET /v1/no-such-route-xyz", text/html
+# -- checked live both ways. PATCH /v1/pages, a real path with the wrong
+# method, answers the ordinary absent-credential JSON instead of a 404 or a
+# 405, which only makes sense if the credential check itself is mounted
+# ahead of the method-specific handler for that path -- so a route that
+# exists refuses you before it discovers you asked for a method it does not
+# support, and a route that does not exist never reaches the check. That is
+# Rootly's own split, from this same collection: credential first for every
+# path the provider has, router first for every path it does not, which is
+# not something a caller can know in advance and not something Cauldron's
+# single auth.after_routing boolean can express (see auth.go's own
+# accounting of the five shapes this has been observed to take). The
+# unrouted-path case below is written the way Rootly's own is: with a valid
+# credential attached, because Cauldron's runtime checks it unconditionally
+# before the router ever runs, and it carries no verified date because that
+# exact request -- a credential attached to a path with no route -- was
+# never the one this Recipe actually sent.
+#
+# **Rate limiting is real, live-verified, and stricter on writes.** Every
+# response this Recipe received carried RateLimit-Policy, RateLimit-Limit,
+# RateLimit-Remaining and RateLimit-Reset (the IETF draft header names, not
+# X-RateLimit-*) -- and GET /v1/pages answered "100;w=300" while POST
+# /v1/pages answered "5;w=300" on the identical account, at the identical
+# moment. A five-per-five-minutes budget on writes and a hundred on reads,
+# both burned by a request that failed for its credentials before anything
+# was written or read.
+#
+# **The host mixes three URL shapes for one API, verified rather than
+# assumed.** GET /v1/pages and GET /v2/pages both route (401, not a 404
+# page) -- two versions of the same listing coexist. GET /v1/{page}/incidents
+# routes; GET /{page}/incidents, with no version segment, does not. GET
+# /{page}/monitors/cron routes with no version segment at all; GET
+# /v1/{page}/monitors/cron and GET /v2/{page}/monitors/cron both fall through
+# to the unhandled-route page. So which prefix a path needs depends on which
+# resource it names, on the same host, and no single upstream.api value
+# describes all of it -- this Recipe declares v1 because that is what its
+# own two modelled routes use, and says so here rather than pretending a
+# constant field would.
+#
+# **What a page id that is not yours answers was asked and could not be
+# checked.** Instatus's own error reference shows only a generic
+# {"error":{"code":"forbidden","message":"Not authorized"}} shape and does
+# not say whether a page you do not own answers that, a 404, or something
+# else. Every probe this Recipe made against a page-scoped route with a
+# made-up id reached the credential check first and 401'd there -- verified
+# live -- so the page-ownership question sits behind a gate this Recipe has
+# no key to open, and it is left unanswered here rather than guessed at.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of the roughly thirty documented page attributes this Recipe declares
+#     ten. Every HTML/CSS injection field (htmlInMeta, cssGlobal and eight
+#     more), Google Analytics, SMS service configuration and onboarding
+#     state are entirely absent.
+#   - components (per-incident, per-page) and regular (non-cron) monitors
+#     are not modelled as resources of their own. components appear nested
+#     inside an incident's own components array, the same way FireHydrant
+#     nests milestones; regular monitors are skipped outright because this
+#     Recipe found no worked example of a regular monitor's read shape that
+#     was not simply the create request echoed back, and inventing one would
+#     be asserting a shape nobody showed.
+#   - GET /monitors/:id/logs, the endpoint that actually carries a
+#     last-checked timestamp for a cron monitor, is not modelled -- see the
+#     header. Declaring it would need a worked log-entry example beyond the
+#     single one this Recipe read, and the one it read is thin enough
+#     (status, createdAt, startedAt, and little else) that a fuller fixture
+#     would be guessing at fields nobody showed.
+#   - create, update, delete, incident updates, maintenances, teammates,
+#     subscribers, escalation policies and on-call schedules -- eleven more
+#     documented sections -- are not modelled. Every route here is a GET.
+#   - No upstream.spec. Instatus's reference is hand-written pages, not a
+#     published machine-readable document this Recipe could fingerprint.
+#
+# Every case below not carrying a verified date was read from Instatus's own
+# published API reference at instatus.com/help/api/, not observed against a
+# real page -- this Recipe was written with no credential and created no
+# account. The key below is a fixture, not a secret.
+
+recipe: instatus
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://instatus.com/help/api
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron0000000000000000000000
+  # "API key is not sent in request header." -- the sentence for nothing
+  # presented, and also the sentence Instatus gives both malformed shapes
+  # this Recipe tried. See the header.
+  absent_error: missing_key
+  malformed_error: missing_key
+  # rejected_error is left at the default authentication_error, which
+  # carries Instatus's own second sentence -- see errors: below.
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    # {"error": {"code": "...", "message": "..."}} on every failure this
+    # Recipe reached.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  page:
+    id:
+      # 25-character lowercase alphanumeric in every example this Recipe
+      # read (a cuid), and no format is stated in the reference -- opaque
+      # rather than a guessed pattern, the same reasoning statuspage's own
+      # Recipe gives for its own ids.
+      style: opaque
+    fields:
+      subdomain:
+        type: string
+      name:
+        type: string
+        required: true
+      logoUrl:
+        type: string
+        null_when_unset: true
+      faviconUrl:
+        type: string
+        null_when_unset: true
+      websiteUrl:
+        type: string
+        null_when_unset: true
+      customDomain:
+        type: string
+        null_when_unset: true
+      # Only ever seen as "UP" in the one worked example this Recipe found.
+      # No other value is confirmed, so none is asserted here as a claimed
+      # enum -- see the header.
+      status:
+        type: string
+        default: UP
+      language:
+        type: string
+        default: en
+      useLargeHeader:
+        type: boolean
+        default: true
+      brandColor:
+        type: string
+        null_when_unset: true
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  # Page-scoped, but not scoped by a resource field -- see the header on
+  # cron_monitor's siteId for the contrast. No worked incident example this
+  # Recipe read echoes a page id anywhere on the record itself; the page is
+  # entirely a fact of the URL, the same reasoning Fireworks' own Recipe
+  # gives for not scoping by account_id.
+  incident:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      started:
+        type: datetime
+      # Only "INVESTIGATING" (on an update) and "RESOLVED" (on the incident
+      # itself) appear as concrete values in the one worked example this
+      # Recipe read. Declared as a plain string with that default rather
+      # than a claimed enum -- see the header.
+      status:
+        type: string
+        default: INVESTIGATING
+      resolved:
+        type: datetime
+        null_when_unset: true
+      # Each entry is a status-change post, not a property -- compare
+      # firehydrant's milestones, the same shape for the same reason: an
+      # incident's own status is a snapshot, and its history is a list.
+      updates:
+        type: list
+      # Nested rather than a resource of its own -- see the header.
+      components:
+        type: list
+
+  # A dead-man's-switch check: it expects to be pinged, not polled. The
+  # resource this Recipe exists to demonstrate -- see the header.
+  cron_monitor:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      slug:
+        type: string
+      # Seconds between expected pings.
+      period:
+        type: integer
+      # Seconds of grace after `period` before a missed ping counts as down.
+      grace:
+        type: integer
+      # up, down, unknown, degraded -- is the last ping healthy.
+      status:
+        type: string
+        default: UP
+      # active, paused, muted -- is anyone even looking. Independent of
+      # status; see the header. Neither value here is derived from the
+      # other.
+      state:
+        type: string
+        default: ACTIVE
+      # Echoes the page id from the URL -- confirmed in the one worked
+      # example this Recipe read, unlike incident above.
+      siteId:
+        type: string
+      groupId:
+        type: string
+        null_when_unset: true
+      componentId:
+        type: string
+        null_when_unset: true
+      onFailCreateIncident:
+        type: boolean
+        default: true
+      onFailPublishIncident:
+        type: boolean
+        default: true
+      onFailNotifySubscribers:
+        type: boolean
+        default: true
+      onRecoverResolveIncident:
+        type: boolean
+        default: true
+      onRecoverPublishIncident:
+        type: boolean
+        default: true
+      onRecoverNotifySubscribers:
+        type: boolean
+        default: true
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v1/pages
+    resource: page
+    operation: list
+
+  - method: GET
+    path: /v1/{page_id}/incidents
+    resource: incident
+    operation: list
+
+  # No version segment -- verified live to be the only prefix that routes at
+  # all for this path shape. See the header.
+  - method: GET
+    path: /{siteId}/monitors/cron
+    resource: cron_monitor
+    operation: list
+    scope: [siteId]
+    list:
+      style: wrapped
+      key: cronMonitors
+      count_field: total
+      pages_field: totalPages
+      page_field: page
+      limit_field: limit
+
+errors:
+  missing_key:
+    status: 401
+    code: forbidden
+    message: API key is not sent in request header.
+
+  # The default rejected/generic sentence -- a key that was sent and does
+  # not belong to a user.
+  authentication_error:
+    status: 401
+    code: forbidden
+    message: API key does not belong to a user.
+
+  # Express's own unhandled-route page, not this Recipe's JSON envelope --
+  # see the header. GET is a literal word here rather than a substitution:
+  # {detail} for unknown_route is the path alone, and this Recipe only ever
+  # tested this shape with GET, so it claims no more than that.
+  unknown_route:
+    status: 404
+    style: text
+    message: |
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+      <meta charset="utf-8">
+      <title>Error</title>
+      </head>
+      <body>
+      <pre>Cannot GET {detail}</pre>
+      </body>
+      </html>
+    headers:
+      Content-Type: "text/html; charset=utf-8"
+
+fixtures:
+  empty: {}
+
+  small-page:
+    page:
+      - id: ckf01fonve9i40a32oas5b0uw
+        subdomain: cauldron-status
+        name: Cauldron Status
+        status: UP
+        language: en
+        useLargeHeader: true
+        brandColor: "#111"
+        createdAt: "2026-01-12T19:03:48.379Z"
+        updatedAt: "2026-08-30T13:10:20.202Z"
+
+    incident:
+      - id: ckf01m59ueaqb0a32wrljz1yd
+        name: Checkout latency spike
+        started: "2026-08-31T14:05:17.398Z"
+        status: RESOLVED
+        resolved: "2026-08-31T14:09:04.498Z"
+        updates:
+          - id: ckf01m5ioeaqi0a32jtv8ovp8
+            message: We are currently investigating this incident.
+            messageHtml: <p>We are currently investigating this incident.</p>
+            status: INVESTIGATING
+            notify: true
+            started: "2026-08-31T14:05:17.398Z"
+            ended: null
+            duration: 228
+            createdAt: "2026-08-31T14:08:50.160Z"
+        components:
+          - id: ckf01fvnxywz50a35nh1qzssm
+            name: Checkout API
+            status: PARTIALOUTAGE
+
+    cron_monitor:
+      - id: cron-abc123
+        name: Nightly backup
+        slug: cauldron-status-x7k2m9n4p1q8w3e5
+        period: 86400
+        grace: 3600
+        status: UP
+        state: ACTIVE
+        siteId: ckf01fonve9i40a32oas5b0uw
+        componentId: ckf01fvnxywz50a35nh1qzssm
+        onFailCreateIncident: true
+        onFailPublishIncident: true
+        onFailNotifySubscribers: true
+        onRecoverResolveIncident: true
+        onRecoverPublishIncident: true
+        onRecoverNotifySubscribers: true
+        createdAt: "2026-06-15T08:00:00.000Z"
+        updatedAt: "2026-06-15T08:00:00.000Z"
+      # Its last ping was healthy, and nobody is watching -- the pair this
+      # Recipe exists to demonstrate. See the header.
+      - id: cron-def456
+        name: Weekly report generator
+        slug: cauldron-status-a1b2c3d4e5f6g7h8
+        period: 604800
+        grace: 7200
+        status: UP
+        state: PAUSED
+        siteId: ckf01fonve9i40a32oas5b0uw
+        onFailCreateIncident: false
+        onFailPublishIncident: false
+        onFailNotifySubscribers: false
+        onRecoverResolveIncident: false
+        onRecoverPublishIncident: false
+        onRecoverNotifySubscribers: false
+        createdAt: "2026-05-01T08:00:00.000Z"
+        updatedAt: "2026-08-01T08:00:00.000Z"
+
+# Every case below carries source. A verified date means this Recipe called
+# api.instatus.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from Instatus's own
+# published API reference and never called with a real API key.
+conformance:
+  - name: no credential at all says it was never sent
+    source: https://api.instatus.com/v1/pages
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages
+    expect:
+      status: 401
+      body:
+        error.code: forbidden
+        error.message: API key is not sent in request header.
+
+  - name: a well-formed junk key is told it does not belong to a user
+    source: https://api.instatus.com/v1/pages
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error.code: forbidden
+        error.message: API key does not belong to a user.
+
+  - name: a header with no Bearer prefix at all is called absent, not wrong
+    source: https://api.instatus.com/v1/pages
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        error.message: API key is not sent in request header.
+
+  - name: an empty bearer value gets the same absent sentence too
+    source: https://api.instatus.com/v1/pages
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error.message: API key is not sent in request header.
+
+  - name: a real path with the wrong method still asks for the credential first
+    # No 404 and no 405 -- the ordinary absent-credential answer, which only
+    # makes sense if the auth check sits ahead of the method-specific
+    # handler on this path. See the header.
+    source: https://api.instatus.com/v1/pages
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: PATCH
+      path: /v1/pages
+    expect:
+      status: 401
+      body:
+        error.message: API key is not sent in request header.
+
+  - name: a page-scoped route with a made-up page id still needs the credential first
+    source: https://api.instatus.com/v1/nonexistent-page-id-xyz/incidents
+    verified: "2026-09-03"
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/nonexistent-page-id-xyz/incidents
+    expect:
+      status: 401
+      body:
+        error.message: API key is not sent in request header.
+
+  - name: a path with no route at all, reached with a credential Cauldron cannot omit
+    # The live request that proves this shape -- see the header -- carried
+    # no credential at all: GET with nothing attached answers this same body
+    # and status. Cauldron's own auth check runs unconditionally before the
+    # router does (auth.after_routing is not declared, and the default
+    # checks first, always -- see the header's routing paragraph, and
+    # rootly/recipe.yaml for the same limitation on the same shape of
+    # provider). Reaching the 404 through Cauldron therefore needs a
+    # credential this Recipe holds, which is a request the live API was
+    # never actually sent, so this case carries no verified date even though
+    # the body and status are the ones actually observed.
+    source: https://api.instatus.com/v1/no-such-route-xyz
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/no-such-route-xyz
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 404
+      body_matches: "Cannot GET /v1/no-such-route-xyz"
+
+  - name: a page listing is a bare array
+    source: https://instatus.com/help/api/status-pages
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/pages
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": ckf01fonve9i40a32oas5b0uw
+        "[0].subdomain": cauldron-status
+        "[0].status": UP
+      absent:
+        - data
+        - pages
+
+  - name: an incident's components arrive nested, not as a separate fetch
+    source: https://instatus.com/help/api/incidents
+    fixture: small-page
+    request:
+      method: GET
+      path: /v1/ckf01fonve9i40a32oas5b0uw/incidents
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].status": RESOLVED
+        "[0].components[0].name": Checkout API
+        "[0].components[0].status": PARTIALOUTAGE
+        "[0].updates[0].status": INVESTIGATING
+
+  - name: state and status are two different facts on the same cron monitor
+    # The claim this Recipe exists to check -- see the header. Both fields
+    # sit on the same record, neither is derived from the other, and a
+    # client reading only status would call this monitor healthy.
+    source: https://instatus.com/help/api/monitors
+    fixture: small-page
+    request:
+      method: GET
+      path: /ckf01fonve9i40a32oas5b0uw/monitors/cron
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+    expect:
+      status: 200
+      body:
+        "cronMonitors[0].status": UP
+        "cronMonitors[0].state": ACTIVE
+        "cronMonitors[1].status": UP
+        "cronMonitors[1].state": PAUSED
+        total: 2
+        totalPages: 1
