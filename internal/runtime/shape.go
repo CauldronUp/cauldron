@@ -679,8 +679,20 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 		// identifier, so it does not repeat inside the value.
 		keyed := map[string]any{}
 
+		// Under the name the identifier actually goes out as, which is not
+		// always "id". presentAll has already renamed it by the time this
+		// runs, so reading "id" literally found nothing for any resource
+		// declaring id.field -- and finding nothing here meant skipping the
+		// record, so the whole entry vanished from the response with no error
+		// anywhere. A keyed list that silently drops its contents is the worst
+		// shape of this bug: the caller gets a smaller object, not a failure.
+		key := "id"
+		if spec, ok := s.recipe.Resources[resource]; ok {
+			key = identifierName(spec)
+		}
+
 		for _, record := range page.Records {
-			name, _ := record["id"].(string)
+			name, _ := record[key].(string)
 			if name == "" {
 				continue
 			}
@@ -688,7 +700,7 @@ func (s *Sandbox) listBody(spec recipe.ListResponse, page store.Page, limit int,
 			value := map[string]any{}
 
 			for field, held := range record {
-				if field == "id" {
+				if field == key {
 					continue
 				}
 
