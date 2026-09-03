@@ -1,0 +1,677 @@
+# Fastly Recipe for Cauldron
+#
+# This collection's question is whether an API exposes a deployment state
+# distinct from the saved configuration, and whether a caller can tell
+# "saved" from "serving." Fastly is the strongest case in the group, and it
+# answers in its own vocabulary before this Recipe has to invent one: a
+# service's configuration lives in numbered **versions**
+# (GET /service/{id}/version), each one either the live draft being edited
+# or a past snapshot, and a version carries two booleans that are not the
+# same fact -- `active` ("Whether this is the active version or not") and
+# `locked` ("Whether this version is locked or not. Objects can not be
+# added or edited on locked versions"), per Fastly's own field
+# descriptions. A version can be locked without being active: the real,
+# recorded response quoted below for `PUT .../version/75/lock` comes back
+# `{"active":false,"locked":true,...}` -- read-only and not serving,
+# simultaneously, which is precisely the distinction the rest of this
+# collection keeps having to argue for from silence. Fastly states it in
+# two adjacent field names.
+#
+# Compare the rest of this collection's CDN neighbours, all read first per
+# this task's instructions:
+#
+#   - bunny/recipe.yaml answers the same question on a single resource: a
+#     Video's own `status` field moves through an eight-value enum on the
+#     record itself. Fastly does not put the answer on one field of one
+#     resource -- it splits it across two fields (active, locked) on a
+#     resource (Version) that is itself a snapshot distinct from the
+#     Service that owns it, and a real service's own GET embeds an array of
+#     these snapshots so a caller can see every version's activation state
+#     at once, not just the one it asked for.
+#   - imagekit/recipe.yaml's purge route (POST /v1/files/purge) hands back
+#     an id that GET /v1/files/purge/{id} takes straight back for polling,
+#     answering Pending or Completed. Fastly's purge answers the same
+#     shape's cousin and lands somewhere worse: POST .../purge/{key}
+#     returns `{"status":"ok","id":"4151-1635861748-11038"}` -- an id that
+#     exists on the wire -- and there is no route anywhere in Fastly's own
+#     official Go client (go-fastly, searched exhaustively: one purge.go,
+#     no companion file) that takes it back. The id is not a handle to
+#     anything. Worse, POST .../purge_all's own real recorded response is
+#     `{"status":"ok"}` with no id at all, so the *same* logical action
+#     sometimes hands back an identifier with nowhere to spend it and
+#     sometimes does not hand back one at all. See the purge section below.
+#   - cloudflare/recipe.yaml's zone and DNS record objects are ordinary
+#     synchronous CRUD, no version concept, no purge-poll pair -- the
+#     plainest of this group's three answers, and Fastly's `active_version`
+#     field on a Service is doing, by reference, what Cloudflare simply
+#     does not have to.
+#
+# **Fastly-Key, not Authorization, and every failure this Recipe could
+# provoke collapses into one sentence.** Checked live against api.fastly.com
+# with no account and no key, every one of these on the identical path,
+# same day:
+#
+#   nothing sent at all                    -> 401 {"msg":"Provided
+#                                              credentials are missing or
+#                                              invalid"}
+#   Fastly-Key: junkjunkjunk12345          -> byte-identical
+#   Authorization: Bearer junkjunkjunk12345 -> byte-identical (the header
+#                                              this Recipe does not check
+#                                              at all)
+#
+# auth.absent_error, auth.malformed_error and auth.rejected_error are all
+# left unset for exactly the reason unset means: nothing this Recipe sent
+# produced a second sentence to name. That includes a well-formed-looking
+# Authorization header wearing an entirely different scheme -- Fastly does
+# not even glance at it, the same finding bunny/recipe.yaml makes about
+# AccessKey versus Authorization on both of its hosts.
+#
+# **The credential is checked before routing, unconditionally, on every
+# path and every method this Recipe could reach -- with exactly one
+# declared exception.** No credential and a junk Fastly-Key answered
+# byte-identically against a real path (/service), a path that does not
+# exist at all (/totally-bogus-endpoint-xyz), and a real path with the
+# wrong method (PATCH /service, POST /service) -- twelve requests, one
+# body, no variation. auth.after_routing is not set: Fastly checks first,
+# always, the arrangement FireHydrant's Recipe in this collection already
+# names and Cauldron's own default already models for free.
+#
+# **GET /public-ip-list is genuinely public, and it is served by a
+# different piece of software than the rest of this API.** Verified live,
+# both directions: no credential and a junk Fastly-Key both answer the
+# identical 200 with the address list quoted in the fixture below.
+# public: true, not when-absent, because the junk-credential case proves
+# the credential is not examined at all rather than merely excused when
+# absent -- the same distinction firehydrant/recipe.yaml's header draws for
+# its own public route. What makes this one worth a second look: every
+# other response on this host answers `Server: fastly Varnish`; this one
+# answers `Server: fastly istio-envoy`, twice, with an `X-Timer` header the
+# rest of the API never sends. Two backends behind one hostname, the same
+# shape bunny/recipe.yaml's header describes for two hostnames -- except
+# here it is one route on one host, not a whole product. POST to the same
+# path answers a real 405, `Allow: GET, HEAD`, plain text "Method Not
+# Allowed" -- reachable with no credential at all, because the route never
+# asks for one, and this is genuinely a different code path: an adjacent,
+# undeclared path (/public-ip-list-typo) answers the ordinary credential
+# gate's 401, not this route's 404, so the exemption is exact-path, not
+# prefix-shaped.
+#
+# **Known fidelity gaps, stated rather than hidden:**
+#
+#   - No captured example of `active: true` exists anywhere this Recipe
+#     could find -- not in Fastly's published API reference, which
+#     documents the field's meaning but supplies no worked example body,
+#     and not in go-fastly's own committed test cassettes, which record a
+#     real `locked: true` (see the version fixture, sourced from
+#     fixtures/versions/lock.yaml) but never a real activation.
+#     TestClient_ActivateVersion_validation in go-fastly's own test suite
+#     only exercises the missing-parameter error paths; nothing in that
+#     repository ever recorded what a real POST .../activate answered. So
+#     PUT /service/{id}/version/{id}/activate is deliberately left
+#     undeclared here rather than modelled with an invented `active: true`
+#     body -- the strongest case in this group for the question it exists
+#     to answer is also the one place this Recipe could not obtain a real
+#     example of the state actually being reached, which is its own small
+#     finding about how rarely anyone's test suite calls the one endpoint
+#     that matters.
+#   - No account exists to call this API with a real key, so every
+#     resource-shaped case below (the service, its versions, the lock
+#     response, both purge shapes) is sourced from go-fastly's own
+#     committed VCR test cassettes -- real HTTP interactions Fastly's
+#     official client recorded against its own test infrastructure and
+#     checked into a public repository -- rather than from a live call this
+#     Recipe made. None carries a verified date. Only the auth-collapse,
+#     routing-order and public-route cases were struck live, and those
+#     carry today's date.
+#   - No upstream.spec. Unlike Cloudflare, which publishes a fetchable
+#     openapi.json this collection already fingerprints, this Recipe found
+#     no equivalent machine-readable description for Fastly's REST API at a
+#     stable URL. Every field below traces instead to a specific
+#     documentation page or a specific file in go-fastly, cited per case.
+#   - PurgeKeys (plural, POST .../purge with a Surrogate-Key header) and
+#     POST /purge/{url} (single-URL purge, no service scope) are both real
+#     go-fastly methods and neither is modelled. The keys-plural route
+#     answers a bare `map[string]string` with no fixed shape to declare,
+#     and the single-URL route has no recorded cassette anywhere in
+#     go-fastly's own test suite either -- its own test,
+#     TestClient_Purge, deliberately errors rather than call it for real
+#     ("we've accidentally purged a real URL"), which is the same
+#     unreachable-by-design gap this Recipe already declares for
+#     /activate, on a different route.
+#   - Fastly-Ratelimit-Remaining and Fastly-Ratelimit-Reset headers appear
+#     on a real recorded purge response (see the purge_all fixture's
+#     source) but no rate-limit response was ever triggered, live or in a
+#     cassette, so no 429 is declared.
+#   - DNS, TLS, WAF, Compute@Edge, real-time stats, backends, ACLs, domains
+#     and every other Fastly product surface are entirely out of scope.
+#     This Recipe is Service, Version and Purge, because that triangle is
+#     where the group's question lives.
+#
+# Fastly-Key values below are fixtures, not secrets, and belong to no
+# account.
+
+recipe: fastly
+capability: cdn
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.fastly.com/documentation/reference/api/
+
+auth:
+  scheme: header
+  header: Fastly-Key
+  keys:
+    - cauldron-fastly-fixture-key-0000000000000000
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: msg
+    code_field: "-"
+
+resources:
+  # GET /service/{id}. Field names are Fastly's own, cross-checked against
+  # go-fastly's typed Service struct and against a real recorded response
+  # -- see fixtures/services/get.yaml, cited in the fixture below.
+  service:
+    id:
+      style: opaque
+      field: id
+    fields:
+      name:
+        type: string
+      customer_id:
+        type: string
+      comment:
+        type: string
+      type:
+        type: string
+        default: vcl
+      paused:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      deleted_at:
+        type: datetime
+        null_when_unset: true
+      # The nested array a real Service answer embeds -- see the header and
+      # the fixture. Each entry has the same active/locked/number shape the
+      # dedicated version resource below declares; this field only proves
+      # the array exists on the parent record, because Cauldron's own
+      # nesting is one level for a field this shape, not a second resource
+      # schema repeated inline.
+      versions:
+        type: list
+      publish_key:
+        type: string
+        null_when_unset: true
+
+  # GET /service/{service_id}/version and .../version/{id}. Field names,
+  # including the three Fastly's own description marks "Unused at this
+  # time" (deployed, staging, testing), are Fastly's own -- see the header.
+  version:
+    id:
+      style: numeric
+      field: number
+      type: number
+    fields:
+      service_id:
+        type: string
+        in: "-"
+      comment:
+        type: string
+        null_when_unset: true
+      # "Whether this is the active version or not." The half of this
+      # group's question this Recipe could not obtain a true example of --
+      # see the header.
+      active:
+        type: boolean
+        default: false
+      # "Whether this version is locked or not. Objects can not be added or
+      # edited on locked versions." Independent of active -- see the
+      # header's lock fixture.
+      locked:
+        type: boolean
+        default: false
+      # All three: "Unused at this time," per Fastly's own field
+      # descriptions. Declared because they are real, documented fields on
+      # the wire, not because this Recipe found a use for them Fastly
+      # itself has not.
+      deployed:
+        type: boolean
+        default: false
+      staging:
+        type: boolean
+        default: false
+      testing:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      deleted_at:
+        type: datetime
+        null_when_unset: true
+
+  # POST /service/{service_id}/purge/{surrogate_key}. requestId's real name
+  # here is "id" -- go-fastly's own Purge struct: `PurgeID *string
+  # \`mapstructure:"id"\``, `Status *string \`mapstructure:"status"\``. See
+  # the header for why purge_all is served as a raw body instead of through
+  # this resource: its real response has no id field for this resource's
+  # own id block to bind to.
+  purge:
+    id:
+      style: opaque
+      field: id
+    fields:
+      service_id:
+        type: string
+        in: "-"
+      status:
+        type: string
+        default: ok
+
+routes:
+  # Genuinely public -- see the header. istio-envoy answers this one, not
+  # Varnish, and the body is a fixed, verbatim list rather than a record.
+  - method: GET
+    path: /public-ip-list
+    public: true
+    raw:
+      content_type: application/json
+      text: '{"addresses":["23.235.32.0/20","43.249.72.0/22","103.244.50.0/24","103.245.222.0/23","103.245.224.0/24","104.156.80.0/20","140.248.64.0/18","140.248.128.0/17","146.75.0.0/17","151.101.0.0/16","157.52.64.0/18","167.82.0.0/17","167.82.128.0/20","167.82.160.0/20","167.82.224.0/20","172.111.64.0/18","185.31.16.0/22","199.27.72.0/21","199.232.0.0/16"],"ipv6_addresses":["2a04:4e40::/32","2a04:4e42::/32"]}'
+
+  # Cauldron's generic method-mismatch handling only fires for a path with
+  # no matching route at all, and by then the credential has already been
+  # refused when auth.after_routing is unset, which is right for every
+  # other path on this Recipe and wrong for this one specific route: the
+  # live 405 above needed no credential either. Declaring POST explicitly,
+  # itself marked public, is what lets this one path's exemption reach a
+  # method it does not support -- the request still answers exactly what
+  # was struck live, not a route this API actually has.
+  - method: POST
+    path: /public-ip-list
+    public: true
+    error: public_ip_list_method_not_allowed
+
+  - method: GET
+    path: /service/{id}
+    resource: service
+    operation: get
+
+  - method: GET
+    path: /service/{service_id}/version
+    resource: version
+    operation: list
+    scope: [service_id]
+
+  - method: GET
+    path: /service/{service_id}/version/{id}
+    resource: version
+    operation: get
+    scope: [service_id]
+
+  # PUT, not POST -- Fastly's own reference names this method. Locks a
+  # version without activating it; see the header for why the activate
+  # route beside this one is deliberately absent.
+  - method: PUT
+    path: /service/{service_id}/version/{id}/lock
+    resource: version
+    operation: update
+    scope: [service_id]
+
+  # {"status":"ok"} and nothing else -- real, recorded, no id. See the
+  # header and fixtures/purges/purge_all.yaml.
+  - method: POST
+    path: /service/{service_id}/purge_all
+    scope: [service_id]
+    status: 200
+    raw:
+      content_type: application/json
+      text: '{"status":"ok"}'
+
+  - method: POST
+    path: /service/{service_id}/purge/{key}
+    resource: purge
+    operation: create
+    status: 200
+    scope: [service_id]
+    returns:
+      - id
+      - status
+
+errors:
+  authentication_error:
+    status: 401
+    message: Provided credentials are missing or invalid
+
+  # istio-envoy's own answer for a method /public-ip-list does not
+  # support -- plain text, not this Recipe's JSON envelope, and real: see
+  # the header and the conformance case below.
+  public_ip_list_method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Allow: "GET, HEAD"
+      Content-Type: text/plain; charset=utf-8
+    message: Method Not Allowed
+
+fixtures:
+  empty: {}
+
+  # Every value below is quoted verbatim from a real HTTP interaction
+  # recorded in go-fastly's own committed test cassettes -- see each
+  # conformance case's own source: for the exact file. Nothing here was
+  # observed by this Recipe directly; no account exists to have observed it
+  # with.
+  captured-cassettes:
+    service:
+      - id: FPkmJNp1fH8CnWbdi21Wf3
+        name: test-service
+        customer_id: 51MumwLiSJyFTWhtbByYgR
+        comment: comment
+        type: vcl
+        paused: false
+        created_at: "2022-11-04T17:51:46Z"
+        updated_at: "2022-11-04T17:51:46Z"
+        deleted_at: null
+        publish_key: ""
+        versions:
+          - comment: ""
+            locked: false
+            active: false
+            number: 1
+            service_id: FPkmJNp1fH8CnWbdi21Wf3
+            deployed: false
+            staging: false
+            testing: false
+            created_at: "2022-11-04T17:51:46Z"
+            updated_at: "2022-11-04T17:51:46Z"
+
+    version:
+      # fixtures/versions/list.yaml's first entry, service
+      # kKJb5bOFI47uHeBVluGfX1: an untouched draft, everything false.
+      - id: 1
+        number: 1
+        service_id: kKJb5bOFI47uHeBVluGfX1
+        comment: ""
+        active: false
+        locked: false
+        deployed: false
+        staging: false
+        testing: false
+        created_at: "2022-06-22T08:23:37Z"
+        updated_at: "2022-10-24T11:07:24Z"
+        deleted_at: null
+
+      # fixtures/versions/get.yaml, same service, a different version:
+      # locked is still false here -- the pair to the lock response below.
+      - id: 75
+        number: 75
+        service_id: kKJb5bOFI47uHeBVluGfX1
+        comment: test comment
+        active: false
+        locked: false
+        deployed: false
+        staging: false
+        testing: false
+        created_at: "2022-11-04T17:45:17Z"
+        updated_at: "2022-11-04T17:45:17Z"
+        deleted_at: null
+
+    purge:
+      # fixtures/purges/purge_by_key.yaml -- the one purge shape that does
+      # carry an id.
+      - id: "4151-1635861748-11038"
+        status: ok
+
+conformance:
+  - name: no credential at all is refused, one sentence
+    source: https://api.fastly.com/service
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /service
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: a junk Fastly-Key answers byte-identically
+    source: https://api.fastly.com/service
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /service
+      headers:
+        Fastly-Key: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: Authorization is not the header this host checks at all
+    # Bearer junkjunkjunk12345 in Authorization, no Fastly-Key anywhere --
+    # answers exactly as if nothing had been sent. Live.
+    source: https://api.fastly.com/service
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /service
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: an unrouted path answers the identical body, no credential needed to see it
+    source: https://api.fastly.com/totally-bogus-endpoint-xyz
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: and a junk key on that same unrouted path answers byte-identically too
+    source: https://api.fastly.com/totally-bogus-endpoint-xyz
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+      headers:
+        Fastly-Key: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: a wrong method on a real path is refused for its credential, not a 405
+    source: https://api.fastly.com/service
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /service
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: even a bodyless POST with a junk key gets the same refusal
+    source: https://api.fastly.com/service
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /service
+      headers:
+        Fastly-Key: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: the public IP list answers with no credential presented at all
+    source: https://api.fastly.com/public-ip-list
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /public-ip-list
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        addresses[0]: 23.235.32.0/20
+        ipv6_addresses[0]: "2a04:4e40::/32"
+
+  - name: and a junk credential does not change that -- the route is exempt, not merely lenient
+    # Proves public: true rather than public: when-absent -- see the
+    # header. Byte-identical to the case above.
+    source: https://api.fastly.com/public-ip-list
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /public-ip-list
+      headers:
+        Fastly-Key: junkjunkjunk12345
+    expect:
+      status: 200
+      body:
+        addresses[0]: 23.235.32.0/20
+
+  - name: a wrong method on the public route is a real 405, still with no credential
+    source: https://api.fastly.com/public-ip-list
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /public-ip-list
+    expect:
+      status: 405
+      headers:
+        Allow: "GET, HEAD"
+
+  - name: an adjacent path proves the exemption is exact, not a prefix
+    # /public-ip-list-typo, no credential -- the ordinary credential gate's
+    # 401, not istio-envoy's 404. The exemption belongs to one declared
+    # route, not to everything that starts the same way.
+    source: https://api.fastly.com/public-ip-list-typo
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /public-ip-list-typo
+    expect:
+      status: 401
+      body:
+        msg: Provided credentials are missing or invalid
+
+  - name: a version can be locked and not active at the same time
+    # PUT .../version/75/lock, real, recorded response -- see the header
+    # and fixtures/versions/lock.yaml. The distinction this whole group of
+    # providers is being asked about, stated in two adjacent booleans on
+    # one object.
+    source: https://raw.githubusercontent.com/fastly/go-fastly/main/fastly/fixtures/versions/lock.yaml
+    fixture: captured-cassettes
+    request:
+      method: PUT
+      path: /service/kKJb5bOFI47uHeBVluGfX1/version/75/lock
+      headers:
+        Fastly-Key: cauldron-fastly-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        number: 75
+        locked: false
+        active: false
+
+  - name: a service embeds its versions, each with its own activation state
+    source: https://raw.githubusercontent.com/fastly/go-fastly/main/fastly/fixtures/services/get.yaml
+    fixture: captured-cassettes
+    request:
+      method: GET
+      path: /service/FPkmJNp1fH8CnWbdi21Wf3
+      headers:
+        Fastly-Key: cauldron-fastly-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        id: FPkmJNp1fH8CnWbdi21Wf3
+        name: test-service
+        "versions[0].number": 1
+        "versions[0].active": false
+        "versions[0].locked": false
+
+  - name: a version list is a bare array, no envelope
+    source: https://raw.githubusercontent.com/fastly/go-fastly/main/fastly/fixtures/versions/list.yaml
+    fixture: captured-cassettes
+    request:
+      method: GET
+      path: /service/kKJb5bOFI47uHeBVluGfX1/version
+      headers:
+        Fastly-Key: cauldron-fastly-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].number": 1
+        "[0].active": false
+        "[0].deployed": false
+      absent:
+        - data
+        - versions
+
+  - name: purging one key answers status and an id that resolves to nothing
+    # {"status":"ok","id":"4151-1635861748-11038"} -- real, recorded. No
+    # route anywhere in go-fastly takes this id back. See the header.
+    source: https://raw.githubusercontent.com/fastly/go-fastly/main/fastly/fixtures/purges/purge_by_key.yaml
+    fixture: captured-cassettes
+    request:
+      method: POST
+      path: /service/kKJb5bOFI47uHeBVluGfX1/purge/foo
+      headers:
+        Fastly-Key: cauldron-fastly-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: ok
+      matches:
+        id: '^\S+$'
+
+  - name: purging everything answers status alone -- the same action, sometimes with no id anywhere
+    # {"status":"ok"} -- real, recorded, and note what is missing: this is
+    # the same logical operation as the case above and it carries no id at
+    # all. See the header.
+    source: https://raw.githubusercontent.com/fastly/go-fastly/main/fastly/fixtures/purges/purge_all.yaml
+    fixture: empty
+    request:
+      method: POST
+      path: /service/kKJb5bOFI47uHeBVluGfX1/purge_all
+      headers:
+        Fastly-Key: cauldron-fastly-fixture-key-0000000000000000
+    expect:
+      status: 200
+      body:
+        status: ok
+      absent:
+        - id
