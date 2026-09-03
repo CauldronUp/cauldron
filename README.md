@@ -629,6 +629,16 @@ A **Recipe** defines how Cauldron emulates an external dependency. It is not a m
 | Fixtures | Named seed data: `empty`, `small-shop`, `enterprise` |
 | Conformance | The suite that proves the Recipe still matches the real API |
 
+Each one lives in `recipes/<name>/` and carries three things a reader wants
+separately: `recipe.yaml` is the Recipe itself, with the full notes in its
+header -- what was probed, what it answered, what was deliberately not modelled
+and why. `README.md` is the short version: what this provider turned out to do
+that a caller would not expect, and how many of its claims were checked against
+the live API rather than read in documentation. The conformance cases sit inside
+the Recipe, beside the claims they check.
+
+If you are about to fake one provider, its README is the page to read.
+
 ## Design commitments
 
 These are the decisions the project intends to be held to.
