@@ -1,0 +1,478 @@
+# Google Books Recipe for Cauldron
+#
+# Third of a group with recipes/openlibrary/recipe.yaml and
+# recipes/gutendex/recipe.yaml, and it answers the group's question --
+# does an ISBN lookup say which edition you got, and whether other editions
+# exist -- worse than either sibling. Open Library's canonical document
+# carries works[].key beside the edition; Gutendex does not model editions
+# at all because Project Gutenberg mostly has one text per work. Google
+# Books has neither. Checked against the API reference index today: the
+# only resource types this API exposes are Bookshelf, Volume,
+# Bookshelves.volumes, Mylibrary.bookshelves and Mylibrary.bookshelves.volumes
+# -- no Work, no grouping of editions, nothing relating one ISBN's Volume to
+# another ISBN's Volume of the same book at all. A Volume IS the unit; there
+# is no coarser one to ask about.
+#
+# **What a Volume carries as identifiers, read from
+# developers.google.com/books/docs/v1/reference/volumes today:**
+#
+#   id                                  Google's own, e.g. "zyTCAlFPjgYC"
+#   volumeInfo.industryIdentifiers[]    {type, identifier}, type one of
+#                                       ISBN_10, ISBN_13, ISSN, OTHER
+#
+# Google's own id is what every other field on the record is actually keyed
+# by -- selfLink, the get route below, the cover images. The ISBN sits inside
+# an array of typed identifiers beside a library's ISSN and a bucket for
+# whatever else a cataloguer entered, and nothing on the record says which
+# industryIdentifiers entry, if any, is the one a search for a given ISBN
+# matched against.
+#
+# **The genuinely-open claim is true of the protocol and was found false of
+# the day.** Google's own docs say plainly: "Performing a search does not
+# require authentication, so you do not have to provide the Authorization
+# HTTP header." Probed live against www.googleapis.com today with no key at
+# all, twice, on two different routes (a search and a get-by-id) --
+#
+#   GET /books/v1/volumes?q=isbn:9780451526342          -> 429
+#   GET /books/v1/volumes/zyTCAlFPjgYC                   -> 429
+#
+#   {"error": {"code": 429, "message": "Quota exceeded for quota metric
+#    'Queries' and limit 'Queries per day' of service 'books.googleapis.com'
+#    for consumer 'project_number:624717413613'.", "status":
+#    "RESOURCE_EXHAUSTED", "errors": [{"reason": "rateLimitExceeded", ...}]}}
+#
+# "project_number:624717413613" is Google's own bucket for every caller who
+# never registered a project -- a single shared allowance, and today, on
+# this host, for this consumer, it reads zero. Key-less access is real and
+# it is not a fallback path a client can rely on being open; it is a queue
+# behind every other unregistered caller hitting the same service today,
+# and the queue was already spent before this Recipe made its first call.
+# **A key changes which failure you get, not just whether you get one.** The
+# same search, with a key nobody issued --
+#
+#   GET /books/v1/volumes?q=isbn:9780451526342&key=junkkey12345   -> 400
+#   {"error": {"code": 400, "message": "API key not valid. Please pass a
+#    valid API key.", "status": "INVALID_ARGUMENT", "errors": [{"reason":
+#    "badRequest", ...}]}}
+#
+# -- fails fast against Google's key-validation service instead of queuing
+# behind the shared anonymous bucket. A caller who bothers to type a wrong
+# key gets a cleaner, quicker, more specific answer than one who sends
+# nothing, which is backwards from what "no key required" leads a reader to
+# expect. Both shapes share one envelope -- nested under "error", with
+# "code" carrying the *HTTP status again* as a bare number beside "status"
+# carrying a gRPC-style constant (RESOURCE_EXHAUSTED, INVALID_ARGUMENT) --
+# and that repetition of the status inside the body is itself a small,
+# genuine oddity: two fields on every Google API error, one of them
+# redundant with the response line.
+#
+# **totalItems answers a zero-result search with 200 and a count, and this
+# Recipe cannot pin the exact shape.** Google's own docs give a worked
+# search example (totalItems: 3, one item shown) and say nothing anywhere
+# about what a query matching nothing renders -- confirmed absent from
+# developers.google.com/books/docs/v1/using today, section by section. A
+# live check would have settled it in one call; the quota above made that
+# call impossible without waiting on a shared allowance this Recipe does
+# not control. So: modelled here is the one worked search Google's own docs
+# publish, and the empty-result shape is left out rather than guessed,
+# which is the choice Step 3 of this batch's brief calls for by name.
+#
+# **Routing beats the credential for a path that plainly is not there, and
+# beats it for a wrong method too -- and there is no 405 anywhere on this
+# host.** A path this API does not serve, probed with no key and again with
+# a junk one:
+#
+#   GET /books/v1/nosuchroute                 -> 404, no key
+#   GET /books/v1/nosuchroute?key=junkkey12345 -> 404, junk key
+#
+# identical either way: Google's own web-frontend 404 page, text/html, not
+# JSON, from a host whose every real answer is JSON. POST, PUT and DELETE
+# against the *real* volumes path, each sent with a proper Content-Length so
+# the frontend would actually route them rather than reject the request
+# for looking malformed --
+#
+#   POST/PUT/DELETE /books/v1/volumes(/{id})  -> 404, the identical page
+#
+# -- answer the same 404 as the wrong path, not a 405. (A bodiless POST
+# answers 411 Length Required instead, HTTP/1.0, "POST requests require a
+# Content-length header." -- a frontend-level artifact of the request
+# itself, not a fact about routing, and not modelled below for that reason.)
+# So this host's true answer to "does a wrong method get a real 405" is
+# that it has no 405 at all: an unknown path and a disallowed method are one
+# failure. Cauldron cannot reproduce that. Once a GET route is declared for
+# a path, Cauldron synthesises a 405 with Allow: GET for any other method
+# on that same path, unconditionally -- there is no field to suppress it.
+# That synthesised 405 would be asserting a status this Recipe watched the
+# real host never send on any of three methods it tried, so no conformance
+# case below claims one. Two Recipes in this same batch hit the identical
+# wall on the identical mechanism -- see recipes/hardcover/recipe.yaml's
+# header for the other one, and internal/recipe/route.go's own method_not_
+# allowed comment for the Turso/Koyeb/ClickHouse/Workable precedent of
+# providers with no real 405 either.
+#
+# after_routing: true follows from the first finding above (routing beats
+# the credential on both an unrouted path and a real one hit with a bad
+# method) and from nothing else -- Cauldron has no field for "the frontend
+# also answers a bodiless POST before the backend would," so that half of
+# the finding lives in prose only.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The zero-result search shape (totalItems: 0, and whether "items" is
+#     omitted or empty) is not modelled. See above.
+#   - Whether a checksum-invalid ISBN (a well-formed ISBN-13 whose final
+#     digit fails the ISBN check-digit algorithm) is treated differently
+#     from a well-formed one matching no catalogue entry could not be
+#     determined at all: both require a live search this Recipe could not
+#     make today, and Google's own docs never distinguish the two cases in
+#     words. Left out rather than guessed.
+#   - The list route below does not filter by its own query parameter.
+#     Cauldron does not parse Google's search-operator syntax (isbn:,
+#     inauthor:, intitle:), so the one route serves the one fixture
+#     regardless of q -- the same bargain every GraphQL Recipe in this
+#     collection already states, applied to a REST querystring instead.
+#   - userInfo, saleInfo, accessInfo and searchInfo -- four more top-level
+#     Volume fields the reference documents -- are not declared. Nothing in
+#     either worked example below shows them populated, and they describe
+#     bookstore and per-user state a keyless reader would not see in the
+#     first place.
+#   - Only the query-string key scheme is modelled. Google Books also
+#     accepts an OAuth 2.0 bearer token on the Authorization header for the
+#     same routes, undeclared here because nothing about the failure
+#     surface changes by adding it and this batch never held one to try.
+#
+# The two worked volumes below (a "Flowers" search result and "The Google
+# story" by volume id) are copied field-for-field from
+# developers.google.com/books/docs/v1/using and .../reference/volumes,
+# because the shared quota above made a live call to either route
+# impossible today -- neither carries a verified date for that reason, and
+# this Recipe says so rather than quietly reusing a real ISBN's real data
+# under an invented response.
+
+recipe: googlebooks
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v1
+  provider: googlebooks
+  docs: https://developers.google.com/books/docs/v1/using
+  # Google's own Discovery Document, not OpenAPI -- confirmed live today
+  # (revision 20260827) and used to check the path shapes below
+  # (books/v1/volumes, books/v1/volumes/{volumeId}), but in a format this
+  # collection's own fingerprinting tool cannot read ("no openapi or
+  # swagger version field"), so no spec_hash is recorded. Same bargain
+  # recipes/mixpanel/recipe.yaml already makes for an unfingerprintable
+  # spec it did check.
+  spec: https://www.googleapis.com/discovery/v1/apis/books/v1/rest
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: query
+  param: key
+  keys:
+    - AIzaCauldronFixtureKey00000000000
+  # No key at all queues behind a shared, already-exhausted allowance --
+  # see the header. A key nobody issued fails its own, separate check
+  # instead, faster and more specifically. There is no third shape: nothing
+  # tried here rules a credential out by its form before checking it.
+  absent_error: quota_exhausted
+  rejected_error: invalid_key
+  # Routing beats the credential on both an unrouted path and a real path
+  # hit with the wrong method -- see the header.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: items
+  resource:
+    style: bare
+  error:
+    # {"error": {"code": ..., "message": ..., "status": ...}} -- "code" is
+    # the HTTP status again, as a bare number; "status" is a gRPC-style
+    # constant. Both real errors below share this envelope; the routing
+    #404 does not and overrides it per-error, because it is HTML from an
+    # entirely different program in front of this one.
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    type_field: status
+
+resources:
+  volume:
+    id:
+      style: opaque
+      field: id
+    # Confirmed on the one worked example this Recipe could read: every
+    # Volume answers "kind": "books#volume", the same literal Google's own
+    # field reference describes generically as "Resource type for a
+    # volume." A constant rather than a per-record field, because nothing
+    # here suggests it varies.
+    constants:
+      kind: books#volume
+    fields:
+      # Present on the one worked example this Recipe holds and not on the
+      # other -- see the header for why the second is not fabricated one.
+      etag:
+        type: string
+        null_when_unset: true
+      selfLink:
+        type: string
+        null_when_unset: true
+      # Everything below sits one level down, under volumeInfo -- kind, id,
+      # etag and selfLink are the only fields the top level carries.
+      title:
+        type: string
+        in: volumeInfo
+      authors:
+        type: list
+        in: volumeInfo
+      # {type, identifier}[], type one of ISBN_10, ISBN_13, ISSN, OTHER --
+      # see the header. The ISBN sits inside this array with nothing
+      # marking which entry, if any, answered a search for it.
+      industryIdentifiers:
+        type: list
+        in: volumeInfo
+      pageCount:
+        type: integer
+        null_when_unset: true
+        in: volumeInfo
+      dimensions:
+        type: map
+        null_when_unset: true
+        in: volumeInfo
+      printType:
+        type: string
+        null_when_unset: true
+        in: volumeInfo
+      mainCategory:
+        type: string
+        null_when_unset: true
+        in: volumeInfo
+
+routes:
+  # No matches_query: Cauldron does not parse Google's search-operator
+  # syntax, so this one route answers the one worked example regardless of
+  # what q asks for -- see the header.
+  - method: GET
+    path: /books/v1/volumes
+    resource: volume
+    operation: list
+    fields:
+      # A literal rather than a computed count.count_field, because
+      # totalItems (3) is larger than the one item Google's own worked
+      # example actually shows -- the same reading Gutendex's Recipe
+      # already records for its own uncountable total.
+      kind: books#volumes
+      totalItems: 3
+
+  - method: GET
+    path: /books/v1/volumes/{id}
+    resource: volume
+    operation: get
+
+  # Genuinely unrouted, on the live host, with or without a credential --
+  # see the header. public: true because the credential was never examined
+  # either way, confirmed rather than assumed.
+  - method: GET
+    path: /books/v1/nosuchroute
+    public: true
+    error: page_not_found
+
+errors:
+  # Never reached directly: both verdicts below name their own entry. Kept
+  # as the fallback every Recipe here needs one of.
+  authentication_error:
+    status: 401
+    message: Invalid API key provided.
+
+  quota_exhausted:
+    status: 429
+    headers:
+      Content-Type: application/json; charset=UTF-8
+    message: "Quota exceeded for quota metric 'Queries' and limit 'Queries per day' of service 'books.googleapis.com' for consumer 'project_number:624717413613'."
+    code: 429
+    type: RESOURCE_EXHAUSTED
+
+  invalid_key:
+    status: 400
+    headers:
+      Content-Type: application/json; charset=UTF-8
+    message: "API key not valid. Please pass a valid API key."
+    code: 400
+    type: INVALID_ARGUMENT
+
+  # HTML, from Google's web frontend, on a host whose every real answer is
+  # JSON -- see the header. Overrides the Recipe-wide nested style, because
+  # this is not the Books backend answering at all.
+  page_not_found:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=UTF-8
+    message: "<!DOCTYPE html>"
+
+fixtures:
+  empty: {}
+
+  flowers:
+    volume:
+      - id: _ojXNuzgHRcC
+        etag: OTD2tB19qn4
+        selfLink: https://www.googleapis.com/books/v1/volumes/_ojXNuzgHRcC
+        title: Flowers
+        authors:
+          - Vijaya Khisty Bodach
+
+  google-story:
+    volume:
+      - id: zyTCAlFPjgYC
+        # Derived from the documented pattern the Flowers example shows
+        # (base URL + /volumes/ + id), not itself an observed value -- this
+        # exact id was never reached live; see the header.
+        selfLink: https://www.googleapis.com/books/v1/volumes/zyTCAlFPjgYC
+        title: The Google story
+        authors:
+          - David A. Vise
+          - Mark Malseed
+        industryIdentifiers:
+          - type: ISBN_10
+            identifier: 055380457X
+          - type: ISBN_13
+            identifier: "9780553804577"
+        pageCount: 207
+        dimensions:
+          height: "24.00 cm"
+          width: "16.03 cm"
+          thickness: "2.74 cm"
+        printType: BOOK
+        mainCategory: Business & Economics / Entrepreneurship
+
+conformance:
+  - name: no key at all queues behind an already-exhausted shared allowance
+    source: https://www.googleapis.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /books/v1/volumes
+      query:
+        q: "isbn:9780451526342"
+    expect:
+      status: 429
+      headers:
+        Content-Type: application/json; charset=UTF-8
+      body:
+        error.code: 429
+        error.status: RESOURCE_EXHAUSTED
+      matches:
+        error.message: "Queries per day.*project_number:624717413613"
+
+  - name: the same shared gate answers a get-by-id identically
+    source: https://www.googleapis.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /books/v1/volumes/zyTCAlFPjgYC
+    expect:
+      status: 429
+      body:
+        error.code: 429
+        error.status: RESOURCE_EXHAUSTED
+
+  - name: a key nobody issued fails faster and more specifically than none at all
+    source: https://www.googleapis.com
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /books/v1/volumes
+      query:
+        q: "isbn:9780451526342"
+        key: junkkey12345
+    expect:
+      status: 400
+      headers:
+        Content-Type: application/json; charset=UTF-8
+      body:
+        error.code: 400
+        error.status: INVALID_ARGUMENT
+        error.message: "API key not valid. Please pass a valid API key."
+
+  - name: a path this API does not serve 404s the same with or without a credential
+    source: https://www.googleapis.com/books/v1/nosuchroute
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /books/v1/nosuchroute
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=UTF-8
+      body_matches: '^<!DOCTYPE html>'
+
+  - name: and a junk key changes nothing about that routing answer
+    source: https://www.googleapis.com/books/v1/nosuchroute
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /books/v1/nosuchroute
+      query:
+        key: junkkey12345
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=UTF-8
+
+  - name: a Volume's own id is what the record is keyed by, and the ISBN is one entry in an array beside it
+    source: https://developers.google.com/books/docs/v1/using
+    fixture: google-story
+    request:
+      method: GET
+      path: /books/v1/volumes/zyTCAlFPjgYC
+      query:
+        key: AIzaCauldronFixtureKey00000000000
+    expect:
+      status: 200
+      body:
+        kind: books#volume
+        id: zyTCAlFPjgYC
+        "volumeInfo.title": The Google story
+        "volumeInfo.authors[0]": David A. Vise
+        "volumeInfo.authors[1]": Mark Malseed
+        # The ISBN sits inside this array with nothing marking it as THE
+        # match for any particular ISBN search.
+        "volumeInfo.industryIdentifiers[0].type": ISBN_10
+        "volumeInfo.industryIdentifiers[0].identifier": 055380457X
+        "volumeInfo.industryIdentifiers[1].type": ISBN_13
+        "volumeInfo.industryIdentifiers[1].identifier": "9780553804577"
+        "volumeInfo.pageCount": 207
+        "volumeInfo.printType": BOOK
+
+  - name: a search answers a wrapped list with a count larger than the items shown
+    source: https://developers.google.com/books/docs/v1/using
+    fixture: flowers
+    request:
+      method: GET
+      path: /books/v1/volumes
+      query:
+        q: "flowers inauthor:keyes"
+        key: AIzaCauldronFixtureKey00000000000
+    expect:
+      status: 200
+      body:
+        kind: books#volumes
+        totalItems: 3
+        "items[0].kind": books#volume
+        "items[0].id": _ojXNuzgHRcC
+        "items[0].volumeInfo.title": Flowers
+        "items[0].volumeInfo.authors[0]": Vijaya Khisty Bodach
+      absent:
+        # The identifiers array is not part of this worked example -- see
+        # the header. Nothing here claims a search result carries one.
+        - "items[0].volumeInfo.industryIdentifiers"
