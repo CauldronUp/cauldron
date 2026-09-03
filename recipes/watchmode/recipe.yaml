@@ -1,0 +1,530 @@
+# Watchmode Recipe for Cauldron
+#
+# Differs from tmdb/recipe.yaml and tvmaze/recipe.yaml, the other two
+# Recipes in this small collection, in where the foreign ids live. TMDB
+# nests a single imdb_id inside its full movie record and nowhere else;
+# TVmaze nests three (tvrage, thetvdb, imdb) under one "externals" object.
+# Watchmode puts imdb_id and tmdb_id -- plus a third field, tmdb_type,
+# that neither of the other two needs -- directly on the top-level record,
+# beside its own numeric id, on both the full detail object and every
+# search hit. TMDB numbers movies and TV separately too, but never has to
+# say so on the wire, because a client always calls a movie-shaped or a
+# tv-shaped endpoint and the type is implied by which one it used.
+# Watchmode's /search endpoint answers movies and TV in the same array, so
+# tmdb_type earns its place: 1396 is a real TMDB id in both the movie and
+# the tv numbering, and tmdb_id alone cannot say which. This is quoted
+# from Watchmode's own OpenAPI description, not inferred -- see below.
+#
+# EVERY FOREIGN ID IS OPTIONAL, PER THE PROVIDER'S OWN SCHEMA, AND THE
+# SCHEMA SAYS SO ABOUT NEARLY EVERYTHING.
+#
+# Fetched live from https://api.watchmode.com/openapi.json on 2026-09-03
+# (info.title "Watchmode API", info.version "1.1.7") rather than guessed:
+# the TitleDetails schema's own "required" array is empty -- not one
+# field, including Watchmode's own id, is required. Of its properties,
+# imdb_id, tmdb_id and tmdb_type are each declared "nullable": true, and
+# so are all but four of the roughly twenty other fields this schema
+# carries (id, title, year and type are the only ones this Recipe found
+# without a nullable flag; content_ratings has no flag either way,
+# because it is a bare additionalProperties map rather than a scalar).
+# tmdb_type is itself an enum of exactly two values, "movie" and "tv" --
+# so a caller checking a TMDB id for a match has three fields to read, not
+# one, and every one of them can be absent on a record this API still
+# considers complete enough to return.
+#
+# THE ID SLOT ACCEPTS THREE ENTIRELY DIFFERENT SCHEMES, AT DIFFERENT COSTS.
+#
+# GET /v1/title/{id}/details/'s own operation description (same fetched
+# description, not observed, since no key exists to call it) states the
+# id path parameter takes:
+#
+#   Watchmode ID   (e.g. 345534)          -- costs 1 credit
+#   IMDB ID        (e.g. tt0903747)       -- costs 2 credits
+#   TMDB format    (e.g. movie-278, tv-1396) -- costs 2 credits
+#
+# One path parameter, three addressing schemes, and the provider bills the
+# two foreign ones double. This is the id-lookup cross-check this small
+# collection's providers keep answering differently: OMDb and Trakt both
+# make a caller name which foreign scheme up front (i= vs t=; a whole
+# separate /search/{id_type}/{id} route); Watchmode instead overloads a
+# single {id} and prices the ambiguity. Only the Watchmode-numbered form
+# is modelled below -- see the gaps.
+#
+# THE DOCUMENTED CREDENTIAL SHAPE IS NOT THE ONE THIS RECIPE OBSERVED, AND
+# THE PROVIDER'S OWN DESCRIPTION ADMITS TO CHANGING IT MID-DOCUMENT.
+#
+# The same OpenAPI description's info.description recommends a header,
+# not a query parameter, in these words: "We recommend sending it in a
+# request header so the key is not exposed in URLs, browser history,
+# analytics, referrer headers, or web server logs," and lists three
+# accepted channels -- X-API-Key (recommended), Authorization: Bearer
+# (alternative), and apiKey as a query parameter, explicitly labelled
+# "Legacy... Supported for backwards compatibility; prefer X-API-Key for
+# new integrations." All three were checked live, junk value in each:
+# identical 401, byte for byte, whichever channel carried it. Cauldron
+# has one credential scheme per Recipe; this one models the query
+# parameter, both because it is what a caller copying an old integration
+# still sends and because it is the one this small collection's brief
+# exists to ask about. The other two are real and verified, not modelled.
+#
+# The bigger disagreement is the error body's own shape. The description's
+# Error schema requires three fields -- success, statusCode, statusMessage
+# -- and its own worked example for 401 is
+# {"success":false,"statusCode":401,"statusMessage":"Unauthorized"}. The
+# live wire, checked every way this session tried a bad or missing key,
+# sends {"success":false,"errorMessage":"Please enter a valid API key."}
+# instead: no statusCode anywhere in the body, and the message field is
+# not the one the schema requires at all. Since the one shape this project
+# could check against the live host already disagrees with its own
+# description, the description's NotFound example (statusCode 404,
+# statusMessage "Title not found.") is not modelled either -- there is no
+# way to call a bad title id without a key, and no remaining reason to
+# trust that shape would match what actually ships.
+#
+# ROUTING, THE METHOD ALLOW-LIST, AND THE CREDENTIAL ANSWER IN A DIFFERENT
+# ORDER FOR EACH.
+#
+# Every response on this host, failure or not, carries
+# "vary: rsc, next-router-state-tree, next-router-prefetch,
+# next-router-segment-prefetch" -- the same Next.js app-router fingerprint
+# together/recipe.yaml already documents for api.together.xyz elsewhere in
+# this project: the API and the marketing site are one deployment here
+# too. Checked live, no account, no key ever created:
+#
+#   GET  /v1/title/tt3896198/details/            (no key)   -> 401
+#   GET  /v1/title/tt3896198/details/?apiKey=junk            -> 401,
+#     byte-identical body
+#   GET  /v1/title/tt3896198/details/?apiKey=                -> 401,
+#     byte-identical (Cauldron's own query-scheme check already treats an
+#     empty value as absent; no special handling was needed to reproduce
+#     this)
+#   GET  /v1/nonexistentendpoint/                (no key)   -> 401,
+#     byte-identical -- the credential is judged before the path is,
+#     Cauldron's default order
+#   POST /v1/title/tt3896198/details/             (no key)   -> 401,
+#     byte-identical -- and before the method is
+#   PUT  /v1/title/tt3896198/details/?apiKey=junk            -> 401
+#   DELETE /v1/title/tt3896198/details/?apiKey=junk           -> 401,
+#     same as PUT: both verbs are in this host's own declared
+#     access-control-allow-methods (GET, POST, PUT, DELETE, OPTIONS), so
+#     both still reach the credential check even though neither does
+#     anything on this particular route
+#   PATCH /v1/title/tt3896198/details/            (no key)   -> 405, zero
+#     bytes, no Content-Type
+#   PATCH /v1/title/tt3896198/details/?apiKey=junk            -> byte-
+#     identical 405, credential never consulted
+#
+# PATCH is the one verb this host's own CORS header never lists, and it is
+# the only one that skips the credential check entirely -- a wrong or
+# missing key never gets a say, because the method is refused before
+# anything about the request is examined. This is the same split
+# auth.go's own notes record for Flexport ("splits on whether the verb is
+# one it declares anywhere"), independently found on a completely
+# different provider: an api-key check that always wins against routing
+# and against a wrong-but-declared verb, and always loses to a verb the
+# platform does not recognise at all.
+#
+# access-control-expose-headers -- present on every response this session
+# received, 401 included -- names ten headers this API can send:
+# X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After, X-Account-Quota,
+# X-Account-Quota-Used, X-Concurrency-Limit, X-Concurrency-InFlight,
+# X-Watchmode-Truncated, X-Watchmode-Result-Limit, X-Watchmode-Request-
+# Cost, X-Watchmode-Horizon-Limited. Not one of them carried a value on
+# any response this session could reach -- every request this Recipe could
+# make failed the credential check, and quota only has something to report
+# once a request gets past it. The description's own Rate Limiting section
+# names four of these directly (X-RateLimit-Limit, X-RateLimit-Remaining,
+# X-Account-Quota, X-Account-Quota-Used) with no worked values either.
+# None is declared on a response below for that reason: the names are
+# real and verified; the values are not observed anywhere.
+#
+# GET /v1/status/ -- the endpoint the description's own X-API-Key example
+# curl command uses -- was checked on the theory that a status/health
+# route might be the one genuinely open endpoint on this host. It is not:
+# byte-identical 401 to every other route tried, no key, junk key, or
+# either alternate channel. This Recipe declares no public route, because
+# none was found.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - X-API-Key and Authorization: Bearer, the two header-based credential
+#     channels the description recommends over the query parameter, are
+#     verified live and not modelled -- see above.
+#   - The id path parameter's IMDB-format and TMDB-format addressing
+#     (tt0903747, movie-278, tv-1396) are documented and not modelled;
+#     only the Watchmode-numbered form the worked example uses is.
+#   - people_results, the second array GET /search's own worked example
+#     shows beside title_results, is not modelled. This Recipe's search
+#     resource covers titles only.
+#   - No plot, synopsis or review text is reproduced from the worked
+#     examples this Recipe read, even though the description's own
+#     TitleDetails example carries plot_overview, will_you_like_this and
+#     review_summary fields -- title, year and identifiers are what this
+#     small collection's Recipes are about, and those three fields are
+#     dropped from the fixture below on purpose.
+#   - 404 (a title id that parses but does not exist) is not modelled --
+#     see above, the documented shape for it is not trustworthy given
+#     what the 401 case already shows about this description.
+#   - Poster, backdrop and trailer URL fields are typed but not asserted
+#     with real values, to keep this Recipe's fixture to what it is
+#     actually about.
+
+recipe: watchmode
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://api.watchmode.com/docs/
+  spec: https://api.watchmode.com/openapi.json
+  spec_hash: c3a2b578ea2dd40b227e4097fb9c177db67c6e7fff8b4dd95b63ae59f966b689
+  spec_seen: "2026-09-03"
+
+auth:
+  # Legacy per the provider's own description, and still the channel this
+  # small collection's brief asks about -- see the header for the two
+  # header-based channels this Recipe verified live and does not model.
+  scheme: query
+  param: apiKey
+  keys:
+    - cauldron-watchmode-fixture-key-00000000
+
+responses:
+  list:
+    # No key here: search_result names its own collection below, and a
+    # global key would describe a shape nothing reads. No count, page or
+    # cursor field either -- the search response is two bare arrays
+    # (title_results, people_results) with no pagination envelope around
+    # them at all, per the description's own SearchResponse example.
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: errorMessage
+    code_field: "-"
+    fields:
+      success: false
+
+resources:
+  title:
+    id:
+      style: numeric
+      type: number
+    fields:
+      title:
+        type: string
+      original_title:
+        type: string
+        null_when_unset: true
+      type:
+        type: string
+      runtime_minutes:
+        type: integer
+        null_when_unset: true
+      year:
+        type: integer
+      end_year:
+        type: integer
+        null_when_unset: true
+      release_date:
+        type: string
+        null_when_unset: true
+      # Nullable per the provider's own schema -- see the header.
+      imdb_id:
+        type: string
+        null_when_unset: true
+      tmdb_id:
+        type: integer
+        null_when_unset: true
+      # A movie id and a tv id occupy the same TMDB numbering; this is the
+      # field that says which. Also nullable.
+      tmdb_type:
+        type: string
+        null_when_unset: true
+      genres:
+        type: list
+        null_when_unset: true
+      genre_names:
+        type: list
+        null_when_unset: true
+      user_rating:
+        type: number
+        null_when_unset: true
+      critic_score:
+        type: integer
+        null_when_unset: true
+      us_rating:
+        type: string
+        null_when_unset: true
+      content_ratings:
+        type: map
+      original_language:
+        type: string
+        null_when_unset: true
+      similar_titles:
+        type: list
+        null_when_unset: true
+      networks:
+        type: list
+        null_when_unset: true
+      network_names:
+        type: list
+        null_when_unset: true
+      relevance_percentile:
+        type: number
+        null_when_unset: true
+      popularity_percentile:
+        type: number
+        null_when_unset: true
+
+  # A search hit. "name" here where the full record above says "title" --
+  # the provider's own two words for the same concept, not a typo this
+  # Recipe introduced.
+  search_result:
+    collection: title_results
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      type:
+        type: string
+      year:
+        type: integer
+        null_when_unset: true
+      imdb_id:
+        type: string
+        null_when_unset: true
+      tmdb_id:
+        type: integer
+        null_when_unset: true
+      tmdb_type:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v1/title/{id}/details/
+    resource: title
+    operation: get
+
+  - method: GET
+    path: /v1/search/
+    resource: search_result
+    operation: list
+
+  # PATCH is not in this host's own declared access-control-allow-methods
+  # (GET, POST, PUT, DELETE, OPTIONS) and answers a real 405 regardless of
+  # credential -- verified live both with a key and with none. public:
+  # true skips the credential check Cauldron would otherwise run first,
+  # and error: makes the answer unconditional, matching the live host
+  # exactly rather than leaking a 401 this route never actually sends.
+  - method: PATCH
+    path: /v1/title/{id}/details/
+    public: true
+    error: method_blocked
+
+errors:
+  # The live wire's own shape -- see the header for how it differs from
+  # the provider's own documented Error schema.
+  authentication_error:
+    status: 401
+    message: "Please enter a valid API key."
+
+  method_blocked:
+    status: 405
+    empty: true
+
+fixtures:
+  empty: {}
+
+  # The provider's own worked example for GET /title/{id}/details -- read
+  # from the OpenAPI description, not called, because no key exists here.
+  # plot_overview, will_you_like_this and review_summary are in the real
+  # example and dropped here on purpose -- see the header.
+  catalogue:
+    title:
+      - id: 3173903
+        title: Breaking Bad
+        original_title: Breaking Bad
+        type: tv_series
+        runtime_minutes: 45
+        year: 2008
+        end_year: 2013
+        release_date: "2008-01-20"
+        imdb_id: tt0903747
+        tmdb_id: 1396
+        tmdb_type: tv
+        genres: [7]
+        genre_names:
+          - Drama
+        user_rating: 9.2
+        critic_score: 85
+        us_rating: TV-MA
+        content_ratings:
+          AU: MA 15+
+          US: TV-MA
+        original_language: en
+        similar_titles: [330884, 343611]
+        networks: [8]
+        network_names:
+          - AMC
+        relevance_percentile: 98.92
+        popularity_percentile: 99.99
+
+    search_result:
+      - id: 3173903
+        name: Breaking Bad
+        type: tv_series
+        year: 2008
+        imdb_id: tt0903747
+        tmdb_id: 1396
+        tmdb_type: tv
+
+conformance:
+  - name: no key at all is 401
+    source: https://api.watchmode.com/v1/title/tt3896198/details/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/title/tt3896198/details/
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        success: false
+        errorMessage: "Please enter a valid API key."
+
+  - name: a wrong key answers the identical body, not a different sentence
+    source: https://api.watchmode.com/v1/title/tt3896198/details/?apiKey=junk_test_key_not_real
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/title/tt3896198/details/
+      query:
+        apiKey: junk_test_key_not_real
+    expect:
+      status: 401
+      body:
+        errorMessage: "Please enter a valid API key."
+
+  - name: an empty apiKey value is treated exactly like an absent one
+    source: https://api.watchmode.com/v1/title/tt3896198/details/?apiKey=
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/title/tt3896198/details/
+      query:
+        apiKey: ""
+    expect:
+      status: 401
+      body:
+        errorMessage: "Please enter a valid API key."
+
+  - name: the credential is judged before the path is
+    source: https://api.watchmode.com/v1/nonexistentendpoint/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v1/nonexistentendpoint/
+    expect:
+      status: 401
+      body:
+        errorMessage: "Please enter a valid API key."
+
+  - name: and before the method is, for a verb this host still declares
+    source: https://api.watchmode.com/v1/title/tt3896198/details/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /v1/title/tt3896198/details/
+    expect:
+      status: 401
+      body:
+        errorMessage: "Please enter a valid API key."
+
+  - name: PUT and DELETE still reach the credential check too
+    source: https://api.watchmode.com/v1/title/tt3896198/details/?apiKey=junk_test_key_not_real
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /v1/title/tt3896198/details/
+      query:
+        apiKey: junk_test_key_not_real
+    expect:
+      status: 401
+      body:
+        errorMessage: "Please enter a valid API key."
+
+  - name: PATCH never reaches the credential check at all, key or no key
+    source: https://api.watchmode.com/v1/title/tt3896198/details/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/title/tt3896198/details/
+    expect:
+      status: 405
+
+  - name: attaching a key to the same PATCH changes nothing
+    source: https://api.watchmode.com/v1/title/tt3896198/details/?apiKey=junk_test_key_not_real
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v1/title/tt3896198/details/
+      query:
+        apiKey: junk_test_key_not_real
+    expect:
+      status: 405
+
+  - name: the foreign ids sit beside Watchmode's own id, all three nullable per the schema
+    source: https://api.watchmode.com/openapi.json
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/title/3173903/details/
+      query:
+        apiKey: cauldron-watchmode-fixture-key-00000000
+    expect:
+      status: 200
+      body:
+        id: 3173903
+        title: Breaking Bad
+        type: tv_series
+        imdb_id: tt0903747
+        tmdb_id: 1396
+        tmdb_type: tv
+      absent:
+        - plot_overview
+        - will_you_like_this
+        - review_summary
+
+  - name: a search hit calls the same concept name, not title
+    source: https://api.watchmode.com/openapi.json
+    fixture: catalogue
+    request:
+      method: GET
+      path: /v1/search/
+      query:
+        apiKey: cauldron-watchmode-fixture-key-00000000
+        search_field: name
+        search_value: Breaking Bad
+    expect:
+      status: 200
+      body:
+        "title_results[0].id": 3173903
+        "title_results[0].name": Breaking Bad
+        "title_results[0].tmdb_id": 1396
+        "title_results[0].tmdb_type": tv
+      absent:
+        - "title_results[0].title"
