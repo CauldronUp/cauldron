@@ -1,0 +1,654 @@
+# Strava Recipe for Cauldron
+#
+# Strava is one of three wearable Recipes written together (strava, oura,
+# fitbit) to answer one question: can a caller tell a day with genuinely no
+# activity from a day the device has not synced yet, or from a day outside
+# the window the granted scope covers? Strava does not answer that question
+# the way the other two do -- it has no per-device sync marker and no
+# per-day summary endpoint at all -- and its own upload pipeline turns out
+# to be the honest place the question actually gets answered on this API.
+#
+# **Every route on this host answers 401 with no account at all,** and the
+# body is identical whichever of four ways a credential is wrong. Checked
+# live, all four against GET /api/v3/athlete:
+#
+#   no Authorization header at all         -> 401 {"message":"Authorization
+#   Authorization: Bearer junktoken12345         Error","errors":[{
+#   Authorization: junktoken12345 (no          "resource":"Athlete",
+#     "Bearer " prefix)                        "field":"access_token",
+#   Authorization: Bearer (prefix, nothing       "code":"invalid"}]}
+#     after it)
+#
+# byte-identical on every one. Strava's own published Fault schema --
+# {"message": string, "errors": [{"resource", "field", "code"}]} , fetched
+# from developers.strava.com/swagger/fault.json on 2026-09-02 -- is real and
+# matches the wire exactly, but it never distinguishes a verdict: this
+# Recipe's auth.absent_error and auth.malformed_error are both left unset,
+# because there is no second sentence anywhere on this host to name them
+# with. Compare firehydrant/recipe.yaml in this collection, whose two
+# verdicts really do answer differently, and rootly/recipe.yaml, which
+# shares Strava's own Fault shape and Strava's own collapse of absent and
+# wrong into one message.
+#
+# **A malformed id under a real route is refused for its credentials before
+# the id is ever examined.** GET /api/v3/activities/not-a-real-id-@@@ with
+# no credential answers the identical Authorization Error a well-formed
+# request would get refused for -- checked live -- so an id this badly
+# shaped never reaches whatever validation Strava's own routing does for
+# activity ids.
+#
+# **Routing resolves before the credential -- and Strava has no 405
+# anywhere on this host that was reachable without an account.** Checked
+# live, with and without a credential and never needing one to answer:
+#
+#   GET  /api/v3/nosuchroute12345    -> 404 {"message":"Record Not Found",
+#   POST /api/v3/athlete                    "errors":[{"resource":
+#   DELETE /api/v3/athlete (junk auth)      "resource","field":"path",
+#                                            "code":"invalid"}]}
+#
+# byte-identical across all three -- an unrouted path, and a real path
+# addressed with a method that path does not take, answer the same 404 in
+# the same envelope, with or without a credential presented. This is the
+# same finding turso/recipe.yaml in this collection makes about its own
+# host: no distinct 405 exists to serve, so this Recipe's own
+# method_not_allowed is declared with status 404 and Strava's exact
+# "Record Not Found" body rather than the generic 405 Cauldron would
+# otherwise compute an Allow header for. auth.after_routing is declared
+# true precisely because none of this depends on what credential, if any,
+# was sent -- routing decides the whole answer before Strava's auth check is
+# ever reached.
+#
+# **The documented rate-limit headers were never once seen.** Strava's own
+# rate-limits page names them exactly: X-RateLimit-Limit and
+# X-RateLimit-Usage (the overall ceiling), X-ReadRateLimit-Limit and
+# X-ReadRateLimit-Usage (the lower, read-only ceiling), each carrying two
+# comma-separated numbers, 15-minute then daily -- "200 requests every 15
+# minutes, with up to 2,000 requests per day" overall, "100... with up to
+# 1,000... per day" for non-upload (read) traffic, fetched from
+# https://developers.strava.com/docs/rate-limits/ on 2026-09-02. Every one
+# of the dozens of 401 responses this Recipe collected while probing --
+# absent credential, wrong credential, malformed credential, unrouted paths,
+# wrong methods -- carried none of the four headers, checked by inspecting
+# the complete header set each time rather than by name alone. The likeliest
+# reading is that unauthenticated traffic is not metered against any
+# application's bucket at all and so has nothing to report -- consistent
+# with Rootly's own Recipe in this collection, which found the same absence
+# on its own 401s and cited the same reasoning -- but that is inference, not
+# something either the docs or the wire actually states, so this Recipe
+# serves what it saw (no header on any failure response) rather than the
+# documented figures, which never appeared on anything this Recipe was
+# permitted to call. No 429 body is declared for the same reason 429 is
+# nowhere in this Recipe's routes: Strava's own docs describe the status and
+# say "along with a JSON error message" and stop there -- no worked example
+# of that message exists anywhere this Recipe could find, and a body this
+# Recipe never read is not a body this Recipe will serve.
+#
+# **Strava's own answer to "has this synced yet" is not a per-day summary --
+# it is the upload pipeline, and it says so in exactly these words.**
+# GET /api/v3/uploads/{uploadId} answers with an Upload object whose status
+# field is documented, verbatim, as one of four sentences: "Your activity is
+# still being processed.", "Your activity is ready.", "The created activity
+# has been deleted.", "There was an error processing your activity." --
+# fetched from https://developers.strava.com/docs/uploads/ on 2026-09-02,
+# along with the one worked example that page publishes:
+#
+#   {"id": 123456, "id_str": "123456", "external_id": "98765.gpx",
+#    "error": null, "status": "Your activity is ready.",
+#    "activity_id": 153243126}
+#
+# and the same page's own words for the field that matters here: activity_id
+# "may be null" until processing finishes. So a caller polling an upload
+# mid-flight is not looking at an empty result or a 404 -- it is a 200, an
+# explicit prose sentence saying processing is not done, and a null where
+# the finished activity's id will eventually sit. That is Strava's version
+# of the trio's core question, and it is the one place on this API the
+# answer is not a guess: the provider tells you which of the three kinds of
+# nothing you are looking at, in a status string meant to be read by a
+# person. Only the "ready" state has a full worked example to cite; the
+# "still processing" fixture is not built, because assembling one from the
+# documented status string and the documented nullability of activity_id
+# without a full worked example of that specific combination would be
+# closer to invented than read. It is described here instead.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of well over a hundred documented fields across DetailedAthlete and
+#     SummaryActivity, a few dozen are declared. Segment efforts, laps,
+#     zones, gear, clubs, routes and the whole streams API (raw time-series
+#     GPS, heart rate and power data, which is the closest thing to a true
+#     per-second sync record this API has) are entirely absent.
+#   - before/after (epoch-timestamp range filters on the activity listing)
+#     are documented and not modelled: this format's Filter mechanism
+#     narrows on a discrete field value, not an open-ended numeric range, so
+#     there is no way to declare them as an enforced filter without a
+#     mechanism this collection does not have yet. A request naming them
+#     is accepted and the fixture answers the same page regardless of what
+#     range was asked for -- stated here rather than served as though the
+#     range were honoured.
+#   - profile:read_all is documented to change which representation
+#     GET /api/v3/athlete answers with (Detailed vs Summary); only the
+#     detailed shape is modelled, because Strava's own reference never
+#     shows the summary one as a distinct worked example.
+#   - Strava's own reference documents no error body at all for a valid
+#     token missing a required scope (activity:read_all, profile:write, and
+#     so on) -- searched across the reference index, the authentication
+#     guide and the embedded swagger.json, and found nowhere. That is a
+#     genuine gap in Strava's own materials, not an omission here: compare
+#     Fitbit's Recipe in this trio, whose documentation names the exact
+#     errorType and status for the identical situation, and Apollo.io's
+#     Recipe elsewhere in this collection, which does the same. No
+#     insufficient-scope error is declared for Strava because nothing
+#     published says what one looks like.
+#   - create, update and delete are not modelled. Every route here is a GET.
+#
+# Every case below not carrying a verified date was read from Strava's own
+# published swagger.json (see upstream.spec) or from the prose pages cited
+# above, not observed against a real athlete -- no account was ever created
+# and no OAuth flow was ever started or completed. The credential below is a
+# fixture and belongs to no account.
+
+recipe: strava
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v3
+  docs: https://developers.strava.com/docs/reference/
+  spec: https://developers.strava.com/swagger/swagger.json
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_strava_fixture_00000000000000000000
+  # No verdict here has a sentence of its own to reach for -- see the
+  # header. Every credential failure this Recipe observed answers the same
+  # body, so absent_error and malformed_error both stay unset and fall back
+  # to authentication_error, which already is that one body.
+  after_routing: true
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # {"message": "...", "errors": [{"resource", "field", "code"}]} --
+  # Strava's own published Fault shape, matching the wire exactly. The
+  # message sits at the top level, not inside each error entry, so this is
+  # flat with the errors array added back on as a declared field per error
+  # below.
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # GET /api/v3/athlete answers about whoever the credential belongs to --
+  # no id in the path at all, the same shape as GitHub's /user or Stripe's
+  # /v1/account elsewhere in this collection.
+  athlete:
+    id:
+      style: numeric
+      type: number
+    fields:
+      username:
+        type: string
+        null_when_unset: true
+      resource_state:
+        type: integer
+      firstname:
+        type: string
+      lastname:
+        type: string
+      city:
+        type: string
+        null_when_unset: true
+      state:
+        type: string
+        null_when_unset: true
+      country:
+        type: string
+        null_when_unset: true
+      sex:
+        type: string
+        null_when_unset: true
+      premium:
+        type: boolean
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+      follower_count:
+        type: integer
+        null_when_unset: true
+      friend_count:
+        type: integer
+        null_when_unset: true
+      measurement_preference:
+        type: string
+        null_when_unset: true
+      # Documented nullable -- an athlete with no FTP set answers null
+      # rather than omitting the field, per Strava's own worked example.
+      ftp:
+        type: integer
+        null_when_unset: true
+      weight:
+        type: number
+        null_when_unset: true
+
+  activity:
+    id:
+      style: numeric
+      type: number
+    fields:
+      name:
+        type: string
+      distance:
+        type: number
+      moving_time:
+        type: integer
+      elapsed_time:
+        type: integer
+      total_elevation_gain:
+        type: number
+      type:
+        type: string
+      sport_type:
+        type: string
+      # Documented nullable when the activity has no specific workout
+      # classification.
+      workout_type:
+        type: integer
+        null_when_unset: true
+      external_id:
+        type: string
+        null_when_unset: true
+      upload_id:
+        type: integer
+        null_when_unset: true
+      start_date:
+        type: datetime
+      start_date_local:
+        type: datetime
+      timezone:
+        type: string
+      utc_offset:
+        type: number
+      trainer:
+        type: boolean
+      commute:
+        type: boolean
+      manual:
+        type: boolean
+      private:
+        type: boolean
+      gear_id:
+        type: string
+        null_when_unset: true
+      average_speed:
+        type: number
+      max_speed:
+        type: number
+      has_heartrate:
+        type: boolean
+      average_heartrate:
+        type: number
+        null_when_unset: true
+      max_heartrate:
+        type: number
+        null_when_unset: true
+      achievement_count:
+        type: integer
+      kudos_count:
+        type: integer
+      # A small nested object, {id, resource_state} -- the athlete who did
+      # this, meta-referenced rather than embedded. Not the same declaration
+      # as the athlete resource above; Strava never nests the full profile
+      # inside an activity.
+      athlete:
+        type: map
+
+  # GET /api/v3/uploads/{uploadId} -- see the header for why this resource
+  # is this trio's most direct answer to "has this synced yet."
+  upload:
+    id:
+      style: numeric
+      type: number
+    fields:
+      id_str:
+        type: string
+      external_id:
+        type: string
+        null_when_unset: true
+      error:
+        type: string
+        null_when_unset: true
+      # One of four documented sentences -- see the header. Not declared as
+      # an enum: this format's fixed vocabularies are for fields a provider
+      # cannot rename, and nothing here suggests these sentences are a
+      # stable machine-checkable contract rather than prose meant for a
+      # human.
+      status:
+        type: string
+      # "May be null" until processing finishes, per Strava's own words --
+      # the field this whole Recipe was written to point at.
+      activity_id:
+        type: integer
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/v3/athlete
+    resource: athlete
+    operation: get
+    id_from: auth
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  - method: GET
+    path: /api/v3/athlete/activities
+    resource: activity
+    operation: list
+    pagination:
+      style: page
+      limit: 30
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  - method: GET
+    path: /api/v3/activities/{id}
+    resource: activity
+    operation: get
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  - method: GET
+    path: /api/v3/uploads/{id}
+    resource: upload
+    operation: get
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+errors:
+  # The one sentence every credential failure this Recipe observed answers
+  # with -- see the header. Confirmed absent of every rate-limit header on
+  # every occurrence.
+  authentication_error:
+    status: 401
+    message: Authorization Error
+    headers:
+      Content-Type: application/json; charset=utf-8
+    fields:
+      "errors[0].resource": Athlete
+      "errors[0].field": access_token
+      "errors[0].code": invalid
+
+  # Rails' own router miss, reached for a path this host has no route for at
+  # all -- and, on this host, for a method a real path does not take
+  # either. See method_not_allowed below and the header.
+  unknown_route:
+    status: 404
+    message: Record Not Found
+    headers:
+      Content-Type: application/json; charset=utf-8
+    fields:
+      "errors[0].resource": resource
+      "errors[0].field": path
+      "errors[0].code": invalid
+
+  # status: 404 is not a typo -- see the header. No 405 was ever observed on
+  # this host; a wrong method on a real path answers the identical body an
+  # unrouted path does, so this shares unknown_route's shape exactly rather
+  # than borrowing Cauldron's own generic 405.
+  method_not_allowed:
+    status: 404
+    message: Record Not Found
+    headers:
+      Content-Type: application/json; charset=utf-8
+    fields:
+      "errors[0].resource": resource
+      "errors[0].field": path
+      "errors[0].code": invalid
+
+fixtures:
+  empty: {}
+
+  # athlete and activity are Strava's own published swagger examples,
+  # verbatim -- developers.strava.com/swagger/swagger.json, the
+  # getLoggedInAthlete and getLoggedInAthleteActivities examples. upload is
+  # the one worked example on developers.strava.com/docs/uploads/. None of
+  # these three was called live -- see the header.
+  #
+  # The athlete's name and username are substituted. Strava's own example uses
+  # a real cyclist's, and a fixture is a worse place for somebody's name than a
+  # documentation page is. Every other field is theirs.
+  athlete:
+    athlete:
+      - id: 1234567890987654321
+        username: cauldron_example
+        resource_state: 3
+        firstname: Example
+        lastname: Athlete
+        city: San Francisco
+        state: CA
+        country: US
+        sex: F
+        premium: true
+        created_at: "2017-11-14T02:30:05Z"
+        updated_at: "2018-02-06T19:32:20Z"
+        follower_count: 5
+        friend_count: 5
+        measurement_preference: feet
+        ftp: null
+        weight: 0
+
+    activity:
+      - id: 154504250376823
+        name: Happy Friday
+        distance: 24931.4
+        moving_time: 4500
+        elapsed_time: 4500
+        total_elevation_gain: 0
+        type: Ride
+        sport_type: MountainBikeRide
+        workout_type: null
+        external_id: garmin_push_12345678987654321
+        upload_id: 987654321234567891234
+        start_date: "2018-05-02T12:15:09Z"
+        start_date_local: "2018-05-02T05:15:09Z"
+        timezone: (GMT-08:00) America/Los_Angeles
+        utc_offset: -25200
+        trainer: true
+        commute: false
+        manual: false
+        private: false
+        gear_id: b12345678987654321
+        average_speed: 5.54
+        max_speed: 11
+        has_heartrate: true
+        average_heartrate: 140.3
+        max_heartrate: 178
+        achievement_count: 0
+        kudos_count: 3
+        athlete:
+          id: 134815
+          resource_state: 1
+
+    upload:
+      - id: 123456
+        id_str: "123456"
+        external_id: 98765.gpx
+        error: null
+        status: Your activity is ready.
+        activity_id: 153243126
+
+conformance:
+  - name: no credential and a wrong one answer the identical body, with no rate-limit header on either
+    source: https://api.strava.com/api/v3/athlete
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/athlete
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        message: Authorization Error
+        "errors[0].resource": Athlete
+        "errors[0].field": access_token
+        "errors[0].code": invalid
+      absent_headers:
+        - X-RateLimit-Limit
+        - X-RateLimit-Usage
+        - X-ReadRateLimit-Limit
+        - X-ReadRateLimit-Usage
+
+  - name: leaving the header off entirely answers the same
+    source: https://api.strava.com/api/v3/athlete
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/athlete
+    expect:
+      status: 401
+      body:
+        message: Authorization Error
+
+  - name: a header with no Bearer scheme, and the prefix with nothing after it, answer the same again
+    source: https://api.strava.com/api/v3/athlete
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/athlete
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        message: Authorization Error
+
+  - name: a malformed id under a real route is still refused for its credentials
+    source: https://api.strava.com/api/v3/activities/not-a-real-id-@@@
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/activities/not-a-real-id-@@@
+    expect:
+      status: 401
+      body:
+        message: Authorization Error
+
+  - name: an unrouted path 404s in a different envelope, with no credential examined
+    source: https://api.strava.com/api/v3/nosuchroute12345
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/nosuchroute12345
+    expect:
+      status: 404
+      body:
+        message: Record Not Found
+        "errors[0].resource": resource
+        "errors[0].field": path
+        "errors[0].code": invalid
+
+  - name: and a credential changes nothing about it
+    source: https://api.strava.com/api/v3/nosuchroute12345
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/nosuchroute12345
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 404
+      body:
+        message: Record Not Found
+
+  - name: a wrong method on a real path gets the identical body, not a 405, even with a credential presented
+    source: https://api.strava.com/api/v3/athlete
+    verified: "2026-09-02"
+    fixture: athlete
+    request:
+      method: DELETE
+      path: /api/v3/athlete
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        message: Record Not Found
+      absent_headers:
+        - Allow
+
+  - name: the authenticated athlete is the record itself, with no wrapper
+    source: https://developers.strava.com/swagger/swagger.json
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/athlete
+      headers:
+        Authorization: Bearer cauldron_strava_fixture_00000000000000000000
+    expect:
+      status: 200
+      body:
+        username: cauldron_example
+        premium: true
+        ftp: null
+      absent:
+        - data
+        - athlete
+
+  - name: an activity listing is a bare array, and a nested athlete is a meta-reference, not the full profile
+    source: https://developers.strava.com/swagger/swagger.json
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/athlete/activities
+      headers:
+        Authorization: Bearer cauldron_strava_fixture_00000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].name": Happy Friday
+        "[0].start_date": "2018-05-02T12:15:09Z"
+        "[0].start_date_local": "2018-05-02T05:15:09Z"
+        "[0].athlete.id": 134815
+      absent:
+        - "[0].athlete.username"
+        - "[0].athlete.firstname"
+
+  - name: a ready upload carries the finished activity's id; a mid-flight one would carry null instead
+    # Only the "ready" state has a full worked example to build a fixture
+    # from -- see the header for why the "still processing" state is
+    # described in prose rather than built.
+    source: https://developers.strava.com/docs/uploads/
+    fixture: athlete
+    request:
+      method: GET
+      path: /api/v3/uploads/123456
+      headers:
+        Authorization: Bearer cauldron_strava_fixture_00000000000000000000
+    expect:
+      status: 200
+      body:
+        status: Your activity is ready.
+        activity_id: 153243126
+        error: null
