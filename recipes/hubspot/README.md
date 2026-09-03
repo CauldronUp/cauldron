@@ -6,6 +6,11 @@ Emulates the HubSpot API (v3), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It nests every business attribute under `properties`, so a client reading
+`contact.email` finds nothing and has to know to look one level down.
+
 ## Sources
 
 - Documentation: https://developers.hubspot.com/docs/api/crm/contacts
