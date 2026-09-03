@@ -1,0 +1,661 @@
+# Taddy Recipe for Cauldron
+#
+# Read recipes/shopifygraphql/recipe.yaml first, because this Recipe borrows
+# its whole vocabulary -- one path, one method, routing chosen by
+# `selects` reading the word inside the GraphQL query body, no query
+# actually parsed -- and then disagrees with it on the one thing that group
+# exists to ask about: whether an error arrives as an HTTP status or inside
+# a 200.
+#
+# Shopify's answer is "sometimes, and the two cases matter": a throttle and
+# an unrecognised token both refuse the request outright, and only the
+# throttle stays 200 while the token failure is a real 401. Taddy's answer,
+# checked live against api.taddy.org today with no account and no key ever
+# held, is stranger: **which HTTP status a credential failure gets depends
+# on whether a credential was sent at all, not on whether the request could
+# be served.**
+#
+#   nothing sent, X-API-KEY entirely
+#     absent from the request           -> 200
+#                                           {"data":{"getPodcastSeries":null},
+#                                            "errors":[{"message":"The
+#                                            X-API-KEY or X-USER-ID headers
+#                                            are missing or invalid...",
+#                                            "code":"API_KEY_INVALID"}]}
+#   X-API-KEY present and wrong
+#     (X-USER-ID present or absent,
+#      makes no difference)             -> 500
+#                                           {"errors":[{"message":"...same
+#                                            sentence...","code":
+#                                            "API_KEY_INVALID"}]}
+#     -- no top-level "data" key at all on this one
+#
+# The sentence and the code are byte-identical between the two. What differs
+# is the HTTP status (200 vs 500) and whether "data" exists on the body at
+# all. Confirmed by holding the request otherwise fixed and toggling only
+# whether X-API-KEY was on the wire: an empty X-API-KEY header, no
+# X-API-KEY at all, and X-USER-ID sent alone all answered 200 with data
+# present; X-API-KEY sent with junk in it, with or without X-USER-ID beside
+# it, answered 500 with data absent, five times over, reproducibly. That
+# means `response.ok` genuinely tells the two failures apart here -- 200 is
+# ok, 500 is not -- which is the opposite problem from Shopify's throttle,
+# where response.ok is true for a request that did nothing. The trap on
+# this API is narrower and just as real: code that checks status and then
+# reads response.data.getPodcastSeries.name on the 200 path, because status
+# was fine, dereferences null. Nothing throws before that line; the crash is
+# one property access later, on a payload that arrived exactly the shape
+# GraphQL promises for "the field resolved to nothing."
+#
+# X-USER-ID is documented as required alongside X-API-KEY and, in every
+# combination this Recipe tried, never once changed which branch fired --
+# only X-API-KEY's own presence did. Recorded because the documentation and
+# the wire disagree about how load-bearing the second header actually is,
+# not because this Recipe found a use for the disagreement.
+#
+# **Routing is checked before any of the above, unconditionally.** A POST to
+# a path this API does not serve -- no credential of any kind sent -- answers
+#
+#   404 {"errors":[{"message":"404: Not found. Only \"/\", \"/graphql\", and
+#        \"/log\" is allowed."}]}
+#
+# which is Taddy's own routing table, disclosed inside the 404 message
+# itself. POST to "/" and POST to "/graphql" were both checked live and
+# answer identically in every other respect, so this Recipe routes "/",
+# which is the address Taddy's own onboarding guide sends a new developer
+# to paste into a browser tab.
+#
+# **A malformed request body is a third shape again, and it is not the
+# GraphQL "errors" array at all.** Body that is not valid JSON -- sent with
+# no credential -- answers 200 with {"error": "SyntaxError: Unexpected
+# token 'n', \"not json at all {\" is not valid JSON"}, a *singular* "error"
+# key holding a bare string, which is neither Shopify's array-of-objects
+# shape nor this API's own two-shapes-above. A body that is valid JSON but
+# has no "query" property at all -- an empty POST body -- is the one case on
+# this whole host that is not 200: 400 {"errors":[{"message":"Missing POST
+# body"}]}, back to the ordinary array shape. Neither is modelled as a route
+# below (see the gaps), both are quoted here because they are real, live,
+# and change the answer to "does an error arrive as a status or inside a
+# 200" a third and fourth time on one endpoint.
+#
+# **Unauthenticated introspection works.** `{ __schema { queryType {
+# fields { name } } } }` and `{ __type(name: "PodcastSeries") { fields {
+# name description } } }` both answered live with no X-API-KEY at all --
+# the entire schema, every field's own description, is public. Every field
+# name, type and description this Recipe cites below was read from Taddy's
+# live schema this way, not from prose documentation, which is a stronger
+# source than either of this group's siblings could reach: Podcast Index's
+# schema came from a published OpenAPI file and Listen Notes' from its own
+# OpenAPI file, both third-party artefacts a provider could let drift from
+# its actual API. This one is the API answering questions about itself.
+#
+# **The identifier scheme, established by introspecting getPodcastSeries and
+# getPodcastEpisode's own argument lists rather than guessing:**
+#
+#   getPodcastSeries(uuid: ID, itunesId: Float, rssUrl: String, name: String)
+#   getPodcastEpisode(uuid: ID, guid: String, name: String,
+#                      seriesUuidForLookup: ID)
+#
+# uuid is documented, per field, as "Taddy's unique identifier (an uuid)" --
+# minted by Taddy, not derived from the feed. rssUrl and guid are the other
+# two arguments that are not Taddy's own: rssUrl on a series is literally
+# the feed's own address, an alternate key a caller can resolve a show by
+# without ever holding Taddy's uuid for it, and guid on an episode is, in
+# the schema's own words, "An episode's unique identifier from its RSS
+# feed" -- looked up directly, not merely carried as a read-only field the
+# way Listen Notes' guid_from_rss is. Of the three providers in this group,
+# Taddy is the only one whose feed-native identifier is also a first-class
+# *lookup key*, not only an echo.
+#
+# **feedRefreshDetails is this group's question, answered as a graduated
+# scale rather than a boolean or a bare timestamp.** Introspected live from
+# FeedRefreshPriority's own enum descriptions:
+#
+#   WEBSUB    checked within 30 minutes of a push notification
+#   HIGH      every 2 hours
+#   MEDIUM    every 6 hours
+#   REGULAR   once a day
+#   INACTIVE  once a week
+#   LOW       once a month
+#   NEVER     "Feed is no longer checked for updates"
+#
+# and FeedRefreshPriorityReason, which only applies at LOW, INACTIVE or
+# NEVER, names why: INACTIVE_FOR_OVER_1_YEAR, DUPLICATE_FEED,
+# ERROR_PARSING_FEED, or FEED_URL_NOT_WORKING ("404 error, etc"). Compare
+# Podcast Index's dead -- one bit, no reason -- and Listen Notes' silence on
+# the question entirely (see that Recipe's own header). Taddy is the only
+# one of the three that both grades the decline before calling it dead and
+# names which of four documented reasons applied. dateLastRefreshed sits
+# beside priority on the same object, documented as "Epoch time in seconds"
+# with no worked numeric example anywhere this Recipe could find -- typed
+# below, never fixtured with an invented number.
+#
+# **isBlocked, isCompleted and isRemoved are three different questions, all
+# introspected from the live schema's own field descriptions, and none of
+# them is feedRefreshDetails' question:**
+#
+#   PodcastSeries.isCompleted  "If the podcast is finished / complete"
+#   PodcastSeries.isBlocked    "If the content has violated Taddy's
+#                                distribution policies for illegal or
+#                                harmful content it will be blocked from
+#                                getting any updates"
+#   PodcastEpisode.isRemoved   "If the episode has now been removed from
+#                                the RSS Feed"
+#   PodcastEpisode.isBlocked   the same moderation sentence as the series
+#                                field, at episode granularity
+#
+# isCompleted is the itunes:complete signal, a normal end of life a healthy
+# show reaches on purpose. isBlocked is Taddy's own moderation action, nothing
+# to do with the feed's own health. isRemoved is the one that answers this
+# group's episode-level question directly: the producer pulled this specific
+# episode from the feed, and Taddy still has a record of it existing. A
+# healthy, ordinary episode -- Taddy's own worked example, quoted below --
+# answers isRemoved: null rather than false, which this Recipe states rather
+# than resolves: the schema gives it no default and this Recipe never saw a
+# case where it was explicitly false.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No upstream.spec. GraphQL has no OpenAPI-shaped description to fetch
+#     and fingerprint, the same gap shopifygraphql's own Recipe states for
+#     the identical reason -- what this Recipe fingerprinted instead was the
+#     live schema itself, by introspection, which cannot be drift-checked
+#     the way an OpenAPI URL can.
+#   - The malformed-body and empty-body shapes above are quoted, not routed.
+#     Cauldron's routing reads a parsed query property; a body that is not
+#     valid JSON, or JSON with no query in it, has nothing for `selects` to
+#     read, and there is no route to decline into instead of one that never
+#     matches.
+#   - GET and OPTIONS on every path this Recipe tried, routed or not,
+#     answered 204 or 200 with no body and a CORS header set -- a gateway
+#     rule that runs in front of routing entirely, the same shape Podcast
+#     Index's User-Agent gate has in this group's sibling Recipe. Not
+#     modelled, for the identical reason: it fires for paths this API does
+#     not even have, which a per-route declaration cannot express.
+#   - auth.malformed_error is unset. X-API-KEY has no documented prefix or
+#     pattern to fail a shape check against -- every value this Recipe tried
+#     that was present at all, however garbled, took the 500 branch, not a
+#     third one.
+#   - getPodcastSeries and getPodcastEpisode's own arguments (uuid, rssUrl,
+#     itunesId, name, guid, seriesUuidForLookup) are not read from the
+#     request. Every case below gets the fixture named, regardless of the
+#     argument it asked with -- the same bargain shopifygraphql's own header
+#     states for its arguments.
+#   - The 200-with-null-data credential-absent shape echoes
+#     "data.getPodcastSeries": null specifically, because Cauldron does not
+#     parse GraphQL and this Recipe's own credential-failure entries are one
+#     static shape, not one keyed to whichever root field a caller happened
+#     to ask for. Checked live for getPodcastEpisode too and the shape is
+#     identical but for the field name -- "data.getPodcastEpisode": null --
+#     which this Recipe does not vary per route.
+#   - itunesInfo, WebsubDetails and every comics-API type are declared
+#     nowhere beyond what the two worked examples below carry.
+#   - feedRefreshDetails.dateLastRefreshed is typed and never fixtured with
+#     a value -- see above.
+#
+# The two worked JSON bodies below (This American Life and "Case #2
+# Britney") are copied verbatim from taddy.org/developers/podcast-api's own
+# published example responses, not observed against a live query -- no
+# X-API-KEY exists to have made one. Every conformance case using them
+# carries no verified date for that reason; every case about the credential
+# chain, the routing table and introspection was struck live today and
+# carries one.
+
+recipe: taddy
+capability: media
+version: 0.1.0
+
+upstream:
+  api: graphql
+  docs: https://taddy.org/developers/intro-to-taddy-graphql-api
+
+auth:
+  scheme: header
+  header: X-API-KEY
+  keys:
+    - cauldron-taddy-fixture-key-000000000000
+  # Live: no X-API-KEY at all -- absent, empty, or simply never sent, with
+  # or without X-USER-ID beside it -- takes this branch. See the header.
+  absent_error: key_absent
+  # Live: X-API-KEY present and not one Taddy issued takes this branch
+  # instead, whatever X-USER-ID carries. Same sentence as key_absent, a
+  # different status and a different envelope -- see the header.
+  rejected_error: key_rejected
+  # Routing is checked first, unconditionally -- see the header.
+  after_routing: true
+
+responses:
+  resource:
+    # Overridden per route below: getPodcastSeries answers under
+    # data.getPodcastSeries and getPodcastEpisode under data.getPodcastEpisode,
+    # which is not one Recipe-wide constant either.
+    style: wrapped
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: code
+    type_field: "-"
+
+resources:
+  podcastSeries:
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+      itunesId:
+        type: integer
+        null_when_unset: true
+      description:
+        type: string
+        null_when_unset: true
+      imageUrl:
+        type: string
+        null_when_unset: true
+      totalEpisodesCount:
+        type: integer
+        null_when_unset: true
+      # The feed's own address, and a first-class lookup key -- see the
+      # header. Not selected in Taddy's own worked example below, so left
+      # unset on that fixture rather than guessed.
+      rssUrl:
+        type: string
+        null_when_unset: true
+      isCompleted:
+        type: boolean
+        null_when_unset: true
+      isBlocked:
+        type: boolean
+        null_when_unset: true
+      itunesInfoUuid:
+        type: string
+        null_when_unset: true
+        in: itunesInfo
+        as: uuid
+      itunesInfoPublisherName:
+        type: string
+        null_when_unset: true
+        in: itunesInfo
+        as: publisherName
+      itunesInfoArtworkUrl:
+        type: string
+        null_when_unset: true
+        in: itunesInfo
+        as: baseArtworkUrlOf
+      # The whole answer to this group's question, graded rather than
+      # boolean -- see the header. Never fixtured with a real
+      # dateLastRefreshed: no worked numeric example exists anywhere this
+      # Recipe could find.
+      feedRefreshPriority:
+        type: string
+        null_when_unset: true
+        in: feedRefreshDetails
+        as: priority
+      feedRefreshPriorityReason:
+        type: string
+        null_when_unset: true
+        in: feedRefreshDetails
+        as: priorityReason
+      feedRefreshDateLastRefreshed:
+        type: integer
+        null_when_unset: true
+        in: feedRefreshDetails
+        as: dateLastRefreshed
+
+  podcastEpisode:
+    id:
+      style: opaque
+    fields:
+      hash:
+        type: string
+        null_when_unset: true
+      name:
+        type: string
+      description:
+        type: string
+        null_when_unset: true
+      imageUrl:
+        type: string
+        null_when_unset: true
+      datePublished:
+        type: timestamp
+        null_when_unset: true
+      # The feed's own <guid>, and -- unlike Listen Notes' guid_from_rss --
+      # also a documented lookup argument in its own right. See the header.
+      guid:
+        type: string
+        null_when_unset: true
+      subtitle:
+        type: string
+        null_when_unset: true
+      audioUrl:
+        type: string
+        null_when_unset: true
+      videoUrl:
+        type: string
+        null_when_unset: true
+      fileLength:
+        type: integer
+        null_when_unset: true
+      fileType:
+        type: string
+        null_when_unset: true
+      duration:
+        type: integer
+        null_when_unset: true
+      episodeType:
+        type: string
+        null_when_unset: true
+      seasonNumber:
+        type: integer
+        null_when_unset: true
+      episodeNumber:
+        type: integer
+        null_when_unset: true
+      websiteUrl:
+        type: string
+        null_when_unset: true
+      isExplicitContent:
+        type: boolean
+        default: false
+      # "If the episode has now been removed from the RSS Feed" -- see the
+      # header. Taddy's own worked example answers null on a healthy
+      # episode, not false, which this Recipe states rather than resolves.
+      isRemoved:
+        type: boolean
+        null_when_unset: true
+      podcastSeriesUuid:
+        type: string
+        null_when_unset: true
+        in: podcastSeries
+        as: uuid
+      podcastSeriesName:
+        type: string
+        null_when_unset: true
+        in: podcastSeries
+        as: name
+
+routes:
+  - method: POST
+    path: /
+    resource: podcastSeries
+    operation: get
+    # No GraphQL is parsed (see the header), so uuid/rssUrl/itunesId/name
+    # never travel through a path or body location this format understands
+    # -- the same "no id to extract" shape id_from: auth already names for
+    # Binance's server-time route elsewhere in this collection, not because
+    # this route answers about the caller.
+    id_from: auth
+    id_as: uuid
+    selects: getPodcastSeries
+    envelope:
+      key: data.getPodcastSeries
+
+  - method: POST
+    path: /
+    resource: podcastEpisode
+    operation: get
+    id_from: auth
+    id_as: uuid
+    selects: getPodcastEpisode
+    envelope:
+      key: data.getPodcastEpisode
+
+errors:
+  # The generic fallback -- never actually reached by a real verdict here,
+  # since both absent and rejected name their own entries below, but
+  # required as the default.
+  authentication_error:
+    status: 401
+    message: "The X-API-KEY or X-USER-ID headers are missing or invalid. Please check they are set properly and contact danny@taddy.org if you need help."
+
+  # 200, with a data key nulled out -- see the header for why this is more
+  # dangerous than a 401 would be, and why it only echoes getPodcastSeries
+  # specifically.
+  #
+  # Live, "data" sits beside "errors" at the top of the body. Cauldron's own
+  # per-error fields nest inside the failing entry instead (the mechanism
+  # this runtime gives a Recipe for a field that belongs to the whole
+  # response, rather than to one entry in it, is a Recipe-wide constant, and
+  # a Recipe-wide constant cannot be absent from key_rejected's own body a
+  # few lines down). The case below therefore asserts errors[0].data rather
+  # than the top-level data this API actually sends, and this note is the
+  # honest difference between the two.
+  key_absent:
+    status: 200
+    message: "The X-API-KEY or X-USER-ID headers are missing or invalid. Please check they are set properly and contact danny@taddy.org if you need help."
+    code: API_KEY_INVALID
+    fields:
+      data.getPodcastSeries: null
+
+  # 500, and no data key at all -- the byte-identical sentence as
+  # key_absent above, told apart only by status and envelope. See the
+  # header.
+  key_rejected:
+    status: 500
+    message: "The X-API-KEY or X-USER-ID headers are missing or invalid. Please check they are set properly and contact danny@taddy.org if you need help."
+    code: API_KEY_INVALID
+
+  # Taddy's own routing table, disclosed inside the message itself -- see
+  # the header. No code on this one at all, unlike the two above.
+  unknown_route:
+    status: 404
+    code_field: "-"
+    message: "404: Not found. Only \"/\", \"/graphql\", and \"/log\" is allowed."
+
+fixtures:
+  empty: {}
+
+  # Taddy's own published worked example for getPodcastSeries, copied
+  # verbatim from taddy.org/developers/podcast-api/get-podcast-series --
+  # never observed against a live query, no key exists to have made one.
+  this-american-life:
+    podcastSeries:
+      - id: d682a935-ad2d-46ee-a0ac-139198b83bcc
+        name: This American Life
+        itunesId: 201671138
+        description: >-
+          Each week we choose a theme. Then anything can happen. This
+          American Life is true stories that unfold like little movies for
+          radio.
+        imageUrl: https://thisamericanlife.org/sites/all/themes/thislife/img/tal-logo-3000x3000.png
+        totalEpisodesCount: 11
+        itunesInfoUuid: d682a935-ad2d-46ee-a0ac-139198b83bcc
+        itunesInfoPublisherName: This American Life
+        itunesInfoArtworkUrl: https://is1-ssl.mzstatic.com/image/thumb/Podcasts123/v4/4e/b9/bb/4eb9bb9b-ed19-f0b7-7739-1177f1b35207/mza_8452563123961176873.png/640x640bb.png
+
+  # Taddy's own published worked example for getPodcastEpisode, copied
+  # verbatim from taddy.org/developers/podcast-api/get-podcast-episode. A
+  # different show entirely (Mystery Show) from the series fixture above.
+  case-2-britney:
+    podcastEpisode:
+      - id: eb9d1c8f-58a4-4adb-a3d3-6bca573d31a2
+        hash: 700d5eca3bd6ea013760bfe5956a9c4ddbd7399f26c2eb2a5b0360a7e76fa448
+        name: Case #2 Britney
+        description: >-
+          Andrea's a writer no one reads. Then she makes a shocking
+          discovery.
+        imageUrl: null
+        datePublished: 1432958400
+        guid: http://www.wnyc.org/story/case-2-britney/
+        subtitle: >-
+          The Case: Andrea's a writer no one reads. Then she makes a
+          shocking discovery.
+        audioUrl: https://traffic.megaphone.fm/GLT5025099642.mp3?updated=1511216902
+        fileType: audio/mpeg
+        duration: 2964
+        episodeType: FULL
+        isExplicitContent: false
+        isRemoved: null
+        podcastSeriesUuid: 8c9998d7-7114-4514-ab17-1a0ad05f73fc
+        podcastSeriesName: Mystery Show
+
+  # Not a real, named show -- a minimal placeholder carrying only the
+  # feedRefreshDetails vocabulary, built entirely from the live schema's own
+  # enum names (introspected, quoted in the header) rather than from a
+  # worked example, because no worked numeric or full-object example of
+  # this field exists anywhere Taddy publishes. dateLastRefreshed is left
+  # unset for the reason stated there.
+  deprioritized-feed:
+    podcastSeries:
+      - id: 00000000-0000-0000-0000-000000000000
+        name: (placeholder -- demonstrates feedRefreshDetails only)
+        feedRefreshPriority: "NEVER"
+        feedRefreshPriorityReason: FEED_URL_NOT_WORKING
+
+conformance:
+  - name: no X-API-KEY at all answers 200 with a nulled-out data key
+    # Live, "data" sits beside "errors"; the emulator can only place the
+    # same null inside the entry -- see errors.key_absent's own note.
+    source: https://api.taddy.org
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      json:
+        query: "{ getPodcastSeries(uuid: \"e04b0e30-8038-4664-ab77-5cbaad0be55d\") { uuid name } }"
+    expect:
+      status: 200
+      body:
+        errors[0].data.getPodcastSeries: null
+        errors[0].code: API_KEY_INVALID
+      matches:
+        errors[0].message: "X-API-KEY or X-USER-ID"
+
+  - name: X-USER-ID alone, with no X-API-KEY, is still the absent branch
+    source: https://api.taddy.org
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      headers:
+        X-USER-ID: "12345"
+      json:
+        query: "{ getPodcastSeries(uuid: \"x\") { uuid name } }"
+    expect:
+      status: 200
+      body:
+        errors[0].data.getPodcastSeries: null
+        errors[0].code: API_KEY_INVALID
+
+  - name: a present but wrong X-API-KEY answers 500 with no data key at all
+    # The byte-identical sentence and code as the absent case above; only
+    # the status and the missing data key say which one this is. See the
+    # header.
+    source: https://api.taddy.org
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      headers:
+        X-API-KEY: junkkey000
+        X-USER-ID: "12345"
+      json:
+        query: "{ getPodcastSeries(uuid: \"x\") { uuid name } }"
+    expect:
+      status: 500
+      body:
+        errors[0].code: API_KEY_INVALID
+      absent:
+        - data
+
+  - name: X-API-KEY alone, wrong and with no X-USER-ID, still takes the 500 branch
+    source: https://api.taddy.org
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /
+      headers:
+        X-API-KEY: junkkey000
+      json:
+        query: "{ getPodcastSeries(uuid: \"x\") { uuid name } }"
+    expect:
+      status: 500
+      absent:
+        - data
+
+  - name: routing answers an unrouted path before any credential is examined, and discloses its own table
+    source: https://api.taddy.org/nosuchroute
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: POST
+      path: /nosuchroute
+      json:
+        query: "{ getPodcastSeries(uuid: \"x\") { uuid name } }"
+    expect:
+      status: 404
+      body:
+        errors[0].message: "404: Not found. Only \"/\", \"/graphql\", and \"/log\" is allowed."
+      absent:
+        - errors[0].code
+
+  - name: uuid is Taddy's own, minted separately from the itunes id beside it
+    source: https://taddy.org/developers/podcast-api/get-podcast-series
+    fixture: this-american-life
+    request:
+      method: POST
+      path: /
+      headers:
+        X-API-KEY: cauldron-taddy-fixture-key-000000000000
+        X-USER-ID: "1"
+      json:
+        query: "{ getPodcastSeries(uuid: \"d682a935-ad2d-46ee-a0ac-139198b83bcc\") { uuid name itunesId totalEpisodesCount itunesInfo { uuid publisherName } } }"
+    expect:
+      status: 200
+      body:
+        data.getPodcastSeries.uuid: d682a935-ad2d-46ee-a0ac-139198b83bcc
+        data.getPodcastSeries.name: This American Life
+        data.getPodcastSeries.itunesId: 201671138
+        data.getPodcastSeries.totalEpisodesCount: 11
+        data.getPodcastSeries.itunesInfo.publisherName: This American Life
+      absent:
+        - errors
+
+  - name: guid is pulled straight from the RSS feed's own element
+    source: https://taddy.org/developers/podcast-api/get-podcast-episode
+    fixture: case-2-britney
+    request:
+      method: POST
+      path: /
+      headers:
+        X-API-KEY: cauldron-taddy-fixture-key-000000000000
+        X-USER-ID: "1"
+      json:
+        query: "{ getPodcastEpisode(uuid: \"eb9d1c8f-58a4-4adb-a3d3-6bca573d31a2\") { uuid guid isRemoved podcastSeries { uuid name } } }"
+    expect:
+      status: 200
+      body:
+        data.getPodcastEpisode.uuid: eb9d1c8f-58a4-4adb-a3d3-6bca573d31a2
+        data.getPodcastEpisode.guid: http://www.wnyc.org/story/case-2-britney/
+        # null, not false -- see the header.
+        data.getPodcastEpisode.isRemoved: null
+        data.getPodcastEpisode.podcastSeries.uuid: 8c9998d7-7114-4514-ab17-1a0ad05f73fc
+        data.getPodcastEpisode.podcastSeries.name: Mystery Show
+
+  - name: a deprioritized feed is graded, and the reason is named separately from the grade
+    source: https://taddy.org/developers/podcast-api/feed-refresh-details
+    fixture: deprioritized-feed
+    request:
+      method: POST
+      path: /
+      headers:
+        X-API-KEY: cauldron-taddy-fixture-key-000000000000
+        X-USER-ID: "1"
+      json:
+        query: "{ getPodcastSeries(uuid: \"00000000-0000-0000-0000-000000000000\") { uuid feedRefreshDetails { priority priorityReason } } }"
+    expect:
+      status: 200
+      body:
+        data.getPodcastSeries.feedRefreshDetails.priority: "NEVER"
+        data.getPodcastSeries.feedRefreshDetails.priorityReason: FEED_URL_NOT_WORKING
+        # null, not a fabricated epoch value -- see the fixture's own note
+        # and the header. Cauldron always renders a declared field, so this
+        # is the emulator's honest "never observed a value" rather than a
+        # claim that the real API omits the key when a caller does not
+        # select it.
+        data.getPodcastSeries.feedRefreshDetails.dateLastRefreshed: null
