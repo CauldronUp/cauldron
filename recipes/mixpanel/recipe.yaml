@@ -1,0 +1,630 @@
+# Mixpanel Recipe for Cauldron
+#
+# docs/backlog.md has an entry for this provider, titled "Mixpanel, and an
+# API that only speaks in batches." /track, /import and every /engage and
+# /groups operation declare `requestBody: schema: type: array, minItems: 1`
+# in Mixpanel's own published ingestion.openapi.yaml -- confirmed again
+# live, 2026-09-03. There is no single-record form of anything on this host.
+#
+# That used to be why most of this file was prose instead of routes: a
+# conformance case's body was a JSON object (`request.json` was
+# `map[string]any`), and there was no way to write a case whose body is a
+# bare array. `request.json` is now `any` (internal/recipe/case.go), a case
+# can send `json: [ ... ]`, and internal/recipe/array_body_test.go pins what
+# that buys: SendsJSON counts an array as a body, JSONFields returns nothing
+# for one because an array has no field names to echo, and the selects_body
+# body-marker scan reads inside an array exactly as it reads an object.
+#
+# Routing still needed a way to tell an array-bodied request from an
+# object-bodied one sharing the same path, and that is selects_body, not a
+# new mechanism -- a marker word looked for anywhere in the raw request text
+# (internal/runtime/router.go's mentions, whole-word, punctuation-aware),
+# already load-bearing for seven other Recipes. Every array route below is
+# selected by a word this case's own request carries -- the project token
+# where the token field is the one present, the event name where it is not
+# -- never by the array brackets alone, because the live host does not
+# treat "is an array" as sufficient on its own. See the probes right below.
+#
+# WHAT AN OBJECT ACTUALLY GETS, live, 2026-09-03, POST /track:
+#
+#   {}                                            -> 200  "0"
+#   {"event": "x", "properties": {"token": "t"}}  -> 200  "0"
+#
+# WHAT AN ARRAY GETS, live, 2026-09-03, same host, same instant:
+#
+#   [{"event":"x","properties":{"token":"t","distinct_id":"d"}}] -> 200 "1"
+#   [{"event":"x","properties":{"distinct_id":"d"}}]    (no token)   -> "0"
+#   [{"properties":{"token":"t","distinct_id":"d"}}]    (no event)   -> "0"
+#   [{"event":"x"}]                                (no properties)  -> "0"
+#
+# The bare integer is the whole body -- one ASCII byte, no braces -- and it
+# means what Mixpanel's own reference says plainly: "1 - One or more objects
+# provided are valid. This does not signify a valid project token or
+# secret." An object at the top level is not a list of objects, so it counts
+# zero valid ones and answers 0, whatever is inside it, before any per-field
+# check runs at all. An array is not a standing exemption from that check
+# either: each of the last three probes above drops exactly one field from
+# an otherwise-complete event, and each still answers the ordinary "0".
+# Shape gets an array past the first gate; the event inside it still needs
+# a token, an event name and a properties object, all three, before
+# anything is counted.
+#
+# THE FINDING THIS COLLECTION CARES ABOUT MOST is the first line of the
+# second table: a complete event -- token, event name and properties all
+# present -- wrapped in an array, with a project token that was never
+# issued to anyone (cauldron0000000000000000arrayfake, chosen so it plainly
+# belongs to nobody and cannot land in a real project), gets accepted. "This
+# does not signify a valid project token." The event is gone, silently, and
+# nothing about the 200 or the "1" says so. That is now a route and a
+# conformance case -- "an array wraps one well-formed event and a token
+# belonging to nobody, and Mixpanel takes it anyway" -- not a paragraph.
+#
+# `verbose=1` changes the bit into an object, per Mixpanel's own words:
+# "If present and equal to 1, Mixpanel will respond with a JSON Object
+# describing the success or failure of the tracking call" -- and its own
+# description recommends it "only for debugging during implementation," which
+# is a real API telling you its honest answer is opt-in. Checked live,
+# 2026-09-03:
+#
+#   verbose=1, {}                                  -> {"error":"data, missing or empty","status":0}
+#   verbose=1, {"event":"x","properties":{"token":"t","distinct_id":"d"}}
+#                                                    -> {"error":"data, missing or empty","status":0}
+#   verbose=1, [{"event":"x","properties":{"token":"t","distinct_id":"d"}}]
+#                                                    -> {"error":null,"status":1}
+#   verbose=1, [...one event, missing token]        -> {"error":"token, missing or empty","status":0}
+#   verbose=1, [...one event, missing event name]   -> {"error":"event, missing","status":0}
+#   verbose=1, [...one event, missing properties]   -> {"error":"properties, missing or empty","status":0}
+#
+# Every object, however complete, gets the identical "data, missing or
+# empty" -- the shape check runs before the content is ever read, which is
+# why one route serves it for every object this format could construct. An
+# array gets one of several answers depending on exactly what is inside it,
+# and every shape above is now a route and a case, not three of six lines
+# left as a paragraph: the accepted array, and each of the three ways one
+# event can be short a required field.
+#
+# A DOCUMENTATION ERROR, caught live rather than assumed: Mixpanel's own
+# /track reference states the response is "text/plain" carrying the bare
+# integer. Every one of the eight requests behind the numbers above answered
+# with `content-type: application/json` instead -- checked with curl -i, no
+# Accept header sent, reproduced across the default host, api-eu, and with
+# and without verbose. A "1" or a "0" is valid JSON (a bare scalar), so
+# nothing throws, but a client sniffing the header to decide whether to
+# .json() the body is told the wrong thing by Mixpanel's own reference.
+#
+# THREE REGIONS, ONE SHAPE. api.mixpanel.com is the default; Mixpanel's own
+# description also names api-eu.mixpanel.com ("EU servers if you are
+# enrolled in EU Data Residency") and api-in.mixpanel.com (India). Only the
+# default and EU hosts were called live -- GET /track and POST /track?verbose=1
+# against api-eu.mixpanel.com on 2026-09-03 answered byte-identically to the
+# default host, so this Recipe serves one emulated host for both, the same
+# simplification customerio/recipe.yaml and mezmo/recipe.yaml make for their
+# own multi-host providers. api-in was never called and is not claimed.
+#
+# UNROUTED PATHS ARE NOT MIXPANEL. A path this Recipe's provider does not
+# route -- checked live, 2026-09-03, against
+# https://api.mixpanel.com/this-route-does-not-exist-cauldron -- answers
+# `404 <Error><Code>NoSuchKey</Code>...` as application/xml, with an
+# X-GUploader-UploadID header and a UploadServer Server header: that is
+# Google Cloud Storage answering directly, not Mixpanel's application. Attach
+# any Authorization header, even garbage Basic, to the same unrouted path and
+# the answer changes to `401 <Error><Code>AuthenticationRequired</Code>...
+# </Error>` with `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`
+# -- GCS's own auth challenge, not Mixpanel's, and not the 401 /import
+# answers below. Two completely different backends share this host, and
+# Cauldron's Recipe-wide auth setting cannot describe "checked first, except
+# on the paths a different program entirely is answering for" -- see
+# auth.after_routing in internal/recipe/auth.go for the boolean this would
+# need to be a third thing to express. This Recipe's default (credential
+# checked before routing, because /import wants that and nothing here is
+# marked after_routing) means an unrouted path in the EMULATOR answers this
+# Recipe's own 401, matching neither of the two real answers above. Stated
+# rather than served, the same way census/recipe.yaml states the mirror
+# problem for a provider whose unrouted paths answer 401 that this format
+# cannot reach either.
+#
+# /track DOES have a real, ordinary 405: DELETE, no credential (none is ever
+# examined here), answered `405 Method not allowed` as text/plain, with
+# `Allow: GET, HEAD, OPTIONS, POST` -- checked live, 2026-09-03. This Recipe
+# reproduces the status, the wording and the plain-text framing; the Allow
+# header it computes will read "POST" alone, because POST is the only method
+# declared for this path here, not the four the live host actually accepts.
+# GET is real too -- the live host answers a bare GET the same "0"/"1" shape,
+# historically for image-beacon style tracking with the payload base64'd
+# into a query parameter -- and is not modelled: this Recipe never
+# constructs that query encoding, and adding a GET route that only ever
+# answers what POST already does would claim more coverage than was checked.
+#
+# /import IS THE OTHER STORY: an ordinary, well-behaved, three-verdict
+# credential check, and the one part of this Recipe that reads exactly like
+# the rest of this collection. Mixpanel's own words: "HTTP Basic
+# authentication... your Service Account username and password. Alternatively
+# you can provide your project token as the username with an empty
+# password" -- so `credential: username` (the default this Recipe does not
+# need to override) is right, the same shape Twilio's account SID uses.
+# Checked live, 2026-09-03, against https://api.mixpanel.com/import:
+#
+#   no Authorization header at all         -> 401 "Access is forbidden due to
+#                                              request missing authentication
+#                                              details. ..."
+#   Authorization: Bearer junktoken12345   -> 401 "This endpoint only
+#                                              supports HTTP Basic Auth. ..."
+#   Authorization: Basic <right shape, wrong secret>
+#                                           -> 401 "Unauthorized, invalid
+#                                              project secret. ..."
+#
+# Three different sentences for three different mistakes, and they land on
+# Cauldron's three verdicts with no forcing required: internal/runtime/auth.go's
+# own basic-scheme check classifies "Authorization header present, does not
+# parse as Basic" as Malformed -- which is exactly what a Bearer-scheme
+# header is against a Basic-only Recipe -- so absent_error, malformed_error
+# and rejected_error below are not a workaround, they are what was sent and
+# what came back. GET /import (wrong method) with no credential answered the
+# identical absent-credential 401, not a 405 or a 404, so the credential really
+# is checked before the method or the route existence on this path, which is
+# this Recipe's default (auth checked before routing) and needed no
+# after_routing declaration to reproduce.
+#
+# "status" IS THREE THINGS IN ONE DOCUMENT, and the /import error envelope
+# adds a fourth right beside the first: {"code":401,"error":"...","status":0}
+# -- and that 0 is not the HTTP status echoed back (it is 401), it is
+# Mixpanel's own success bit, 0 for failure, reused inside the error body
+# for a field that already means something else everywhere else on this
+# host. This Recipe serves it as a Recipe-wide error constant rather than
+# responses.error.status_field, because status_field means "echo the HTTP
+# status" and echoing 401 here would be wrong about the one byte that is
+# actually on the wire.
+#
+# A DOCUMENTED, NOT OBSERVED SUCCESS: no project secret was ever created, so
+# a genuine /import 200 was never called. Mixpanel's own reference gives a
+# worked example --
+# {"code": 200, "num_records_imported": 2000, "status": "OK"} -- quoted
+# verbatim from https://docs.mixpanel.com/reference/import-events and served
+# here with no verified date. Its sibling failure example --
+# a 400 that names num_records_imported: 999 beside status: "Bad Request",
+# because the batch is not atomic and nine hundred ninety-nine of a thousand
+# events can succeed under a status code that reads like all of them failed
+# -- needs a working project to reach at all and is recorded in the docs
+# entry, not served here.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No resource is declared anywhere in this file. Every route answers
+#     with raw bytes, not a record, because that is the only mechanism this
+#     format has that does not require either choosing an object shape
+#     Mixpanel would refuse or claiming a structured record where the wire
+#     sends a bare scalar. See internal/recipe/raw.go for the arXiv Recipe
+#     this same reasoning first applied to.
+#   - /engage, /groups and /lookup-tables are still not modelled, and the
+#     array fix above does not close this one. Each of /engage and /groups
+#     is nine batch-only operations sharing one path, disambiguated by which
+#     $-prefixed key is present in the body -- $set, $set_once, $add,
+#     $union, $append, $remove, $unset, $delete, plus a ninth -- and
+#     OpenAPI's own path-fragment trick (`/engage#profile-set`) means a
+#     spec-reading tool counts twenty paths here where there are six real
+#     ones. selects_body could in principle pick a $-prefixed operation the
+#     same way it now picks an array shape on /track, but living and
+#     verifying nine operations apiece against real profiles is the larger,
+#     separate piece of work docs/backlog.md already names -- "a decision
+#     about what this format models... larger than one provider" -- not a
+#     side effect of fixing this file's one finding. lookup-tables takes
+#     text/csv, which is a different gap again and untouched by any of this.
+#   - EU is verified; India (api-in.mixpanel.com) is named in the provider's
+#     own description and was never called.
+#
+recipe: mixpanel
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://developer.mixpanel.com/reference/ingestion-api-overview
+  spec: https://docs.mixpanel.com/openapi/ingestion.openapi.yaml
+  spec_hash: a9c876b8c21acc3edd8d5ff176e6b23ac9c67e9cf0272c07516a8135d0d8dbc6
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: basic
+  keys:
+    - cauldron-mixpanel-fixture-secret-000000000000
+  # The three /import sentences, quoted verbatim above. Nothing is armed:
+  # every one of these is what the live host sent for the request shown.
+  absent_error: import_auth_required
+  malformed_error: import_basic_only
+  rejected_error: import_invalid_secret
+
+responses:
+  error:
+    style: flat
+    message_field: error
+    code_field: code
+    fields:
+      # Mixpanel's own success/failure bit, reused inside the error
+      # envelope for a field that already means something else on the
+      # ingestion side of this host -- see the header. Constant, and not
+      # status_field, because status_field echoes the HTTP status (401) and
+      # the wire never sends that number here.
+      status: 0
+
+routes:
+  # An object -- refused, whatever is inside it. The array routes below are
+  # what an object is refused IN FAVOUR of; see the header.
+  - method: POST
+    path: /track
+    public: true
+    raw:
+      content_type: application/json
+      text: "0"
+
+  - method: POST
+    path: /track
+    public: true
+    matches_query:
+      verbose: "1"
+    raw:
+      content_type: application/json
+      text: '{"error":"data, missing or empty","status":0}'
+
+  # THE FINDING. An array carrying one complete event -- token, event name
+  # and properties all present -- is accepted, whatever the token is. Chosen
+  # by selects_body on the project token this case's own request carries,
+  # not on the array brackets: see the header for why an array by itself is
+  # not the condition that gets a "1".
+  - method: POST
+    path: /track
+    public: true
+    selects_body: "cauldron0000000000000000arrayfake"
+    raw:
+      content_type: application/json
+      text: "1"
+
+  # The same request, verbose. Chosen by the same token plus the query flag,
+  # so this route only wins over the plain array route when both are true.
+  - method: POST
+    path: /track
+    public: true
+    matches_query:
+      verbose: "1"
+    selects_body: "cauldron0000000000000000arrayfake"
+    raw:
+      content_type: application/json
+      text: '{"error":null,"status":1}'
+
+  # An array is not a free pass. These three answer for an event missing
+  # exactly one of the fields the accepted route above has all three of --
+  # chosen, in turn, by a word this case put in whichever field the event
+  # still has, since the field that is missing cannot carry a marker.
+  - method: POST
+    path: /track
+    public: true
+    matches_query:
+      verbose: "1"
+    selects_body: "cauldron_array_missing_token"
+    raw:
+      content_type: application/json
+      text: '{"error":"token, missing or empty","status":0}'
+
+  - method: POST
+    path: /track
+    public: true
+    matches_query:
+      verbose: "1"
+    selects_body: "cauldron0000000000000missingevent"
+    raw:
+      content_type: application/json
+      text: '{"error":"event, missing","status":0}'
+
+  - method: POST
+    path: /track
+    public: true
+    matches_query:
+      verbose: "1"
+    selects_body: "cauldron_array_missing_properties"
+    raw:
+      content_type: application/json
+      text: '{"error":"properties, missing or empty","status":0}'
+
+  # Real, live, ordinary: a method /track does not support. The Allow this
+  # Recipe computes will read "POST" alone -- see the header for the three
+  # other methods the live host actually accepts.
+  - method: DELETE
+    path: /track
+    public: true
+    error: method_not_allowed
+
+  # Gated by the Recipe-wide Basic auth above -- not public. Answers with
+  # Mixpanel's own worked example for a successful import, quoted and not
+  # observed; see the header.
+  - method: POST
+    path: /import
+    raw:
+      content_type: application/json
+      text: '{"code": 200, "num_records_imported": 2000, "status": "OK"}'
+
+errors:
+  import_auth_required:
+    status: 401
+    code: 401
+    message: "Access is forbidden due to request missing authentication details. Please see: https://developer.mixpanel.com/reference/ingestion-api-authentication"
+
+  import_basic_only:
+    status: 401
+    code: 401
+    message: "This endpoint only supports HTTP Basic Auth. Please see https://developer.mixpanel.com/reference/ingestion-api-authentication"
+
+  import_invalid_secret:
+    status: 401
+    code: 401
+    message: "Unauthorized, invalid project secret. See docs for more information: https://developer.mixpanel.com/reference/authentication#project-secret"
+
+  # The live, ordinary 405 -- see the header for the Allow-header gap.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: "text/plain; charset=utf-8"
+    message: "Method not allowed"
+
+fixtures:
+  empty: {}
+
+# The two shapes below are not symmetric, and the cases after them earn
+# that: an object refuses, whatever is inside it, in both of its cases. An
+# array refuses or accepts depending on exactly what is inside it, across
+# the six that follow.
+conformance:
+  - name: an object is not a list of objects, whatever is inside it
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      json:
+        event: cauldron_test_event
+        properties:
+          token: cauldron0000000000000000000000fake
+          distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      # The whole body is one character: a bare "0", not an object. Mixpanel's
+      # own reference calls this text/plain; the live Content-Type header
+      # says application/json instead -- see the header's documentation-error
+      # finding.
+      body_matches: '^0$'
+
+  - name: verbose turns the bit into an object, and still refuses the same shape
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      query:
+        verbose: "1"
+      json:
+        event: cauldron_test_event
+        properties:
+          token: cauldron0000000000000000000000fake
+          distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      body:
+        error: "data, missing or empty"
+        status: 0
+      absent:
+        - id
+        - uuid
+
+  - name: an array wraps one well-formed event and a token belonging to nobody, and Mixpanel takes it anyway
+    # THE FINDING. cauldron0000000000000000arrayfake was never issued to
+    # anyone and cannot land in a real project; that is the whole point of
+    # using it. Mixpanel's own words about the "1" it answers with: "This
+    # does not signify a valid project token or secret."
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      json:
+        - event: cauldron_test_event
+          properties:
+            token: cauldron0000000000000000arrayfake
+            distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      # One character: a bare "1", not an object -- the array's own version
+      # of the same documentation error the object case pins above.
+      body_matches: '^1$'
+
+  - name: verbose says the same about the array -- accepted, and no error
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      query:
+        verbose: "1"
+      json:
+        - event: cauldron_test_event
+          properties:
+            token: cauldron0000000000000000arrayfake
+            distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      body:
+        error: null
+        status: 1
+
+  - name: an array still needs a token, even one belonging to nobody
+    # Presence, not ownership -- this event has no token field at all, which
+    # is a different failure from the accepted case above having a fake one.
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      query:
+        verbose: "1"
+      json:
+        - event: cauldron_array_missing_token
+          properties:
+            distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      body:
+        error: "token, missing or empty"
+        status: 0
+
+  - name: an array still needs an event name
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      query:
+        verbose: "1"
+      json:
+        - properties:
+            token: cauldron0000000000000missingevent
+            distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      body:
+        error: "event, missing"
+        status: 0
+
+  - name: an array still needs a properties object
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      query:
+        verbose: "1"
+      json:
+        - event: cauldron_array_missing_properties
+    expect:
+      status: 200
+      body:
+        error: "properties, missing or empty"
+        status: 0
+
+  - name: shape alone is not the "1" -- the same malformed event, without verbose, still gets the ordinary refusal
+    # No route above answers this: it is the plain "0" fallback, matched
+    # because none of the selects_body markers above are in this body. That
+    # is the point -- an array is not a standing exemption from the fields
+    # check, only from whether the token is real.
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /track
+      json:
+        - event: cauldron_array_missing_token
+          properties:
+            distinct_id: cauldron-test-id
+    expect:
+      status: 200
+      body_matches: '^0$'
+
+  - name: a method /track does not support is a real 405, not a credential check
+    source: https://api.mixpanel.com/track
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /track
+    expect:
+      status: 405
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: 'Method not allowed'
+
+  - name: import refuses an absent credential with one sentence
+    source: https://api.mixpanel.com/import
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /import
+      json:
+        event: cauldron_test_event
+    expect:
+      status: 401
+      body:
+        code: 401
+        status: 0
+      matches:
+        error: 'missing authentication details'
+
+  - name: and a header that is present but not Basic another
+    # A Bearer-scheme header does not parse as Basic, which
+    # internal/runtime/auth.go classifies as Malformed on its own -- nothing
+    # here is armed or forced.
+    source: https://api.mixpanel.com/import
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /import
+      headers:
+        Authorization: Bearer junktoken12345
+      json:
+        event: cauldron_test_event
+    expect:
+      status: 401
+      body:
+        code: 401
+        status: 0
+      matches:
+        error: 'only supports HTTP Basic Auth'
+
+  - name: and a well-formed Basic credential that is simply wrong a third
+    source: https://api.mixpanel.com/import
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /import
+      headers:
+        Authorization: Basic anVua3VzZXI6anVua3Bhc3M=
+      json:
+        event: cauldron_test_event
+    expect:
+      status: 401
+      body:
+        code: 401
+        status: 0
+      matches:
+        error: 'invalid project secret'
+
+  - name: a correct secret reaches Mixpanel's own worked import example
+    # Documented, not observed -- see the header. No project secret was ever
+    # created; this quotes https://docs.mixpanel.com/reference/import-events
+    # verbatim rather than calling a real project.
+    source: https://docs.mixpanel.com/reference/import-events
+    fixture: empty
+    request:
+      method: POST
+      path: /import
+      headers:
+        Authorization: Basic Y2F1bGRyb24tbWl4cGFuZWwtZml4dHVyZS1zZWNyZXQtMDAwMDAwMDAwMDAwOg==
+      json:
+        event: cauldron_test_event
+    expect:
+      status: 200
+      body:
+        code: 200
+        num_records_imported: 2000
+        status: "OK"
