@@ -1,0 +1,524 @@
+# Oura Recipe for Cauldron
+#
+# Oura is the control in a group of three wearable Recipes written together
+# (strava, oura, fitbit) to answer one question: can a caller tell a day with
+# genuinely no activity from a day the ring has not synced yet, or from a day
+# outside the window the granted scope covers? Oura turns out to be the
+# simplest of the three on the wire and the sharpest on one specific point --
+# a three-way credential split most of this collection cannot find even a
+# two-way version of.
+#
+# **api.ouraring.com is FastAPI, and it says so in its own bytes.** Every
+# failure this Recipe observed, on every route, is {"detail": ...} -- a bare
+# string for an HTTPException and, once past the credential gate, an array of
+# {loc, msg, type, input, ctx} objects for a RequestValidationError. That
+# second shape is not read from a guess about FastAPI's defaults: it is typed
+# out in Oura's own published OpenAPI description as HTTPValidationError,
+# {"detail": {"type": "array", "items": {"$ref": ".../ValidationError"}}},
+# fetched from https://cloud.ouraring.com/v2/static/json/openapi-1.37.json
+# (info.title "Oura API Documentation 2.0") on 2026-09-02, and then produced
+# live, unprompted, by sending a query parameter FastAPI's own type coercion
+# rejects. See the credential-vs-validation finding below for exactly when.
+#
+# **Absent, malformed and rejected are three different sentences, not two.**
+# Checked live, all four ways, against GET /v2/usercollection/daily_activity:
+#
+#   no Authorization header at all      -> 400 "Token is missing from
+#                                            Request Authorization Heade"
+#   Authorization: junktoken12345         -> 400 "No access token header
+#     (no "Bearer " prefix)                  found"
+#   Authorization: Bearer                 -> 400 "No access token header
+#     (prefix, nothing after it)             found"
+#   Authorization: Bearer junktoken12345  -> 401 "The access token provided
+#     (well-formed, not a real token)         is expired, revoked,
+#                                              malformed, or invalid for
+#                                              other reasons."
+#
+# Three distinct wordings and two distinct status codes for what most
+# providers in this collection answer with one sentence apiece. The genuinely
+# absent header gets its own message, complete with a typo Oura's own service
+# has shipped with -- "Heade", not "Header", reproduced here exactly because
+# it is what the wire actually sends, checked twice to rule out a fluke. A
+# header that is present and cannot be a Bearer credential -- no prefix, or
+# the prefix with nothing after it -- collapses to a second, different
+# sentence. Only a credential that has the right shape and is simply not one
+# Oura issued reaches a different status code and Oura's own backend. This
+# maps onto auth.absent_error, auth.malformed_error and auth.rejected_error
+# precisely, one case per verdict, all four verified today.
+#
+# **The credential gate runs before request validation, on the routes that
+# need one.** Sent live, together: GET .../daily_activity?start_date=not-a-date
+# with no Authorization header at all answers 400 "Token is missing..." --
+# the same absent-credential sentence, not a complaint about the date. The
+# malformed query string is never examined, because the credential check
+# refuses the request first. The sandbox route below, which accepts any
+# non-empty Authorization value and therefore reaches the handler, answers
+# the identical malformed date with the full 422 HTTPValidationError array --
+# two ValidationError entries, one for each half of the date's own
+# `anyOf: [datetime, date, null]` schema -- verified live and quoted in the
+# validation_error case. Cauldron has no mechanism for query-shape validation
+# at all, so that 422 is demonstrated by fault injection (arm) rather than
+# reached through routing; see the case for why that is still evidence.
+#
+# **A publicly documented sandbox host answers with no account at all.**
+# GET /v2/sandbox/usercollection/daily_activity requires only that
+# Authorization be present -- Oura's own 400 for leaving it off says so in as
+# many words: "Missing auth token. Include any string in 'Authorization'
+# header." Checked live: a bare "Authorization: junktoken12345" with no
+# scheme, and "Authorization: Bearer " with nothing after it, both succeed
+# here (200), where the identical headers are refused as malformed against
+# the real host two paragraphs up. This is the one Recipe in this trio where
+# a genuinely live, verified 200 response with real field names and real
+# numbers was reachable without holding a token, an account, or anyone's
+# actual ring -- every value in the daily_activity fixture below is a number
+# Oura's own sandbox generated and sent, not invented here. The sandbox and
+# the real per-user route share one schema (PublicDailyActivity, referenced
+# by both paths in Oura's own OpenAPI document), so what the sandbox proves
+# about field names and nesting is evidence about the real route's shape,
+# even though only the sandbox request itself carries a verified date.
+#
+# The sandbox has its own sharp edge: it cannot demonstrate genuine
+# emptiness. Two calls, one for today's date and one for 2020-01-01, both
+# answered 200 with exactly one fabricated record apiece -- the sandbox
+# manufactures a row for whatever range is asked rather than ever returning
+# an empty collection, so it is useless as evidence for the "empty array"
+# half of this trio's core question. That answer comes from the OpenAPI
+# schema instead: MultiDocumentResponse_PublicDailyActivity_ declares "data"
+# as a required array and "next_token" as required and nullable, so a
+# genuinely empty range is data: [] and next_token: null -- documented, not
+# observed, and said so below.
+#
+# Also observed and not modelled: asking the sandbox for the exact id its own
+# listing had just handed back -- GET .../daily_activity/{id} with that
+# literal id -- answered 500 Internal Server Error, Content-Type text/plain,
+# body "Internal Server Error". Not FastAPI's own detail envelope; not JSON
+# at all. The sandbox's listing and its own single-record getter disagree
+# about what a valid id looks like. Checked live, 2026-09-02, and left out of
+# this Recipe entirely rather than built into a route: a single-document GET
+# is not declared for either host, because the one live data point for it is
+# a crash, not a contract.
+#
+# **The scope question, which this trio exists to sharpen, has a negative
+# answer for Oura specifically.** The security scheme oauth2 declares eight
+# scopes (email, personal, daily, heartrate, workout, tag, session, spo2) as
+# available grants -- but every operation's own `security` requirement in the
+# published OpenAPI document names an empty scope list. Checked
+# mechanically across the whole document: zero of Oura's own route
+# declarations tie any operation to any required scope, despite the scopes
+# existing and being real things a user is asked to grant. And the one status
+# code adjacent to authentication that Oura documents beyond 401 -- 403 -- is
+# glossed in the same document as "Access forbidden. Usually means the
+# user's subscription to Oura has expired and their data is not available
+# via the API," which is an account-billing state, not a missing-grant one.
+# So unlike Apollo.io (a documented 403 naming the missing scope in prose)
+# and Fitbit (a documented insufficient_scope errorType elsewhere in this
+# trio), Oura's own machine-readable description gives no way to establish
+# what a valid token missing daily or heartrate actually receives -- not
+# because the question was not asked, but because Oura's own spec never
+# answers it. No insufficient_scope error is declared here for that reason;
+# inventing one would be the fabrication Step 3 warns against.
+#
+# **Routing resolves before the credential, on both the real host and the
+# sandbox.** Checked live, all with no Authorization header sent at all:
+# GET /v2/usercollection/nosuchroute -> 404 {"detail":"Not Found"}; the
+# identical request carrying a well-formed junk Bearer token answers the
+# same body. POST and DELETE on /v2/usercollection/daily_activity -> 405
+# {"detail":"Method Not Allowed"} with an Allow: GET header, again with no
+# credential examined at all. Both facts hold with or without a credential
+# and hold the same way for a wrong method as for a wrong path, so
+# auth.after_routing is declared true rather than approximated -- FastAPI's
+# own routing genuinely runs ahead of the dependency that reads
+# Authorization, on every path this Recipe tried.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of the sandbox host's fourteen usercollection resources
+#     (daily_activity, daily_sleep, daily_readiness, sleep, heartrate,
+#     workout, tag, session, and six more) only daily_activity is declared.
+#     The others were not probed at all; adding them without probing them
+#     would be asserting a schema this Recipe never read on the wire.
+#   - The `met` field (a 60-second interval time series, tens of samples per
+#     day) is present on every live response this Recipe received and is not
+#     declared. It is real and it is large, and a fixture reproducing it
+#     honestly would be reproducing a time series, not demonstrating a shape.
+#   - class_5_min, meters_to_target, non_wear_time, resting_time and several
+#     smaller numeric fields are visible in the live response and left out to
+#     keep the fixture legible; they are ordinary integers with no
+#     distinguishing behaviour of their own.
+#   - `fields=` (the documented partial-response query parameter) is not
+#     modelled. Its default -- every field, unless the caller narrows it --
+#     is what every case below relies on, and the narrowing itself was never
+#     probed.
+#   - No single-document GET route is declared, for either host -- see above.
+#   - No rate-limit header or 429 body was seen on any call this Recipe made;
+#     none is declared, and that is an absence in what was observed rather
+#     than a claim that this host never limits.
+#
+# Every case below not carrying a verified date was read from Oura's own
+# published OpenAPI description (see upstream.spec), not observed against a
+# real ring -- no account was ever created and no OAuth flow was ever
+# started or completed. Every "verified" case, including the sandbox ones,
+# called api.ouraring.com directly with exactly the request shown. The
+# credential below is a fixture and belongs to no account; the sandbox
+# accepts any string at all, which is Oura's own documented behaviour and
+# not a weakness of this Recipe.
+
+recipe: oura
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://cloud.ouraring.com/v2/docs
+  spec: https://cloud.ouraring.com/v2/static/json/openapi-1.37.json
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_oura_fixture_0000000000000000000000
+  # Three verdicts, three sentences, checked live -- see the header. Nothing
+  # is left to the generic fallback.
+  absent_error: token_missing
+  malformed_error: no_access_token_header
+  rejected_error: invalid_token
+  # FastAPI's own routing resolves before its own auth dependency runs, on
+  # every path and every method this Recipe tried -- see the header.
+  after_routing: true
+
+# Authorization must be present for the sandbox route to answer at all,
+# which the credential scheme above cannot express on its own: the sandbox
+# is declared public (see the route), so this is the only gate left standing
+# for it. Still checked on the ordinary routes underneath the credential
+# check itself, which never lets an absent header reach this far -- see
+# internal/runtime/handler.go.
+required_headers:
+  Authorization: sandbox_token_missing
+
+responses:
+  list:
+    style: wrapped
+    key: data
+    cursor_field: next_token
+    cursor_null: true
+  resource:
+    style: bare
+  error:
+    # {"detail": "..."} for a single-string failure. The 422 shape is
+    # declared as its own error entry with a style override, below.
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  daily_activity:
+    id:
+      # "daily_activity-0-2026-9-1" is what the sandbox mints, not
+      # zero-padded and carrying the operation's own name inside the id --
+      # see the header for why this is stated as a sandbox artifact rather
+      # than claimed as the real host's minting scheme, which was never
+      # observed.
+      style: opaque
+    fields:
+      day:
+        type: string
+      timestamp:
+        type: datetime
+      score:
+        type: integer
+      active_calories:
+        type: integer
+      total_calories:
+        type: integer
+      target_calories:
+        type: integer
+      steps:
+        type: integer
+      equivalent_walking_distance:
+        type: integer
+      inactivity_alerts:
+        type: integer
+      contributors:
+        type: map
+
+routes:
+  - method: GET
+    path: /v2/usercollection/daily_activity
+    resource: daily_activity
+    operation: list
+    # Oura's own parameter list for this route is start_date, end_date,
+    # next_token and fields -- no page-size parameter of any name.
+    # limit_param: "-" says so rather than leaving it unstated, which is
+    # the honest reading of a provider that pages by cursor alone.
+    pagination:
+      style: cursor
+      cursor_param: next_token
+      limit_param: "-"
+
+  # Genuinely public, in the sense Cauldron's Public means: no credential is
+  # checked. required_headers still gates it on Authorization being present
+  # at all -- see above and the header's sandbox paragraph. Verified live,
+  # both that this differs from the real route and that it too resolves
+  # routing before that gate.
+  - method: GET
+    path: /v2/sandbox/usercollection/daily_activity
+    resource: daily_activity
+    operation: list
+    public: true
+    pagination:
+      style: cursor
+      cursor_param: next_token
+      limit_param: "-"
+
+errors:
+  # The one sentence reserved for a request that carried no Authorization
+  # header at all. Live, verified twice.
+  token_missing:
+    status: 400
+    message: Token is missing from Request Authorization Heade
+
+  # What a present-but-unusable value gets: no "Bearer " prefix, or the
+  # prefix with nothing after it. Both shapes verified live against this
+  # same message.
+  no_access_token_header:
+    status: 400
+    message: No access token header found
+
+  # A syntactically fine Bearer credential this Recipe does not hold. The
+  # only one of the three verdicts that reaches Oura's own backend rather
+  # than being refused at the gate -- see the header.
+  invalid_token:
+    status: 401
+    message: >-
+      The access token provided is expired, revoked, malformed, or invalid
+      for other reasons.
+
+  unknown_route:
+    status: 404
+    message: Not Found
+
+  method_not_allowed:
+    status: 405
+    message: Method Not Allowed
+
+  # What the sandbox alone answers for a missing Authorization header --
+  # Oura's own instructions for using the sandbox at all, sent back as the
+  # refusal. Live, verified.
+  sandbox_token_missing:
+    status: 400
+    message: Missing auth token. Include any string in 'Authorization' header.
+
+  # FastAPI's own RequestValidationError shape, demonstrated by fault
+  # injection rather than reached through routing: Cauldron has no
+  # query-parameter validation layer to produce this on its own, and the
+  # request below only reaches it live because the sandbox's Authorization
+  # gate accepts anything. See the header for why this is still evidence
+  # rather than an approximation. Built entirely from fields rather than
+  # from message_field/code_field, because this format's error styles
+  # generate one array entry and the live body carries two -- one for each
+  # half of start_date's own anyOf: [datetime, date, null] schema.
+  validation_error:
+    status: 422
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    fields:
+      "detail[0].type": datetime_from_date_parsing
+      "detail[0].loc": [query, start_date, datetime]
+      "detail[0].msg": >-
+        Input should be a valid datetime or date, invalid character in year
+      "detail[0].input": not-a-date
+      "detail[0].ctx": {error: invalid character in year}
+      "detail[1].type": date_from_datetime_parsing
+      "detail[1].loc": [query, start_date, date]
+      "detail[1].msg": >-
+        Input should be a valid date or datetime, invalid character in year
+      "detail[1].input": not-a-date
+      "detail[1].ctx": {error: invalid character in year}
+
+fixtures:
+  empty: {}
+
+  # Every value here is exactly what api.ouraring.com's sandbox sent for
+  # GET /v2/sandbox/usercollection/daily_activity with
+  # Authorization: Bearer anything, on 2026-09-02. Nothing is invented; see
+  # the header.
+  ring:
+    daily_activity:
+      - id: daily_activity-0-2026-9-1
+        day: "2026-09-01"
+        timestamp: "2026-09-01T00:00:00.000+00:00"
+        score: 84
+        active_calories: 100
+        total_calories: 2000
+        target_calories: 2000
+        steps: 10000
+        equivalent_walking_distance: 1000
+        inactivity_alerts: 10
+        contributors:
+          meet_daily_targets: 74
+          move_every_hour: 90
+          recovery_time: 70
+          stay_active: 80
+          training_frequency: 60
+          training_volume: 50
+
+conformance:
+  - name: no Authorization header at all gets Oura's own typo, verbatim
+    source: https://api.ouraring.com/v2/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/daily_activity
+    expect:
+      status: 400
+      body:
+        detail: Token is missing from Request Authorization Heade
+
+  - name: a header with no Bearer scheme is a second, different sentence
+    source: https://api.ouraring.com/v2/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/daily_activity
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 400
+      body:
+        detail: No access token header found
+
+  - name: and so is the Bearer prefix with nothing after it -- same sentence, still not absent
+    source: https://api.ouraring.com/v2/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/daily_activity
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 400
+      body:
+        detail: No access token header found
+
+  - name: only a well-formed, wrong token reaches Oura's own backend, at a different status
+    source: https://api.ouraring.com/v2/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/daily_activity
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        detail: >-
+          The access token provided is expired, revoked, malformed, or
+          invalid for other reasons.
+
+  - name: an unrouted path 404s with no credential examined at all
+    source: https://api.ouraring.com/v2/usercollection/nosuchroute
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/nosuchroute
+    expect:
+      status: 404
+      body:
+        detail: Not Found
+
+  - name: and a credential changes nothing about it
+    source: https://api.ouraring.com/v2/usercollection/nosuchroute
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/usercollection/nosuchroute
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 404
+      body:
+        detail: Not Found
+
+  - name: a wrong method on a real path is a real 405, also with no credential sent
+    source: https://api.ouraring.com/v2/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: POST
+      path: /v2/usercollection/daily_activity
+    expect:
+      status: 405
+      headers:
+        allow: GET
+      body:
+        detail: Method Not Allowed
+
+  - name: the sandbox refuses only a request with no Authorization at all
+    source: https://api.ouraring.com/v2/sandbox/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/sandbox/usercollection/daily_activity
+    expect:
+      status: 400
+      body:
+        detail: Missing auth token. Include any string in 'Authorization' header.
+
+  - name: and accepts a header with no scheme at all, where the real host calls the same value malformed
+    source: https://api.ouraring.com/v2/sandbox/usercollection/daily_activity
+    verified: "2026-09-02"
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/sandbox/usercollection/daily_activity
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 200
+      body:
+        "data[0].id": daily_activity-0-2026-9-1
+        "data[0].day": "2026-09-01"
+        "data[0].steps": 10000
+        "data[0].score": 84
+        "data[0].contributors.stay_active": 80
+        next_token: null
+      absent:
+        - "data[0].attributes"
+        - meta
+
+  - name: a malformed query parameter answers Oura's own FastAPI validation array, once past the gate
+    # Armed: Cauldron has no query-shape validation of its own to reach this
+    # through routing, so this demonstrates the shape rather than the path
+    # that reaches it -- see the header and the case naming the credential
+    # order above, which is the request this was paired with live.
+    source: https://api.ouraring.com/v2/sandbox/usercollection/daily_activity?start_date=not-a-date
+    verified: "2026-09-02"
+    arm: validation_error
+    fixture: ring
+    request:
+      method: GET
+      path: /v2/sandbox/usercollection/daily_activity?start_date=not-a-date
+      headers:
+        Authorization: Bearer anything
+    expect:
+      status: 422
+      body:
+        "detail[0].loc[1]": start_date
+        "detail[1].type": date_from_datetime_parsing
+        "detail[1].msg": >-
+          Input should be a valid date or datetime, invalid character in
+          year
+      absent:
+        - error
+        - errors
