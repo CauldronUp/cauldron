@@ -5788,6 +5788,512 @@ func providers() []provider {
 			recipe: "veriff",
 			gomod:  []string{"github.com/brokeyourbike/veriff-api-client-go"},
 		},
+		{
+			// DeepL publishes an official client per ecosystem and they do
+			// not all speak this API. deepl-node's own translator.ts picks
+			// serverUrl between https://api-free.deepl.com and
+			// https://api.deepl.com by account type and sends
+			// Authorization: DeepL-Auth-Key <key>, which is this Recipe's
+			// two hosts and its non-Bearer prefix exactly.
+			// deeplcom/deepl-php is the same vendor's PHP one.
+			//
+			// No Go module is mapped, and the reason is that DeepL does
+			// not publish one. Its GitHub organisation ships Python, .NET,
+			// Node, PHP, Java and Ruby clients, a CLI and a Chrome
+			// extension, and no Go. The community modules that exist
+			// (bounoable/deepl, michimani/deepl-sdk-go, cluttrdev/deepl-go)
+			// are one author each with nothing depending on them, so the
+			// gap is left rather than filled with the largest of three
+			// small guesses.
+			recipe:   "deepl",
+			composer: []string{"deeplcom/deepl-php"},
+			npm:      []string{"deepl-node"},
+		},
+		{
+			// The official clients name the host and the header in their
+			// own source: node-lokalise-api's base_client.ts hardcodes
+			// urlRoot = "https://api.lokalise.com/api2/" and
+			// lokalise_api.ts sets authHeader to "x-api-token", which is
+			// this Recipe's api2 path and its X-Api-Token check.
+			//
+			// The CLI is left out on the rule the Sonar scanners and
+			// NuGet's exe wrappers already set here. lokalise2 is a
+			// compiled binary a build step shells out to, not a library a
+			// project calls, so a manifest holding it says a pipeline
+			// uploads translation files rather than that this code makes
+			// these requests.
+			//
+			// The Go client is the same organisation's third leg: its own
+			// README calls itself "Lokalise API v2 official Golang client
+			// library", and it hits the same api2 host as the two above.
+			recipe:   "lokalise",
+			composer: []string{"lokalise/php-lokalise-api"},
+			npm:      []string{"@lokalise/node-api"},
+			gomod:    []string{"github.com/lokalise/go-lokalise-api"},
+		},
+		{
+			// Crowdin is the rare provider with a genuine first-party
+			// client in all three ecosystems, and the Go one settles the
+			// question this Recipe's header raises. crowdin.go sets
+			// baseURL = "https://api.crowdin.com/" and only prepends an
+			// organisation subdomain when one is configured, so Cloud is
+			// what the client does by default and Enterprise is the
+			// deliberate override. That is the honest shape of the
+			// mapping: the same dependency can be pointed at the
+			// per-organisation host this Recipe says it does not model,
+			// and nothing in a manifest records which way it was
+			// configured.
+			recipe:   "crowdin",
+			composer: []string{"crowdin/crowdin-api-client"},
+			npm:      []string{"@crowdin/crowdin-api-client"},
+			gomod:    []string{"github.com/crowdin/crowdin-api-client-go"},
+		},
+		{
+			// nkl-kst/the-sports-db builds
+			// thesportsdb.com/api/v1/json/{key}/{endpoint} in its own
+			// RequestBuilder.php, key as a literal path segment, and
+			// defaults it to the old free key "3" -- the one this Recipe's
+			// header records as still answering while no longer being the
+			// key the documentation names. @apicity/thesportsdb documents
+			// the same path scheme with the current "123" alongside the v2
+			// header variant.
+			//
+			// tamnd/thesportsdb-cli is left out for the opposite reason to
+			// most exclusions here: its README says no API key, so it
+			// describes a request this Recipe's path-carried credential
+			// cannot be read out of.
+			recipe:   "thesportsdb",
+			composer: []string{"nkl-kst/the-sports-db"},
+			npm:      []string{"@apicity/thesportsdb"},
+		},
+		{
+			// Most PHP candidates are the wrong version, which is eBay's
+			// and DHL's shape arriving on a much smaller provider. Ten-odd
+			// packages on Packagist name football-data, and most of the ones
+			// that state a version at all target v1 or v2 -- one links
+			// api.football-data.org/docs/v1/index.html outright. This
+			// Recipe models v4, whose X-Auth-Token wording its header
+			// quotes, so pointing a v2 client at it would answer shapes
+			// the client cannot read. victoravelar/laravel-dashboard
+			// -football-data-advanced is a dashboard tile rather than a
+			// client on top of that.
+			//
+			// einar-hansen/php-football-data is the exception, and its own
+			// readme says so -- "This implementation uses the V4 (latest) of
+			// the API" -- confirmed in its source rather than taken on the
+			// readme's word: every Resource class builds its path under
+			// '/v4/...' (AreaResource's '/v4/areas', CompetitionResource's
+			// '/v4/competitions', and so on), against a bare baseUri of
+			// api.football-data.org with the version carried in the path
+			// rather than the host.
+			//
+			// The npm one is small -- seventeen installs a month, no
+			// repository listed -- and unambiguous, which is the bar Ecwid
+			// and VTEX already set. Its built source reads
+			// baseUrl = "https://api.football-data.org/v4" and
+			// "X-Auth-Token": this.apiKey, both of them this Recipe's
+			// exactly.
+			recipe:   "footballdata",
+			composer: []string{"einar-hansen/php-football-data"},
+			npm:      []string{"football-data-sdk"},
+		},
+		{
+			// The two PHP packages are the retired API, and this is the
+			// sharpest version of that miss in the collection because the
+			// retirement is what the Recipe is about. lsv/balldontlie and
+			// slvler/balldontlie-laravel both call
+			// www.balldontlie.io/api/v1/ and send no Authorization header
+			// at all -- the free unauthenticated host from before the key
+			// requirement this Recipe's header opens on. Their response
+			// shape is the old one too. A project holding either is
+			// written against an API that now answers 401 to everything,
+			// so there is no Composer mapping.
+			//
+			// @balldontlie/sdk is the vendor's own, published from the
+			// balldontlie-api organisation, and its client.ts sets
+			// baseURL = "https://api.balldontlie.io" with
+			// Authorization: config.apiKey -- raw, no Bearer prefix, which
+			// is the exact shape this Recipe records the documentation
+			// stating.
+			//
+			// The Go module is one author's and carries no tagged version
+			// in the module proxy, so it is reachable only by
+			// pseudo-version. It is mapped on the same reading as
+			// brokeyourbike/veriff-api-client-go above: baseURL is
+			// "https://api.balldontlie.io/v1" and the header is added raw,
+			// so the source reads unambiguous rather than plausible.
+			// bruin-data's two packages are the near miss worth naming --
+			// same host, same raw header, same company -- and they call
+			// /fifa/worldcup/v1/*, a different product from the basketball
+			// surface modelled here.
+			recipe: "balldontlie",
+			npm:    []string{"@balldontlie/sdk"},
+			gomod:  []string{"github.com/rajwalgautam/nba-client"},
+		},
+		{
+			// Sign-in-with, at a scale that would swamp a popularity rule
+			// in all three ecosystems at once. This Recipe models a read
+			// API behind a bearer token, and the most installed thing
+			// carrying the word on Packagist is hwi/oauth-bundle at
+			// twenty-two million -- a generic Symfony OAuth bundle that
+			// supports this provider among dozens. Behind it
+			// socialiteproviders/strava and edwin-luijten/oauth2-strava
+			// hold a hundred and thirty-six and a hundred and thirteen
+			// thousand between them, and both only get a user signed in.
+			// In Go the entire search is forks of goth, the same idea
+			// again. That is socialiteproviders/gumroad and
+			// unikapps/laravel-socialite-squarespace, except here the
+			// login helpers outnumber and outrank every real client.
+			//
+			// What is left does call the API. basvandorst/stravaphp says
+			// "Strava V3 API PHP client" and has two hundred and eight
+			// thousand installs, iamstuartwilson/strava and codetoad
+			// /strava forty-six and thirty-eight thousand. On npm
+			// strava-v3 is dominant rather than merely present --
+			// seventeen and a half thousand installs a month against one
+			// and a half thousand for the next, a ten-to-one gap -- and it
+			// is the v3 wrapper this Recipe's version wants.
+			// obalunenko/strava-api is generated from
+			// developers.strava.com/swagger/swagger.json, the same
+			// document this Recipe cites, and its client sets
+			// DefaultHost "www.strava.com" with DefaultBasePath "/api/v3".
+			recipe: "strava",
+			composer: []string{
+				"basvandorst/stravaphp",
+				"iamstuartwilson/strava",
+				"codetoad/strava",
+			},
+			npm:   []string{"strava-v3", "strava"},
+			gomod: []string{"github.com/obalunenko/strava-api"},
+		},
+		{
+			// The npm package's README points at api.ouraring.com/docs
+			// paths that are the retired v1 documentation, and its code
+			// does not. lib/client.js requests
+			// /v2/usercollection/daily_activity,
+			// /v2/usercollection/daily_sleep and
+			// /v2/usercollection/personal_info against
+			// https://api.ouraring.com -- the v2 collection this Recipe
+			// models, including the exact route its credential findings
+			// were struck against. The prose is stale and the requests are
+			// current, which is the reverse of the usual failure here and
+			// the reason reading the source rather than the description
+			// changed this verdict.
+			//
+			// Packagist has one client, small and unambiguous: tai-sho
+			// /oura-api-php, eleven downloads total, whose README requires a
+			// "personal access token" from cloud.ouraring.com/docs and builds
+			// requests with it as a Bearer token. That is a prefix of unrelated
+			// vendors elsewhere on the registry -- ouranoshong publishes three
+			// WeChat libraries and bjoernffm/ourairports-downloader reads
+			// airport data, which is Lago inside Lagoon again. flyingflip
+			// /oauth2-oura is the login helper Strava's entry above is mostly
+			// made of.
+			//
+			// austinmoody/go_oura holds ouraApiUrlv2 =
+			// "https://api.ouraring.com/v2" beside the same
+			// /usercollection/* route names in its own config.go.
+			recipe:   "oura",
+			composer: []string{"tai-sho/oura-api-php"},
+			npm:      []string{"oura"},
+			gomod:    []string{"github.com/austinmoody/go_oura"},
+		},
+		{
+			// The brief for this batch asked for a dominant client stated with
+			// numbers, the same bar Strava's entry above clears, and Fitbit's
+			// npm neighbourhood needs it stated carefully: the largest packages
+			// by far are OAuth login helpers rather than clients. djchen
+			// /oauth2-fitbit alone is five hundred and twelve thousand downloads
+			// on Packagist, an OAuth 2.0 provider for the PHP League that gets a
+			// token and never reads a resource, and socialiteproviders/fitbit is
+			// seventy-three thousand more of the same -- the sign-in-with shape
+			// Strava's own entry excludes, at a hundred times the scale.
+			//
+			// Among packages that actually call resource endpoints,
+			// fitbit-oauth2-client is dominant rather than merely present:
+			// twenty-four hundred downloads a month against four hundred and
+			// thirty-three for fitbit-api-handler and two hundred and forty-three
+			// for fitbit-node, a five-to-one gap over the next real client. Its
+			// built source does both halves of this Recipe in one file --
+			// tokenUri: "https://api.fitbit.com" for the OAuth exchange, then
+			// "https://api.fitbit.com/1/user/${userId}/profile.json" and
+			// ".../activities.json" for the resource calls, Bearer token on
+			// both -- this Recipe's own worked example, /1/user/-/profile.json,
+			// verbatim.
+			//
+			// namelivia/fitbit-http-php is the dominant composer client that
+			// speaks the right protocol, though its own README says the author
+			// abandoned it: "I'm abandoning it because I don't own any Fitbit
+			// product anymore." It is mapped anyway for the reason commercetools
+			// /php-sdk is -- a frozen client still makes these requests -- and
+			// its Api class takes an OAuth 2.0 Client ID and Secret, this
+			// Recipe's scheme. popthestack/fitbit, close behind it in downloads,
+			// is excluded for speaking Fitbit's retired OAuth 1.0a instead: its
+			// own README asks for "a consumer key and secret" and its example
+			// calls getProfile() through a Session-based OAuth1 gateway.
+			//
+			// github.com/Fitbit/smartling is the vendor's own organisation
+			// publishing something else entirely -- a client for Smartling, a
+			// translation service -- which is etsy/phan and allegro/php-protobuf
+			// again, this time as the vendor's whole Go presence.
+			recipe:   "fitbit",
+			composer: []string{"namelivia/fitbit-http-php"},
+			npm:      []string{"fitbit-oauth2-client"},
+		},
+		{
+			// The vendor's own client in three ecosystems, and it knows
+			// about the test host this Recipe actually models.
+			// podcast-api-js's Constants.js carries both
+			// API_BASE_PROD = "https://listen-api.listennotes.com/api/v2"
+			// and API_BASE_TEST =
+			// "https://listen-api-test.listennotes.com/api/v2", and sends
+			// the key as "X-ListenAPI-Key". The Go one repeats the pair as
+			// BaseURLProduction and BaseURLTest with
+			// RequestHeaderKeyAPI = "X-ListenAPI-Key". So the packages
+			// mapped here already reach the no-credential host this Recipe
+			// serves, by a constant of their own, which is unusual enough
+			// to record.
+			//
+			// The name is two ordinary words and the collisions are what
+			// that implies: npm's other "listennotes" is somebody's
+			// note-taking app.
+			recipe:   "listennotes",
+			composer: []string{"listennotes/podcast-api"},
+			npm:      []string{"podcast-api"},
+			gomod:    []string{"github.com/ListenNotes/podcast-api-go"},
+		},
+		{
+			// The credential is computed rather than carried, so it is the
+			// one thing that tells a real client from a plausible one, and
+			// all three mapped packages compute it identically.
+			// podcastindex-php's HttpClient builds
+			// sha1(key . secret . timestamp) into Authorization with the
+			// timestamp beside it in X-Auth-Date; podcast-index-api does
+			// crypto.createHash("sha1").update(key + secret + dt); and
+			// TheHippo/podcastindex has a whole auth.go for
+			// fmt.Sprintf("%s%s%d", key, secret, now.Unix()) hashed the
+			// same way, with BaseURL =
+			// "https://api.podcastindex.org/api/1.0/".
+			//
+			// This Recipe accepts any forty lowercase-hex characters
+			// because it cannot verify a signature it has no secret for,
+			// which means these three are the population that check-shape
+			// exists to serve.
+			recipe:   "podcastindex",
+			composer: []string{"podcastindex/podcastindex-php"},
+			npm:      []string{"podcast-index-api"},
+			gomod:    []string{"github.com/TheHippo/podcastindex"},
+		},
+		{
+			// courtlistener-sdk is a TypeScript client and MCP server for
+			// this API in one package, published from a monorepo that does
+			// nothing else, and it documents COURTLISTENER_API_TOKEN and
+			// the split this Recipe is built on -- most endpoints
+			// authenticated, some not.
+			//
+			// tamnd/courtlistener-cli is the third module from that author
+			// mapped here, after mavencentral-cli and frankfurter-cli, and
+			// it is the same shape as both: a command line with the client
+			// as a package inside it. Its courtlistener.go declares
+			// BaseURL = "https://www.courtlistener.com/api/rest/v4",
+			// which is this Recipe's version rather than the v3 most
+			// writing about this API still describes.
+			//
+			// Packagist returns nothing for this provider at all.
+			recipe: "courtlistener",
+			npm:    []string{"@us-legal-tools/courtlistener-sdk"},
+			gomod:  []string{"github.com/tamnd/courtlistener-cli"},
+		},
+		{
+			// ProPublica publishes several APIs and only one of them is
+			// this. kirkaracha/laravel-propublica-congress-api is a real
+			// package for the Congress API -- legislators and votes,
+			// behind a key -- and this Recipe models the Nonprofit
+			// Explorer, which takes no credential at all. Same vendor,
+			// different product, different credential model, and the
+			// package name says ProPublica in both cases. That is
+			// avalara-for-communications and DHL Parcel again.
+			//
+			// The mapped packages name the right one outright.
+			// kevinem/nonprofit-explorer-php borrows ProPublica's own
+			// sentence about "the search engine and database that powers
+			// Nonprofit Explorer" for its description, and
+			// propublica-nonprofit-explorer-sdk names
+			// projects.propublica.org/nonprofits/api in its README.
+			// adamthehutt/propublica-php is the one that has to be read
+			// rather than skimmed: its description is only "a simple PHP
+			// client for Propublica's API", and its namespace is
+			// AdamTheHutt\ProPublica\NonprofitExplorer with an example
+			// that queries an EIN and returns nteeCode. The description is
+			// ambiguous and the code is not.
+			//
+			// Every one of these is small -- forty installs for the first
+			// -- which is what an API with no credential and no billing
+			// tends to have around it.
+			recipe: "propublica",
+			composer: []string{
+				"kevinem/nonprofit-explorer-php",
+				"kevinem/nonprofit-explorer-laravel",
+				"adamthehutt/propublica-php",
+			},
+			npm: []string{"propublica-nonprofit-explorer-sdk"},
+		},
+		{
+			// grid-intensity-go is the jira.js problem in a smaller
+			// package and it resolves itself. One module holds a provider
+			// for this API and a provider for WattTime, so a dependency on
+			// it cannot say which the caller uses -- except that its
+			// WattTime half defaults to api2.watttime.org/v2, the retired
+			// host the backlog records that Recipe against, while its
+			// Electricity Maps half sets APIURL =
+			// "https://api.electricitymap.org/v3" and does
+			// req.Header.Add("auth-token", e.token). Only one of the two
+			// providers inside it still describes something this
+			// collection serves, so it is mapped here and named in the
+			// backlog there.
+			//
+			// The vendor has been renamed twice and the legacy names turn
+			// up nothing usable: there is no co2signal or electricitymap
+			// package on Packagist or in Go modules, and
+			// homebridge-co2signal on npm is an abandoned scaffold whose
+			// package.json still reads "A short description about what
+			// your plugin does."
+			//
+			// homebridge-electricitymaps is a smart-home plugin rather
+			// than a library, and it is mapped because it makes exactly
+			// these requests: BASE_API_URL = "https://api.electricitymap
+			// .org/v3", /carbon-intensity/latest and
+			// /power-breakdown/latest, with the auth-token header.
+			recipe: "electricitymaps",
+			npm:    []string{"homebridge-electricitymaps"},
+			gomod:  []string{"github.com/thegreenwebfoundation/grid-intensity-go"},
+		},
+		{
+			// Unambiguous in all three ecosystems, which for a category
+			// this crowded is worth saying. Email verification has a dozen
+			// vendors selling the same product, so the risk here was a
+			// client for one of the others carrying this one's name, and
+			// none of the three mapped packages is that: all are published
+			// from the vendor's own organisations.
+			//
+			// zerobouncego sets api_key as a request parameter by name,
+			// which is this Recipe's scheme, and the module is mapped at
+			// its unversioned path so the /v2 suffix its current releases
+			// carry matches too.
+			recipe:   "zerobounce",
+			composer: []string{"zero-bounce/sdk"},
+			npm:      []string{"@zerobounce/zero-bounce-sdk"},
+			gomod:    []string{"github.com/zerobounce/zerobouncego"},
+		},
+		{
+			// Mapped with a gap that is worth stating rather than hiding
+			// in a match, which is the trade the Apideck entry above
+			// makes. Both official clients send the credential as a
+			// header: kickbox-node's auth_handler.js does
+			// request["headers"]["Authorization"] = "token " + key, and
+			// the PHP one is built the same way. This Recipe checks the
+			// apikey query parameter, because that is what Kickbox's own
+			// documentation shows and it is what the live host parses --
+			// a key sent that way is refused as invalid rather than
+			// ignored, so both are real credentials on the real API.
+			//
+			// The consequence is precise: everything else lines up --
+			// api.kickbox.com, v2, /verify, all three hardcoded in both
+			// clients -- and an emulator built on the query parameter
+			// will read a request carrying only the header as having
+			// presented nothing. That is a fidelity gap in this Recipe
+			// rather than a doubt about the mapping, and it is the reason
+			// to write it here instead of discovering it once.
+			//
+			// The homographs the name invites did not materialise. The
+			// bare word on both registries is the vendor's, and the only
+			// unrelated thing found was a kickboxing trainer in Go.
+			recipe:   "kickbox",
+			composer: []string{"kickbox/kickbox"},
+			npm:      []string{"kickbox"},
+		},
+		{
+			// The version is in the client rather than in the name.
+			// NeverBounceAPI-PHP's ApiClient.php declares
+			// $baseUrl = "https://api.neverbounce.com" and
+			// $apiVersion = "v4.2" and sets $params["key"], and the Go
+			// one's DefaultBaseURL is the same host with "/v4.2/"
+			// appended -- so both pin the exact version this Recipe
+			// models rather than tracking whatever is current.
+			//
+			// The Go module carries no tagged version in the proxy
+			// despite being the vendor's own, so it is reachable only by
+			// pseudo-version, and it is mapped anyway for the reason the
+			// balldontlie module above is.
+			recipe:   "neverbounce",
+			composer: []string{"neverbounce/neverbounce-php"},
+			npm:      []string{"neverbounce"},
+			gomod:    []string{"github.com/NeverBounce/NeverBounceApi-Go"},
+		},
+		{
+			// Packagist has nothing, so this is npm alone.
+			// @pipedream/rentcast's rentcast.app.mjs returns
+			// "https://api.rentcast.io/v1" from _baseUrl() and sends
+			// "X-Api-Key" on every request, this Recipe's host and
+			// header exactly. @pipedream/jira_service_desk is already
+			// mapped in this file, so the shape is established.
+			//
+			// Two near misses, both agent tooling rather than a client.
+			// @pipeworx/mcp-rentcast's published code is a pointer at
+			// gateway.pipeworx.io and contains no RentCast request at
+			// all. @openpets/rentcast's package.json names the right
+			// host and header too, but its own index.ts imports
+			// "./openapi-client" and "./openapi-tools" and neither file
+			// ships in the published tarball -- four files total,
+			// commands.json, index.ts, package.json and README.md, none
+			// of them the two modules the code requires. A project
+			// holding it would fail on require() before it ever made a
+			// request.
+			recipe: "rentcast",
+			npm:    []string{"@pipedream/rentcast"},
+		},
+		{
+			// The mapping turns on which ATTOM host this Recipe actually
+			// models, and the answer is not the one in its upstream docs
+			// field. Every probe in the header was struck against
+			// api.gateway.attomdata.com under /propertyapi/v1.0.0/*;
+			// api.developer.attomdata.com is where the documentation
+			// lives and answers a CloudFront 403. my-eq/go-attom sets
+			// DefaultBaseURL = "https://api.gateway.attomdata.com/" and
+			// req.Header.Set("apikey", c.apiKey), which is that host and
+			// this Recipe's header exactly, across fifty-odd Property API
+			// endpoints. Reading the docs host as the API host would have
+			// rejected the one real client this provider has.
+			//
+			// Neither registry has anything. Packagist returns its own
+			// most-downloaded packages for the word, which is the
+			// popularity fallback the backlog records for Spaceflight
+			// News, and npm has only @pipeworx/mcp-attom -- named
+			// correctly, and a routing stub like its RentCast sibling
+			// with no ATTOM request in it.
+			recipe: "attom",
+			gomod:  []string{"github.com/my-eq/go-attom"},
+		},
+		{
+			// A client for a product the vendor is winding down, which is
+			// the last thing this Recipe expected to find. Its header
+			// establishes that Estated was bought by ATTOM in 2022 and
+			// that apis.estated.com is now a shim ATTOM runs and has said
+			// it will deprecate. A package written against that is
+			// therefore worth checking twice rather than assuming away,
+			// and forward-force/estated-api-sdk is real:
+			// BASE_URL = "https://apis.estated.com" -- the plural host,
+			// the one that resolves, not the api.estated.com and
+			// developer.estated.com this Recipe records as NXDOMAIN --
+			// and addQueryParameter("token", $apiKey), which is the
+			// credential scheme exactly.
+			//
+			// Nothing on npm, and no Go module. The Composer one is the
+			// only client this API has anywhere, on either side of the
+			// acquisition.
+			recipe:   "estated",
+			composer: []string{"forward-force/estated-api-sdk"},
+		},
 	}
 }
 
