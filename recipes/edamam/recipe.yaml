@@ -1,0 +1,398 @@
+# Edamam Recipe for Cauldron
+#
+# Which Edamam this models, plainly, because there is more than one.
+# developer.edamam.com issues app_id/app_key pairs per *product* -- Recipe
+# Search, Food Database, Nutrition Analysis, Meal Planner are separate
+# applications with separate keys -- and they do not share a wire shape even
+# where they share a hostname. This Recipe models the Nutrition Analysis API:
+# GET /api/nutrition-data (one ingredient line) and POST /api/nutrition-details
+# (a whole recipe). Both live on api.edamam.com, both are covered by the same
+# published OpenAPI description (upstream.spec), and both are this
+# collection's actual question -- a nutrient figure and the portion it
+# belongs to.
+#
+# **The response gives the whole recipe's totals, not one serving, and
+# nothing in the body says so.** AnalyzedRecipe carries yield (a serving
+# count) and totalWeight (grams) beside totalNutrients -- and totalNutrients
+# is exactly that, the total for everything submitted, not divided by yield.
+# A caller who wants what one serving contains has to read yield and do the
+# division themselves; nothing here is called totalNutrientsPerServing, and
+# no field flags that the numbers as sent need dividing at all. Compare
+# Spoonacular's Recipe in this collection, whose own documentation states
+# outright that its nutrition figures are already per serving and says to
+# multiply for the whole recipe -- the same fact, stated in the opposite
+# direction, and only one of the two providers puts it in writing.
+#
+# **Every nutrient figure does carry its own unit, per field.** Edamam's
+# schema is explicit here in a way Nutritionix's Recipe in this collection is
+# not: totalNutrients is a map keyed by USDA/FNDDS nutrient code (ENERC_KCAL,
+# PROCNT, FAT, CHOCDF, FIBTG, ...) and every entry is
+# {label, quantity, unit} -- confirmed against Edamam's own published
+# OpenAPI description, components.schemas.NutrientInfo. So the unit question
+# and the basis question have opposite answers on the same response: unit is
+# stated, per field, everywhere; basis is stated once, for the whole object,
+# and is the whole recipe unless the caller divides it.
+#
+# **calories is declared a bare integer, separate from totalNutrients'
+# ENERC_KCAL, which is a float with its own unit field.** Two representations
+# of the same quantity, two JSON types, and nothing says whether calories is
+# ENERC_KCAL rounded or computed a second way. This is Open Food Facts'
+# "twelve keys for one nutrient" finding again, in miniature: two keys this
+# time, not twelve, and the interesting one for this Recipe is not the
+# duplication itself but that it duplicates across a type boundary an
+# equality check would not survive.
+#
+# **The not-found question, for an ingredient rather than a whole request.**
+# Ingredient.parsed.status is documented as one of OK, MISSING_QUANTITY,
+# UNRECOGNIZED_FOOD -- a per-ingredient verdict inside an otherwise
+# successful analysis, distinct from the whole-request 422 the same
+# OpenAPI description reserves for "couldn't parse the recipe or extract the
+# nutritional info." Whether a fuzzy match is distinguishable from an exact
+# one: no. The schema's OK covers both; there is no confidence or
+# match-quality field anywhere beside it. Whether an unrecognised ingredient
+# inside an otherwise-valid multi-line recipe fails the whole request or
+# succeeds with that one line flagged was not established -- exercising it
+# needs a working key, and this Recipe does not guess.
+#
+# **Three error envelopes, one host, and app_id is the one query parameter
+# whose absence never changes the sentence.** Probed live with no key ever
+# minted, on the date in each case's own source:
+#
+#   GET  /api/nutrition-data       neither param        -> {"status":"error","message":"Unauthorized"}
+#   GET  /api/nutrition-data       app_key only (junk)   -> {"status":"error","message":"Unauthorized"}
+#   GET  /api/nutrition-data       app_id only (junk)    -> {"status":"error","message":"Missing app_key."}
+#   GET  /api/nutrition-data       both present, junk    -> {"status":"error","message":"Unauthorized app_id"}
+#   POST /api/nutrition-details    no params at all      -> {"error":"unauthorized"}
+#   GET  /api/food-database/v2/parser  neither, or junk  -> Apache Tomcat/11.0.13's own 401 HTML page
+#
+# Four sentences and three envelope shapes for the same mistake, on the same
+# hostname. auth.param is app_id here rather than app_key, and it is the
+# choice that reproduces both real "app_id absent" requests correctly: with
+# no app_id at all, and with app_key alone, the live wording is identical
+# ("Unauthorized"), and both collapse to this runtime's Absent verdict with
+# the same message. What that choice cannot reproduce is the two-message
+# split inside the rejected verdict -- "Missing app_key." when app_key is
+# genuinely absent, "Unauthorized app_id" when it is merely wrong -- because
+# nothing here inspects a second query parameter. Both are recorded above as
+# live findings; only "Unauthorized app_id", the more complete mistake, is
+# asserted as a case below. Nutrition-details' own {"error": "unauthorized"}
+# envelope is a fourth shape again, and it is not asserted as a case either
+# -- not because it was not verified (it was, on the date above), but
+# because this format's credential check is one setting for the whole
+# Recipe: auth.rejected_error names a single error, and there is no
+# per-route override for which shape a failed credential answers with. A
+# Recipe can describe two envelopes on one host; it cannot make the runtime
+# choose between them by path. Food Database's Tomcat page is a fifth shape
+# again and is not modelled at all: it is a different backend behind the
+# same hostname, mentioned here for the contrast and not exercised by any
+# route this Recipe declares.
+#
+# **Routing resolves before the credential for a path with no route at all,
+# and the ordering does not hold for a wrong method on a real one.** Probed
+# live, no credential sent either way:
+#
+#   GET /api/no-such-route-xyz          -> 404 {"errors":[{"error":"HTTP 404 Not Found"}]}
+#   PUT /api/nutrition-data             -> 401, the same Unauthorized body a GET with no key gets
+#   DELETE /api/nutrition-details       -> 400 Tomcat "HTTP method DELETE is not supported by this URL"
+#
+# The first line is auth.after_routing's contract exactly -- an unrouted path
+# 404s with nothing examined -- and is what this Recipe declares and asserts.
+# The other two are not: a wrong method on a route this Recipe does declare
+# still hits the credential gate (PUT) or a container-level 400 that has
+# nothing to do with credentials or routes (DELETE), and Cauldron's own
+# after_routing would instead answer 404 or 405 to both with no credential
+# check at all once a route exists at that path. That mismatch is recorded
+# here rather than forced into a case that would misrepresent what the
+# emulator actually does.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful nutrition body carries a verified date, or exact
+#     asserted quantities. The OpenAPI description gives field names and
+#     types and no worked numeric example for either route; this Recipe's
+#     conformance cases for a 200 assert structure and per-field units only
+#     -- that totalNutrients.ENERC_KCAL.unit is "kcal", that calories is
+#     present -- and invent no calorie or gram figure. Contrast Together and
+#     Fireworks in this collection, whose 200 cases cite the provider's own
+#     example values; Edamam's own description has none to cite for this
+#     endpoint.
+#   - Recipe Search (/api/recipes/v2) and Food Database
+#     (/api/food-database/v2/*) are not modelled at all, beyond the
+#     header's live probe of their distinct error shapes. They are separate
+#     Edamam products with separate keys, and the "different hosts and
+#     paths" this API family is known for is real: same hostname, three
+#     backends, three envelopes, confirmed above rather than assumed.
+#   - auth.param checks app_id alone. A request carrying a correct app_id and
+#     any app_key at all is accepted here; the real API also demands a
+#     matching app_key. That is the format's single-credential model, stated
+#     plainly rather than left to be discovered.
+
+recipe: edamam
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v1.4
+  docs: https://developer.edamam.com/edamam-docs-nutrition-api
+  spec: https://api.edamam.com/doc/open-api/nutrition-analysis-v1.yaml
+  spec_hash: f7b6ac31c5cae76079867deab13bbfabdc8cb85525929788458f7f8d97e2f487
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: query
+  param: app_id
+  keys:
+    - cauldron0000
+  # Both real "app_id absent" requests -- neither parameter, and app_key
+  # alone -- resolve to this runtime's Absent verdict and both get the
+  # identical live wording. Left unset: it is also the wording a present,
+  # wrong app_id gets when app_key is genuinely absent too, which is not the
+  # sentence this Recipe asserts for that verdict -- see rejected_error and
+  # the header.
+  absent_error: authentication_error
+  # A present, wrong app_id -- with an app_key also present -- gets a more
+  # specific sentence than the generic one. See the header for the sibling
+  # case this single-parameter model cannot also reproduce.
+  rejected_error: rejected_app_id
+  # An unrouted path resolves before the credential is examined -- verified
+  # live. See the header for the two ways this does not extend to a wrong
+  # method on a route that does exist.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  analyzed_food:
+    id:
+      style: opaque
+      field: "-"
+      carried_by: label
+    fields:
+      uri:
+        type: string
+        null_when_unset: true
+      label:
+        type: string
+        null_when_unset: true
+      # A bare integer -- see the header's contrast with totalNutrients'
+      # own ENERC_KCAL, a float with its own unit field.
+      calories:
+        type: integer
+      totalWeight:
+        type: number
+      # A serving count. Nothing divides totalNutrients by this for you --
+      # see the header.
+      yield:
+        type: number
+      # Keyed by USDA/FNDDS nutrient code (ENERC_KCAL, PROCNT, FAT, CHOCDF,
+      # FIBTG, ...); every entry is {label, quantity, unit} per Edamam's own
+      # published schema. The whole recipe's total, not one serving.
+      totalNutrients:
+        type: map
+      # The same shape again, and a different number under the same keys --
+      # not asserted here beyond its presence; see the header.
+      totalDaily:
+        type: map
+      dietLabels:
+        type: list
+      healthLabels:
+        type: list
+      cautions:
+        type: list
+      ingredientLines:
+        type: list
+      ingredients:
+        type: list
+
+routes:
+  - method: GET
+    path: /api/nutrition-data
+    resource: analyzed_food
+    operation: get
+    id_from: "query:ingr"
+
+  - method: POST
+    path: /api/nutrition-details
+    resource: analyzed_food
+    operation: get
+    id_from: "body:title"
+
+errors:
+  # The wording this runtime's Absent and unmodelled-Rejected verdicts share
+  # on GET /api/nutrition-data -- both real app_id-absent requests, verified
+  # live, byte for byte.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    fields:
+      status: error
+
+  # A present, wrong app_id with an app_key also present. Verified live.
+  # See the header for "Missing app_key.", the sibling wording this
+  # single-parameter credential model cannot also produce.
+  rejected_app_id:
+    status: 401
+    message: Unauthorized app_id
+    fields:
+      status: error
+
+  # A genuinely unrouted path -- verified live, with no credential examined,
+  # per auth.after_routing.
+  unknown_route:
+    status: 404
+    style: list
+    key: errors
+    message_field: error
+    code_field: "-"
+    message: "HTTP 404 Not Found"
+
+fixtures:
+  empty: {}
+
+  kitchen:
+    analyzed_food:
+      # Field names and types only -- see the header. No quantity here is a
+      # value Edamam's own documentation published for this endpoint; the
+      # numbers are placeholders and no case below asserts them.
+      - id: "1 apple"
+        uri: null
+        label: null
+        calories: 0
+        totalWeight: 0
+        yield: 1
+        totalNutrients:
+          ENERC_KCAL:
+            label: Energy
+            quantity: 0
+            unit: kcal
+          PROCNT:
+            label: Protein
+            quantity: 0
+            unit: g
+          FAT:
+            label: Fat
+            quantity: 0
+            unit: g
+          CHOCDF:
+            label: Carbs
+            quantity: 0
+            unit: g
+        totalDaily: {}
+        dietLabels: []
+        healthLabels: []
+        cautions: []
+        ingredientLines:
+          - 1 apple
+        ingredients: []
+
+conformance:
+  - name: neither query parameter gets the generic sentence
+    source: https://api.edamam.com/api/nutrition-data
+    verified: "2026-09-03"
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/nutrition-data?ingr=1%20apple
+    expect:
+      status: 401
+      body:
+        status: error
+        message: Unauthorized
+
+  - name: app_key alone gets the same sentence -- app_id is what is missing
+    source: https://api.edamam.com/api/nutrition-data
+    verified: "2026-09-03"
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/nutrition-data?ingr=1%20apple&app_key=junkkey
+    expect:
+      status: 401
+      body:
+        status: error
+        message: Unauthorized
+
+  - name: a present, wrong app_id gets a more specific sentence
+    # Live, with app_key also present and also wrong. See the header for
+    # "Missing app_key.", the answer to the same app_id when app_key is
+    # absent instead -- a distinction this single-parameter model cannot
+    # also carry.
+    source: https://api.edamam.com/api/nutrition-data
+    verified: "2026-09-03"
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/nutrition-data?ingr=1%20apple&app_id=junkid&app_key=junkkey
+    expect:
+      status: 401
+      body:
+        status: error
+        message: Unauthorized app_id
+
+  - name: an unrouted path 404s with no credential examined
+    source: https://api.edamam.com/api/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/no-such-route-xyz
+    expect:
+      status: 404
+      body:
+        "errors[0].error": HTTP 404 Not Found
+
+  - name: and the identical 404 whether or not a credential was sent
+    source: https://api.edamam.com/api/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/no-such-route-xyz?app_id=junkid&app_key=junkkey
+    expect:
+      status: 404
+      body:
+        "errors[0].error": HTTP 404 Not Found
+
+  - name: every nutrient carries its own unit, per field
+    # Documented, not called with a key -- see the header's observed/documented
+    # split. Structure and units only: components.schemas.NutrientInfo is
+    # {label, quantity, unit} on Edamam's own published description, and no
+    # quantity here is asserted as a value the provider sent.
+    source: https://api.edamam.com/doc/open-api/nutrition-analysis-v1.yaml
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/nutrition-data?ingr=1%20apple&app_id=cauldron0000
+    expect:
+      status: 200
+      body:
+        totalNutrients.ENERC_KCAL.label: Energy
+        totalNutrients.ENERC_KCAL.unit: kcal
+        totalNutrients.PROCNT.unit: g
+        totalNutrients.FAT.unit: g
+      matches:
+        calories: "^[0-9]+$"
+        totalNutrients.ENERC_KCAL.quantity: "."
+
+  - name: the total is for the whole recipe, and yield is the only division offered
+    source: https://api.edamam.com/doc/open-api/nutrition-analysis-v1.yaml
+    fixture: kitchen
+    request:
+      method: GET
+      path: /api/nutrition-data?ingr=1%20apple&app_id=cauldron0000
+    expect:
+      status: 200
+      body:
+        yield: 1
+      matches:
+        totalWeight: "."
+      absent:
+        - totalNutrientsPerServing
+        - perServing
