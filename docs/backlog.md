@@ -286,7 +286,7 @@ the header says so.
 | Honeybadger | Assess — faults and notices |
 | Grafana Cloud | Assess — the stack-management API, which is a second surface on top of the one that now ships. **The Grafana HTTP API is shipped** as `grafana`, written against `api-merged.json` in `grafana/grafana`: two unique identifiers for one dashboard, and the one called `id` is the one you cannot use. A save's required fields are `["status", "title", "version", "id", "uid", "url"]` and the two identifiers carry the same sentence -- "The unique identifier (id)" and "The unique identifier (uid)" -- for an int64 and a string, while the only path that fetches a dashboard is `/api/dashboards/uid/{uid}`. So the integer is required in every save response and can address nothing; it is the instance's row number, and a deploy that stored it stored the identifier that will not survive the move. The document says the same about folders outright: `folderId` is "Deprecated: use FolderUID instead", beside `folderUid`. Also pinned: a field called `title` whose description is **"Slug The slug of the dashboard."** with the example "my-dashboard" -- a struct comment one field out of place, on the field a UI shows back to the user; the `version` that guards the next save living in `meta` rather than on the dashboard, which is free-form JSON, with a **412** declared on the save; five permission booleans (`canAdmin`, `canDelete`, `canEdit`, `canSave`, `canStar`) and a sixth field, `provisioned`, that none of them accounts for; and a search that answers with a bare array, no envelope and no count, whose hits can be dashboards already in the bin. Detection is the thinnest in the collection and the reason is the finding: eighteen npm results for "grafana" and not one calls this API -- the whole `@grafana/` scope is plugin tooling, and the biggest Packagist numbers are Loki, a different product from the same vendor |
 | ~~Honeycomb~~ | Shipped. **One endpoint answers `problem+json` and six do not** -- `/1/auth` sends RFC 7807 while boards, datasets, columns, triggers, markers and the events ingest answer the same credential failure as a plain `{"error": ...}`. Written partly to find out whether RFC 7807 needed a new error style: it did not, a flat style with the message under `title` reproduces it exactly |
-| Better Stack | Assess — logs, uptime monitors, incidents |
+| ~~Better Stack~~ | Shipped. Its 404 hardcodes the word GET whatever method was sent, and it is the only one of its group with both a last-checked time and paused as its own status word |
 | ~~Heap~~ | Shipped. The application identifier authenticates nothing -- one that was never registered gets the identical success a real one would |
 | LogRocket | Assess — sessions and issues |
 | ~~New Relic~~ | Shipped, with five cases checked against the live API and five drafted from its published description. **Its own description would generate a broken client**: the spec declares the applications list with the same schema as the single fetch, promising `{"application": {...}}` where the wire sends `{"applications": [...]}`, so generated code reads `response.application.id` and gets undefined on every list call. Also pinned: a wrong key echoed back inside the failure body, and `health_status` as the string "gray" beside `reporting` as a boolean -- two fields stating one fact in two types. NerdGraph was probed for the 200-with-errors behaviour this collection collects and does **not** do it unauthenticated: it 401s before GraphQL executes |
@@ -399,7 +399,7 @@ the header says so.
 | Provider | Why |
 |---|---|
 | ~~HashiCorp Vault~~ | Shipped, and this row named the headline before it was written: the same read gives you the secret, or a box containing the secret. On KV v1 `response.data` is your secret; on KV v2 `response.data.data` is, and `response.data` is a box holding it beside a metadata block. Nothing in the path says which, because the version is a property of the mount. `secret = response.data` does not throw against v2 -- it yields an object, truthily, and surfaces later as a password that is an object. Written against openapi.json in `hashicorp/vault-client-go`, the document HashiCorp generates its own Go client from, which turned out to omit three things every real request and response has: the `/v1/` URL prefix (stated in `info.description` and on none of its 715 paths), the response envelope (the document's `KvV2ReadResponse` is the *inner* half; the wrapper carrying `request_id`, `lease_id`, `renewable` and `lease_duration` is hand-written outside the generated code as `Response[T any]`), and authentication (`securitySchemes` is `{}`, empty, for an API whose purpose is holding secrets). The generator emits the middle and a person supplies both ends. Also pinned: a write answers with metadata and not with the secret -- the request schema says so in passing, "will be stored and returned on read" -- while the v1 write answers 204 with no body at all; not-deleted is `deletion_time: ""` beside `destroyed: false`, an empty string rather than a null; and a version is an integer in `current_version` and a string when the same number is a key in `versions`. Stated and not served: `/sys/health`, whose five declared responses are 200 active, **429 "unsealed and standby"**, **472** (not an HTTP status code) for a DR replication secondary, **501 "not initialized"** and 503 sealed -- codes chosen so a load balancer's "2xx is healthy" rule finds only the active node, which means every generic monitor reports a working standby as rate-limited. Those are states of the server rather than properties of a request. Also unserved: listings, which answer with an array of names rather than records. Detection found the most contested word in the collection -- four vendors ship a Vault and the biggest is Azure's |
-| Doppler | Assess — configs, secrets, the inherited value that looks local |
+| ~~Doppler~~ | Shipped. The credential is checked before routing for every method and path, so it never tells a caller their path was wrong, only that they were |
 | 1Password | Assess — Connect and Service Accounts are separate APIs |
 | Infisical | Assess — secrets, environments, folder scoping |
 | Terraform Cloud | Assess — runs, plans, applies. A run is a state machine with a confirmation step in the middle |
@@ -1076,7 +1076,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**334 more listings across 216 Recipes declare no paging at all**, and the
+**344 more listings across 222 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1221,7 +1221,7 @@ transfers alone, and say so in the header.
 |---|---|
 | ~~Bugsnag~~ | Shipped. An error carries counts and no stack trace, fixed is not terminal, and severity is a different question from unhandled |
 | Grafana Cloud | Assess — the stack-management API and the Prometheus-shaped query API that is not REST. The Grafana HTTP API itself ships; see the row in the observability table above for what it pins |
-| Better Stack | Assess — logs, uptime monitors, incidents |
+| ~~Better Stack~~ | Shipped. Its 404 hardcodes the word GET whatever method was sent, and it is the only one of its group with both a last-checked time and paused as its own status word |
 | ~~PostHog~~ | Shipped. A flag definition is not what a user gets, nought per cent is not inactive, and capture says the same thing whatever you send |
 | Statsig | Assess — gates, experiments, exposure logging |
 | ~~Flagsmith~~ | Shipped, and the point this row made is confirmed: a flag definition is not what a user gets, and the Recipe models the evaluated form. The finding it did not anticipate is that Flagsmith **answers three failures in three formats with no field in common** -- a printed Python tuple served as JSON, a zero-byte 404 for a wrong key, and a bare array holding one object for an unrouted path. Missing and wrong are both modelled, which most Recipes here cannot do, because they run through two different mechanisms rather than one credential gate |
@@ -1309,7 +1309,7 @@ what normalisation does not fix.
 | PayU | The same merchant has different endpoints per country and the response fields differ between them |
 | ~~Gorgias~~ | Shipped. A ticket and its messages are two paginated endpoints read at different moments, so the count on one disagrees with the array on the other; from_agent is true for automated replies; and a reopened ticket keeps its closing time with nothing marking the reopening |
 | ~~Kustomer~~ | Shipped. A conversation is a customer timeline carrying every channel they ever used, assignment is on the conversation rather than any message, status and queue are unrelated, and everything is JSON:API so nothing a client wants is at the top level |
-| Jotform | Form fields are keyed by numeric ids that change when the form is edited, so yesterday's submission maps to today's form incorrectly |
+| ~~Jotform~~ | Shipped, and the premise was wrong in the useful direction: an answer embeds the question's own text and type inline, so a Jotform submission is the one in this group that survives its form being edited. Its not-found echoes the path parameter's name rather than the value |
 
 ### AI and inference
 
@@ -1351,7 +1351,7 @@ what normalisation does not fix.
 | ~~PropelAuth~~ | Shipped, and the row's own claim is confirmed from PropelAuth's published worked examples: `org_id_to_org_info` really does arrive as `{}` for a user in no organisation, so an empty object is a valid user rather than a broken read. What the row did not anticipate is worse than what it did. **The status code tracks whether an Authorization header was sent, not what was in it** -- no header is 404, any header at all is 401, on a hostname invented for the probe and on PropelAuth's own quickstart host alike, with byte-identical empty bodies. So a typo in the subdomain and an expired key are the same event. That is the failure the Make Recipe records, repeated and widened |
 | Helicone | It is a proxy, so a single call can fail as the upstream provider or as Helicone, and the two error shapes are unrelated |
 | ~~Fireworks AI~~ | Shipped, and the row's first clause is confirmed in a stronger form than it guessed: a model's identifier on the control plane is a **resource name**, `accounts/my-account/models/my-model`, so it carries three slashes and the word "models" inside it. What the row missed is that there are two API designs on one hostname -- the OpenAI-compatible inference surface, and a control plane shaped by Google's API Improvement Proposals (`models`/`nextPageToken`/`totalSize`, sharing no key with the other half). Written as the pair to Together AI, and the two **split the middle credential case in opposite directions**: a header present with no scheme is "missing" to Together and "invalid" to Fireworks. Cold-start latency was not reachable without a key and is not claimed |
-| SurveyMonkey | A response in progress is returned and then changes, so a page read twice is not the same page |
+| ~~SurveyMonkey~~ | Shipped, and the sharper problem is upstream of that one: a response carries choice, row and column identifiers and never a label, so an answer cannot be read at all without joining to the survey's current questions. Its own published example gets its own wire wrong, quoting a numeric error id as a string |
 
 ### Storage and media
 
@@ -1583,7 +1583,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Ninety-six Recipes send at least one identifier as a number now, and each
+Ninety-seven Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.

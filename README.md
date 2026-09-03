@@ -65,14 +65,14 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 5898 cases, 2720 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 6064 cases, 2845 of them checked against a live API |
 | Spec drift (`cauldron drift`) | Working. 113 Recipes are checked against their provider's own OpenAPI document; 463 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
 | Headless mode (`--headless`, `--host`) | Working. Providers only, one line of JSON, no containers |
 | Application runtimes in containers | Not built. Run your app as you normally do |
-| Recipes shipped | 609: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter, Nominatim, Open Library, Wikipedia, Hacker News, PokeAPI, MusicBrainz, Open Food Facts, Crossref, Zippopotam, TVmaze, Sunrise-Sunset, NHTSA vPIC, Wikidata, GBIF, Nager.Date, Wayback Machine, National Weather Service, OpenTDB, Open Brewery DB, PoetryDB, Datamuse, Art Institute of Chicago, Postcodes.io, Met Museum, Rick and Morty, Deck of Cards, TheMealDB, World Bank, disease.sh, Dog CEO, Advice Slip, SWAPI, Chuck Norris, Open Notify, Agify, Bible API, CoinGecko, iTunes Search, EPSS, Chess.com, ip-api, Where the ISS at, TfL, openFDA, OpenAlex, MBTA, Carbon Intensity, UK Police, FHRS, BoC Valet, FBI Wanted, Zenodo, UniProt, Spaceflight News, ClinicalTrials.gov, DataCite, Deezer, iNaturalist, RCSB, Europe PMC, OpenAIRE, ROR, Nobel Prize, PDBe, Jisho, Stack Exchange, Kraken, Scryfall, Lichess, Gutendex, Wikimedia, SEC EDGAR, Alpha Vantage, NCBI Entrez, Semantic Scholar, Mercado Libre, US Census, NASA, Steam, NOAA, Guardian, arXiv, Healthchecks, PubNub, Paystack, Hugging Face, Vultr, Linode, Smartsheet, UptimeRobot, Render, Upstash, Mistral, xAI, Scaleway, Status.io, Tink, OpenAQ, Groq, Perplexity, TMDB, RAWG, Twitch, Spotify, Duffel, FlightAware, Honeycomb, New Relic, Wise, Flutterwave, Giphy, Unsplash, NewsAPI, GNews, Coda, GitBook, Split, Flagsmith, Brevo, Mailjet, Lithic, Moov, Descope, FRED, Twelve Data, Mapbox, OpenRouteService, Plivo, Sinch, Cronitor, Checkly, ScrapingBee, Browserless, Brave Search, Serper, Temporal, Inngest, Infobip, Customer.io, Pipedream, Make, Turso, SingleStore, Airbyte, Census, Rootly, FireHydrant, Axiom, Mezmo, Raygun, AppSignal, Ory, SuperTokens, Logto, Wasabi, Filebase, HERE, TomTom, what3words, Frontegg, Kinde, PropelAuth, Convex, Xata, Fauna, Airbrake, Papertrail, Sumo Logic, PandaDoc, SignNow, Anvil, Together AI, Fireworks, Lever, Ashby, Workable, Kit, Buttondown, Zapier, n8n, Windmill, Nuvei, Worldpay, Rapyd, Baserow, NocoDB, Retool, Bunny, ImageKit, Transloadit, Chroma, Milvus, Rippling, BambooHR, Workday, Diffbot, Bright Data, Zyte, Koyeb, Northflank, Porter, NetSuite, Sage Intacct, Expensify, ClickHouse, Timescale, InfluxDB, Sendcloud, ShipBob, Onfleet, Dynatrace, Scout APM, FullStory, Formstack, PDFMonkey, Api2Pdf, Akeyless, JFrog Artifactory, Sonatype Nexus, Swell, Commerce Layer, Snipcart, Payoneer, Treasury Prime, Melio, Tipalti, Anrok, Vertex, TriNet, Remote.com, Zenvia, Kaleyra, Textline, Constant Contact, Drip, Omnisend, Duo, Castle, Sardine, MinIO, Nile, Tigris, Elastic Cloud, Optimizely, VWO, Flexport, Bringg, Radar, TalkJS, CometChat, Whereby, Clio, Aha, Adapty, JustCall, CloudTalk, Missive, Papaya Global, Postscript, Appsmith, Budibase, Coveralls, SavvyCal, 100ms, Ayrshare, AWS Cognito, Google Maps Platform, Livepeer, UPS, USPS, Canada Post, Reddit, Bluesky, Mastodon, Coinbase, Binance, Alchemy, WeatherAPI, Tomorrow.io, Visual Crossing, IPinfo, MaxMind, Geoapify, Clearbit, Hunter.io, Apollo.io, Daily, LiveKit, Agora, Discogs, Last.fm, Genius, CockroachDB, Redis Cloud, SurrealDB, Checkout.com, Klarna, Mangopay, Amadeus, Kiwi.com, Hotelbeds, Sumsub, Veriff, Alloy, Anthropic, Stability AI, Fal.ai, MX, Belvo, Basiq, DeepL, Lokalise, Crowdin, TheSportsDB, football-data, balldontlie, Strava, Oura, Fitbit, Listen Notes, Podcast Index, Taddy, CourtListener, ProPublica, OpenStates, Electricity Maps, WattTime, EIA, ZeroBounce, Kickbox, NeverBounce, RentCast, ATTOM, Estated, Canvas, Moodle, Clever, OpenSky, AviationStack, AeroDataBox, Nutritionix, Edamam, Spoonacular, Google Books, ISBNdb, Hardcover, Toggl, Harvest, Clockify, Mixpanel, Amplitude, Heap, Exa, Tavily, SerpApi, Fastly, KeyCDN, Akamai, Namecheap, Porkbun, DNSimple, OpenCorporates, Companies House, PatentsView, Cloudflare Stream, api.video, Bunny Stream |
+| Recipes shipped | 627: Stripe, GitHub, GitLab, Bitbucket, Shopify, Shopify GraphQL, BigCommerce, Etsy, Magento, eBay, Amazon SP-API, EasyPost, AfterShip, ShipStation, ShipEngine, DHL, Recharge, Lemon Squeezy, Toast, Avalara, FedEx, Easyship, Clover, Lightspeed, Printful, Printify, Medusa, Shopware, commercetools, VTEX, Saleor, Allegro, Akeneo, Voucherify, Apideck, Royal Mail, Lago, Polar, Gumroad, Ecwid, Squarespace, Wix, Metronome, Twilio, Slack, HubSpot, SendGrid, Airtable, Notion, Zendesk, Postmark, Plaid, Clerk, Intercom, Discord, Square, Mailchimp, Cloudflare, Vercel, Xero, QuickBooks, PagerDuty, Asana, Algolia, Sentry, Box, Calendly, Datadog, Front, Typeform, Miro, Contentful, Sanity, Klaviyo, Webflow, Zoom, Pipedrive, Freshdesk, Mailgun, Okta, Shippo, Dropbox, Google Drive, Google Cloud Storage, Auth0, Recurly, Trello, Paddle, CircleCI, Snyk, Statuspage, Buildkite, ClickUp, Basecamp, Shortcut, Chargebee, Vonage, Rollbar, Docusign, Lob, Segment, Greenhouse, Adyen, Salesforce, Help Scout, DigitalOcean, WooCommerce, WordPress, AWS SQS, Google Pub/Sub, AWS DynamoDB, AWS Secrets Manager, AWS SES, Resend, Cloudinary, LaunchDarkly, Vimeo, Mux, Pusher, Ably, Ghost, WorkOS, TaxJar, Stytch, Keycloak, FusionAuth, AssemblyAI, Documenso, Dropbox Sign, Deepgram, Gusto, OneSignal, Telnyx, Bill.com, Ramp, Mercury, Brex, Deel, Google Calendar, Jira, Confluence, Jira Service Management, OpenAI, ElevenLabs, PayPal, RingCentral, Mollie, Gmail, Increase, Svix, Docker Hub, Onfido, Netlify, Firecrawl, Modern Treasury, npm registry, Bugsnag, Persona, Orb, PostHog, Column, marqeta, braze, bandwidth, alpaca, meilisearch, knock, merge, truelayer, razorpay, gocardlessbank, finch, replicate, cohere, hightouch, dwolla, airwallex, snowflake, incidentio, fivetran, novu, uploadcare, midtrans, courier, opsgenie, xendit, gorgias, fastspring, kustomer, calcom, twilioverify, qdrant, revenuecat, backblaze, kratos, hetzner, heroku, polygon, fly, apify, finnhub, tradier, typesense, weaviate, hydra, openrouter, Gemini, Google Address Validation, ShipHero, Linear, Monday, Attio, Neon, PlanetScale, MongoDB Atlas, Supabase, Discourse, Langfuse, YouTube, HashiCorp Vault, Unleash, Pinecone, Hookdeck, Grafana, ConfigCat, SonarCloud, GrowthBook, PyPI, crates.io, RubyGems, Repology, Homebrew, Packagist, Hex.pm, NuGet, Go proxy, Maven Central, OSV.dev, deps.dev, Open-Meteo, USGS, Frankfurter, Nominatim, Open Library, Wikipedia, Hacker News, PokeAPI, MusicBrainz, Open Food Facts, Crossref, Zippopotam, TVmaze, Sunrise-Sunset, NHTSA vPIC, Wikidata, GBIF, Nager.Date, Wayback Machine, National Weather Service, OpenTDB, Open Brewery DB, PoetryDB, Datamuse, Art Institute of Chicago, Postcodes.io, Met Museum, Rick and Morty, Deck of Cards, TheMealDB, World Bank, disease.sh, Dog CEO, Advice Slip, SWAPI, Chuck Norris, Open Notify, Agify, Bible API, CoinGecko, iTunes Search, EPSS, Chess.com, ip-api, Where the ISS at, TfL, openFDA, OpenAlex, MBTA, Carbon Intensity, UK Police, FHRS, BoC Valet, FBI Wanted, Zenodo, UniProt, Spaceflight News, ClinicalTrials.gov, DataCite, Deezer, iNaturalist, RCSB, Europe PMC, OpenAIRE, ROR, Nobel Prize, PDBe, Jisho, Stack Exchange, Kraken, Scryfall, Lichess, Gutendex, Wikimedia, SEC EDGAR, Alpha Vantage, NCBI Entrez, Semantic Scholar, Mercado Libre, US Census, NASA, Steam, NOAA, Guardian, arXiv, Healthchecks, PubNub, Paystack, Hugging Face, Vultr, Linode, Smartsheet, UptimeRobot, Render, Upstash, Mistral, xAI, Scaleway, Status.io, Tink, OpenAQ, Groq, Perplexity, TMDB, RAWG, Twitch, Spotify, Duffel, FlightAware, Honeycomb, New Relic, Wise, Flutterwave, Giphy, Unsplash, NewsAPI, GNews, Coda, GitBook, Split, Flagsmith, Brevo, Mailjet, Lithic, Moov, Descope, FRED, Twelve Data, Mapbox, OpenRouteService, Plivo, Sinch, Cronitor, Checkly, ScrapingBee, Browserless, Brave Search, Serper, Temporal, Inngest, Infobip, Customer.io, Pipedream, Make, Turso, SingleStore, Airbyte, Census, Rootly, FireHydrant, Axiom, Mezmo, Raygun, AppSignal, Ory, SuperTokens, Logto, Wasabi, Filebase, HERE, TomTom, what3words, Frontegg, Kinde, PropelAuth, Convex, Xata, Fauna, Airbrake, Papertrail, Sumo Logic, PandaDoc, SignNow, Anvil, Together AI, Fireworks, Lever, Ashby, Workable, Kit, Buttondown, Zapier, n8n, Windmill, Nuvei, Worldpay, Rapyd, Baserow, NocoDB, Retool, Bunny, ImageKit, Transloadit, Chroma, Milvus, Rippling, BambooHR, Workday, Diffbot, Bright Data, Zyte, Koyeb, Northflank, Porter, NetSuite, Sage Intacct, Expensify, ClickHouse, Timescale, InfluxDB, Sendcloud, ShipBob, Onfleet, Dynatrace, Scout APM, FullStory, Formstack, PDFMonkey, Api2Pdf, Akeyless, JFrog Artifactory, Sonatype Nexus, Swell, Commerce Layer, Snipcart, Payoneer, Treasury Prime, Melio, Tipalti, Anrok, Vertex, TriNet, Remote.com, Zenvia, Kaleyra, Textline, Constant Contact, Drip, Omnisend, Duo, Castle, Sardine, MinIO, Nile, Tigris, Elastic Cloud, Optimizely, VWO, Flexport, Bringg, Radar, TalkJS, CometChat, Whereby, Clio, Aha, Adapty, JustCall, CloudTalk, Missive, Papaya Global, Postscript, Appsmith, Budibase, Coveralls, SavvyCal, 100ms, Ayrshare, AWS Cognito, Google Maps Platform, Livepeer, UPS, USPS, Canada Post, Reddit, Bluesky, Mastodon, Coinbase, Binance, Alchemy, WeatherAPI, Tomorrow.io, Visual Crossing, IPinfo, MaxMind, Geoapify, Clearbit, Hunter.io, Apollo.io, Daily, LiveKit, Agora, Discogs, Last.fm, Genius, CockroachDB, Redis Cloud, SurrealDB, Checkout.com, Klarna, Mangopay, Amadeus, Kiwi.com, Hotelbeds, Sumsub, Veriff, Alloy, Anthropic, Stability AI, Fal.ai, MX, Belvo, Basiq, DeepL, Lokalise, Crowdin, TheSportsDB, football-data, balldontlie, Strava, Oura, Fitbit, Listen Notes, Podcast Index, Taddy, CourtListener, ProPublica, OpenStates, Electricity Maps, WattTime, EIA, ZeroBounce, Kickbox, NeverBounce, RentCast, ATTOM, Estated, Canvas, Moodle, Clever, OpenSky, AviationStack, AeroDataBox, Nutritionix, Edamam, Spoonacular, Google Books, ISBNdb, Hardcover, Toggl, Harvest, Clockify, Mixpanel, Amplitude, Heap, Exa, Tavily, SerpApi, Fastly, KeyCDN, Akamai, Namecheap, Porkbun, DNSimple, OpenCorporates, Companies House, PatentsView, Cloudflare Stream, api.video, Bunny Stream, Bitly, Dub, Short.io, SurveyMonkey, Jotform, Tally, 1Password, Bitwarden, Doppler, Better Stack, Instatus, Pingdom, Transitland, Navitia, 511, OMDb, Trakt, Watchmode |
 
 ## Try it
 
@@ -322,12 +322,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 5898 cases, 2720 run against
-a live account and 3178 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 6064 cases, 2845 run against
+a live account and 3219 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-All 2720 are the cases whose provider can be asked without a key. Six are
+All 2845 are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -3371,6 +3371,66 @@ Six are Bunny Stream's, where **the library id's shape is checked and its owner
 is not**: numeric ids are indistinguishable, non-numeric ones are refused before
 the credential.
 
+Nine are Bitly's, which **calls retargeting redirecting and bills for it** --
+a first-class operation charged as an encode, with no field anywhere holding the
+destination a link used to have.
+
+Nine are Dub's, where **a bad key is not rejected until a workspace resolves**:
+the same wrong token answers a missing-workspace 404 without one and an
+invalid-key 401 with one.
+
+Ten are Short.io's, **one fact in four envelopes** -- the same unauthorized
+condition rendered four different ways depending only on which route was asked.
+
+Five are SurveyMonkey's, whose **own example gets its own wire wrong**, quoting
+a numeric error id as a string, and whose responses carry identifiers and never
+a label.
+
+Six are Jotform's, whose **envelope and status can disagree**, and whose
+not-found echoes the path parameter's name rather than the value it was given.
+
+Eight are Tally's, where **every failure is the same twelve bytes** -- absent,
+wrong, unrouted, wrong method, all identical -- except an undocumented root path
+that answers four bytes whatever the credential.
+
+Ten are Bitwarden's, whose **two refusals differ only in a header clients
+ignore**: both 401 with zero bytes, separated by the challenge alone.
+
+Eight are Doppler's, which **refuses before it routes, without exception**, so
+it never tells a caller their path was wrong.
+
+Seven are Better Stack's, whose **404 always says GET** whatever method was
+sent, verified across six verbs.
+
+Six are Instatus', where **a monitor can be up and paused at once** -- two
+independent fields, and no last-checked time on the record at all.
+
+Six are Pingdom's, which **separates the last poll from the last outage**, the
+only provider in its group to do so, and the only one with a state for
+unconfirmed.
+
+Five are Transitland's, whose **two credential failures differ only by a
+header**, and which dates every source feed separately -- the only honest answer
+available to an aggregator.
+
+Seven are Navitia's, **three credential sentences and no workaround**, where an
+invented coverage region answers exactly what a real one would.
+
+Five are 511's, where **a dot in the path skips the credential entirely**: any
+segment carrying a file extension is served by the web server before the
+application is reached.
+
+Eight are OMDb's, and **the success-shaped failure that no longer is** -- the
+reputation was real and is out of date, though the envelope still holds the
+string False rather than a boolean.
+
+Eight are Trakt's, where **the credential is the only thing that ever speaks**:
+with no key header the edge answers instead of the application, and the version
+header never distinguishes anything.
+
+Eight are Watchmode's, whose **description guarantees nothing at all** -- an
+empty required array, and every foreign identifier nullable.
+
 Every other provider needs an account, and a date nobody can reproduce is
 worth less than an empty field that says so.
 
@@ -3557,7 +3617,7 @@ question about the Recipe that wants a live call to settle. Recording a
 description a Recipe contradicts files the argument as a fingerprint and loses
 it.
 
-**The number will not reach 609.** Most providers publish nothing, and this
+**The number will not reach 627.** Most providers publish nothing, and this
 search reaches only descriptions served at a conventional URL -- a provider
 publishing in a GitHub repository, which is how eleven of the first twelve here
 were found, still needs a person to say where it is.
