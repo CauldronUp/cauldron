@@ -7173,7 +7173,7 @@ func providers() []provider {
 			// Packagist's own p2 metadata lists zero installable versions
 			// -- composer require has nothing left to fetch, so it maps to
 			// nothing.
-			recipe: "onepassword",
+			recipe: "1password",
 			npm:    []string{"@1password/connect"},
 			gomod:  []string{"github.com/1Password/connect-sdk-go"},
 		},
