@@ -2,6 +2,12 @@
 
 package recipe
 
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
 // Route binds an HTTP method and path to an operation on a resource.
 type Route struct {
 	// Derived marks a route that came from the provider's own description
@@ -354,7 +360,81 @@ type Route struct {
 	// separate contract -- a provider can want its version header on a public
 	// route, and Cognito does -- so those are still checked. Routing,
 	// method resolution and the error table are unaffected.
-	Public bool `yaml:"public"`
+	//
+	// It reads two ways, because providers mean two different things by open.
+	//
+	//   public: true          the credential is not examined at all
+	//   public: when-absent   exempt only a request that presented nothing
+	//
+	// The first is FireHydrant's, and it was verified rather than assumed: its
+	// public route answers byte-identically with a junk bearer token attached
+	// and with no header at all, so it genuinely ignores the credential.
+	//
+	// The second is football-data's, and the difference is not academic. Its
+	// competitions list answers with nothing presented and refuses a wrong
+	// token with a 400. Under the first reading a fake would wave that wrong
+	// token through, which teaches a caller their bad credential is fine on
+	// exactly the route they are most likely to try first. Under the second
+	// the absent case is served, a valid key still works, and anything else is
+	// judged as it would be anywhere else on the host.
+	Public PublicMode `yaml:"public"`
+}
+
+// PublicMode is how far a route's credential exemption reaches.
+type PublicMode struct {
+	// Always exempts every request from the credential check.
+	Always bool
+	// WhenAbsent exempts only a request that presented no credential.
+	WhenAbsent bool
+}
+
+// Exempts reports whether this mode excuses a request that reached the given
+// verdict.
+func (p PublicMode) Exempts(v Verdict) bool {
+	switch {
+	case p.Always:
+		return true
+	case p.WhenAbsent:
+		return v == Absent
+	}
+
+	return false
+}
+
+// Declared reports whether the route claims any exemption at all.
+func (p PublicMode) Declared() bool {
+	return p.Always || p.WhenAbsent
+}
+
+// UnmarshalYAML accepts the bare boolean and the named mode.
+//
+// The boolean came first and four Recipes ship it, so it keeps meaning what it
+// meant. Anything else has to be a mode this understands: a typo silently
+// reading as "not public" would turn a declared exemption into a gated route,
+// which fails as a 401 on a path the provider serves to anyone.
+func (p *PublicMode) UnmarshalYAML(value *yaml.Node) error {
+	var flag bool
+	if err := value.Decode(&flag); err == nil {
+		p.Always = flag
+
+		return nil
+	}
+
+	var named string
+	if err := value.Decode(&named); err != nil {
+		return err
+	}
+
+	switch named {
+	case "always":
+		p.Always = true
+	case "when-absent":
+		p.WhenAbsent = true
+	default:
+		return fmt.Errorf("route public %q must be true, always, or when-absent", named)
+	}
+
+	return nil
 }
 
 // Pagination describes how a list endpoint pages.

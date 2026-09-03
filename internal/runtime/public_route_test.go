@@ -21,7 +21,7 @@ import (
 // describe a provider as smaller than it is.
 func TestAPublicRouteIsServedWithNoCredential(t *testing.T) {
 	r := gatedAndNot()
-	r.Routes[1].Public = true
+	r.Routes[1].Public = recipe.PublicMode{Always: true}
 
 	s, err := New(r, Options{Seed: 1})
 	if err != nil {
@@ -58,7 +58,7 @@ func TestAnUnmarkedRouteIsStillGated(t *testing.T) {
 // Recipe declares.
 func TestAnUnroutedPathIsRefusedEvenBesideAPublicRoute(t *testing.T) {
 	r := gatedAndNot()
-	r.Routes[1].Public = true
+	r.Routes[1].Public = recipe.PublicMode{Always: true}
 
 	s, err := New(r, Options{Seed: 1})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestAnUnroutedPathIsRefusedEvenBesideAPublicRoute(t *testing.T) {
 // borrowing the exemption.
 func TestAPublicRouteWorksOnARoutingFirstRecipe(t *testing.T) {
 	r := gatedAndNot()
-	r.Routes[1].Public = true
+	r.Routes[1].Public = recipe.PublicMode{Always: true}
 	r.Auth.AfterRouting = true
 
 	s, err := New(r, Options{Seed: 1})
@@ -104,7 +104,7 @@ func TestAPublicRouteWorksOnARoutingFirstRecipe(t *testing.T) {
 // insists on.
 func TestARequiredHeaderIsStillRequiredOnAPublicRoute(t *testing.T) {
 	r := gatedAndNot()
-	r.Routes[1].Public = true
+	r.Routes[1].Public = recipe.PublicMode{Always: true}
 	r.Auth.AfterRouting = true
 	r.RequiredHeaders = map[string]recipe.RequiredHeader{"X-Api-Version": {Error: "missing_version"}}
 	r.Errors = map[string]recipe.Error{"missing_version": {Status: 400, Message: "The X-Api-Version header is required."}}

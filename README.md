@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 5585 cases, 2483 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 5586 cases, 2484 of them checked against a live API |
 | Spec drift (`cauldron drift`) | Working. 113 Recipes are checked against their provider's own OpenAPI document; 463 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
@@ -322,12 +322,12 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 5585 cases, 2483 run against
+That second line is the honest one. Of every Recipe: 5586 cases, 2484 run against
 a live account and 3102 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-All 2483 are the cases whose provider can be asked without a key. Six are
+All 2484 are the cases whose provider can be asked without a key. Six are
 OpenRouter's model-catalogue cases, whose numbers were read from the provider
 rather than inferred; its completion cases carry no date, because calling that
 endpoint costs money. Eight are the npm registry's, where what was checked is
@@ -3198,7 +3198,7 @@ Eight are TheSportsDB's, where **a finished match says nothing about being
 over**: a 2019 fixture carries a null status and only its two score fields
 prove it happened.
 
-Six are football-data's, whose **open route breaks when you authenticate** --
+Seven are football-data's, whose **open route breaks when you authenticate** --
 the competitions list works with no credential and answers 400 with a wrong
 one.
 
