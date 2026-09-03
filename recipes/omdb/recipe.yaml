@@ -1,0 +1,348 @@
+# OMDb Recipe for Cauldron
+#
+# OMDb is famous, in every other API emulator's write-up, for answering
+# HTTP 200 with {"Response":"False","Error":"..."} on every failure --
+# the success-shaped failure this collection already tracks for Expensify,
+# Google Maps, VWO and ATTOM. Checked live against www.omdbapi.com on
+# 2026-09-03, that claim is no longer true. It answers 401:
+#
+#   GET /?i=tt3896198                (no apikey)
+#   -> 401 {"Response":"False","Error":"No API key provided."}
+#
+#   GET /?i=tt3896198&apikey=junk    (wrong apikey)
+#   -> 401 {"Response":"False","Error":"Invalid API key!"}
+#
+# Both bodies verified byte for byte, both under
+# Content-Type: application/json; charset=utf-8. Even the credential
+# failure -- the one case this project's write-up would have called the
+# sharpest instance of the pattern -- comes back a real 401, not the
+# masked 200 the same page still uses to describe OMDb by reputation. The
+# fifth "always 200" candidate this collection went looking for turned out
+# not to be one, on the date above; whatever produced the reputation
+# either predates this Cloudflare deployment or predates a fix.
+#
+# **"Response" is the string "False", not the boolean false.** Quoted
+# directly from both bodies above: a client that does `if (!body.Response)`
+# gets the right answer by accident, because a non-empty string is truthy
+# and the accident only works because nobody wrote `=== false`. Declared as
+# a fixed field on the error envelope below exactly as observed, string and
+# all.
+#
+# **Absent and wrong are the same 401 in every dimension except the
+# sentence.** Checked live, all under Content-Type: application/json;
+# charset=utf-8, all 401:
+#
+#   no apikey at all                          -> "No API key provided."
+#   apikey= (present, empty)                  -> "No API key provided."
+#   apikey=junk_test_key_not_real              -> "Invalid API key!"
+#   apikey=1a2b3c4d (shaped like a real key)    -> "Invalid API key!"
+#   apikey=junk, on a nonexistent imdb id       -> "Invalid API key!"
+#   apikey=junk, with t= instead of i=          -> "No API key provided."
+#     (t= without apikey; the missing-key sentence never even reaches the
+#     point of noticing which lookup parameter was used)
+#
+# An empty apikey value is treated exactly like an absent one -- not a
+# third, "malformed" sentence. Cauldron's own query-scheme credential check
+# already collapses "" to absent (internal/runtime/auth.go: presented ==
+# "" -> Absent), so this Recipe needed no special handling to reproduce it;
+# it is simply what auth.absent_error is for. There is no shape check
+# beyond that: a key that merely looks wrong and one built to look right
+# (an 8-character hex string, OMDb's real format) get the identical
+# "Invalid API key!" -- OMDb never reaches a byte of the key before
+# deciding it is wrong, or at least never says anything different if it
+# does. rejected and malformed are therefore the same message here, and
+# only absent_error is declared below; everything else falls to the one
+# generic entry, which is the honest default.
+#
+# **The credential is checked before the path, and the path is checked by
+# a completely different program than the one holding the key.** The API
+# and the docs page share exactly one route: "/", where apikey and i/t/s
+# all live as query parameters. Nothing else on this host is OMDb's own
+# application at all -- verified live, with and without an apikey attached
+# to prove the credential never gets consulted for either:
+#
+#   GET /nonexistentpath                       -> 404, IIS's own page,
+#                                                  Content-Type: text/html
+#                                                  (no charset), 1245 bytes
+#   GET /nonexistentpath?apikey=junk            -> byte-identical 404
+#   PATCH /?i=tt3896198                         -> 405, IIS's own page,
+#                                                  Allow: GET, HEAD,
+#                                                  OPTIONS, TRACE, 1293 bytes
+#   PATCH /?i=tt3896198&apikey=junk             -> byte-identical 405
+#
+# Both pages are stock IIS error documents (X-AspNet-Version:
+# 4.0.30319 appears on every JSON response too), not OMDb-authored content,
+# and the title line is what distinguishes them -- reproduced as a
+# body_matches fragment below rather than claimed byte for byte, the same
+# call raygun/recipe.yaml and together/recipe.yaml make for pages that
+# belong to a framework rather than to the provider. auth.after_routing is
+# what makes this Cauldron-representable at all: IIS resolves the path and
+# the verb before anything downstream ever asks whether a key was sent.
+# The live Allow header lists four methods (GET, HEAD, OPTIONS, TRACE,
+# IIS's own defaults for a static-feeling route); this Recipe declares only
+# GET, so its own computed Allow would just say "GET" and is not asserted
+# below for that reason -- a real discrepancy, stated rather than hidden.
+#
+# **GET / with no query parameters at all is not the API. It is the
+# marketing homepage** -- 200, text/html; charset=utf-8, the same
+# usage/parameters/examples page this Recipe's header was partly built by
+# reading. Not modelled as a route: it is not JSON, and every query this
+# Recipe cares about (apikey, i, t, s, or any combination) reaches the
+# application instead and is covered by the cases above.
+#
+# **No worked response example exists anywhere in OMDb's own materials.**
+# The homepage's Parameters section documents field names for the request
+# (i, t, type, y, plot, r, callback, v) and states the rule "while both i
+# and t are optional at least one argument is required" -- but the
+# by-title and by-id example forms on the same page submit to the live API
+# from the visitor's own browser rather than embedding a static response,
+# and no separate errors or schema reference page exists the way TMDB's
+# does. Every attempt to reach an actual record failed on the key before
+# OMDb's application ever looked at i, t or s (see the credential-order
+# cases above), and there is no OpenAPI description or GitHub-hosted
+# schema published anywhere this Recipe could find -- so, per this
+# project's own rule, the route is left out rather than guessed. The
+# `movie` resource below exists only so this Recipe's one real route has
+# something to be a GET on; it carries no fields and its id names no
+# wire property, because nothing here is a claim about what a 200 looks
+# like.
+#
+# **The free tier is documented at 1,000 requests a day** -- OMDb's own
+# apikey.aspx page, read rather than called: "FREE! (1,000 daily limit)"
+# beside the sign-up radio button. No rate-limit header of any kind
+# appeared on any response this Recipe received, 401 or otherwise, so none
+# is declared.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No 200 response of any kind is modelled -- see above.
+#   - The XML response mode (r=xml) is documented on the homepage's own
+#     parameter table and never tried; this Recipe's error envelope is
+#     JSON only, matching every response actually observed.
+#   - The Poster API (img.omdbapi.com, a separate host per the homepage's
+#     own Usage section, "only available to patrons") is not this host and
+#     is not modelled.
+#   - HEAD and OPTIONS were not probed to a conclusion this session; a
+#     HEAD request against the live host did not return within this
+#     session's tooling and was abandoned rather than retried against a
+#     rate limit that might have been the actual cause.
+
+recipe: omdb
+capability: media
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.omdbapi.com/
+
+auth:
+  # Query, not a header -- OMDb's own Usage section gives the request shape
+  # as "http://www.omdbapi.com/?apikey=[yourkey]&", and the credential
+  # belongs in logs and browser history exactly the way this scheme
+  # reproduces.
+  scheme: query
+  param: apikey
+  keys:
+    - cauldron-omdb-fixture-key-00000000
+  # IIS resolves the path and the method before anything downstream asks
+  # for a key -- see the header. Cauldron's default checks the credential
+  # first for every path; this is the other order.
+  after_routing: true
+  # "No API key provided." -- reserved for a request that presented
+  # nothing (or an empty value, which OMDb's own wire treats identically).
+  # Malformed is not declared: there is no prefix or pattern to fail here,
+  # so everything else falls to the generic entry below, which already
+  # carries OMDb's one other sentence, "Invalid API key!".
+  absent_error: no_api_key
+
+responses:
+  error:
+    # Two fields, and the one that says false is a string that says so,
+    # not a boolean. See the header.
+    style: flat
+    message_field: Error
+    code_field: "-"
+    fields:
+      Response: "False"
+
+resources:
+  # Exists only so this Recipe's one real route has an operation to
+  # declare, and carries exactly one field: Response, the string that
+  # discriminates success from failure on every case this Recipe verified
+  # (see the header -- both observed error bodies lead with
+  # "Response":"False"). Its value on a genuine 200 was never observed;
+  # "True" is the documented boolean's only other value and nothing else
+  # about a 200 -- no Title, Year, Plot or any other field -- is claimed,
+  # because no worked example of one exists anywhere this Recipe could
+  # find.
+  movie:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      Response:
+        type: string
+
+routes:
+  - method: GET
+    path: /
+    resource: movie
+    operation: get
+    id_from: "query:i"
+
+errors:
+  no_api_key:
+    status: 401
+    message: "No API key provided."
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  # The generic fallback, and OMDb's own second sentence: what a key gets
+  # once it is merely present and wrong, whatever its shape.
+  authentication_error:
+    status: 401
+    message: "Invalid API key!"
+    headers:
+      Content-Type: application/json; charset=utf-8
+
+  # IIS's own 404, not OMDb's -- see the header. Only the distinguishing
+  # title line is reproduced, matched with body_matches below rather than
+  # claimed byte for byte.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html
+    message: "<title>404 - File or directory not found.</title>"
+
+  # IIS's own 405, same caveat. The live Allow header names four methods
+  # this Recipe does not declare -- see the header -- so it is not
+  # asserted in the case below.
+  method_not_allowed:
+    status: 405
+    style: text
+    headers:
+      Content-Type: text/html
+    message: "<title>405 - HTTP verb used to access this page is not allowed.</title>"
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: no key at all answers a real 401, not the masked 200 this provider is known for
+    source: http://www.omdbapi.com/?i=tt3896198
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      query:
+        i: tt3896198
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json; charset=utf-8
+      body:
+        Response: "False"
+        Error: "No API key provided."
+
+  - name: a key that is simply wrong gets a different sentence, still 401
+    source: http://www.omdbapi.com/?i=tt3896198&apikey=junk_test_key_not_real
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      query:
+        i: tt3896198
+        apikey: junk_test_key_not_real
+    expect:
+      status: 401
+      body:
+        Response: "False"
+        Error: "Invalid API key!"
+
+  - name: a key shaped like the real 8-character format is refused the same way
+    source: http://www.omdbapi.com/?i=tt3896198&apikey=1a2b3c4d
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      query:
+        i: tt3896198
+        apikey: 1a2b3c4d
+    expect:
+      status: 401
+      body:
+        Error: "Invalid API key!"
+
+  - name: an empty apikey value is treated exactly like an absent one
+    source: http://www.omdbapi.com/?i=tt3896198&apikey=
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      query:
+        i: tt3896198
+        apikey: ""
+    expect:
+      status: 401
+      body:
+        Error: "No API key provided."
+
+  - name: a title search with no key gets the same missing-key sentence as an id lookup
+    source: http://www.omdbapi.com/?t=Inception
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      query:
+        t: Inception
+    expect:
+      status: 401
+      body:
+        Error: "No API key provided."
+
+  - name: a path this host does not route is IIS's 404, not OMDb's, credential or not
+    source: http://www.omdbapi.com/nonexistentpath
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /nonexistentpath
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html
+      body_matches: "404 - File or directory not found\\."
+
+  - name: attaching a key to the same bad path changes nothing
+    source: http://www.omdbapi.com/nonexistentpath?apikey=junk_test_key_not_real
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /nonexistentpath
+      query:
+        apikey: junk_test_key_not_real
+    expect:
+      status: 404
+      body_matches: "404 - File or directory not found\\."
+
+  - name: a method this host does not accept is IIS's 405, not OMDb's
+    source: http://www.omdbapi.com/?i=tt3896198
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /
+      query:
+        i: tt3896198
+    expect:
+      status: 405
+      headers:
+        Content-Type: text/html
+      body_matches: "405 - HTTP verb used to access this page is not allowed\\."
