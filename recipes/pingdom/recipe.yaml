@@ -1,0 +1,516 @@
+# Pingdom Recipe for Cauldron
+#
+# One of a batch of three uptime/status-page Recipes -- see
+# recipes/betterstack/recipe.yaml and recipes/instatus/recipe.yaml for the
+# other two, and recipes/statuspage/recipe.yaml and
+# recipes/uptimerobot/recipe.yaml for the two already in this collection.
+# All five exist to answer one question: a monitor that stops reporting is
+# indistinguishable from a service that is up unless the API says when it
+# last checked, and unless a paused monitor is distinguishable from a
+# passing one.
+#
+# Pingdom's own OpenAPI description -- fetched from docs.pingdom.com and
+# fingerprinted below, not guessed at -- answers both halves directly, on
+# the one Check schema every route in this Recipe shares:
+#
+#   status:        up | down | unconfirmed_down | unknown | paused
+#   lasttesttime:  "Timestamp of last test (if any)"
+#   lastdownstart: "Timestamp of start of last check down (if any)"
+#   lastdownend:   "... During a downtime it will be lasttesttime."
+#
+# paused is a fifth word in the enum, not a derived absence of the other
+# four, and lasttesttime is a field of its own -- the last time the check
+# actually ran -- kept separate from lastdownstart and lastdownend, which
+# mark the edges of a down interval rather than the most recent poll. A
+# check that has been paused for a month keeps whatever lasttesttime its
+# last real poll produced; nothing advances it while paused, and status:
+# paused is what tells a caller not to read that frozen number as recent.
+# There is no separate boolean "paused" flag on the read side of a check at
+# all -- pause/unpause is a write-only parameter (PUT /checks or PUT
+# /checks/{id} take {"paused": true}), and it surfaces on read purely as
+# this one status value. Confirmed directly from the Check and
+# CreateCheck/ModifyCheckSettings schemas in Pingdom's own spec; the two
+# conformance cases below asserting this are read from that document rather
+# than a live account, because reading a real check needs a real API token
+# and this Recipe was written with none.
+#
+# **Four sentences for what most providers in this collection collapse into
+# one or two.** Checked live, four ways, against GET /api/3.1/checks:
+#
+#   no Authorization header at all       "Authorization data is missing. Please provide a valid API token"
+#   Authorization: Bearer junktoken12345 "Please provide a valid API token"
+#   Authorization: junktoken12345 (no "Bearer ")  "Unsupported authorization method. Please provide a valid API token"
+#   Authorization: Bearer  (nothing after the prefix)  "Missing or empty bearer token. Please provide a valid API token"
+#
+# Absent and rejected are two different sentences, which this format's
+# auth.absent_error / rejected_error already distinguish. The other two are
+# both Malformed by Cauldron's own verdict logic -- a header with no
+# recognised scheme and a scheme with nothing after it are the same
+# verdict, per auth.go -- and Pingdom answers them with two different
+# sentences anyway, which this format has no way to keep apart: only one of
+# them can be auth.malformed_error. This Recipe keeps the empty-bearer
+# sentence, because "Bearer " with nothing after it is the shape auth.go's
+# own doc comment names as the canonical Malformed case; the no-scheme
+# sentence is real, live-verified, and stated here rather than served,
+# because a Recipe should not claim a fourth message this format can only
+# hold three of. Compare Instatus, this batch's other neighbour, whose two
+# malformed shapes collapse into the SAME sentence as absent -- Pingdom
+# keeps all four distinct where Instatus keeps only two.
+#
+# **auth.after_routing: true, and there is never a 405 anywhere on this
+# host.** A path with no route at all and a real path with an undeclared
+# method both answer the identical body, with no credential examined
+# either way:
+#
+#   {"error":{"statuscode":404,"statusdesc":"Not Found",
+#             "errormessage":"Please specify a valid API resource."}}
+#
+# Checked live: GET /api/3.1/no-such-route-xyz and PATCH /api/3.1/checks
+# (a real path; the collection route only ever defines GET, POST and a bulk
+# PUT) both gave this exact body, and neither carried an Authorization
+# header. That is the Fireworks arrangement, not Rootly's -- see
+# betterstack/recipe.yaml and instatus/recipe.yaml, this batch's other two,
+# for a provider using each of the other two shapes -- except that Pingdom
+# never distinguishes a wrong method from a wrong path at all: there is no
+# Allow header anywhere in this Recipe's probes, and no 405 was ever
+# observed on any request this Recipe sent. errors.method_not_allowed is
+# overridden to the identical 404 body for exactly that reason, and the
+# override's non-405 status is what Cauldron's own runtime reads as a
+# signal to leave the Allow header off, which is the faithful behaviour
+# here.
+#
+# **The base URL answers a third message, distinct from both.** GET
+# https://api.pingdom.com/ (no /api/3.1 segment at all) answers 404 with
+# "This is the base URL of the API. Please refer to the API documentation."
+# -- a third sentence, on a fourth kind of request, not modelled as a route
+# here because it is a fact about the host's root rather than about this
+# API version.
+#
+# **Two rate-limit windows, in one header value apiece, never observed
+# live.** Pingdom's own description: every response carries
+# Req-Limit-Short and Req-Limit-Long, each holding a whole sentence rather
+# than a number -- "Remaining: 394 Time until reset: 3589" -- a short
+# window that resets in minutes and a long one that resets across weeks,
+# the same short/long shape this collection's Strava Recipe already
+# records. None of the eight live 401/404 responses this Recipe actually
+# captured carried either header, which reads as these being sent only
+# alongside a successful, authenticated call -- a call this Recipe has no
+# key to make, so headers: below states the documented shape and no
+# conformance case asserts it live.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of the roughly twenty documented Check fields (before any type-specific
+#     ones) this Recipe declares fourteen. requestheaders, postdata,
+#     shouldcontain/shouldnotcontain, probe regions and every non-HTTP check
+#     type (tcp, dns, udp, smtp, pop3, imap) are entirely absent; only the
+#     http/httpcustom fields url, encryption and port are modelled.
+#   - PUT and DELETE on /checks/{id} are real, documented Pingdom routes
+#     (modify, delete) and both answered the same absent-credential 401 this
+#     Recipe's GET case does when checked live with no header -- but neither
+#     is modelled, so declaring them as routes here would either fabricate
+#     their success shape or misrepresent them as unrouted. Left out
+#     entirely rather than guessed at.
+#   - actions (alert-delivery history), analysis (root-cause detail),
+#     maintenance windows, probes, credits, traceroute and the newer
+#     transaction-monitoring (tms) surface are documented sections this
+#     Recipe does not model at all. Pingdom has no incident resource in the
+#     Statuspage/Better-Stack/Instatus sense -- no started/resolved
+#     lifecycle object -- only a check's own status history and the actions
+#     log of alerts that status produced, and that absence is itself part of
+#     the answer to this batch's question: Pingdom tells you when a check
+#     was last tested and what it found, and leaves "was there an incident"
+#     for the caller to derive.
+#   - create, update, delete and the bulk-pause PUT are not modelled. Every
+#     route here is a GET.
+#   - counts.limited and counts.filtered, the two-stage tag-then-limit
+#     funnel Pingdom's own list envelope reports beside counts.total, are
+#     not modelled -- this format's count_field names one number and
+#     Pingdom's list sends three.
+#
+# Every case below not carrying a verified date was read from Pingdom's own
+# published OpenAPI description, fetched from docs.pingdom.com and
+# fingerprinted under upstream.spec_hash, not observed against a real
+# account -- this Recipe was written with no credential and created no
+# account. The key below is a fixture, not a secret.
+
+recipe: pingdom
+capability: observability
+version: 0.1.0
+
+upstream:
+  api: "3.1"
+  docs: https://docs.pingdom.com/api/
+  spec: https://docs.pingdom.com/API_3.1.yaml
+  spec_hash: 95e024f55ecdfa8b440feeed532bbab9f684c3fa81138bd99607038455fd5f58
+  spec_seen: "2026-09-03"
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron0000000000000000000000000000000000000000000000000000000000
+  absent_error: missing_key
+  # See the header: Pingdom actually sends a third, different sentence for
+  # the no-scheme-at-all shape of Malformed, which this field cannot also
+  # carry.
+  malformed_error: empty_bearer
+  # rejected_error is left at the default authentication_error, which
+  # carries Pingdom's own third sentence, the shortest of the four.
+  after_routing: true
+
+responses:
+  list:
+    style: wrapped
+    key: checks
+    count_field: counts.total
+  resource:
+    style: wrapped
+    key: check
+  error:
+    # {"error": {"statuscode", "statusdesc", "errormessage"}} on every
+    # failure this Recipe reached.
+    style: nested
+    key: error
+    message_field: errormessage
+    code_field: "-"
+    status_field: statuscode
+    type_field: statusdesc
+
+resources:
+  check:
+    id:
+      # "id": {"type": "integer", "example": 100} -- Pingdom's own schema.
+      style: numeric
+    fields:
+      name:
+        type: string
+      # up, down, unconfirmed_down, unknown, paused -- five words, and
+      # paused is one of them. See the header.
+      status:
+        type: string
+        default: up
+      resolution:
+        type: integer
+      hostname:
+        type: string
+      type:
+        type: string
+      # The field this Recipe exists to demonstrate -- see the header. Not
+      # the same fact as a status transition.
+      lasttesttime:
+        type: timestamp
+        null_when_unset: true
+      lastresponsetime:
+        type: integer
+        null_when_unset: true
+      lasterrortime:
+        type: timestamp
+        null_when_unset: true
+      # Edges of a down interval, not a poll time -- see the header for the
+      # contrast with lasttesttime.
+      lastdownstart:
+        type: timestamp
+        null_when_unset: true
+      lastdownend:
+        type: timestamp
+        null_when_unset: true
+      created:
+        type: timestamp
+      ipv6:
+        type: boolean
+        default: false
+      tags:
+        type: list
+      # HTTP-check-specific, from HttpAttributesBase. Only these three of
+      # that schema's dozen-odd fields are modelled -- see the gaps below.
+      url:
+        type: string
+        null_when_unset: true
+      encryption:
+        type: boolean
+        null_when_unset: true
+      port:
+        type: integer
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/3.1/checks
+    resource: check
+    operation: list
+    pagination:
+      style: offset
+      limit: 25000
+      max_limit: 25000
+      limit_param: limit
+      cursor_param: offset
+
+  - method: GET
+    path: /api/3.1/checks/{id}
+    resource: check
+    operation: get
+
+errors:
+  missing_key:
+    status: 401
+    type: Unauthorized
+    message: Authorization data is missing. Please provide a valid API token
+
+  # The Malformed sentence this Recipe keeps -- see the header for the
+  # other one it cannot also carry.
+  empty_bearer:
+    status: 401
+    type: Unauthorized
+    message: Missing or empty bearer token. Please provide a valid API token
+
+  # Rejected, and the generic default: the shortest of the four sentences.
+  authentication_error:
+    status: 401
+    type: Unauthorized
+    message: Please provide a valid API token
+
+  unknown_route:
+    status: 404
+    type: Not Found
+    message: Please specify a valid API resource.
+
+  # Overridden to the identical body unknown_route sends, with the identical
+  # non-405 status -- which is also what tells Cauldron's own runtime to
+  # leave the Allow header off, faithfully: no 405 and no Allow header were
+  # ever observed on this host. See the header.
+  method_not_allowed:
+    status: 404
+    type: Not Found
+    message: Please specify a valid API resource.
+
+  # Documented, not observed -- this Recipe never triggered a real 429, and
+  # the two Req-Limit-* headers Pingdom's own description promises alongside
+  # it are not served here for the same reason they are not served on any
+  # other response -- see the header.
+  rate_limit:
+    status: 429
+    message: Request limit exceeded, try again later
+
+fixtures:
+  empty: {}
+
+  small-account:
+    check:
+      # Values are Pingdom's own schema examples (id: 100, name: mycheck,
+      # the four last* timestamps, hostname from HttpAttributesBase) where
+      # the spec gives one, cited rather than observed -- see the header.
+      - id: 100
+        name: mycheck
+        status: up
+        resolution: 5
+        hostname: my.pingdom.com
+        type: http
+        lasterrortime: 1297446423
+        lasttesttime: 1300977363
+        lastresponsetime: 355
+        lastdownstart: 1300977363
+        lastdownend: 1300977463
+        created: 1291992288
+        ipv6: false
+        tags:
+          - name: apache
+            type: u
+            count: 1
+        url: /
+        encryption: true
+        port: 443
+      # Paused, and lasttesttime is frozen at whatever the last real poll
+      # produced rather than advancing -- the pair this Recipe exists to
+      # demonstrate. See the header.
+      - id: 101
+        name: Marketing homepage
+        status: paused
+        resolution: 30
+        hostname: www.example.com
+        type: http
+        lasttesttime: 1690003600
+        lastresponsetime: 210
+        created: 1680000000
+        ipv6: false
+        url: /
+        encryption: true
+        port: 443
+
+# Every case below carries source. A verified date means this Recipe called
+# api.pingdom.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from Pingdom's own
+# published OpenAPI description and never called with a real API token.
+conformance:
+  - name: no credential at all is told it is missing
+    source: https://api.pingdom.com/api/3.1/checks
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body:
+        error.statuscode: 401
+        error.statusdesc: Unauthorized
+        error.errormessage: Authorization data is missing. Please provide a valid API token
+
+  - name: a well-formed junk token is told only that it is wrong
+    source: https://api.pingdom.com/api/3.1/checks
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error.errormessage: Please provide a valid API token
+
+  - name: an empty bearer value gets its own third sentence
+    source: https://api.pingdom.com/api/3.1/checks
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error.errormessage: Missing or empty bearer token. Please provide a valid API token
+
+  - name: a made-up id under a real route still needs the credential first
+    source: https://api.pingdom.com/api/3.1/checks/12345
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks/12345
+    expect:
+      status: 401
+      body:
+        error.errormessage: Authorization data is missing. Please provide a valid API token
+
+  - name: a path with no route at all needs no credential
+    source: https://api.pingdom.com/api/3.1/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/no-such-route-xyz
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json
+      body:
+        error.statuscode: 404
+        error.statusdesc: Not Found
+        error.errormessage: Please specify a valid API resource.
+
+  - name: a real path with an undeclared method needs no credential either, and answers identically
+    # PATCH is not one of the methods /checks defines (GET, POST, PUT) --
+    # see the header. Same body as the unrouted case above, same status, no
+    # Allow header.
+    source: https://api.pingdom.com/api/3.1/checks
+    verified: "2026-09-03"
+    fixture: small-account
+    request:
+      method: PATCH
+      path: /api/3.1/checks
+    expect:
+      status: 404
+      body:
+        error.errormessage: Please specify a valid API resource.
+      absent_headers:
+        - Allow
+
+  - name: a listing wraps the array under checks, with the count nested under counts
+    source: https://docs.pingdom.com/API_3.1.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "checks[0].name": mycheck
+        "checks[0].status": up
+        "checks[1].status": paused
+        counts.total: 2
+      absent:
+        - data
+        - results
+
+  - name: paused is its own status value, not a derived absence of the others
+    source: https://docs.pingdom.com/API_3.1.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks/101
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "check.status": paused
+
+  - name: lasttesttime is a poll time, and it is not the same field as a down transition
+    # The claim this Recipe exists to check -- see the header. A single
+    # check carries all three, and none is derived from either of the
+    # others.
+    source: https://docs.pingdom.com/API_3.1.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks/100
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "check.lasttesttime": 1300977363
+        "check.lastdownstart": 1300977363
+        "check.lastdownend": 1300977463
+        "check.lasterrortime": 1297446423
+
+  - name: a single check wraps under the singular key, not the plural one
+    source: https://docs.pingdom.com/API_3.1.yaml
+    fixture: small-account
+    request:
+      method: GET
+      path: /api/3.1/checks/100
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 200
+      body:
+        "check.id": 100
+        "check.hostname": my.pingdom.com
+      absent:
+        - checks
+        - id
+        - hostname
+
+  - name: a rate-limited response keeps the same nested envelope
+    source: https://docs.pingdom.com/API_3.1.yaml
+    fixture: small-account
+    arm: rate_limit
+    request:
+      method: GET
+      path: /api/3.1/checks
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000000000000000000000000000000000000000
+    expect:
+      status: 429
+      body:
+        error.errormessage: Request limit exceeded, try again later
