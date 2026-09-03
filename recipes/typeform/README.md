@@ -6,6 +6,13 @@ Emulates the Typeform API (1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It shared in a bug this collection found through Webflow: every timestamp field
+was being filled in automatically, so a response somebody abandoned still
+carried a `submitted_at`. An emulator that dates an event which never happened
+teaches an integration to trust a field it should be checking for absence.
+
 ## Sources
 
 - Documentation: https://www.typeform.com/developers/create/
