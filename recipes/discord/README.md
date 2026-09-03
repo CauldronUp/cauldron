@@ -6,6 +6,11 @@ Emulates the Discord API (v10), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its snowflakes are numeric strings long enough that minting small integers
+would have let a rounding bug through unnoticed.
+
 ## Sources
 
 - Documentation: https://discord.com/developers/docs/reference
