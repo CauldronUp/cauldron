@@ -327,113 +327,55 @@ a live account and 3219 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
-All 2845 are the cases whose provider can be asked without a key.
+All 2845 are the cases whose provider can be asked without a key. Every other
+provider needs an account, and a date nobody can reproduce is worth less than an
+empty field that says so.
 
-Every provider's own findings now live beside its Recipe, in
+Every provider's own findings live beside its Recipe, in
 `recipes/<name>/README.md` -- what was probed, what it answered, and what was
-deliberately not modelled. They were here, all three thousand lines of them,
-and a file nobody reads to the end is a poor place for the one note a person
-wants when they are about to use a particular fake.
-
-Every other provider needs an account, and a date nobody can reproduce is
-worth less than an empty field that says so.
+deliberately not modelled. They were here, all three thousand lines of them, and
+a file nobody reads to the end is a poor place for the one note a person wants
+when they are about to use a particular fake.
 
 Cases run in process and need no credentials, so CI runs them on every push and
 a Recipe edit that drifts from the provider fails there rather than in an
 application months later.
 
-Writing a Recipe is the format's stress test, and each new provider has found
-something. Slack's failures arrive with HTTP 200 and its identifier lives in a
-query parameter, so the router learned RPC shapes. HubSpot nests every business
-attribute under `properties`. Notion refuses a request with no version header.
-Plaid's error category is a separate field from its code. Intercom's paging
-state is nested, which exposed declared constants silently overwriting computed
-values. Discord's snowflakes are numeric strings long enough that minting small
-integers would let a rounding bug through. Square's money is an object in minor
-units. Cloudflare puts every payload under `result`, success or failure, so a
-client branching on the HTTP status is checking the wrong thing. Xero answers a
-request for one invoice with a list of one. PagerDuty authenticates with
-`Token token=`, not `Bearer`. Sentry's entire error body is one string.
+Writing a Recipe is the format's stress test, and every provider has found
+something -- a failure that arrives with HTTP 200, an identifier in a query
+parameter, money as an object in minor units, an error body that is one bare
+string. Those findings are in each Recipe's own README, beside the Recipe that
+found them, because the one a reader wants is the one for the provider they are
+about to fake.
 
-Datadog sends its errors as an array of bare strings, so a client reading
-`.message` from each entry finds `undefined` on every one.
+A pattern runs through them. The state that breaks an integration is almost
+never a failure: it is a third state nobody branched on -- a request closed
+rather than completed, a job waiting on approval, a subscription with a
+cancellation scheduled and not yet applied. Every fixture carries one, and
+finding it is most of the work.
 
-Miro nests coordinates under `position`, so code reading `item.x` gets nothing
-and the item silently lands at the origin. Contentful keeps the identifier at
-`sys.id`.
+That work is now research rather than engineering. The format has needed no new
+mechanism for most of the Recipes added recently; what a new provider costs is
+reading it closely enough to know which state nobody branches on.
 
-Webflow found a bug that had already shipped: every timestamp field was filled
-in automatically, so a site that had never been published still carried a
-`lastPublished`, and a Typeform response somebody abandoned still carried a
-`submitted_at`. The emulator was claiming events that never happened, which no
-test written against it could catch.
-
-Mailgun found the worst one. Basic authentication only ever compared the
-username, which is right for Twilio, where the account SID is the username, and
-wrong for Mailgun, whose username is the constant `api` and whose key is the
-password. A request with the correct username and a completely wrong key
-returned 200, so the failure path a test most wants to exercise could not be
-reached at all.
-
-Dropbox found a limitation in the conformance checker rather than the emulator.
-It names a field `.tag`, where the leading dot is part of the name, and the
-checker split every path on dots, so there was no way to assert on it at all.
-The emulator had been sending it correctly the whole time while every case that
-mentioned it failed.
-
-Trello is the clearest case for reproducing something rather than improving on
-it. Its credentials travel in the query string, which is a bad idea, and its
-failures are plain text rather than JSON. A fake that accepted a header would
-hide the fact that the key ends up in access logs, and one that answered in
-JSON would hide that calling `.json()` on a real error throws.
-
-A pattern runs through the newer Recipes: the state that breaks an integration
-is almost never a failure, it is a third state nobody branched on. A GitLab
-merge request that is closed rather than merged. A CircleCI workflow waiting on
-approval, which is neither a pass nor a failure. A Paddle subscription with a
-cancellation scheduled but not yet applied. Each fixture carries one.
-
-Of the thirty-five Recipes from Fivetran to Langfuse, twenty-five needed no
-change to the format or the runtime. Writing a Recipe is now mostly research
-rather than engineering: the work is reading the provider closely enough to
-know which state nobody branches on, not teaching the format a new trick.
-
-That window is named rather than described as "the last thirty-five", because
-a sliding window is a number that goes stale without anybody editing it. It is
-also the one figure here no test can hold: it is a claim about commits, and CI
-clones without history. `git log --diff-filter=A` over `recipes/` and
-`internal/` settles it for anyone who wants to check.
-
-The suite has started finding faults in itself as well. Vonage reports a
-successful send with the string `"0"` and Docusign counts with strings, and the
-checker was comparing scalars by their rendered text, so `"0"` and `0` were
-indistinguishable and both of those cases passed whichever the emulator sent.
-Scalars now compare kind as well as value, which immediately turned up a real
-inconsistency: the nested error style was sending PagerDuty's numeric codes as
-text.
+The suite has started finding faults in itself as well as in the Recipes. A
+provider reporting success with the string `"0"` is what made the conformance
+checker compare a scalar's kind as well as its value, and that change
+immediately turned up a real inconsistency in the runtime's own error rendering.
+Several Recipes record a bug they found in the emulator rather than in their
+provider, which is the more useful half of writing one.
 
 Not every provider fits, and one is left out deliberately rather than faked.
 Temporal Cloud is gRPC rather than HTTP: this format describes HTTP surfaces,
 and nothing built on it would be a Temporal client. No Recipe is better than a
 misleading one.
 
-That sentence used to name two others, and both of them ship now. Linear was
-out for being GraphQL -- a single endpoint where the request body decides the
-response shape -- until a route learned to match on the field a query names,
-and Linear, Monday and ShipHero all shipped on it. Attio was out for the same
-reason, recorded from an assessment that was simply wrong: Attio is REST and
-publishes an OpenAPI description. Both entries sat unchallenged because
+That list used to be longer, and two of its entries were wrong. One named a
+provider the format had since learned to describe; the other named one that had
+been assessed incorrectly in the first place. Both sat unchallenged because
 nothing rereads a list of things that cannot be done, and a reason that has
-quietly expired reads exactly like one that still holds.
-
-The earlier round found real bugs rather than confirming what the code did:
-routes like Shopify's `/orders/{id}.json` matched nothing at all, so every
-single-object route on Shopify and Twilio answered 404; errors came back in
-Stripe's nested shape for providers that send a flat one; Twilio's identifier
-is `sid`, not `id`; creates answered 200 where the provider answers 201; and
-the list envelope carried a `next_cursor` field that Stripe does not send,
-which is the worst kind of infidelity because code written against it works
-locally and breaks in production.
+quietly expired reads exactly like one that still holds. Each of those Recipes
+now records what it was excluded for and why that stopped being true.
 
 ### Snapshots
 
