@@ -1,0 +1,645 @@
+# Harvest Recipe for Cauldron
+#
+# Same group, same question as toggl/recipe.yaml and clockify/recipe.yaml: a
+# running timer is an entry with no end, so how does the provider represent
+# one, and can a caller sum a day's entries without silently counting a
+# timer that is still going? Harvest's answer is the plainest of the three
+# and it is worth stating exactly why. The time entry object carries a
+# dedicated boolean, is_running, present on every record, that answers the
+# question directly -- no sign trick, no null-as-signal, nothing to infer.
+# Beside it sit two independent pairs that each null out while a timer runs
+# and fill in once it stops, because Harvest actually supports two
+# unrelated tracking modes at once (checkable via wants_timestamp_timers on
+# the Company API, which this Recipe does not model):
+#
+#   timer_started_at / hours   duration mode. timer_started_at is an ISO
+#                              8601 instant while running and documented as
+#                              null for a stopped entry -- "Returns null for
+#                              stopped timers" is the reference's own
+#                              wording. hours accumulates: it is 0 the
+#                              instant a fresh timer starts (the worked
+#                              PATCH .../restart example below answers
+#                              "hours": 0 with is_running: true) and a real
+#                              decimal once stopped.
+#   started_time / ended_time  wall-clock mode. started_time is always
+#                              filled in; ended_time is documented as
+#                              nullable and is null while running, a
+#                              12-hour time string ("11:38am") once stopped.
+#
+# **duration is stored, not derived, and is not on this object at all** --
+# there is no field of that name anywhere in the time entry schema. hours
+# is the closest thing to it, and the worked PATCH .../stop example below
+# shows it computed server-side across the run: a timer started at
+# 2017-08-22T17:37:13Z and stopped a minute or so later answers
+# "hours": 0.02 and "rounded_hours": 0.25, the second number reflecting
+# whatever Time Rounding setting the account uses -- so two different
+# numbers on the same record both mean "how long," neither is a raw
+# duration field, and the field that looks most like Toggl's or Clockify's
+# duration answers a different, rounding-adjusted question. Both are
+# decimal hours, not seconds and not an ISO 8601 duration string.
+#
+# **Deletion.** DELETE /v2/time_entries/{id} is documented as "Returns only
+# a status code" -- no representation of the deleted record, not even an
+# id -- and the time entry schema names no deleted-at or tombstone field
+# anywhere for a caller to have checked in the first place. Nothing here
+# suggests Harvest keeps the record answerable after deletion the way
+# Clockify's own TIME_ENTRY_RESTORED webhook event implies Clockify does
+# (see clockify/recipe.yaml); Harvest's own account-level Audit Log API
+# records that a delete happened as an event, which is a log entry, not the
+# entry answering for itself. This Recipe does not model delete, restart or
+# stop as callable routes with a fixture in front of them -- see the gaps
+# below -- but it does fixture the two worked examples the reference
+# itself publishes for restart and stop, because those are the two
+# snapshots that answer this group's question most directly and neither
+# one requires guessing a value the vendor never wrote down.
+#
+# **The account-id question this group asked about.** Harvest requires two
+# headers on every call: `Authorization: Bearer <token>` and
+# `Harvest-Account-Id: <id>`. Struck live against
+# api.harvestapp.com/v2/users/me, no account, no real token ever created:
+#
+#   no headers at all                      404, zero bytes, Content-Type:
+#                                           application/json
+#   Bearer <junk>, no Harvest-Account-Id   401 {"error":"invalid_token",
+#                                           "error_description":"The access
+#                                           token provided is expired,
+#                                           revoked, malformed or invalid
+#                                           for other reasons."}
+#   Bearer <junk>, Harvest-Account-Id:     the identical 401 body -- adding
+#     999999999                            an account id changes nothing
+#                                           about the *status or body*, only
+#                                           the WWW-Authenticate header (see
+#                                           below)
+#
+# So a junk bearer token answers "invalid_token" whether or not an account
+# id rides beside it, because the token itself is checked before the
+# account id is ever consulted -- this Recipe could establish that the
+# token gate comes first, and no further, because reaching the account-id
+# check requires a token this Recipe has never held, per this group's rule
+# against real credentials. That is the honest limit of what a public
+# probe can show, and it is exactly why the fourth verdict this collection
+# added this week is worth naming here even though this Recipe cannot
+# fixture it: a real, accepted token scoped to the wrong account is
+# authentication succeeding and authorisation refusing, which is what
+# auth.unentitled exists to say -- but auth.unentitled is a property of a
+# *credential* this Recipe holds and refuses on purpose, and this Recipe
+# holds no real Harvest credential at all, so there is no key to name
+# there. What the general documentation (help.getharvest.com/api-v2/
+# introduction/overview/general) does commit to is the status family: 403
+# "The object you requested was found but you don't have authorization to
+# perform your request" is on that page's own table, distinct from 404
+# "The object you requested can't be found" -- a documented pair that maps
+# neatly onto "the account exists and is not yours" versus "the account id
+# is not a real one," and neither is fixtured here because neither has a
+# worked example anywhere in the reference and this Recipe was never able
+# to reach either live.
+#
+# One live, reproducible nuance beyond the body: the WWW-Authenticate
+# header on the 401 gains a `resource_metadata` attribute the instant a
+# Harvest-Account-Id header is present at all -- struck live and
+# reproduced three times, byte-identical each time, with the URL inside it
+# echoing the request path. That is not modelled either: Cauldron's
+# credential check fires once, Recipe-wide, before a route or its path is
+# resolved (see auth.after_routing being left at its default below), and
+# has no per-request value to interpolate into a static header string the
+# way route-level {detail} substitution works for unknown_route. Stated
+# here rather than served with a fixed, wrong value.
+#
+# **Absent is disguised as a 404, not a 401 -- and that split depends on
+# routing in a way auth.after_routing cannot express on its own.** Struck
+# live, no credential at all, three ways:
+#
+#   GET /v2/users/me (real route, right method)     404, empty, JSON
+#   PATCH /v2/users/me (real route, wrong method)    404, empty, JSON --
+#                                                     identical to the row
+#                                                     above; no 405 is
+#                                                     reachable without a
+#                                                     credential either
+#   GET /v2/nosuchroute12345 (no such route)         404, Content-Type
+#                                                     text/html, Harvest's
+#                                                     own branded "Page not
+#                                                     found" marketing page
+#
+# So an absent credential 404s two different ways depending on whether the
+# path is one the API application recognises at all: an empty
+# machine-readable 404 for a real route (any method), and the marketing
+# site's own HTML 404 -- a different program on the same host -- for one it
+# does not. And the moment *any* credential is presented, even garbage,
+# every one of those three requests instead answers the identical 401
+# invalid_token shown above, regardless of the path or the method:
+#
+#   PATCH /v2/users/me, Bearer <junk>                401 invalid_token
+#   GET /v2/nosuchroute12345, Bearer <junk>           401 invalid_token
+#
+# That is Genius's shape, named in this collection's own auth.go: "Genius
+# splits within one verdict. Its absent-credential case depends on
+# routing... while its rejected-credential case is routing-blind and
+# answers identically either way." Harvest is now the second Recipe here
+# with that exact split, at different status codes (404 vs 404-HTML rather
+# than Genius's 401 vs 403). auth.after_routing stays at its default
+# (false) because that reproduces the malformed/rejected half exactly --
+# credential checked first, unconditionally, for every path and method --
+# which is the half this Recipe can actually route requests through.
+# What it cannot reproduce is the *other* half of the split: the branded
+# HTML 404 for an unrouted path with no credential, because Cauldron's
+# unconditional pre-routing check answers with this Recipe's own
+# credential_required entry before the router is ever asked whether the
+# path exists. Reaching Cauldron's own unknown_route rescue needs a
+# credential this Recipe's own fixture accepts -- a request never made
+# against the live API, so no case below claims that shape carries a
+# verified date, and none asserts the HTML page's contents, for the same
+# reason Together AI's Recipe declines to serve Next.js's marketing
+# 404 -- a page is not a payload.
+#
+# **User-Agent.** Harvest's own overview page is unambiguous: "If you
+# don't include a User-Agent header, you'll get a 400 Bad Request
+# response." Struck live to see when that check actually runs: a request
+# with no Authorization header and no User-Agent still 404s the same way a
+# request with no Authorization and a normal User-Agent does, and a
+# request carrying a junk bearer token still answers 401 invalid_token
+# whether or not User-Agent is present at all. So the documented 400 is
+# real but gated behind the credential check -- it is unreachable without a
+# token this Recipe has never held, and this Recipe does not fixture it,
+# stating the documented sentence rather than a status this Recipe could
+# not strike.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Of roughly thirty documented time entry fields this Recipe declares
+#     about twenty. Invoice, external_reference, task_assignment and
+#     user_assignment sub-objects are declared as opaque maps rather than
+#     nested field-by-field, because nothing this group asks about depends
+#     on their internals and Harvest's own reference gives worked values
+#     for them that this Recipe can pass through without asserting.
+#   - create, update, delete, restart and stop are not modelled as routes
+#     a caller can invoke against this emulator -- see this group's rule
+#     against starting, stopping, creating or deleting any time entry, live
+#     or fixtured through a route. The restart and stop *response shapes*
+#     are fixtured as GET-reachable snapshots instead (see fixtures below),
+#     which lets this Recipe answer the running-vs-stopped question with
+#     the vendor's own worked numbers without ever exposing a route that
+#     performs either action.
+#   - required_headers names no custom wording for a missing
+#     Harvest-Account-Id, because none is documented and none was ever
+#     reachable live (see above) -- this falls back to Cauldron's own
+#     generic parameter-missing message rather than a sentence this Recipe
+#     invented.
+#   - The id.getharvest.com host (a separate OAuth identity service used
+#     only for the token-exchange and accounts-listing flows) is not
+#     modelled; every route here is on api.harvestapp.com.
+#
+# Every case below not carrying a verified date was read from Harvest's own
+# published reference at help.getharvest.com/api-v2, not observed against
+# a real account -- this Recipe was written with no credential and created
+# no account. The key below is a fixture, not a secret; every name, id and
+# hours value in the fixtures is copied verbatim from a worked example on
+# that reference, not invented.
+
+recipe: harvest
+capability: hr
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://help.getharvest.com/api-v2/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron0000000000000000000000
+  # Disguised as the provider having no route at all for this path -- see
+  # the header. Struck live on a route this Recipe knows about, with no
+  # method restriction: the same empty 404 answered a real method and a
+  # wrong one identically.
+  absent_error: credential_required
+  # A credential that is present and unacceptable, whatever the reason.
+  # Struck live: a well-formed junk bearer token, an unprefixed value and
+  # an empty value after "Bearer " were not separately distinguished in
+  # this Recipe's probing -- the token gate answered "invalid_token" to
+  # every shape tried, so malformed and rejected share this one entry.
+  malformed_error: invalid_token
+  rejected_error: invalid_token
+  # Left at its default (false, checked first, unconditionally) rather than
+  # true, because that is what reproduces the credential-present half of
+  # this API's behaviour exactly -- see the header for the half it cannot
+  # reproduce.
+
+required_headers:
+  Harvest-Account-Id: {}
+
+responses:
+  list:
+    style: wrapped
+    key: time_entries
+    count_field: total_entries
+    pages_field: total_pages
+    page_field: page
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: error_description
+    code_field: error
+
+resources:
+  time_entry:
+    id:
+      style: numeric
+    fields:
+      spent_date:
+        type: string
+      user:
+        type: map
+      client:
+        type: map
+      project:
+        type: map
+      task:
+        type: map
+      user_assignment:
+        type: map
+        null_when_unset: true
+      task_assignment:
+        type: map
+        null_when_unset: true
+      invoice:
+        type: map
+        null_when_unset: true
+      external_reference:
+        type: map
+        null_when_unset: true
+      # Decimal hours, accumulated server-side across every run of the
+      # timer -- see the header for why this is the closest thing to a
+      # duration field this object has, and why it is not the same
+      # question rounded_hours answers.
+      hours:
+        type: number
+      hours_without_timer:
+        type: number
+        null_when_unset: true
+      rounded_hours:
+        type: number
+        null_when_unset: true
+      notes:
+        type: string
+        null_when_unset: true
+      is_locked:
+        type: boolean
+        default: false
+      locked_reason:
+        type: string
+        null_when_unset: true
+      approval_status:
+        type: string
+        null_when_unset: true
+      is_billed:
+        type: boolean
+        default: false
+      # ISO 8601, and documented in so many words as null for a stopped
+      # entry -- the field this object uses instead of a negative duration
+      # or a null end timestamp. See the header.
+      timer_started_at:
+        type: datetime
+        null_when_unset: true
+      started_time:
+        type: string
+        null_when_unset: true
+      ended_time:
+        type: string
+        null_when_unset: true
+      # The one field that answers this group's question with no inference
+      # required at all.
+      is_running:
+        type: boolean
+        default: false
+      billable:
+        type: boolean
+        default: false
+      budgeted:
+        type: boolean
+        default: false
+      billable_rate:
+        type: number
+        null_when_unset: true
+      cost_rate:
+        type: number
+        null_when_unset: true
+      created_at:
+        type: datetime
+      updated_at:
+        type: datetime
+
+routes:
+  - method: GET
+    path: /v2/time_entries
+    resource: time_entry
+    operation: list
+    pagination:
+      style: page
+      limit: 2000
+      limit_param: per_page
+      cursor_param: page
+      first_page: 1
+
+  - method: GET
+    path: /v2/time_entries/{id}
+    resource: time_entry
+    operation: get
+
+errors:
+  # No route matches, no method matches, and no credential was presented --
+  # struck live for a real path with the right method, the same real path
+  # with the wrong method, and reproduced identically both times. Genuinely
+  # zero bytes, not an empty JSON object.
+  credential_required:
+    status: 404
+    empty: true
+    headers:
+      Content-Type: application/json
+
+  # A credential that was presented and is not accepted, in any shape this
+  # Recipe tried. Struck live, including the WWW-Authenticate header's base
+  # form -- see the header for the resource_metadata addendum this entry
+  # does not carry.
+  invalid_token:
+    status: 401
+    code: invalid_token
+    message: The access token provided is expired, revoked, malformed or invalid for other reasons.
+    headers:
+      WWW-Authenticate: >-
+        Bearer realm="Rack::OAuth2 Protected Resources",
+        error="invalid_token", error_description="The access token provided
+        is expired, revoked, malformed or invalid for other reasons."
+
+fixtures:
+  empty: {}
+
+  # Two snapshots of the same time entry, copied verbatim from Harvest's
+  # own worked examples for "Restart a stopped time entry" and "Stop a
+  # running time entry" (help.getharvest.com/api-v2/timesheets-api/
+  # timesheets/time-entries/) -- every id, name and number below is the
+  # vendor's own published example, not invented. Together they are this
+  # Recipe's answer to the question this group exists to ask: is_running
+  # flips, timer_started_at and ended_time trade places between null and a
+  # value, and hours goes from the literal 0 a fresh restart answers with
+  # to a real decimal once stopped.
+  timesheet:
+    time_entry:
+      # PATCH .../restart's own response. Freshly running: timer_started_at
+      # is set, ended_time is null, hours is 0 -- the instant-of-restart
+      # value the reference itself shows, not a placeholder.
+      - id: 662204379
+        spent_date: "2017-03-21"
+        user:
+          id: 1795925
+          name: Jane Smith
+        client:
+          id: 5735776
+          name: 123 Industries
+        project:
+          id: 14808188
+          name: Task Force
+        task:
+          id: 8083366
+          name: Programming
+        user_assignment:
+          id: 130403296
+          is_project_manager: true
+          is_active: true
+          budget: null
+          created_at: "2017-08-22T17:36:54Z"
+          updated_at: "2017-08-22T17:36:54Z"
+          hourly_rate: 100
+        task_assignment:
+          id: 160726645
+          billable: true
+          is_active: true
+          created_at: "2017-08-22T17:36:54Z"
+          updated_at: "2017-08-22T17:36:54Z"
+          hourly_rate: 100
+          budget: null
+        hours: 0
+        hours_without_timer: 0
+        rounded_hours: 0
+        is_locked: false
+        is_billed: false
+        approval_status: unsubmitted
+        timer_started_at: "2017-08-22T17:40:24Z"
+        started_time: "11:40am"
+        is_running: true
+        billable: true
+        budgeted: false
+        billable_rate: 100
+        cost_rate: 75
+        created_at: "2017-08-22T17:40:24Z"
+        updated_at: "2017-08-22T17:40:24Z"
+
+      # PATCH .../stop's own response, for a different time entry id in the
+      # same worked example: stopped, timer_started_at is null again,
+      # ended_time is filled in, hours is a real decimal and rounded_hours
+      # reflects the account's rounding setting -- two different numbers
+      # for the same run, neither one a raw duration field. See the
+      # header.
+      - id: 662202797
+        spent_date: "2017-03-21"
+        user:
+          id: 1795925
+          name: Jane Smith
+        client:
+          id: 5735776
+          name: 123 Industries
+        project:
+          id: 14808188
+          name: Task Force
+        task:
+          id: 8083366
+          name: Programming
+        user_assignment:
+          id: 130403296
+          is_project_manager: true
+          is_active: true
+          budget: null
+          created_at: "2017-08-22T17:36:54Z"
+          updated_at: "2017-08-22T17:36:54Z"
+          hourly_rate: 100
+        task_assignment:
+          id: 160726645
+          billable: true
+          is_active: true
+          created_at: "2017-08-22T17:36:54Z"
+          updated_at: "2017-08-22T17:36:54Z"
+          hourly_rate: 100
+          budget: null
+        hours: 0.02
+        hours_without_timer: 0.02
+        rounded_hours: 0.25
+        is_locked: false
+        is_billed: false
+        approval_status: unsubmitted
+        started_time: "11:37am"
+        ended_time: "11:38am"
+        is_running: false
+        billable: true
+        budgeted: false
+        billable_rate: 100
+        cost_rate: 75
+        created_at: "2017-08-22T17:37:13Z"
+        updated_at: "2017-08-22T17:38:31Z"
+
+# Every case below carries source. A verified date means this Recipe called
+# api.harvestapp.com with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from Harvest's own
+# published reference and never called.
+conformance:
+  - name: no credential at all is disguised as the route not existing
+    # Zero bytes, JSON-labelled, on a route this Recipe fully declares.
+    source: https://api.harvestapp.com/v2/users/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/time_entries
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json
+      no_body: true
+
+  - name: and the wrong method gets the identical disguise, not a 405
+    # Struck live against /v2/users/me; reproduced here against this
+    # Recipe's own declared route. No credential presented either way.
+    source: https://api.harvestapp.com/v2/users/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/time_entries
+    expect:
+      status: 404
+      headers:
+        Content-Type: application/json
+      no_body: true
+
+  - name: any credential at all, even garbage, reveals the route is real
+    # The same PATCH as above, now with a junk bearer token attached: 401
+    # invalid_token, not 404 and not 405 -- the credential gate answers
+    # before routing is ever consulted once anything is presented. Struck
+    # live.
+    source: https://api.harvestapp.com/v2/users/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v2/time_entries
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+        error_description: The access token provided is expired, revoked, malformed or invalid for other reasons.
+
+  - name: a wrong credential answers identically whether or not an account id rides beside it
+    # Struck live twice, with and without Harvest-Account-Id attached to
+    # the same junk bearer token: byte-identical status and body both
+    # times. See the header for the one thing that did change
+    # (WWW-Authenticate's resource_metadata) and why it is not modelled.
+    source: https://api.harvestapp.com/v2/users/me
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v2/time_entries
+      headers:
+        Authorization: Bearer junktoken12345
+        Harvest-Account-Id: "999999999"
+    expect:
+      status: 401
+      body:
+        error: invalid_token
+
+  - name: a single time entry is the record itself, with no wrapper
+    source: https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/
+    fixture: timesheet
+    request:
+      method: GET
+      path: /v2/time_entries/662204379
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+        Harvest-Account-Id: "12345"
+    expect:
+      status: 200
+      body:
+        id: 662204379
+        "user.name": Jane Smith
+        "project.name": Task Force
+      absent:
+        - data
+        - time_entry
+
+  - name: a running entry carries is_running true and a start instant, no end
+    # From Harvest's own PATCH .../restart worked example -- see the
+    # header and the fixtures block.
+    source: https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/
+    fixture: timesheet
+    request:
+      method: GET
+      path: /v2/time_entries/662204379
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+        Harvest-Account-Id: "12345"
+    expect:
+      status: 200
+      body:
+        is_running: true
+        timer_started_at: "2017-08-22T17:40:24Z"
+        hours: 0
+        ended_time: null
+      absent:
+        - duration
+
+  - name: the same entry stopped answers false, a null start and a real decimal
+    # From Harvest's own PATCH .../stop worked example -- a different id
+    # than the running case above, both drawn from the same reference
+    # page's worked pair.
+    source: https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/
+    fixture: timesheet
+    request:
+      method: GET
+      path: /v2/time_entries/662202797
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+        Harvest-Account-Id: "12345"
+    expect:
+      status: 200
+      body:
+        is_running: false
+        ended_time: "11:38am"
+        hours: 0.02
+        rounded_hours: 0.25
+        timer_started_at: null
+      absent:
+        - duration
+
+  - name: the listing wraps its array under time_entries, beside a page count
+    source: https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/
+    fixture: timesheet
+    request:
+      method: GET
+      path: /v2/time_entries
+      headers:
+        Authorization: Bearer cauldron0000000000000000000000
+        Harvest-Account-Id: "12345"
+    expect:
+      status: 200
+      body:
+        "time_entries[0].id": 662204379
+        "time_entries[1].id": 662202797
+        total_entries: 2
+        total_pages: 1
+        page: 1
+      absent:
+        - data
+        - items
