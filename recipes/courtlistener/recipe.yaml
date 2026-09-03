@@ -1,0 +1,949 @@
+# CourtListener Recipe for Cauldron
+#
+# CourtListener really is Django REST Framework, and the header comment this
+# task asked for starts with the question DRF answers first: does the surface
+# answer unauthenticated at all? The honest answer is split down the middle,
+# per viewset, and that split is the whole shape of this Recipe.
+#
+# GET /api/rest/v4/courts/, /people/, /positions/, /search/,
+# /financial-disclosures/ and /audio/ all answered 200 with real data and no
+# Authorization header whatsoever, checked live. GET /api/rest/v4/dockets/,
+# /clusters/, /opinions/, /parties/ and /attorneys/ all answered 401 with no
+# header, checked live the same way. That is not "the API needs a key" or
+# "the API is open" -- both are true, for different resources, and a Recipe
+# that picked one would misdescribe the other half.
+#
+# The reason is DRF's own permission split, not a wrapper this project
+# invented: courts and its open siblings run IsAuthenticatedOrReadOnly --
+# GET/HEAD/OPTIONS need nothing, every other method needs a credential -- and
+# dockets and its gated siblings run IsAuthenticated outright, which gates
+# even a read. Confirmed live and not just inferred: DELETE on
+# /api/rest/v4/courts/ -- a method the Allow header on that same path never
+# lists (GET, POST, HEAD, OPTIONS) -- still answers 401, not 405, because
+# DRF's own initial() runs the authentication check before it ever asks
+# whether the method is one the view defines. The credential is checked
+# before the method is, on every viewset this Recipe struck, gated or not;
+# what differs is only whether GET clears that check for free.
+#
+# Because this collection has plenty of straightforwardly bearer-token APIs
+# already, and per-viewset public/private is genuinely the first thing worth
+# knowing about this one, auth.scheme is none here and every route says for
+# itself whether a credential is checked -- the same trade Census, Turso and
+# Anvil make in this collection, and for the same reason: a single
+# Recipe-wide scheme is one verdict per request, and this host's own
+# taxonomy does not fit in three.
+#
+# That taxonomy, in full, struck live against GET /api/rest/v4/dockets/ with
+# no account and no key ever created:
+#
+#   nothing sent at all                    -> 401 "Authentication credentials
+#                                              were not provided."
+#   Authorization: junkjunkjunk12345        -> the identical sentence
+#     (no recognised scheme keyword at all)
+#   Authorization: Tokenjunkjunkjunk12345   -> the identical sentence again
+#     (glued to the keyword, no space, so DRF's own `auth.split()` sees one
+#     token rather than two and treats it exactly like no header)
+#   Authorization: Token                    -> "Invalid token header. No
+#     (the keyword, a single trailing space,   credentials provided."
+#      nothing after it)
+#   Authorization: Token abc def            -> "Invalid token header. Token
+#     (the keyword plus two space-separated    string should not contain
+#      words)                                  spaces."
+#   Authorization: Token junkjunkjunk12345  -> "Invalid token."
+#     (the keyword, one word, well-formed,
+#      simply not a token this API holds)
+#   Authorization: Bearer junkjunkjunk12345 -> "Invalid or expired bearer
+#                                              token." -- a completely
+#     different WWW-Authenticate challenge too (error="invalid_token" vs the
+#     bare `Bearer realm="api"` every Token-scheme failure above carries) --
+#     because this is django-oauth-toolkit, a second, entirely separate
+#     authentication backend layered onto the same view, answering its own
+#     failures in its own words. FireHydrant and Fireworks are the other
+#     Recipes in this collection needing that many verdicts named apart;
+#     Anvil is the other one where a second scheme entirely turns out to be
+#     the reason.
+#
+# Five sentences, and the first three collapse to one on the wire (DRF's
+# TokenAuthentication treats "nothing", "a header with no recognised
+# scheme", and "the scheme with no space before the value" identically,
+# because all three fail the same `auth.split()` before token comparison
+# even starts) -- so this Recipe declares four routes for the shapes that
+# actually differ and lets everything else fall to the shared one. The two
+# rarer shapes (the bare-keyword and the two-word malformed tokens) are
+# declared and cased below because they were struck live and are real;
+# neither is claimed to be the ONLY other thing the fallback route stands
+# in for.
+#
+# Routing is checked before any of that, unconditionally, on every path this
+# Recipe tried: GET /api/rest/v4/this-is-not-a-real-endpoint/ answered the
+# identical Django 404 page with no header and with a wrong one, both
+# checked live. That is Airbyte's shape from elsewhere in this collection
+# turned inside out -- there, the credential always wins; here, an unrouted
+# path always does, and only once routing succeeds does the credential get a
+# turn. Content negotiation makes the same point a second way: that 404 is
+# text/html, full stop, whether the request's own Accept header asks for
+# application/json or not -- checked live -- because Django's own URL
+# resolver renders it before DRF's content negotiation, which lives one
+# layer further in, is ever reached. A *routed* failure honours Accept
+# properly: the same 401 that answers JSON by default renders as an HTML
+# page, checked live, the instant Accept: text/html is sent -- and so does a
+# plain 200, on GET /api/rest/v4/courts/. "By default, browsers send an
+# Accept header... returning HTML when requested by a browser and returning
+# JSON when no Accept header is provided, because JSON is the default" is
+# the API's own description of the mechanism (wiki.free.law's own words),
+# and every part of that sentence checked out live except the browsable
+# HTML body itself, which is not pinned byte for byte below -- see the gaps.
+#
+# The identifier story this task exists to establish is cleanest on courts,
+# because courts is the one resource reachable with no credential at all.
+# GET /api/rest/v4/courts/ answers an "id" this Recipe mints nowhere -- it is
+# CourtListener's own short code (scotus, ca1) -- sitting beside
+# "pacer_court_id", the PACER system's own integer for the same court, which
+# is null for scotus (the Supreme Court is not a PACER court at all) and 1
+# for the First Circuit. Both fixture records below carry the value PACER's
+# own website actually assigns, not a placeholder: this is the plainest
+# instance in this whole task of "both identifiers, and one of them is
+# sometimes simply absent because the authoritative system has nothing to
+# say."
+#
+# On a docket the split is sharper again, and three identifiers coexist:
+# `id` (CourtListener's own integer primary key -- what every path in this
+# API actually takes), `docket_number` (the court's own docket number, e.g.
+# "1:16-cv-00745" -- what a filing, a citation or a human being calls the
+# case), and `pacer_case_id` (PACER's own internal case id, a second,
+# unrelated number the courts.gov system uses to address the same case
+# internally, e.g. "178502"). `docket_number_core` is a fourth value, and it
+# is CourtListener's own normalisation of the second one, not a fourth
+# identifier: docket numbers are not unique across courts or years, and the
+# core form is what CourtListener's own cross-referencing actually joins on.
+# None of the four is stable in the way an opaque database key usually is --
+# docket_number is reassigned across different courts and can collide, and
+# CourtListener's own docs say so in the case-law overview page cited below.
+#
+# Revision is where this API's own documentation says something this task
+# was specifically watching for. Quoted verbatim, from the case-law page:
+# "a suit filed against the EPA administrator might be captioned Petroleum
+# Co. v. Regan. That would go into the case name fields of the docket and
+# any decisions that were issued. But if the administrator resigns before
+# the case is resolved, the docket could get a new case name, Petroleum Co.
+# v. New Administrator, while the case name fields on the clusters would
+# not change." That is a documented, in-place mutation of a docket's own
+# case_name -- the docket's caption is not append-only, and a client that
+# cached it once and compared later would see the SAME docket silently wear
+# a different name, with nothing on the record marking the change as a
+# revision rather than a correction.
+#
+# Sealing is where this API's own documentation says something sharper
+# still, and in a security warning rather than a schema note. Quoted
+# verbatim, from the RECAP Fetch page: "if you use this API to request a
+# sealed item from PACER, we will go get it and add it to our system, just
+# like you asked. Unfortunately, there's no way for our system to know the
+# item is sealed. Therefore, do not do this." That is the API's own
+# publisher stating, in as many words, that a sealed PACER record ingested
+# through this pipeline is indistinguishable from an ordinary one once it
+# lands -- there is no field anywhere in this API that means "this was
+# sealed." What this Recipe's own docket resource DOES carry is a different
+# thing entirely: `blocked` and `date_blocked`, CourtListener's own privacy
+# mechanism for withholding a record it has decided not to index, which is
+# real, present in the documented example below, and answers a completely
+# different question (CourtListener chose not to show this) from the one
+# PACER sealing answers (the court chose not to release this at all, and
+# CourtListener cannot tell).
+#
+# Staleness -- the analogue of this collection's own question about how
+# fresh a fixture is -- has two answers on a docket, and they are not the
+# same fact. `date_last_filing` is when the COURT last did something on this
+# case; `date_last_index` is when COURTLISTENER last re-touched this record
+# for search. The documented example below has them roughly a week apart
+# (date_last_filing 2024-05-15, date_last_index 2024-05-20T03:59:23) --
+# ordinary scraper lag, not a red flag -- but a client conflating the two
+# would read CourtListener's own crawl cadence as the court's litigation
+# activity, or the reverse.
+#
+# Two more findings, from the live probes rather than the docs:
+#
+#   - A bad id under a real, public resource gets a message that names the
+#     model: GET /api/rest/v4/courts/thisisnotarealcourtid404test/ answers
+#     404 {"detail":"No Court matches the given query."} -- Django's own
+#     get_object_or_404 default, which embeds the model's verbose name.
+#     Every other gated resource on this host would say "No Docket matches"
+#     or "No Person matches" the same way; only Court's is checked live,
+#     because it is the one resource an id lookup did not also need a key
+#     for.
+#   - No X-RateLimit or Retry-After header appeared on any of the roughly
+#     twenty requests this Recipe struck live, 200 or 401 alike. The API's
+#     own throttle FAQ (wiki.free.law, quoted below) documents a worked 429
+#     -- Retry-After: 85774, {"detail":"Request was throttled. Expected
+#     available in 85774 seconds."} -- and this Recipe was never going to
+#     find that shape by triggering it on purpose, so it is served here with
+#     no verified date, exactly as documented. The same overview page states
+#     a specific number for AUTHENTICATED default access -- "5 requests per
+#     minute, 50 requests per hour, and 125 requests per day" -- and is
+#     silent about what an anonymous caller's own ceiling is, which this
+#     Recipe cannot fill in without inventing a figure nobody published.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - assigned_to_str on the docket fixture is NOT the value CourtListener's
+#     own documentation shows. The real worked example names a sitting
+#     federal judge; this task's rule is to keep real people out of
+#     fixtures, so the value below is the obviously synthetic
+#     "Cauldron Fixture Judge" and this note is the disclosure the task asks
+#     for. Every other field on that fixture is the documented example's own
+#     value, unedited.
+#   - The DRF browsable-HTML body itself (content negotiated via
+#     Accept: text/html) is not pinned byte for byte anywhere below. It is
+#     tens of kilobytes of Bootstrap markup that changes on every deploy;
+#     what is asserted is the mechanism (status, Content-Type, that the body
+#     really did change shape), the same restraint Anvil's Recipe in this
+#     collection takes with its own SPA fallback page.
+#   - The Django 404 for an unrouted path is likewise represented by a short
+#     stand-in body rather than the real ~34KB page, for the same reason.
+#   - clusters, opinions, parties, attorneys, docket-entries and
+#     recap-documents are real, gated resources and none of them are routed
+#     here. Every one of them needed a credential this Recipe never held,
+#     and the one worked example CourtListener's own docs provide for a
+#     cluster or an opinion is a handful of keys (`docket`, `sub_opinions`,
+#     `id`) rather than a complete object -- not enough to declare a
+#     resource honestly without guessing the rest of the shape. What those
+#     pages DO establish, quoted in the header above: opinion ids do not
+#     reliably match cluster ids, and a docket's own `clusters` field is
+#     where a case-law decision (if any) is reached from a PACER docket.
+#   - Two live findings could not be turned into routes, because Cauldron's
+#     own credential check is a request-level verdict (Absent, Malformed or
+#     Rejected) computed once, and neither of these is expressible as one:
+#     the fact that "no header" and "a header with no scheme keyword" and
+#     "the scheme keyword with nothing after it, glued" are three
+#     syntactically different requests answering the identical sentence
+#     could only be shown three separate ways or stated once, and it is
+#     stated once, here, and demonstrated below with the two the task
+#     singled out (nothing sent; a bare, unscoped header).
+#   - GET /api/rest/v4/dockets/{id}/, /clusters/, /opinions/, /parties/ and
+#     /attorneys/ are not individually re-declared for every credential
+#     shape the way the list route is -- this Recipe struck PATCH and
+#     OPTIONS against dockets and PATCH against courts/{id} live to confirm
+#     the ordering holds across methods and paths, and cites those checks in
+#     the conformance cases below, rather than repeating all five credential
+#     shapes against every path this Recipe has a use for.
+#   - No upstream.spec is recorded. GET /api/schema/ answers 403 rather than
+#     404 -- suggesting a machine-readable description exists and is itself
+#     gated -- and nothing at /api/rest/v4/schema/, /swagger.json or
+#     /openapi.json answered at all, checked live. There is nothing this
+#     Recipe could fetch, unauthenticated, to fingerprint.
+#
+# Every case below not carrying a verified date was read from CourtListener's
+# own documentation at wiki.free.law/c/courtlistener/help/api/rest/v4/ (the
+# PACER Data, RECAP and Overview pages, cited individually below), not
+# observed against a real credential -- this Recipe was written with no
+# account and no API token ever created. The fixture token below belongs to
+# no account.
+
+recipe: courtlistener
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://wiki.free.law/c/courtlistener/help/api/rest/v4/overview
+
+auth:
+  # Genuinely per-viewset (courts open for GET, dockets gated outright) and
+  # genuinely a five-way credential taxonomy on the gated half -- see the
+  # header for why neither fits a single Recipe-wide scheme. Every route
+  # below says for itself whether a credential is checked.
+  scheme: none
+
+responses:
+  list:
+    style: wrapped
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: detail
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  court:
+    collection: results
+    id:
+      # CourtListener's own short code -- "scotus", "ca1" -- not minted from
+      # a sequence and not the PACER identifier. See the header.
+      style: opaque
+    fields:
+      # PACER's own integer for the same court. Null for courts PACER has no
+      # concept of at all (the Supreme Court chief among them) -- both
+      # values below are the real ones each court's own live record carries,
+      # not a placeholder.
+      pacer_court_id:
+        type: integer
+        null_when_unset: true
+      pacer_has_rss_feed:
+        type: boolean
+        null_when_unset: true
+      pacer_rss_entry_types:
+        type: string
+        default: ""
+      date_last_pacer_contact:
+        type: datetime
+        null_when_unset: true
+      fjc_court_id:
+        type: string
+        default: ""
+      date_modified:
+        type: datetime
+      in_use:
+        type: boolean
+        default: true
+      has_opinion_scraper:
+        type: boolean
+        default: false
+      has_oral_argument_scraper:
+        type: boolean
+        default: false
+      position:
+        type: number
+      citation_string:
+        type: string
+      short_name:
+        type: string
+      full_name:
+        type: string
+      url:
+        type: string
+      start_date:
+        type: string
+        null_when_unset: true
+      end_date:
+        type: string
+        null_when_unset: true
+      jurisdiction:
+        type: string
+      parent_court:
+        type: string
+        null_when_unset: true
+      appeals_to:
+        type: list
+
+  # The one gated resource this Recipe carries a full record for -- see the
+  # header for why clusters and opinions could not follow it. Every field
+  # below not marked otherwise is CourtListener's own documented worked
+  # example, unedited.
+  docket:
+    collection: results
+    id:
+      # What every path in this API actually takes. Not the PACER case id
+      # and not the court's own docket number -- see the header.
+      style: numeric
+      type: number
+    fields:
+      court_id:
+        type: string
+      # Substituted -- see the header. Every other field on this record is
+      # the documented example's own value.
+      assigned_to_str:
+        type: string
+        null_when_unset: true
+      date_created:
+        type: datetime
+      date_modified:
+        type: datetime
+      # CourtListener's own crawl freshness. Compare date_last_filing below
+      # -- see the header for why these are not the same fact.
+      date_last_index:
+        type: datetime
+        null_when_unset: true
+      date_filed:
+        type: string
+        null_when_unset: true
+      date_terminated:
+        type: string
+        null_when_unset: true
+      date_last_filing:
+        type: string
+        null_when_unset: true
+      # Mutable in place -- see the header's quote from CourtListener's own
+      # docs about a docket's case name changing when a named official does.
+      case_name:
+        type: string
+      slug:
+        type: string
+      # The court's own docket number. Authoritative and human-legible; not
+      # globally unique on its own -- see the header.
+      docket_number:
+        type: string
+      # CourtListener's own normalised join key derived from docket_number,
+      # not a fourth identifier -- see the header.
+      docket_number_core:
+        type: string
+        null_when_unset: true
+      # PACER's own internal case id. A second authoritative identifier,
+      # unrelated in form to docket_number, and the one a RECAP Fetch
+      # request can address a case by instead of a docket number.
+      pacer_case_id:
+        type: string
+        null_when_unset: true
+      cause:
+        type: string
+        default: ""
+      nature_of_suit:
+        type: string
+        default: ""
+      jury_demand:
+        type: string
+        default: ""
+      jurisdiction_type:
+        type: string
+        default: ""
+      # CourtListener's own decision to withhold a record from its index --
+      # not PACER sealing, which this API has no field for at all. See the
+      # header.
+      blocked:
+        type: boolean
+        default: false
+      date_blocked:
+        type: string
+        null_when_unset: true
+      tags:
+        type: list
+
+routes:
+  # Genuinely public. No matches_header at all: every request this route
+  # sees is served, the same way FireHydrant's noauth/ping is elsewhere in
+  # this collection.
+  - method: GET
+    path: /api/rest/v4/
+    raw:
+      content_type: application/json
+      text: '{"search":"https://www.courtlistener.com/api/rest/v4/search/","dockets":"https://www.courtlistener.com/api/rest/v4/dockets/","courts":"https://www.courtlistener.com/api/rest/v4/courts/","clusters":"https://www.courtlistener.com/api/rest/v4/clusters/","opinions":"https://www.courtlistener.com/api/rest/v4/opinions/","people":"https://www.courtlistener.com/api/rest/v4/people/","parties":"https://www.courtlistener.com/api/rest/v4/parties/","attorneys":"https://www.courtlistener.com/api/rest/v4/attorneys/","recap-fetch":"https://www.courtlistener.com/api/rest/v4/recap-fetch/","financial-disclosures":"https://www.courtlistener.com/api/rest/v4/financial-disclosures/","citation-lookup":"https://www.courtlistener.com/api/rest/v4/citation-lookup/"}'
+
+  - method: GET
+    path: /api/rest/v4/courts
+    resource: court
+    operation: list
+    public: true
+    pagination:
+      style: page
+      limit: 20
+      limit_param: page_size
+      cursor_param: page
+      first_page: 1
+
+  # The same route, content-negotiated: a browser-shaped Accept header wins
+  # over the credential-free JSON route above. See the header for the live
+  # confirmation this really is genuine negotiation and not a guess.
+  - method: GET
+    path: /api/rest/v4/courts
+    matches_header:
+      Accept: text/html
+    raw:
+      content_type: text/html; charset=utf-8
+      text: <!DOCTYPE html><html><head><title>Court List</title></head><body><h1>Court List</h1><p>This representation is a stand-in for CourtListener's own DRF browsable-API page -- see the header.</p></body></html>
+
+  - method: GET
+    path: /api/rest/v4/courts/{id}
+    resource: court
+    operation: get
+    public: true
+    not_found: no_court_found
+
+  # An unregistered method on a public-for-GET viewset. Still 401, not 405,
+  # because DRF's own auth check runs before method resolution does -- see
+  # the header.
+  - method: DELETE
+    path: /api/rest/v4/courts
+    error: credentials_not_provided
+
+  - method: PATCH
+    path: /api/rest/v4/courts/{id}
+    error: credentials_not_provided
+
+  # Gated outright. The accepted credential, both surfaces.
+  - method: GET
+    path: /api/rest/v4/dockets
+    resource: docket
+    operation: list
+    matches_header:
+      Authorization: Token cauldron-courtlistener-fixture-token-0000000000000000
+    pagination:
+      style: cursor
+      limit: 20
+      limit_param: page_size
+      cursor_param: cursor
+
+  - method: GET
+    path: /api/rest/v4/dockets/{id}
+    resource: docket
+    operation: get
+    matches_header:
+      Authorization: Token cauldron-courtlistener-fixture-token-0000000000000000
+
+  # The credential taxonomy from the header, struck live against exactly
+  # these values. A route naming matches_header outranks the catch-all
+  # below regardless of write order.
+  - method: GET
+    path: /api/rest/v4/dockets
+    matches_header:
+      Authorization: Bearer junkjunkjunk12345
+    error: invalid_bearer_token
+
+  - method: GET
+    path: /api/rest/v4/dockets
+    matches_header:
+      Authorization: "Token "
+    error: token_header_empty
+
+  - method: GET
+    path: /api/rest/v4/dockets
+    matches_header:
+      Authorization: Token abc def
+    error: token_header_spaces
+
+  - method: GET
+    path: /api/rest/v4/dockets
+    matches_header:
+      Authorization: Token junkjunkjunk12345
+    error: invalid_token
+
+  # Everything else -- no header at all, a header with no scheme keyword, or
+  # the keyword glued to the value with no space -- falls here, and all
+  # three answered the identical sentence live. See the header.
+  - method: GET
+    path: /api/rest/v4/dockets
+    error: credentials_not_provided
+
+  - method: GET
+    path: /api/rest/v4/dockets/{id}
+    error: credentials_not_provided
+
+  # Confirms the credential is checked before the method on the GATED
+  # surface too, the same way it is on courts above -- struck live with no
+  # header at all.
+  - method: PATCH
+    path: /api/rest/v4/dockets
+    error: credentials_not_provided
+
+  - method: OPTIONS
+    path: /api/rest/v4/dockets
+    error: credentials_not_provided
+
+  # A path this host has no route for at all. Routing wins over the
+  # credential unconditionally -- struck live with no header and again with
+  # a wrong one, byte for byte the same both times.
+  - method: GET
+    path: /api/rest/v4/this-is-not-a-real-endpoint
+    error: unrouted
+
+errors:
+  # The shared sentence for "nothing recognisable was presented" -- see the
+  # header for the three syntactically different requests this covers.
+  credentials_not_provided:
+    status: 401
+    message: Authentication credentials were not provided.
+    headers:
+      www-authenticate: 'Bearer realm="api"'
+
+  invalid_token:
+    status: 401
+    message: Invalid token.
+    headers:
+      www-authenticate: 'Bearer realm="api"'
+
+  token_header_empty:
+    status: 401
+    message: Invalid token header. No credentials provided.
+    headers:
+      www-authenticate: 'Bearer realm="api"'
+
+  token_header_spaces:
+    status: 401
+    message: Invalid token header. Token string should not contain spaces.
+    headers:
+      www-authenticate: 'Bearer realm="api"'
+
+  # A wholly separate authentication backend (django-oauth-toolkit) answering
+  # its own failure in its own words, with its own challenge -- see the
+  # header.
+  invalid_bearer_token:
+    status: 401
+    message: Invalid or expired bearer token.
+    headers:
+      www-authenticate: 'Bearer realm="api",error="invalid_token",error_description="The access token is invalid."'
+
+  # Django's own get_object_or_404 default, naming the model. Every other
+  # gated resource would say its own model's name the same way -- see the
+  # header.
+  no_court_found:
+    status: 404
+    message: No Court matches the given query.
+
+  # Django's own URL-resolver 404, not DRF's -- text/html regardless of the
+  # request's own Accept header, and identical with or without a credential.
+  # A short stand-in for the real ~34KB page -- see the header.
+  unrouted:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: <!DOCTYPE html><html><head><title>Page not found</title></head><body><h1>Not Found</h1><p>The requested resource was not found on this server.</p></body></html>
+
+  # Documented, not observed -- see the header for why this Recipe never
+  # triggered a real one on purpose.
+  rate_limited:
+    status: 429
+    message: "Request was throttled. Expected available in 85774 seconds."
+    headers:
+      Retry-After: "85774"
+
+fixtures:
+  empty: {}
+
+  federal-courts:
+    court:
+      - id: scotus
+        pacer_court_id: null
+        pacer_has_rss_feed: null
+        pacer_rss_entry_types: ""
+        date_last_pacer_contact: null
+        fjc_court_id: ""
+        date_modified: "2014-10-30T18:59:15.952000-07:00"
+        in_use: true
+        has_opinion_scraper: true
+        has_oral_argument_scraper: true
+        position: 1.0
+        citation_string: SCOTUS
+        short_name: Supreme Court
+        full_name: Supreme Court of the United States
+        url: http://supremecourt.gov/
+        start_date: "1789-09-24"
+        end_date: null
+        jurisdiction: F
+        parent_court: null
+        appeals_to: []
+      - id: ca1
+        pacer_court_id: 1
+        pacer_has_rss_feed: false
+        pacer_rss_entry_types: ""
+        date_last_pacer_contact: null
+        fjc_court_id: "1"
+        date_modified: "2023-02-22T08:08:13.910202-08:00"
+        in_use: true
+        has_opinion_scraper: true
+        has_oral_argument_scraper: true
+        position: 101.0
+        citation_string: 1st Cir.
+        short_name: First Circuit
+        full_name: Court of Appeals for the First Circuit
+        url: http://www.ca1.uscourts.gov/
+        start_date: "1891-03-03"
+        end_date: null
+        jurisdiction: F
+        parent_court: null
+        appeals_to: []
+
+  recap-archive:
+    docket:
+      # CourtListener's own documented worked example (dockets/4214664), with
+      # assigned_to_str substituted for a synthetic value -- see the header.
+      # Every other field is the document's own value, unedited.
+      - id: 4214664
+        court_id: dcd
+        assigned_to_str: Cauldron Fixture Judge
+        date_created: "2016-08-20T07:25:37.448945-07:00"
+        date_modified: "2024-05-20T03:59:23.387426-07:00"
+        date_last_index: "2024-05-20T03:59:23.387429-07:00"
+        date_filed: "2016-04-21"
+        date_terminated: null
+        date_last_filing: "2024-05-15"
+        case_name: "NATIONAL VETERANS LEGAL SERVICES PROGRAM v. United States"
+        slug: national-veterans-legal-services-program-v-united-states
+        docket_number: "1:16-cv-00745"
+        docket_number_core: "1600745"
+        pacer_case_id: "178502"
+        cause: "28:1346 Tort Claim"
+        nature_of_suit: Other Statutory Actions
+        jury_demand: None
+        jurisdiction_type: U.S. Government Defendant
+        blocked: false
+        date_blocked: null
+        tags: []
+
+# Every case below carries source. A verified date means this Recipe called
+# www.courtlistener.com with exactly the request shown and recorded exactly
+# what came back; its absence means the case was read from CourtListener's
+# own documentation and never called with a credential this Recipe held.
+conformance:
+  - name: courts answers with no credential at all
+    source: https://www.courtlistener.com/api/rest/v4/courts/?page_size=1
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: GET
+      path: /api/rest/v4/courts
+    expect:
+      status: 200
+      body:
+        "results[0].id": scotus
+        "results[0].pacer_court_id": null
+        "results[0].short_name": Supreme Court
+
+  - name: the PACER identifier is a real integer for a court PACER actually has
+    source: https://www.courtlistener.com/api/rest/v4/courts/ca1/
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: GET
+      path: /api/rest/v4/courts/ca1
+    expect:
+      status: 200
+      body:
+        id: ca1
+        pacer_court_id: 1
+        full_name: Court of Appeals for the First Circuit
+
+  - name: a bad id under a public resource names the model in its 404
+    source: https://www.courtlistener.com/api/rest/v4/courts/thisisnotarealcourtid404test/
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: GET
+      path: /api/rest/v4/courts/thisisnotarealcourtid404test
+    expect:
+      status: 404
+      body:
+        detail: No Court matches the given query.
+
+  - name: a browser-shaped Accept header changes the response, not just the label
+    source: https://www.courtlistener.com/api/rest/v4/courts/?page_size=1
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: GET
+      path: /api/rest/v4/courts
+      headers:
+        Accept: text/html
+    expect:
+      status: 200
+      headers:
+        Content-Type: text/html; charset=utf-8
+
+  - name: an unregistered method on a public viewset still needs a credential first
+    source: https://www.courtlistener.com/api/rest/v4/courts/
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: DELETE
+      path: /api/rest/v4/courts
+    expect:
+      status: 401
+      headers:
+        www-authenticate: 'Bearer realm="api"'
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: the same holds on a real court id, not only the list
+    source: https://www.courtlistener.com/api/rest/v4/courts/scotus/
+    verified: "2026-09-02"
+    fixture: federal-courts
+    request:
+      method: PATCH
+      path: /api/rest/v4/courts/scotus
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: a gated resource refuses a request with nothing presented
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+      absent:
+        - error
+        - errors
+
+  - name: a header with no recognised scheme keyword answers the identical sentence
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: the keyword glued to the value with no space is the same failure again
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: Tokenjunkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: the keyword alone with nothing after it is a different sentence
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: "Token "
+    expect:
+      status: 401
+      body:
+        detail: Invalid token header. No credentials provided.
+
+  - name: two space-separated words after the keyword is a third sentence
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: Token abc def
+    expect:
+      status: 401
+      body:
+        detail: Invalid token header. Token string should not contain spaces.
+
+  - name: a well-formed token nobody issued is a fourth sentence
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: Token junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        detail: Invalid token.
+
+  - name: a Bearer-shaped credential is refused by a second authentication backend entirely
+    source: https://www.courtlistener.com/api/rest/v4/dockets/?page_size=1
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      headers:
+        www-authenticate: 'Bearer realm="api",error="invalid_token",error_description="The access token is invalid."'
+      body:
+        detail: Invalid or expired bearer token.
+
+  - name: a gated route checks the credential before it checks the method
+    source: https://www.courtlistener.com/api/rest/v4/dockets/
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: PATCH
+      path: /api/rest/v4/dockets
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: and before it checks whether the method even has a body to introspect
+    source: https://www.courtlistener.com/api/rest/v4/dockets/
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: OPTIONS
+      path: /api/rest/v4/dockets
+    expect:
+      status: 401
+      body:
+        detail: Authentication credentials were not provided.
+
+  - name: an unrouted path 404s in HTML whether or not a credential is sent
+    source: https://www.courtlistener.com/api/rest/v4/this-is-not-a-real-endpoint/
+    verified: "2026-09-02"
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+
+  - name: a docket carries three identifiers, only one of them a database key
+    source: https://wiki.free.law/c/courtlistener/help/api/rest/v4/pacer-data
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets/4214664
+      headers:
+        Authorization: Token cauldron-courtlistener-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        id: 4214664
+        docket_number: "1:16-cv-00745"
+        pacer_case_id: "178502"
+        docket_number_core: "1600745"
+
+  - name: two dates answer two different staleness questions
+    source: https://wiki.free.law/c/courtlistener/help/api/rest/v4/pacer-data
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets/4214664
+      headers:
+        Authorization: Token cauldron-courtlistener-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        date_last_filing: "2024-05-15"
+        date_last_index: "2024-05-20T03:59:23.387429-07:00"
+
+  - name: a listing of dockets is reachable with the same credential
+    source: https://wiki.free.law/c/courtlistener/help/api/rest/v4/pacer-data
+    fixture: recap-archive
+    request:
+      method: GET
+      path: /api/rest/v4/dockets
+      headers:
+        Authorization: Token cauldron-courtlistener-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        "results[0].docket_number": "1:16-cv-00745"
+
+  - name: a rate-limited response is documented, not observed
+    source: https://wiki.free.law/c/courtlistener/help/api/rest/faqs/my-api-key-appears-to-be-throttled-rate-limited-help
+    arm: rate_limited
+    fixture: federal-courts
+    request:
+      method: GET
+      path: /api/rest/v4/courts
+    expect:
+      status: 429
+      headers:
+        Retry-After: "85774"
+      body:
+        detail: "Request was throttled. Expected available in 85774 seconds."
