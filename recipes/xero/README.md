@@ -6,6 +6,11 @@ Emulates the Xero API (2.0), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It answers a request for one invoice with a list of one, so code that expects a
+single object finds an array where it did not look for one.
+
 ## Sources
 
 - Documentation: https://developer.xero.com/documentation/api/accounting/overview
