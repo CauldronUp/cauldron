@@ -1,0 +1,383 @@
+# Amplitude Recipe for Cauldron
+#
+# Amplitude is two products behind one name, and they do not share a
+# credential. HTTP API V2 (api2.amplitude.com/2/httpapi) is ingestion: an
+# api_key sits inside the JSON body, beside the events, and there is no
+# Authorization header at all. The Dashboard REST API
+# (amplitude.com/api/3/...) is management: it wants HTTP Basic, api-key as
+# the username and secret-key as the password, per Amplitude's own words.
+# Segment's Recipe in this collection carries one credential for one
+# product; Customer.io's carries two credentials because it is two products
+# on two hosts. Amplitude is the third shape: two credentials, two products,
+# and -- unlike Customer.io's pair -- one of them is not a header at all.
+# This Recipe models the Basic one as the Recipe-wide auth, because it is
+# the one this format's `auth:` block can express, and marks every ingest
+# route `public: true` so the credential this Recipe DOES check is never
+# asked of the endpoint that does not use it -- the same mechanism
+# firehydrant/recipe.yaml and mixpanel/recipe.yaml (this collection's other
+# analytics ingest Recipe) both reach for.
+#
+# THE SHARPEST FINDING IN THIS GROUP, and the reason Amplitude is not just
+# "another Mixpanel," is that its ingest host actually checks the key.
+# Checked live, 2026-09-03, POST https://api2.amplitude.com/2/httpapi:
+#
+#   {"api_key":"cauldron0000000000000000000000fake","events":[{"user_id":"x","event_type":"y"}]}
+#     -> 400 {"code":400,"error":"Invalid API key: cauldron0000000000000000000000fake"}
+#
+# Mixpanel's /track and Heap's /api/track (this group's other two) both
+# answer 200 to the identical mistake and drop the event without saying so.
+# Amplitude names the key back to the caller and refuses to ingest at all.
+# That is not partial credit for effort: it is the one provider in this
+# trio whose ingest endpoint tells the truth about an unrecognised project
+# by default, no debug flag required.
+#
+# THE ORDER OF CHECKS, also live, also 2026-09-03, against the same host:
+#
+#   {}                                          -> 400 {"missing_field":"events","code":400,
+#                                                        "error":"Request missing required field"}
+#   {"events":[{"user_id":"x","event_type":"y"}]}   (no api_key)
+#                                                -> 400 {"missing_field":"api_key or write_key","code":400,
+#                                                        "error":"Request does not have an api_key or write_key"}
+#   {"api_key":"...fake","events":[]}           -> 400 Invalid API key (the same sentence as above,
+#                                                       even though events is empty rather than absent)
+#   {"api_key":"...fake","events":[{}]}         -> 400 Invalid API key (a malformed event inside a
+#                                                       correctly-shaped array never gets checked, because
+#                                                       the key is refused first)
+#
+# events is checked before api_key (an empty body reports events missing,
+# not api_key), and api_key is checked before anything about the events
+# themselves (a malformed event behind a wrong key never gets its own
+# complaint). This Recipe's case format can express exactly one JSON object
+# per request -- Request.JSON is a map, which is what this body already is,
+# so unlike mixpanel/recipe.yaml next to this one, there is no array
+# problem here. What this Recipe still cannot express is TWO DIFFERENT
+# SENTENCES for two different missing fields from one generic
+# required-field check: Cauldron's parameter_missing mechanism (see
+# internal/runtime/handler.go's create()) renders one templated message for
+# every field a Recipe declares required, and "Request missing required
+# field" / missing_field: "events" is not the same sentence as "Request does
+# not have an api_key or write_key" / missing_field: "api_key or write_key"
+# -- two different templates, not one template with a name substituted in.
+# Nor can ordinary field validation express "refuse a value that is not in
+# a known set," which is what the Invalid API key check actually is. So this
+# Recipe serves the one behaviour every request this format can build
+# actually reaches first -- the key check, because it is the closest thing
+# to a credential this endpoint has -- as a raw, fixed response, and the
+# three request-shape findings above are recorded here, live and dated,
+# rather than served as routes that would need a second template this
+# mechanism does not have.
+#
+# METHOD AND ROUTE, checked live, 2026-09-03:
+#
+#   PUT  /2/httpapi           -> 405, zero bytes, no body at all
+#   GET  /2/httpapi            -> 400 {"code":400,"error":"Missing request body"} -- not a 405.
+#                                  GET is a method this host recognises and dispatches, and the
+#                                  failure is that it never carries a body, not that GET is wrong.
+#   GET  /nonexistent-cauldron-path
+#                              -> 404, "invalid_request_path", Content-Type: text/html --
+#                                  eight ASCII bytes of plain text under an HTML header, another
+#                                  Content-Type that does not describe what follows it.
+#
+# THE DASHBOARD API answers a different three-way split, live, 2026-09-03,
+# GET https://amplitude.com/api/3/annotations (also checked against the
+# undocumented /api/2/annotations, which answers byte-identically -- the
+# product's REST surface moved from v2 to v3 and the old prefix still
+# routes):
+#
+#   no Authorization header at all      -> 401, zero bytes, WWW-Authenticate: Basic realm=Restricted
+#   Authorization: Basic <not base64>   -> 401, "HTTP 401: Unauthorized" (22 bytes, plain text,
+#                                            Content-Type: text/html -- Tornado's own generic error
+#                                            page, not the application's)
+#   Authorization: Basic <right shape, wrong pair>
+#                                        -> 403 {"error":{"http_code":403,"type":"unspecified",
+#                                                "message":"Unspecified Error",
+#                                                "metadata":{"details":"Invalid API Key"}}}
+#
+# Three shapes for three mistakes, and internal/runtime/auth.go's own basic
+# scheme check reaches the first two on its own: Go's r.BasicAuth() returns
+# ok=false for both "no header" and "a header that will not parse," and the
+# runtime already tells those apart by whether Authorization was sent at
+# all -- exactly the absent/malformed split this response pair needs. What
+# it does NOT reach on its own: a bare `Authorization: Bearer sometoken`
+# against this Basic-only Recipe is, by that same rule, "present and will
+# not parse" -- Malformed, the identical verdict a bad-base64 Basic header
+# gets. Live, that header answered byte-identical to no header at all (the
+# absent shape, not the malformed one) -- Amplitude draws its absent/wrong-
+# scheme line in the opposite place internal/runtime/auth.go draws it, the
+# mirror of together/recipe.yaml's finding about a header with no Bearer
+# prefix. Checked and not served: a case sending that header would assert
+# what this Recipe's OWN malformed_error says, not what the live host
+# actually answered for it, and that is a claim this file will not make.
+#
+# ROUTING VERSUS AUTH, also live, also 2026-09-03: a path this host does not
+# route -- /api/3/nonexistent-cauldron-path -- answers 404 "404: Not Found"
+# (Werkzeug/Flask-flavoured HTML) whether or not a credential is attached,
+# junk or none. A real path with the wrong method tells a different story
+# by verdict: DELETE with NO credential answers this Recipe's own absent
+# 401, same as GET; DELETE with a well-formed WRONG Basic pair answers a
+# real 405 instead. That is Timescale's exact shape, named in
+# internal/recipe/auth.go's own list of five orderings this boolean cannot
+# express: "An absent or malformed credential is refused before routing; a
+# well-formed one that is simply wrong reaches the router and gets a real
+# 405." Cauldron's refuse() intercepts on ANY non-Accepted verdict alike, so
+# this Recipe's emulator would answer 403 (this Recipe's rejected_error) to
+# that DELETE, not 405 -- stated here, not forced into a case that would
+# assert a status this Recipe cannot actually produce for that request.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Ingest's three request-shape findings above (events checked before
+#     api_key, an empty array treated as present, a malformed event behind
+#     a wrong key never reached) are documented, live-cited prose, not
+#     conformance cases -- see the header's explanation of the two-template
+#     problem.
+#   - No successful ingest was ever observed: doing so needs a real project,
+#     which this Recipe was never given. Amplitude's own published example
+#     for a 200 -- {"code":200,"events_ingested":50,"payload_size_bytes":50,
+#     "server_upload_time":1396381378123} -- is quoted from
+#     https://amplitude.com/docs/apis/analytics/http-v2 and not served,
+#     because events_ingested and payload_size_bytes are computed from the
+#     request and this format has no mechanism to compute either.
+#   - No annotation was ever created, and the dashboard route's success
+#     shape is Amplitude's own worked GET example, quoted and not observed.
+#   - The Bearer-scheme-treated-as-absent finding above is recorded and not
+#     served, for the reason given there.
+#   - The batch endpoint (api2.amplitude.com/batch), which relaxes the
+#     per-device throttling httpapi enforces, is not modelled: it answers
+#     the same shapes as httpapi for the cases checked here and the
+#     difference between them is a rate-limit policy this format has no
+#     mechanism to distinguish.
+recipe: amplitude
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: "2"
+  docs: https://amplitude.com/docs/apis/analytics/http-v2
+
+auth:
+  scheme: basic
+  keys:
+    - cauldron0000000000000000000000ampl
+  # The generic fallback (authentication_error, below) already matches the
+  # live absent shape byte for byte, so absent_error is left unset -- naming
+  # it would only repeat the default.
+  malformed_error: dashboard_malformed_auth
+  rejected_error: dashboard_invalid_key
+
+responses:
+  error:
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    type_field: "-"
+
+routes:
+  # No HTTP-level credential exists on this host at all -- see the header.
+  # public: true so the Recipe-wide Basic check (which serves the dashboard
+  # route below) is never applied here.
+  - method: POST
+    path: /2/httpapi
+    public: true
+    status: 400
+    raw:
+      content_type: application/json
+      text: '{"code":400,"error":"Invalid API key: cauldron0000000000000000000000fake"}'
+
+  - method: GET
+    path: /2/httpapi
+    public: true
+    error: httpapi_missing_body
+
+  - method: PUT
+    path: /2/httpapi
+    public: true
+    error: httpapi_method_not_allowed
+
+  # No key was ever real, so no success was ever observed -- see the
+  # header. Amplitude's own worked example for this route, quoted and not
+  # verified.
+  - method: GET
+    path: /api/3/annotations
+    raw:
+      content_type: application/json
+      text: '{"data":[{"id":12345,"start":"2025-11-01T07:00:00+00:00","details":"This marks the release of feature X","category":{"id":45678,"name":"Releases"},"end":"2025-11-10T07:00:00+01:00","label":"Feature X Release","chart_id":null}]}'
+
+errors:
+  # The generic absent-credential fallback -- see the header. Zero bytes,
+  # not JSON, with the challenge naming a realm Amplitude's own server sends
+  # unquoted (Basic realm=Restricted, not realm="Restricted") -- served
+  # verbatim rather than corrected, because the point is what the wire
+  # actually carries.
+  authentication_error:
+    status: 401
+    empty: true
+    headers:
+      WWW-Authenticate: "Basic realm=Restricted"
+
+  # A Basic header present and not decodable -- Tornado's own generic error
+  # page, not the application's. Its Content-Type really is text/html over
+  # plain text; served as observed rather than corrected, the same choice
+  # Homebrew's 404 makes elsewhere in this collection.
+  dashboard_malformed_auth:
+    status: 401
+    style: text
+    headers:
+      Content-Type: "text/html; charset=UTF-8"
+    message: "HTTP 401: Unauthorized"
+
+  # A well-formed Basic pair this Recipe does not hold. Two levels of
+  # nesting under "error" -- metadata.details carries the one sentence
+  # worth reading, and http_code repeats the status a line above it rather
+  # than naming anything new.
+  dashboard_invalid_key:
+    status: 403
+    style: flat
+    message_field: "-"
+    code_field: "-"
+    fields:
+      error:
+        http_code: 403
+        type: unspecified
+        message: "Unspecified Error"
+        metadata:
+          details: "Invalid API Key"
+
+  # GET reaches this route and dispatches -- see the header and the
+  # method_not_allowed entry below for why GET is not that. A GET's real
+  # shortfall is that it never carries a body; a POST with a genuinely
+  # empty body gets a different sentence, "Request missing required field",
+  # naming events -- live-cited in the header and not served, because the
+  # request that shape needs would collide with the one below as this
+  # format's one generic required-field template.
+  httpapi_missing_body:
+    status: 400
+    style: flat
+    message_field: error
+    code_field: code
+    code: 400
+    message: "Missing request body"
+
+  # GET is a real, dispatched method on this route; its failure is that it
+  # never carries a body, not that the method is wrong -- there is no 405
+  # here at all.
+  httpapi_method_not_allowed:
+    status: 405
+    empty: true
+
+fixtures:
+  empty: {}
+
+conformance:
+  - name: an unrecognised project key is refused, named back, by default
+    # The finding this Recipe exists to carry -- see the header. Mixpanel
+    # and Heap both answer 200 to this exact mistake.
+    source: https://api2.amplitude.com/2/httpapi
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /2/httpapi
+      json:
+        api_key: cauldron0000000000000000000000fake
+        events:
+          - user_id: cauldron-test
+            event_type: cauldron_test_event
+    expect:
+      status: 400
+      body:
+        code: 400
+      matches:
+        error: "^Invalid API key: cauldron0000000000000000000000fake$"
+
+  - name: a GET with no body is a data problem, not a method problem
+    source: https://api2.amplitude.com/2/httpapi
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /2/httpapi
+    expect:
+      status: 400
+      body:
+        code: 400
+        error: "Missing request body"
+
+  - name: PUT gets a real 405 and nothing else
+    source: https://api2.amplitude.com/2/httpapi
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PUT
+      path: /2/httpapi
+      json:
+        api_key: cauldron0000000000000000000000fake
+    expect:
+      status: 405
+      no_body: true
+
+  - name: the dashboard API answers an absent credential with nothing at all
+    source: https://amplitude.com/api/3/annotations
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/3/annotations
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: "Basic realm=Restricted"
+      no_body: true
+
+  - name: a Basic header that will not even decode answers a framework page instead
+    source: https://amplitude.com/api/3/annotations
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/3/annotations
+      headers:
+        Authorization: "Basic not-valid-base64!!!"
+    expect:
+      status: 401
+      headers:
+        Content-Type: "text/html; charset=UTF-8"
+      body_matches: "HTTP 401: Unauthorized"
+
+  - name: a well-formed Basic pair that is simply wrong is a third shape again
+    source: https://amplitude.com/api/3/annotations
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/3/annotations
+      headers:
+        Authorization: Basic anVua3VzZXI6anVua3Bhc3M=
+    expect:
+      status: 403
+      body:
+        error:
+          http_code: 403
+          type: unspecified
+      matches:
+        error.metadata.details: "Invalid API Key"
+
+  - name: a correct pair reaches Amplitude's own worked annotation example
+    # Documented, not observed -- no dashboard credential was ever created.
+    # Quoted from https://amplitude.com/docs/apis/analytics/chart-annotations.
+    source: https://amplitude.com/docs/apis/analytics/chart-annotations
+    fixture: empty
+    request:
+      method: GET
+      path: /api/3/annotations
+      headers:
+        Authorization: Basic Y2F1bGRyb24wMDAwMDAwMDAwMDAwMDAwMDAwMDAwYW1wbDpjYXVsZHJvbnNlY3JldDAwMDAwMDAwMDAwMDAw
+    expect:
+      status: 200
+      body:
+        data:
+          - id: 12345
+            label: "Feature X Release"
+            category:
+              id: 45678
+              name: Releases
