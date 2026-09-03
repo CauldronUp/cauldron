@@ -23,6 +23,12 @@ difference between `"merged_at" in mr` being false and being true: code asking
 whether the key exists got one answer here and the other from GitLab, passed
 locally, and read every merge request as merged.
 
+## What writing this Recipe changed
+
+Its fixture carries the third state that breaks integrations: a merge request
+that is closed rather than merged. Neither open nor merged, and code branching
+on two outcomes has nowhere to put it.
+
 ## Sources
 
 - Documentation: https://docs.gitlab.com/ee/api/rest/
