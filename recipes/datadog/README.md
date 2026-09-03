@@ -6,6 +6,11 @@ Emulates the Datadog API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It sends its errors as an array of bare strings, so a client reading `.message`
+from each entry finds `undefined` on every one.
+
 ## Sources
 
 - Documentation: https://docs.datadoghq.com/api/latest
