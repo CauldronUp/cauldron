@@ -6,6 +6,11 @@ Emulates the Intercom API (2.11), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its paging state is nested, and modelling that exposed a real bug in the
+runtime: declared constants were silently overwriting computed values.
+
 ## Sources
 
 - Documentation: https://developers.intercom.com/docs/references/rest-api
