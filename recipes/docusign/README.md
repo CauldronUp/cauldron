@@ -6,6 +6,13 @@ Emulates the Docusign API (v2.1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It counts with strings rather than numbers. Together with Vonage's `"0"`, that
+is what made the conformance checker compare a scalar's kind as well as its
+value -- until then a case could pass whichever of the two the emulator
+sent.
+
 ## Sources
 
 - Documentation: https://developers.docusign.com/docs/esign-rest-api/reference/
