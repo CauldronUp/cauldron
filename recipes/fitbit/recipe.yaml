@@ -1,0 +1,624 @@
+# Fitbit Recipe for Cauldron
+#
+# Fitbit is one of three wearable Recipes written together (strava, oura,
+# fitbit) to answer one question: can a caller tell a day with genuinely no
+# activity from a day the device has not synced yet, or from a day outside
+# the window the granted scope covers? Fitbit's own wire answers all three,
+# and the sharpest finding here is not in any of the resources -- it is that
+# api.fitbit.com is two programs wearing one hostname, and which one answers
+# a failure depends entirely on how the credential was wrong.
+#
+# **Absent and malformed both reach a gateway that has never heard of
+# Fitbit's own error format.** Checked live, three ways, against
+# GET /1/user/-/profile.json:
+#
+#   no Authorization header at all        -> 401
+#   Authorization: junktoken12345           {"error": {"code": 401,
+#     (no "Bearer " prefix)                  "message": "Request is missing
+#   Authorization: Bearer                    required authentication
+#     (prefix, nothing after it)             credential. Expected OAuth 2
+#                                             access token, login cookie or
+#                                             other valid authentication
+#                                             credential. See
+#                                             https://developers.google.com/
+#                                             identity/sign-in/web/
+#                                             devconsole-project.",
+#                                             "status": "UNAUTHENTICATED"}}
+#
+# with WWW-Authenticate: Bearer realm="api.fitbit.com" and Server: ESF on
+# every one. ESF is Google's Extensible Service Framework -- this is Google
+# Cloud Endpoints' own generic missing-credential response, complete with a
+# documentation link to Google Sign-In, which has nothing to do with Fitbit.
+# The three requests above are byte-identical, so a header with no Bearer
+# prefix and one with the prefix and nothing after it are both treated as
+# though nothing had been sent at all, and Cauldron's own Malformed verdict
+# has no distinct sentence to reach for here: absent_error and
+# malformed_error are both left unset, which is the honest way to say the
+# gateway does not tell them apart.
+#
+#   Authorization: Bearer junktoken12345  -> 401 {"success": false, "errors":
+#     (well-formed, not a real token)          [{"errorType":
+#                                                "invalid_token", "message":
+#                                                "Access token invalid:
+#                                                junktoken12345. Visit
+#                                                https://dev.fitbit.com/docs/
+#                                                oauth2 for more information
+#                                                on the Fitbit Web API
+#                                                authorization process."}]}
+#
+# A completely different envelope, from a completely different program: this
+# is Fitbit's own backend, reached only once a value shaped enough like a
+# Bearer credential gets past the gateway in front of it. Fitbit's own
+# published error-message reference names errorType as a fixed vocabulary
+# (invalid_grant, invalid_request, unsupported_grant_type, validation,
+# expired_token, invalid_client, invalid_token, system, insufficient_
+# permissions, insufficient_scope, not_found, request), fetched from
+# https://dev.fitbit.com/build/reference/web-api/troubleshooting-guide/
+# error-messages/ on 2026-09-02 and quoted in full below. invalid_token is
+# the one this Recipe observed live; the rest are declared from that table,
+# cited and not observed, because none of them is reachable without a real
+# access token this Recipe was never issued.
+#
+# **The scope question, answered precisely, in Fitbit's own words, with the
+# placeholders still in it.** insufficient_scope's documented message is
+# literally "This application does not have permission to [access-type]
+# [resource-type] data" -- square brackets and all, in Fitbit's own
+# published table, which never fills them in with a worked example anywhere
+# this Recipe could find. So the message below is declared exactly as
+# documented, brackets included, rather than guessing what "[access-type]"
+# would say for a real scope -- filling that in would be inventing the one
+# detail Fitbit itself does not supply. This is the second data point this
+# collection has recorded for "a valid token missing a scope," after
+# Apollo.io's documented 403 (see recipes/apolloio/recipe.yaml), and it
+# lands the same way: a distinct status (403, not 401) and a distinct
+# errorType (insufficient_scope, not invalid_token) that only a real,
+# scope-restricted token could trigger, demonstrated here by fault injection
+# because holding such a token is exactly what this Recipe is not permitted
+# to do.
+#
+# **Routing and method never come up until the credential already has.**
+# Checked live, all with a junk or absent credential and never with a real
+# one: GET /1/user/-/nosuchroute12345.json with no header at all answers the
+# identical gateway 401 a real path does; the same request carrying
+# "Authorization: Bearer junktoken12345" answers Fitbit's own invalid_token
+# 401, not a 404 -- the credential is resolved before the path is, on a path
+# that does not exist at all. DELETE on a real path with no credential
+# answers the gateway 401 too, not a 405. So the credential is checked
+# first, unconditionally, for every path and every method -- the same
+# ordering FireHydrant's Recipe in this collection already found, and the
+# opposite of Oura's, written alongside this one. auth.after_routing is not
+# declared, because Cauldron's own default -- refuse before the router is
+# ever consulted -- is already what this host does.
+#
+# **The one place a sync timestamp exists is not the place the data is.**
+# This is the trio's core finding, and Fitbit answers it more starkly than
+# the other two. GET /1/user/-/activities/date/{date}.json and
+# GET /1/user/-/sleep/date/{date}.json both answer 200 with a populated
+# object for any date at all -- Fitbit's own published examples show an
+# `activities` array of discrete logged exercises sitting empty ([]) beside
+# a `summary` object that is never empty, because every numeric field in it
+# defaults to zero rather than being left out. A day with a fully synced,
+# genuinely empty record and a day the device has not reported in at all
+# produce the identical shape: zeros throughout, 200, no error, nothing to
+# distinguish them. Neither route carries a sync marker of any kind -- no
+# lastSyncTime, no updated-at, nothing dated later than the day itself.
+# That field exists exactly once in this API, on a resource that has
+# nothing to do with any single day: GET /1/user/-/devices.json answers
+# lastSyncTime per physical device, "the last time the device was sync'd
+# with the Fitbit mobile application" per Fitbit's own words -- a fact about
+# the device's own last contact with Fitbit's servers, not about whether any
+# particular date's summary reflects it. Telling a genuinely quiet day from
+# an unsynced one means reading two different resources and comparing a
+# date against a timestamp neither of them shares a key with.
+#
+# **Neither date-scoped route ever echoes the date it was asked for.**
+# Checked against Fitbit's own published example bodies for both routes:
+# the date lives in the path and nowhere in the response. id.field is
+# declared "-" on both resources for this reason -- see Marqeta's balance in
+# this collection's own format documentation for the same shape elsewhere:
+# an addressable record whose body never repeats the key it was addressed
+# by.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - Fitbit's own envelope carries a top-level "success": false sibling to
+#     "errors" on every native failure. Not modelled: the field would have
+#     to be declared as a Recipe-wide error constant to land outside the
+#     array, and a Recipe-wide constant is applied to every error this
+#     Recipe declares -- including authentication_error, which is
+#     overridden to the Google gateway's shape and never carries a
+#     "success" key on the wire at all. There is no way in this format to
+#     add a field to only some of a Recipe's declared errors' top level
+#     without it also landing on the ones with a different shape entirely.
+#   - `distances`, `heartRateZones` and `customHeartRateZones` (arrays of
+#     objects, on the activity summary) and sleep's `levels.data` /
+#     `levels.shortData` / `levels.summary` (a further two levels of
+#     nesting) are visible in Fitbit's own worked examples and not declared.
+#     `activities` and `sleep` are both typed as an opaque list for this
+#     reason, carrying whatever a fixture puts in them rather than a
+#     declared per-field schema.
+#   - Fitbit's own rate limit -- "150 API requests per hour for each user,"
+#     answering 429 with Fitbit-Rate-Limit-Limit / -Remaining / -Reset
+#     headers per https://dev.fitbit.com/build/reference/web-api/developer-
+#     guide/application-design/ -- is documented and not modelled. No call
+#     this Recipe made needed a real token, so none could be rate-limited
+#     against one, and no worked 429 body is published to cite.
+#   - not_found (Fitbit's own 404 errorType, documented with two different
+#     messages for the same code -- "The API you are requesting could not
+#     be found" and "Requested entity was not found") is declared in the
+#     table below and not reached by any route: every route this Recipe
+#     models is a date-scoped GET that Fitbit always answers with zeros
+#     rather than refusing, so there is no route left to demonstrate a
+#     genuine 404 against without inventing one.
+#   - insufficient_permissions (403, three separate documented messages) is
+#     not modelled at all, to keep this Recipe to the one scope-adjacent
+#     failure the trio's question is actually about.
+#
+# Every case below not carrying a verified date was read from Fitbit's own
+# published Web API reference (see the source on each case), not observed
+# against a real account -- no account was ever created, no device was ever
+# paired, and no OAuth flow was ever started or completed. The credential
+# below is a fixture and belongs to no account.
+
+recipe: fitbit
+capability: analytics
+version: 0.1.0
+
+upstream:
+  api: "1"
+  docs: https://dev.fitbit.com/build/reference/web-api/
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_fitbit_fixture_0000000000000000000
+  # absent_error and malformed_error are both left unset on purpose -- see
+  # the header. The Google gateway in front of this API answers a missing
+  # header, a header with no Bearer prefix, and "Bearer " with nothing after
+  # it all the same way, so all three fall back to the generic
+  # authentication_error, which is that gateway's own shape.
+  rejected_error: invalid_token
+
+responses:
+  list:
+    style: bare
+  resource:
+    style: bare
+  # Fitbit's own native shape: {"errors": [{"errorType": ..., "message":
+  # ...}]}. authentication_error overrides this per-error, because it never
+  # reaches Fitbit's own backend at all -- see the header.
+  error:
+    style: list
+    key: errors
+    message_field: message
+    code_field: errorType
+
+resources:
+  # GET /1/user/-/activities/date/{date}.json. The date is a path segment
+  # and is never echoed in the body -- see the header.
+  activity_summary:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      # Discrete logged exercises, distinct from the summary totals below.
+      # Fitbit's own example shows this empty ([]) on a day that still has
+      # 1698 steps in summary.steps -- the two are not the same claim about
+      # the day.
+      activities:
+        type: list
+      goalActiveMinutes:
+        type: integer
+        in: goals
+        as: activeMinutes
+      goalCaloriesOut:
+        type: integer
+        in: goals
+        as: caloriesOut
+      goalDistance:
+        type: number
+        in: goals
+        as: distance
+      goalSteps:
+        type: integer
+        in: goals
+        as: steps
+      steps:
+        type: integer
+        in: summary
+      caloriesOut:
+        type: integer
+        in: summary
+      activityCalories:
+        type: integer
+        in: summary
+      sedentaryMinutes:
+        type: integer
+        in: summary
+      lightlyActiveMinutes:
+        type: integer
+        in: summary
+      fairlyActiveMinutes:
+        type: integer
+        in: summary
+      veryActiveMinutes:
+        type: integer
+        in: summary
+      floors:
+        type: integer
+        in: summary
+      elevation:
+        type: number
+        in: summary
+      restingHeartRate:
+        type: integer
+        in: summary
+
+  # GET /1/user/-/devices.json. The one resource in this trio's Fitbit
+  # Recipe that carries a sync timestamp -- see the header.
+  device:
+    id:
+      style: opaque
+    fields:
+      battery:
+        type: string
+      batteryLevel:
+        type: integer
+      deviceVersion:
+        type: string
+      features:
+        type: list
+      # "The last time the device was sync'd with the Fitbit mobile
+      # application" -- Fitbit's own words. Not a claim about any date's
+      # data; a claim about the device's last contact.
+      lastSyncTime:
+        type: datetime
+      mac:
+        type: string
+      type:
+        type: string
+
+  # GET /1/user/-/sleep/date/{date}.json. Same id.field: "-" as
+  # activity_summary, and the same reason.
+  sleep_log:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      sleep:
+        type: list
+      totalSleepRecords:
+        type: integer
+        in: summary
+      totalMinutesAsleep:
+        type: integer
+        in: summary
+      totalTimeInBed:
+        type: integer
+        in: summary
+
+routes:
+  - method: GET
+    path: /1/user/-/activities/date/{id}.json
+    resource: activity_summary
+    operation: get
+
+  - method: GET
+    path: /1/user/-/devices.json
+    resource: device
+    operation: list
+    # No page-size parameter is documented anywhere on this route, and no
+    # account exists to page against; "-" states that rather than leaving
+    # it unstated.
+    pagination:
+      limit_param: "-"
+
+  - method: GET
+    path: /1/user/-/sleep/date/{id}.json
+    resource: sleep_log
+    operation: get
+
+errors:
+  # The Google Cloud Endpoints gateway's own generic missing-credential
+  # shape -- not Fitbit's. Reached by an absent header and by both malformed
+  # shapes this Recipe tried; see the header for why neither
+  # auth.absent_error nor auth.malformed_error names anything else.
+  authentication_error:
+    status: 401
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    message: >-
+      Request is missing required authentication credential. Expected
+      OAuth 2 access token, login cookie or other valid authentication
+      credential. See
+      https://developers.google.com/identity/sign-in/web/devconsole-project.
+    code: "401"
+    fields:
+      error.status: UNAUTHENTICATED
+    headers:
+      WWW-Authenticate: 'Bearer realm="api.fitbit.com"'
+
+  # Fitbit's own backend, reached only by a well-formed Bearer value that is
+  # not a credential this Recipe holds. Live, verified: the live message
+  # echoes the submitted token back verbatim ("Access token invalid:
+  # junktoken12345. Visit ..."), which Cauldron's credential-verdict path
+  # has no {detail} to thread through the way a route's own not-found
+  # message does -- so the value below is pinned to the literal junk token
+  # every case in this Recipe actually sends, rather than templated.
+  invalid_token:
+    status: 401
+    code: invalid_token
+    message: >-
+      Access token invalid: junktoken12345. Visit
+      https://dev.fitbit.com/docs/oauth2 for more information on the
+      Fitbit Web API authorization process.
+
+  # Documented, never triggered -- reaching it needs a real, expired access
+  # token, which this Recipe was never issued. Fitbit's own table gives the
+  # message as a template, "Access token expired: [access_token]", and it is
+  # quoted here exactly that way rather than filled in with a guess.
+  expired_token:
+    status: 401
+    code: expired_token
+    message: "Access token expired: [access_token]"
+
+  # Documented, never triggered: a valid token, correctly scoped, that this
+  # application's own registration does not carry the grant for. See the
+  # header for why the brackets are left exactly as Fitbit's own table
+  # carries them.
+  insufficient_scope:
+    status: 403
+    code: insufficient_scope
+    message: This application does not have permission to [access-type] [resource-type] data
+
+  # Documented, never triggered. Two different sentences share this one
+  # errorType in Fitbit's own table -- see the header.
+  not_found:
+    status: 404
+    code: not_found
+    message: Requested entity was not found
+
+fixtures:
+  empty: {}
+
+  # Every value is Fitbit's own published worked example. activity_summary's
+  # figures are from the Get Daily Activity Summary reference page; device's
+  # are from Get Devices; sleep_log's are from Get Sleep Log by Date. None
+  # of these was called live -- see the header.
+  account:
+    activity_summary:
+      - id: "2018-12-27"
+        activities: []
+        goalActiveMinutes: 30
+        goalCaloriesOut: 1950
+        goalDistance: 8.05
+        goalSteps: 6800
+        steps: 1698
+        caloriesOut: 2628
+        activityCalories: 525
+        sedentaryMinutes: 802
+        lightlyActiveMinutes: 110
+        fairlyActiveMinutes: 0
+        veryActiveMinutes: 0
+        floors: 0
+        elevation: 0
+        restingHeartRate: 77
+
+    device:
+      - id: "816713257"
+        battery: Medium
+        batteryLevel: 60
+        deviceVersion: Charge 2
+        features: []
+        lastSyncTime: "2019-11-07T12:00:58.000"
+        mac: 16ADD56D54GD
+        type: TRACKER
+
+    sleep_log:
+      - id: "2020-02-21"
+        sleep:
+          - logId: 26013218219
+            dateOfSleep: "2020-02-21"
+            startTime: "2020-02-20T23:21:30.000"
+            endTime: "2020-02-21T07:03:30.000"
+            duration: 27720000
+            efficiency: 96
+            infoCode: 0
+            isMainSleep: true
+            minutesAsleep: 384
+            minutesAwake: 78
+            minutesToFallAsleep: 0
+            minutesAfterWakeup: 0
+            timeInBed: 462
+            logType: auto_detected
+            type: stages
+        totalSleepRecords: 1
+        totalMinutesAsleep: 384
+        totalTimeInBed: 462
+
+conformance:
+  - name: no Authorization header at all reaches the Google gateway, not Fitbit
+    source: https://api.fitbit.com/1/user/-/profile.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/profile.json
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Bearer realm="api.fitbit.com"'
+      body:
+        error.code: 401
+        error.status: UNAUTHENTICATED
+        error.message: >-
+          Request is missing required authentication credential. Expected
+          OAuth 2 access token, login cookie or other valid authentication
+          credential. See
+          https://developers.google.com/identity/sign-in/web/devconsole-project.
+      absent:
+        - errors
+        - success
+
+  - name: a header with no Bearer scheme reaches the identical gateway shape
+    source: https://api.fitbit.com/1/user/-/profile.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/profile.json
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 401
+      body:
+        error.status: UNAUTHENTICATED
+
+  - name: and so does the Bearer prefix with nothing after it
+    source: https://api.fitbit.com/1/user/-/profile.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/profile.json
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 401
+      body:
+        error.status: UNAUTHENTICATED
+
+  - name: only a well-formed, wrong token ever reaches Fitbit's own backend
+    source: https://api.fitbit.com/1/user/-/profile.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/profile.json
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors[0].errorType: invalid_token
+        errors[0].message: >-
+          Access token invalid: junktoken12345. Visit
+          https://dev.fitbit.com/docs/oauth2 for more information on the
+          Fitbit Web API authorization process.
+      absent:
+        - error
+
+  - name: an unrouted path with no credential gets the gateway shape too
+    source: https://api.fitbit.com/1/user/-/nosuchroute12345.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/nosuchroute12345.json
+    expect:
+      status: 401
+      body:
+        error.status: UNAUTHENTICATED
+
+  - name: and the identical unrouted path with a wrong token gets Fitbit's own shape instead, never a 404
+    source: https://api.fitbit.com/1/user/-/nosuchroute12345.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/nosuchroute12345.json
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body:
+        errors[0].errorType: invalid_token
+
+  - name: a wrong method on a real path with no credential is still the gateway 401, never a 405
+    source: https://api.fitbit.com/1/user/-/profile.json
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: DELETE
+      path: /1/user/-/profile.json
+    expect:
+      status: 401
+      body:
+        error.status: UNAUTHENTICATED
+
+  - name: a day's activity summary is zeros throughout, never an empty array or a 404
+    source: https://dev.fitbit.com/build/reference/web-api/activity/get-daily-activity-summary/
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/activities/date/2018-12-27.json
+      headers:
+        Authorization: Bearer cauldron_fitbit_fixture_0000000000000000000
+    expect:
+      status: 200
+      body:
+        activities: []
+        goals.steps: 6800
+        summary.steps: 1698
+        summary.sedentaryMinutes: 802
+      absent:
+        - id
+        - date
+        - "2018-12-27"
+
+  - name: lastSyncTime lives on the device, not on any day's summary
+    source: https://dev.fitbit.com/build/reference/web-api/devices/get-devices/
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/devices.json
+      headers:
+        Authorization: Bearer cauldron_fitbit_fixture_0000000000000000000
+    expect:
+      status: 200
+      body:
+        "[0].id": "816713257"
+        "[0].deviceVersion": Charge 2
+        "[0].lastSyncTime": "2019-11-07T12:00:58.000"
+      absent:
+        - "[0].date"
+
+  - name: a sleep log nests each night under sleep, distinct from the day's own summary totals
+    source: https://dev.fitbit.com/build/reference/web-api/sleep/get-sleep-log-by-date/
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/sleep/date/2020-02-21.json
+      headers:
+        Authorization: Bearer cauldron_fitbit_fixture_0000000000000000000
+    expect:
+      status: 200
+      body:
+        "sleep[0].logId": 26013218219
+        "sleep[0].dateOfSleep": "2020-02-21"
+        "sleep[0].minutesAsleep": 384
+        "summary.totalSleepRecords": 1
+        "summary.totalMinutesAsleep": 384
+
+  - name: a valid token missing a scope answers 403 with its own errorType, brackets and all
+    # Armed: reaching this needs a real token registered without the scope
+    # an endpoint requires, which this Recipe is not permitted to hold. See
+    # the header for why the message is quoted with its placeholders
+    # un-filled -- that is exactly what Fitbit's own table publishes.
+    source: https://dev.fitbit.com/build/reference/web-api/troubleshooting-guide/error-messages/
+    arm: insufficient_scope
+    fixture: account
+    request:
+      method: GET
+      path: /1/user/-/activities/date/2018-12-27.json
+      headers:
+        Authorization: Bearer cauldron_fitbit_fixture_0000000000000000000
+    expect:
+      status: 403
+      body:
+        errors[0].errorType: insufficient_scope
+        errors[0].message: This application does not have permission to [access-type] [resource-type] data
