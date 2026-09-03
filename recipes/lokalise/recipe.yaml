@@ -1,0 +1,473 @@
+# Lokalise Recipe for Cauldron
+#
+# Lokalise is not a translation engine, it is localisation *management* --
+# projects, keys, translations as stored resources a human or a machine
+# writes into, not a string handed to a model and returned. The question this
+# Recipe's group exists to ask still applies, in a different shape: does a
+# stored translation carry a state, and can "nobody has translated this yet"
+# be told apart from "somebody translated it to nothing"?
+#
+# The single worked example in Lokalise's own published OpenAPI description
+# (developers.lokalise.com/openapi/lokalise-api-without-branches.yml, for
+# GET /projects/{id}/translations/{id}) answers the first half and exposes
+# the second. A translation carries two independent booleans, not a tri-state
+# field: is_reviewed and is_unverified, plus a reviewed_by that is 0 rather
+# than null or absent when nothing has reviewed it. There is no third value
+# meaning "untranslated" anywhere on the record -- the closest the API comes
+# is filter_untranslated, a query parameter on the list route ("Filter by
+# untranslated keys. Possible values are 1 and 0"), documented in exactly
+# that one sentence with no worked example of what it matches on. A key with
+# no translation in a language could plausibly mean no row exists for that
+# key and language at all, or a row exists with translation: "" -- and
+# because an empty string is a legitimate translation in some locales (it is
+# how several RTL and pluralisation edge cases are meant to be expressed),
+# the API's own reference does not say which of those two shapes
+# filter_untranslated is matching, and no account exists here to ask it
+# directly. That ambiguity is recorded rather than resolved, because
+# resolving it would mean inventing the answer.
+#
+# **Every credential failure on this host is one sentence**, checked live
+# against GET /api2/projects: no X-Api-Token header at all, a syntactically
+# plausible token nobody issued, and an X-Api-Token header sent empty all
+# answer the identical {"error":{"message":"Invalid `X-Api-Token` header",
+# "code":400}} -- 400, not 401, and absent/malformed/rejected collapse to
+# the one sentence the same way Airbyte's and Turso's do elsewhere in this
+# collection. auth.rejected_error is left unset on purpose: the generic
+# message this Recipe's default already produces is, word for word, what
+# every verdict gets.
+#
+# **Routing and method resolve before the credential, and this host has no
+# 405 at all.** Checked live, no credential: GET /api2/no-such-endpoint-xyz
+# answers 404 {"error":{"message":"Not Found","code":404}}. PATCH and DELETE
+# on the very real /api2/projects answer the *identical* body -- not a 405,
+# not an Allow header, the same 404 a mistyped path gets. A caller cannot
+# tell a typo in the path from a typo in the method from this response alone,
+# which is the same finding Turso's Recipe makes about its own host in this
+# collection, on a completely different API.
+#
+# **And a third check runs ahead of both of those, on the routes that carry
+# a parameter, which is the sharpest thing this Recipe found.** Checked live,
+# every combination struck with no credential at all:
+#
+#   GET  /api2/projects/1234.abcd1234        (a shape no real id has)
+#     -> 400 {"error":{"message":"Invalid `project_id` parameter","code":400}}
+#   GET  /api2/projects/803826145ba90b42d5d860.46800099  (id-shaped, unowned)
+#     -> 400 {"error":{"message":"Invalid `X-Api-Token` header","code":400}}
+#   POST /api2/projects   with body {}
+#     -> 400 {"error":{"code":400,"message":"Invalid `name` parameter"}}
+#   POST /api2/projects   with body {"name": "test-project"}
+#     -> 400 {"error":{"message":"Invalid `X-Api-Token` header","code":400}}
+#
+# and every one of the four was re-struck with a wrong-but-present token and
+# came back byte-identical. So the id in the path and the name in the body
+# are validated for their *shape* before the credential is ever consulted --
+# and only once that shape passes does the request fall through to the same
+# credential gate every other route uses. That is not auth.after_routing,
+# which is one flag for whether a route exists and whether its method is
+# registered; this splits on whether a *parameter* is well-formed, the same
+# axis Canada Post's Recipe elsewhere in this collection uses for a tracking
+# number, on a completely different kind of API. See
+# internal/recipe/auth.go's own accounting of orderings this flag cannot
+# express -- Lokalise is a new entry for that list, not a repeat of one on
+# it. It is reproduced below the only way it can be: as its own route,
+# public because no credential check ever applies to that literal request,
+# beside the ordinary credentialed one for a well-shaped id or body.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API token was ever requested,
+#     guessed or used. Every 400/404 case below was struck live and carries
+#     a verified date. The one 200 case -- a single project -- is the
+#     description's own worked example, verbatim, and carries none.
+#   - The malformed-shape cases above are declared as their own literal
+#     routes rather than a general pattern, because Cauldron's identifier and
+#     body-shape checks (misshapen, missingRequired) run downstream of the
+#     credential gate, not ahead of it -- see internal/runtime/identity.go
+#     and internal/runtime/handler.go. Only the exact id
+#     ("1234.abcd1234") and the exact empty body this Recipe actually sent
+#     are reproduced; a different malformed shape sent to this emulator
+#     would fall through to the ordinary credential-gated route instead of
+#     repeating the live finding, which is a real gap between what this
+#     Recipe describes and what it can serve.
+#   - Of the platform's dozens of resources -- keys, translations, languages,
+#     comments, tasks, contributors, webhooks, snapshots, files, branches,
+#     queued processes -- only project and translation are declared, and
+#     translation carries no route at all: no case needed a route to
+#     demonstrate the one thing worth showing, which is the shape of the
+#     record itself. See the header above for why.
+#   - x-ratelimit-limit on every live response read "10, 10;w=1" (ten
+#     requests per one-second window) and remaining counted down across the
+#     probes this Recipe made. Not modelled: a static number would be either
+#     stale on the first request or wrong about every one after it.
+#   - Lokalise OTA (over-the-air) content delivery and the branch-aware
+#     variant of this same API (lokalise-api-with-branches.yml, a distinct
+#     published description) are both real and neither is modelled here.
+
+recipe: lokalise
+capability: cms
+version: 0.1.0
+
+upstream:
+  api: api2
+  docs: https://developers.lokalise.com/reference/lokalise-rest-api
+  spec: https://developers.lokalise.com/openapi/lokalise-api-without-branches.yml
+  spec_hash: c716b0bd7d8e229d55b7edf95ff93ef52ea21ba4e56cff818cdf5f8bcf917222
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: header
+  header: X-Api-Token
+  keys:
+    - cauldron-fixture-token-0000000000000000
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: nested
+    key: error
+    message_field: message
+    code_field: code
+    code_type: number
+
+resources:
+  project:
+    id:
+      style: opaque
+      field: project_id
+    fields:
+      project_type:
+        type: string
+      name:
+        type: string
+      description:
+        type: string
+        null_when_unset: true
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      team_id:
+        type: integer
+      base_language_iso:
+        type: string
+      statistics:
+        type: map
+
+  # No route below serves this resource. It exists to carry the one worked
+  # example the published description gives for a stored translation, cited
+  # in the header, and to let that shape be checked without a credential this
+  # Recipe does not hold pretending to call a route it never struck.
+  translation:
+    id:
+      style: numeric
+      type: number
+      field: translation_id
+    fields:
+      key_id:
+        type: integer
+      language_iso:
+        type: string
+      translation:
+        type: string
+      modified_at:
+        type: string
+      modified_by:
+        type: integer
+      is_reviewed:
+        type: boolean
+      reviewed_by:
+        type: integer
+      is_unverified:
+        type: boolean
+      words:
+        type: integer
+
+routes:
+  # The credential-blind shape checks. Each is the exact literal request this
+  # Recipe struck live; see the header for why a general pattern cannot
+  # reproduce this ahead of Cauldron's own credential gate.
+  - method: GET
+    path: /api2/projects/1234.abcd1234
+    public: true
+    error: invalid_project_id_param
+
+  - method: POST
+    path: /api2/projects
+    public: true
+    error: invalid_name_param
+
+  # The ordinary, credential-gated routes.
+  - method: GET
+    path: /api2/projects
+    resource: project
+    operation: list
+    pagination:
+      style: page
+      limit: 100
+      limit_param: limit
+      cursor_param: page
+
+  - method: GET
+    path: /api2/projects/{id}
+    resource: project
+    operation: get
+
+  - method: POST
+    path: /api2/projects
+    selects_body: name
+    resource: project
+    operation: create
+    returns: [id, project_type, name, description]
+
+errors:
+  # The one sentence every credential verdict gets -- see the header.
+  authentication_error:
+    status: 400
+    message: "Invalid `X-Api-Token` header"
+    code: 400
+
+  unknown_route:
+    status: 404
+    message: "Not Found"
+    code: 404
+
+  # This host has no 405 anywhere reachable without a credential -- see the
+  # header. Named apart from the built-in default so the point is explicit
+  # rather than a coincidence of two defaults matching.
+  method_not_allowed:
+    status: 404
+    message: "Not Found"
+    code: 404
+
+  invalid_project_id_param:
+    status: 400
+    message: "Invalid `project_id` parameter"
+    code: 400
+
+  invalid_name_param:
+    status: 400
+    message: "Invalid `name` parameter"
+    code: 400
+
+fixtures:
+  empty: {}
+
+  team:
+    project:
+      # Lokalise's own worked example for a single project, verbatim --
+      # developers.lokalise.com/reference/list-all-projects.
+      - id: 3002780358964f9bab5a92.87762498
+        project_type: localization_files
+        name: TheApp Project
+        description: "iOS + Android strings of TheApp. https://theapp.com"
+        created_at: "2018-12-31 12:00:00 (Etc/UTC)"
+        created_by: 420
+        team_id: 12345
+        base_language_iso: en
+        statistics:
+          progress_total: 87
+          keys_total: 13
+          team: 2
+          base_words: 22
+
+    # Not routed -- see the header and the resource comment above. Held only
+    # so the shape below can be checked against a record that carries every
+    # field the description's own example does.
+    translation:
+      - id: 344412
+        key_id: 553662
+        language_iso: en_US
+        translation: "Hello, world!"
+        modified_at: "2018-12-31 12:00:00 (Etc/UTC)"
+        modified_by: 420
+        is_reviewed: false
+        reviewed_by: 0
+        is_unverified: true
+        words: 2
+
+# Every case below carries source. A verified date means this Recipe called
+# api.lokalise.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from Lokalise's own
+# published OpenAPI description and never called.
+conformance:
+  - name: no token at all is the generic sentence
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `X-Api-Token` header"
+        "error.code": 400
+
+  - name: a token nobody issued gets the identical sentence
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects
+      headers:
+        X-Api-Token: junk-not-real-token-000000
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `X-Api-Token` header"
+
+  - name: an empty token header is the same sentence too
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects
+      headers:
+        X-Api-Token: ""
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `X-Api-Token` header"
+
+  - name: an unrouted path is a 404, credential or none
+    source: https://api.lokalise.com/api2/no-such-endpoint-xyz
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/no-such-endpoint-xyz
+    expect:
+      status: 404
+      body:
+        "error.message": "Not Found"
+        "error.code": 404
+
+  - name: a method nothing is registered for is the identical 404, not a 405
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: PATCH
+      path: /api2/projects
+    expect:
+      status: 404
+      body:
+        "error.message": "Not Found"
+
+  - name: a second method confirms it, DELETE included
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: DELETE
+      path: /api2/projects
+    expect:
+      status: 404
+      body:
+        "error.message": "Not Found"
+
+  - name: a malformed project id is refused for its shape before its credential is even read
+    # No X-Api-Token header at all. See the header: this shape check runs
+    # ahead of the credential gate every other route falls through to.
+    source: https://api.lokalise.com/api2/projects/1234.abcd1234
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects/1234.abcd1234
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `project_id` parameter"
+
+  - name: and a wrong credential does not change that
+    source: https://api.lokalise.com/api2/projects/1234.abcd1234
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects/1234.abcd1234
+      headers:
+        X-Api-Token: junk-not-real-token-000000
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `project_id` parameter"
+
+  - name: a well-shaped id that owns nothing falls through to the ordinary credential gate
+    # Same route, a project id shaped like a real one. No credential at all,
+    # and the answer is the generic sentence every other unauthenticated
+    # request gets -- the shape check above has nothing left to refuse.
+    source: https://api.lokalise.com/api2/projects/803826145ba90b42d5d860.46800099
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects/803826145ba90b42d5d860.46800099
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `X-Api-Token` header"
+
+  - name: a create with no name is refused for its shape too, before the credential
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: POST
+      path: /api2/projects
+      json: {}
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `name` parameter"
+
+  - name: and that does not change with a wrong credential either
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: POST
+      path: /api2/projects
+      headers:
+        X-Api-Token: junk-not-real-token-000000
+      json: {}
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `name` parameter"
+
+  - name: a create carrying a name falls through to the ordinary credential gate
+    source: https://api.lokalise.com/api2/projects
+    verified: "2026-09-02"
+    fixture: team
+    request:
+      method: POST
+      path: /api2/projects
+      json:
+        name: test-project
+    expect:
+      status: 400
+      body:
+        "error.message": "Invalid `X-Api-Token` header"
+
+  - name: a stored project answers the fields the description's example gives
+    source: https://developers.lokalise.com/openapi/lokalise-api-without-branches.yml
+    fixture: team
+    request:
+      method: GET
+      path: /api2/projects/3002780358964f9bab5a92.87762498
+      headers:
+        X-Api-Token: cauldron-fixture-token-0000000000000000
+    expect:
+      status: 200
+      body:
+        project_id: 3002780358964f9bab5a92.87762498
+        project_type: localization_files
+        name: TheApp Project
+        "statistics.keys_total": 13
+        "statistics.progress_total": 87
