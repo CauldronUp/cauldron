@@ -1,0 +1,753 @@
+# Nutritionix Recipe for Cauldron
+#
+# Nutritionix answers a portion, not a food. /v2/natural/nutrients turns
+# "grape" into 10 grapes -- serving_qty: 10, serving_unit: "grapes",
+# serving_weight_grams: 49 -- and every number that follows, nf_calories
+# included, is 10 grapes' worth. There is no per-100g figure anywhere in the
+# body. Nutritionix's own FAQ says what a caller does about that in as many
+# words: "Using the serving_weight parameter value from the alt_measure
+# array, you can derive the nutrients in each serving by dividing that
+# serving weight by the default returned serving weight of the food object,
+# and multiplying by the full_nutrients array." The basis is stated -- three
+# fields, serving_qty/serving_unit/serving_weight_grams, sitting right next
+# to the numbers -- but converting it to any other basis, including the
+# 100g a caller most likely wants to compare against, is homework the
+# response describes and does not do.
+#
+# **And the numbers that carry that basis carry no unit at all.** full_nutrients
+# is a flat array of {attr_id, value} -- nothing else. Not name, not unit, not
+# usda_tag: those three fields were in Nutritionix's own 2016 documentation
+# for the predecessor endpoint (gist.github.com/nutritionix-docs, file
+# natural.md) and are not in the object the live-documented current endpoint
+# sends. A client reading full_nutrients has to already own a copy of the
+# USDA NUTR_DEF table to know that attr_id 208 is Energy in kcal and attr_id
+# 204 is Fat in grams; the response never says so. Compare
+# recipes/openfoodfacts/recipe.yaml, four keys deep for one nutrient and one
+# of them literally named fat_unit, and recipes/edamam/recipe.yaml, written
+# alongside this one, whose totalNutrients carries {label, quantity, unit} on
+# every entry. Three providers in one collection, three answers to "does the
+# number carry its own unit": Open Food Facts over-supplies it, Edamam states
+# it per field, Nutritionix does not state it at all outside the top-level
+# nf_-prefixed fields, whose units are a naming convention rather than
+# anything on the wire.
+#
+# The top-level nf_ fields fare a little better -- nf_calories, nf_total_fat,
+# nf_sodium and the rest are named for what they are, which is the only
+# reason a caller knows nf_sodium is milligrams and nf_total_fat is grams.
+# Nothing declares it. It is tribal knowledge encoded in a prefix.
+#
+# **Every nutrient figure's basis is per-response, not per-field, and the
+# response is the query, not a fixed 100g.** That is the finding this whole
+# collection exists to check for, and Nutritionix's answer is: stated, once,
+# for the whole object, in three fields a caller has to notice -- and never
+# restated per nutrient, and never offered as a 100g figure anywhere a
+# client could compare two foods without doing the division itself.
+#
+# Written against the live API rather than a document for auth, routing and
+# error shape: every case carrying a verified date was called against
+# trackapi.nutritionix.com on that date. The successful bodies are a
+# different kind of evidence -- see the split below.
+#
+# **x-app-id and x-app-key, and what presenting only one of them answers.**
+# Both are required headers, checked together, and probed in every
+# combination against GET /v2/search/instant with no key ever minted:
+#
+#   neither header                          -> 401 {"message":"unauthorized"}
+#   x-app-key only (junk), no x-app-id      -> 401 {"message":"unauthorized"}
+#   x-app-id only (junk), no x-app-key      -> 401 {"message":"unauthorized"}
+#   both present, both junk                 -> 401 {"message":"invalid app id/key"}
+#
+# That is a clean, honest answer to a bare-gateway-500 risk: Redis Cloud's
+# Recipe in this collection found a provider that answers a 500 for half a
+# credential, and Nutritionix does not. Presenting exactly one of the two
+# headers is indistinguishable from presenting neither -- both get the
+# generic sentence -- and only a request that supplies both, right shape,
+# wrong value, is told anything more specific. This Recipe checks x-app-id
+# as its credential (auth.header), which happens to be the choice that
+# reproduces every one-header-missing case exactly: both real "x-app-id is
+# absent" requests (no headers at all, and x-app-key alone) resolve to this
+# runtime's Absent verdict and both get the identical live wording. The
+# fourth line above -- both present and wrong -- cannot be reproduced by a
+# single-header credential check, because nothing here ever inspects
+# x-app-key's value; it is recorded above as a live finding and left out of
+# conformance rather than asserted as a case this Recipe cannot actually
+# produce.
+#
+# **Routing resolves before the credential, for every path and every
+# method, and there is no 405 anywhere.** An unrouted path answers 404 with
+# or without a credential attached -- identical bodies, byte for byte, both
+# probed live. A real path asked for with the wrong method (PUT on
+# /v2/search/instant) also answers 404, not 401 and not 405: "Cannot PUT
+# /v2/search/instant", Express's own default handler, with no Allow header
+# anywhere. So this host never emits a real 405 at all; a wrong method looks
+# exactly like a wrong path. auth.after_routing carries the ordering. The
+# literal Express text cannot be reproduced for the wrong-method probe
+# without a route declared for every verb on every path (this Recipe
+# declares one verb per path, which is what the provider documents), so only
+# the unrouted-path case is asserted below; the wrong-method finding is
+# recorded here rather than forced into a case that would misrepresent what
+# the emulator can actually produce.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - What happens to a food the database does not have was not established.
+#     Nutritionix's current documentation gives no worked example of an
+#     unmatched natural-language query or an unrecognised UPC, its own 2016
+#     error-handling gist describes a nested errors[] array that does not
+#     match the flat {message, id} envelope this Recipe observed live on
+#     every auth failure, and exercising the real not-found path needs a
+#     working key. Rather than guess at a shape between those two
+#     documented eras, this Recipe leaves it undeclared. Contrast Open Food
+#     Facts, whose not-found path is a fully verified 200 with status 0, and
+#     TheMealDB, whose lookup answers null on the same key a hit uses -- both
+#     established, this one is not.
+#   - No upstream.spec. Nutritionix's current reference (docx.syndigo.com,
+#     Document360) is server-rendered prose with embedded worked examples,
+#     not a machine-readable description; nothing was found to fingerprint.
+#   - full_nutrients holds around a hundred entries on a USDA-sourced record
+#     (grape) and five on a UPC-sourced one (Diet Cola) in Nutritionix's own
+#     worked examples. This Recipe's grape fixture keeps a representative
+#     eight of them and says so rather than pretending to complete the set;
+#     the difference in count between the two records is itself asserted.
+#   - The three successful bodies below (search/instant, natural/nutrients,
+#     search/item) are Nutritionix's own current worked examples, read from
+#     docx.syndigo.com on the date in each case's source and not called with
+#     a real key -- no verified date, by this project's own rule for the
+#     observed/documented split.
+#   - This Recipe's accepted credential checks x-app-id alone; a request
+#     carrying a correct x-app-id and any x-app-key at all is accepted here,
+#     where the real API also demands a matching x-app-key. That is the
+#     format's single-credential model, not a claim about Nutritionix.
+
+recipe: nutritionix
+capability: infrastructure
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://docx.syndigo.com/developers/docs/nutritionix-api-guide
+
+auth:
+  scheme: header
+  header: x-app-id
+  keys:
+    - cauldron0000
+  # Both real "x-app-id absent" requests -- no headers at all, and x-app-key
+  # alone -- resolve here and both get the identical live wording. Left
+  # unset for rejected: the only live rejected wording ("invalid app id/key")
+  # depends on x-app-key also being present, which this runtime never
+  # inspects, so leaving it unset serves the generic message every
+  # single-header-wrong probe actually got.
+  absent_error: authentication_error
+  # Routing resolves before the credential, for every path and every method
+  # -- see the header. An unrouted path 404s, and so does a real path asked
+  # for with the wrong method, both with no credential examined at all.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  list:
+    style: wrapped
+    key: foods
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # GET /v2/search/instant answers one object with two sibling arrays, not a
+  # single collection -- see the header. Modelled as a bare resource whose
+  # two fields are themselves lists, addressed by the query text rather than
+  # by any id the provider echoes.
+  instant_result:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      common:
+        type: list
+      branded:
+        type: list
+
+  # POST /v2/natural/nutrients. Nothing here is echoed under an id the
+  # provider names, so this resource is carried internally by food_name.
+  analyzed_food:
+    id:
+      style: opaque
+      field: "-"
+      carried_by: food_name
+    fields:
+      food_name:
+        type: string
+      brand_name:
+        type: string
+        null_when_unset: true
+      serving_qty:
+        type: integer
+      serving_unit:
+        type: string
+      serving_weight_grams:
+        type: number
+      # The nf_ prefix is the only place a unit is stated for any of these,
+      # and it is a naming convention, not a field. See the header.
+      nf_calories:
+        type: number
+      nf_total_fat:
+        type: number
+      nf_saturated_fat:
+        type: number
+      nf_cholesterol:
+        type: number
+      nf_sodium:
+        type: number
+      nf_total_carbohydrate:
+        type: number
+      nf_dietary_fiber:
+        type: number
+      nf_sugars:
+        type: number
+      nf_protein:
+        type: number
+      nf_potassium:
+        type: number
+      nf_p:
+        type: number
+      # {attr_id, value} and nothing else -- no unit, no name. See the header.
+      full_nutrients:
+        type: list
+      nix_brand_name:
+        type: string
+        null_when_unset: true
+      nix_brand_id:
+        type: string
+        null_when_unset: true
+      nix_item_name:
+        type: string
+        null_when_unset: true
+      nix_item_id:
+        type: string
+        null_when_unset: true
+      upc:
+        type: string
+        null_when_unset: true
+      ndb_no:
+        type: integer
+      source:
+        type: integer
+      # {is_raw_food: bool} on the worked example.
+      metadata:
+        type: map
+      tags:
+        type: map
+      # Every entry here is a different basis for the same food -- see the
+      # header's FAQ quote. The "g": 100 entry is the closest thing to a
+      # per-100g figure this API offers, and it is a conversion factor, not
+      # a nutrient figure.
+      alt_measures:
+        type: list
+      photo:
+        type: map
+
+  # GET /v2/search/item?upc=. Same shape family as analyzed_food, sourced
+  # from a barcode rather than a natural-language query, and sparser: this
+  # record's own full_nutrients holds five entries against the grape
+  # record's hundred-odd, and three of its own nf_ fields are null rather
+  # than zero.
+  branded_food:
+    id:
+      style: opaque
+      field: "-"
+      carried_by: nix_item_id
+    fields:
+      food_name:
+        type: string
+      brand_name:
+        type: string
+      serving_qty:
+        type: integer
+      serving_unit:
+        type: string
+      serving_weight_grams:
+        type: number
+      # A second, metric basis, parallel to serving_qty/serving_unit and
+      # naming neither grams nor the serving_weight_grams figure next to it.
+      nf_metric_qty:
+        type: number
+      nf_metric_uom:
+        type: string
+      nf_calories:
+        type: number
+      nf_total_fat:
+        type: number
+      nf_saturated_fat:
+        type: number
+        null_when_unset: true
+      nf_cholesterol:
+        type: number
+        null_when_unset: true
+      nf_sodium:
+        type: number
+      nf_total_carbohydrate:
+        type: number
+      nf_dietary_fiber:
+        type: number
+        null_when_unset: true
+      nf_sugars:
+        type: number
+        null_when_unset: true
+      nf_protein:
+        type: number
+      nf_potassium:
+        type: number
+        null_when_unset: true
+      nf_p:
+        type: number
+        null_when_unset: true
+      full_nutrients:
+        type: list
+      nix_brand_name:
+        type: string
+      nix_brand_id:
+        type: string
+      nix_item_name:
+        type: string
+      nix_item_id:
+        type: string
+      photo:
+        type: map
+      updated_at:
+        type: string
+      nf_ingredient_statement:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /v2/search/instant
+    resource: instant_result
+    operation: get
+    id_from: "query:query"
+
+  - method: POST
+    path: /v2/natural/nutrients
+    resource: analyzed_food
+    operation: list
+    selects_body: grape
+
+  - method: GET
+    path: /v2/search/item
+    resource: branded_food
+    operation: list
+    matches_query:
+      upc: "49000000450"
+
+errors:
+  # The generic sentence -- every one-header-missing combination this Recipe
+  # was able to probe live got exactly this, byte for byte. See the header.
+  authentication_error:
+    status: 401
+    message: unauthorized
+    fields:
+      # A real UUID, different on every live call and therefore not a value
+      # this fixture can reproduce. Left as a clearly-synthetic placeholder
+      # rather than a copied-down id from one specific probe.
+      id: cauldron-fixture-0000
+
+  # Express's own default 404 handler, byte for byte for the one path this
+  # Recipe called live -- HTML, not this Recipe's usual JSON, and Express
+  # never sends a body at all past the <pre> line. See the header for why
+  # the wrong-method probe is not asserted the same way.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=utf-8
+    message: |-
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+      <meta charset="utf-8">
+      <title>Error</title>
+      </head>
+      <body>
+      <pre>Cannot GET {detail}</pre>
+      </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+  pantry:
+    instant_result:
+      - id: hamburger
+        # Two of eleven live results, and neither carries a single nutrient
+        # field -- the instant endpoint's common results are identification
+        # only, not nutrition. See the case below.
+        common:
+          - food_name: hamburger
+            serving_unit: sandwich
+            tag_name: hamburger
+            serving_qty: 1
+            common_type: null
+            tag_id: "608"
+            photo:
+              thumb: https://nix-tag-images.s3.amazonaws.com/608_thumb.jpg
+            locale: en_US
+          - food_name: hamburger bun
+            serving_unit: hamburger bun
+            tag_name: hamburger bun
+            serving_qty: 1
+            common_type: null
+            tag_id: "226"
+            photo:
+              thumb: https://nix-tag-images.s3.amazonaws.com/226_thumb.jpg
+            locale: en_US
+        # Two of eleven live results. nf_calories is here, on branded items
+        # only, and its basis is serving_qty + serving_unit together -- one
+        # sandwich for the first, 333 grams for the second -- never a fixed
+        # 100g.
+        branded:
+          - food_name: Hamburger
+            serving_unit: sandwich
+            nix_brand_id: 58c05bd9fc977da756c7a4fc
+            brand_name_item_name: Milo's Hamburgers Hamburger
+            serving_qty: 1
+            nf_calories: 340
+            photo:
+              thumb: https://d2eawub7utcl6.cloudfront.net/images/nix-apple-grey.png
+              highres: null
+              is_user_uploaded: false
+            brand_name: Milo's Hamburgers
+            region: 1
+            brand_type: 1
+            nix_item_id: c6405291f1393db78caf5a7e
+            locale: en_US
+          - food_name: Double Hamburger
+            serving_unit: grams
+            nix_brand_id: 58c05bd9fc977da756c7a4fc
+            brand_name_item_name: Original Tommy's Hamburgers Double Hamburger
+            serving_qty: 333
+            nf_calories: 650
+            photo:
+              thumb: https://d2eawub7utcl6.cloudfront.net/images/nix-apple-grey.png
+              highres: null
+              is_user_uploaded: false
+            brand_name: Original Tommy's Hamburgers
+            region: 1
+            brand_type: 1
+            nix_item_id: 513fc9ca673c4fbc260046ed
+            locale: en_US
+
+    analyzed_food:
+      - id: grape
+        food_name: grape
+        brand_name: null
+        serving_qty: 10
+        serving_unit: grapes
+        serving_weight_grams: 49
+        nf_calories: 33.81
+        nf_total_fat: 0.08
+        nf_saturated_fat: 0.03
+        nf_cholesterol: 0
+        nf_sodium: 0.98
+        nf_total_carbohydrate: 8.87
+        nf_dietary_fiber: 0.44
+        nf_sugars: 7.59
+        nf_protein: 0.35
+        nf_potassium: 93.59
+        nf_p: 9.8
+        # Eight of roughly a hundred entries on the live worked example. No
+        # unit and no name on any of them -- see the header.
+        full_nutrients:
+          - attr_id: 203
+            value: 0.3528
+          - attr_id: 204
+            value: 0.0784
+          - attr_id: 205
+            value: 8.869
+          - attr_id: 208
+            value: 33.81
+          - attr_id: 255
+            value: 39.4646
+          - attr_id: 262
+            value: 0
+          - attr_id: 269
+            value: 7.5852
+          - attr_id: 291
+            value: 0.441
+        nix_brand_name: null
+        nix_brand_id: null
+        nix_item_name: null
+        nix_item_id: null
+        upc: null
+        ndb_no: 9132
+        source: 1
+        metadata:
+          is_raw_food: false
+        tags:
+          item: grape
+          measure: null
+          quantity: "10.0"
+          food_group: 3
+          tag_id: 586
+        # The "g": 100 entry is the nearest thing to a per-100g figure this
+        # API offers, and it is a conversion factor rather than a nutrient
+        # value -- see the header.
+        alt_measures:
+          - serving_weight: 126
+            measure: NLEA serving
+            seq: 3
+            qty: 1
+          - serving_weight: 49
+            measure: grapes
+            seq: 2
+            qty: 10
+          - serving_weight: 151
+            measure: cup
+            seq: 1
+            qty: 1
+          - serving_weight: 100
+            measure: g
+            seq: null
+            qty: 100
+        photo:
+          thumb: https://nix-tag-images.s3.amazonaws.com/586_thumb.jpg
+          highres: https://nix-tag-images.s3.amazonaws.com/586_highres.jpg
+          is_user_uploaded: false
+
+    branded_food:
+      - id: 51d2fae7cc9bff111580d8d8
+        food_name: Diet Cola
+        brand_name: Coke
+        serving_qty: 1
+        serving_unit: bottle
+        serving_weight_grams: 226
+        # A second basis for the same bottle -- 591 ml, alongside 226 g
+        # above -- and nothing says which one nf_calories is really counted
+        # against.
+        nf_metric_qty: 591
+        nf_metric_uom: ml
+        nf_calories: 0
+        nf_total_fat: 0
+        nf_saturated_fat: null
+        nf_cholesterol: null
+        nf_sodium: 70
+        nf_total_carbohydrate: 0
+        nf_dietary_fiber: null
+        nf_sugars: null
+        nf_protein: 0
+        nf_potassium: null
+        nf_p: null
+        # Five entries. The grape record above has around a hundred -- see
+        # the header. A client iterating full_nutrients expecting the USDA
+        # set finds four numbers and a sodium value on a branded item.
+        full_nutrients:
+          - attr_id: 203
+            value: 0
+          - attr_id: 204
+            value: 0
+          - attr_id: 205
+            value: 0
+          - attr_id: 208
+            value: 0
+          - attr_id: 307
+            value: 70
+        nix_brand_name: Coke
+        nix_brand_id: 51db3801176fe9790a89ae0b
+        nix_item_name: Diet Cola
+        nix_item_id: 51d2fae7cc9bff111580d8d8
+        photo:
+          thumb: https://nutritionix-api.s3.amazonaws.com/5b5c17c429f162275dc922b0.jpeg
+          highres: null
+          is_user_uploaded: false
+        updated_at: "2022-06-22T03:14:26+00:00"
+        nf_ingredient_statement: Carbonated Water, Caramel Color, Aspartame, Phosphoric Acid, Potassium Benzoate (to Protect Taste), Natural Flavors, Citric Acid, Caffeine.
+
+conformance:
+  - name: neither header gets the generic sentence
+    source: https://trackapi.nutritionix.com/v2/search/instant
+    verified: "2026-09-03"
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/instant?query=hamburger
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: x-app-key alone gets the same sentence -- x-app-id is what is missing
+    source: https://trackapi.nutritionix.com/v2/search/instant
+    verified: "2026-09-03"
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/instant?query=hamburger
+      headers:
+        x-app-key: junkkey123
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: x-app-id alone, wrong, gets the same sentence again
+    # Live: a present-but-wrong x-app-id with no x-app-key at all answered
+    # identically to both cases above. Only when both headers are present
+    # and both wrong does the wording change -- see the header for why that
+    # fourth case is not asserted here.
+    source: https://trackapi.nutritionix.com/v2/search/instant
+    verified: "2026-09-03"
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/instant?query=hamburger
+      headers:
+        x-app-id: junkid123
+    expect:
+      status: 401
+      body:
+        message: unauthorized
+
+  - name: an unrouted path 404s with no credential examined
+    source: https://trackapi.nutritionix.com/v2/no-such-route
+    verified: "2026-09-03"
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/no-such-route
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: "Cannot GET /v2/no-such-route"
+
+  - name: and the identical 404 whether or not a credential was sent
+    source: https://trackapi.nutritionix.com/v2/no-such-route
+    verified: "2026-09-03"
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/no-such-route
+      headers:
+        x-app-id: junkid123
+        x-app-key: junkkey123
+    expect:
+      status: 404
+      body_matches: "Cannot GET /v2/no-such-route"
+
+  - name: common results carry no nutrient field at all
+    # Documented, not called with a key -- see the header's observed/documented
+    # split. common items are identification only: a name, a default serving
+    # quantity and unit, and an image. Nothing here says how many calories a
+    # hamburger has.
+    source: https://docx.syndigo.com/developers/docs/instant-endpoint
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/instant?query=hamburger
+      headers:
+        x-app-id: cauldron0000
+        x-app-key: cauldron0000
+    expect:
+      status: 200
+      body:
+        "common[0].food_name": hamburger
+        "common[0].serving_unit": sandwich
+        "common[1].food_name": hamburger bun
+      absent:
+        - common[0].nf_calories
+        - common[0].calories
+
+  - name: branded results carry calories, on two different bases
+    source: https://docx.syndigo.com/developers/docs/instant-endpoint
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/instant?query=hamburger
+      headers:
+        x-app-id: cauldron0000
+        x-app-key: cauldron0000
+    expect:
+      status: 200
+      body:
+        # One sandwich for the first record, 333 grams for the second --
+        # nf_calories means something different in each row and the only
+        # way to know which is to read serving_qty and serving_unit first.
+        "branded[0].serving_unit": sandwich
+        "branded[0].nf_calories": 340
+        "branded[1].serving_unit": grams
+        "branded[1].serving_qty": 333
+        "branded[1].nf_calories": 650
+
+  - name: the basis is three fields next to the numbers, not a fixed 100g
+    source: https://docx.syndigo.com/developers/docs/natural-language-for-nutrients
+    fixture: pantry
+    request:
+      method: POST
+      path: /v2/natural/nutrients
+      headers:
+        x-app-id: cauldron0000
+        x-app-key: cauldron0000
+      json:
+        query: grape
+    expect:
+      status: 200
+      body:
+        "foods[0].food_name": grape
+        "foods[0].serving_qty": 10
+        "foods[0].serving_unit": grapes
+        "foods[0].serving_weight_grams": 49
+        "foods[0].nf_calories": 33.81
+        # The closest thing to a per-100g figure this response offers, and
+        # it is a conversion factor sitting in a parallel array, not a
+        # second calorie figure.
+        "foods[0].alt_measures[3].measure": g
+        "foods[0].alt_measures[3].serving_weight": 100
+
+  - name: full_nutrients carries a number and an attr_id, and nothing else
+    source: https://docx.syndigo.com/developers/docs/natural-language-for-nutrients
+    fixture: pantry
+    request:
+      method: POST
+      path: /v2/natural/nutrients
+      headers:
+        x-app-id: cauldron0000
+        x-app-key: cauldron0000
+      json:
+        query: grape
+    expect:
+      status: 200
+      body:
+        "foods[0].full_nutrients[0].attr_id": 203
+        "foods[0].full_nutrients[0].value": 0.3528
+        "foods[0].full_nutrients[3].attr_id": 208
+        "foods[0].full_nutrients[3].value": 33.81
+      absent:
+        - foods[0].full_nutrients[0].unit
+        - foods[0].full_nutrients[0].name
+        - foods[0].full_nutrients[0].usda_tag
+
+  - name: a barcode record's full_nutrients is five entries, not a hundred
+    source: https://docx.syndigo.com/developers/docs/search-item-endpoint
+    fixture: pantry
+    request:
+      method: GET
+      path: /v2/search/item?upc=49000000450
+      headers:
+        x-app-id: cauldron0000
+        x-app-key: cauldron0000
+    expect:
+      status: 200
+      body:
+        "foods[0].food_name": Diet Cola
+        "foods[0].brand_name": Coke
+        "foods[0].serving_weight_grams": 226
+        # A second, metric basis for the same bottle, naming neither unit
+        # against the other -- see the header.
+        "foods[0].nf_metric_qty": 591
+        "foods[0].nf_metric_uom": ml
+        "foods[0].nf_calories": 0
+        "foods[0].nf_saturated_fat": null
+        "foods[0].nf_sugars": null
