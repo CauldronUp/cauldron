@@ -1,0 +1,503 @@
+# Companies House Recipe for Cauldron
+#
+# Companies House is the UK's own company register, not an aggregator, and
+# that is the first way this Recipe differs from CourtListener and
+# ProPublica in this same task. Both of those are genuinely reachable with
+# no credential at all for at least some of what they hold -- CourtListener
+# per viewset, ProPublica for everything. Companies House is not: every
+# request this Recipe struck, on every path and every method, with a real
+# credential, a wrong one or none at all, hit the same gate before anything
+# else about the request was ever looked at. There is no public half here.
+#
+# The second difference is the scheme itself. CourtListener carries a Token
+# or a Bearer credential in Authorization and answers with django-oauth
+# -toolkit's own separate sentences when the shape is wrong; ProPublica
+# checks nothing. Companies House uses HTTP Basic -- confirmed against its
+# own developer guide, quoted below -- which neither of those two providers
+# in this task does at all.
+#
+# ## The scheme, precisely, and what the guide gets wrong about it
+#
+# From developer-specs.company-information.service.gov.uk/guides/authorisation,
+# fetched today, quoted verbatim: "The Companies House API uses HTTP Basic
+# Authentication to transmit an API key between the client application and
+# the server. Basic authentication is usually made up of a username and
+# password pair; the Companies House API takes the username as the API key
+# and ignores the password, so can be left blank." The guide's own worked
+# example is `curl -XGET -u my_api_key: https://api.company-information
+# .service.gov.uk/company/00000006`, which is exactly HTTP Basic with the
+# key as username and an empty password -- the shape this task asked this
+# Recipe to establish precisely, and it is precise: struck live today, `-u
+# "junkjunkjunk12345:"` (empty password) produces a DIFFERENT answer from
+# `-u "junkjunkjunk12345:somepassword"` (non-empty password) -- 401 vs 400,
+# a different message, a different Ch-Authentication-Error header. The
+# guide says the password is "ignored". The wire does not ignore it: it
+# refuses it, with a 400 naming a different failure than a bad username
+# alone gets. That contradiction -- checked live, not inferred -- is exactly
+# the kind of thing this task asked this group of Recipes to watch for.
+#
+# ## The credential taxonomy, struck live today (2026-09-03) against
+# ## GET /company/{id} with no account and no key ever requested
+#
+#   nothing sent at all                     -> 401 "Empty Authorization header"
+#   Authorization: (present, empty value)   -> 401 "Empty Authorization header"
+#     (byte-identical to nothing at all -- Companies House does not
+#      distinguish an empty header from an absent one)
+#   Authorization: Basic ###not-base64###   -> 400 "Invalid Authorization header"
+#     (a value that will not base64-decode at all)
+#   Authorization: Basic <valid b64, right shape, WRONG key, NON-EMPTY
+#     password>                             -> 400 "Invalid Authorization header"
+#     (the same sentence as the undecodable case above, even though this one
+#      decodes cleanly and has a colon -- see the contradiction above)
+#   Authorization: Basic (bare keyword, nothing after it at all)
+#                                            -> 401 "Invalid Authorization"
+#   Authorization: Bearer junkjunkjunk12345 (a wholly different scheme)
+#                                            -> 401 "Invalid Authorization"
+#     (the identical sentence the bare-keyword case gets, and the identical
+#      sentence the next case gets -- Companies House does not appear to
+#      distinguish "no recognisable scheme at all" from "the right scheme,
+#      wrong credential")
+#   Authorization: Basic <valid b64, right shape, WRONG key, EMPTY password>
+#                                            -> 401 "Invalid Authorization"
+#
+# Five distinct request shapes collapse to three distinct answers, and the
+# line between them is not "absent vs malformed vs rejected" the way this
+# task's own vocabulary usually draws it. It is "was anything sent" (401,
+# one sentence), "does this parse as Basic with an empty password" (401,
+# a second sentence, covering both a genuinely wrong key AND two shapes --
+# a bare scheme keyword and an entirely different scheme -- that carry no
+# comparable credential at all), and "does it parse as Basic but carry a
+# password" (400, a third sentence, textually the closest of the three to
+# the first but a full status code apart from it).
+#
+# Cauldron's own three-verdict credential check cannot draw that line: its
+# Malformed verdict is "the header is there and will not parse as Basic",
+# which covers the undecodable case correctly but ALSO covers the
+# bare-keyword and wrong-scheme cases -- and this provider answers those
+# with the REJECTED sentence (1) rather than the malformed one, while a
+# well-formed Basic value that merely carries a password gets the malformed
+# sentence despite parsing perfectly well as Basic. Nothing about that shape
+# fits AbsentError/MalformedError/RejectedError. So, the same choice
+# CourtListener makes in this collection and for the same reason: auth is
+# `none` at the Recipe level and every route below says for itself which
+# sentence applies, using matches_header the way CourtListener uses it for
+# its own five-way Authorization taxonomy.
+#
+# ## Credential wins over routing and over method, unconditionally
+#
+# GET on a path this host has no route for at all -- struck live, with no
+# credential and with a wrong one -- answers the identical 401 an unrouted
+# GET on a real path gets. POST and DELETE on the real company route, with
+# no credential, answer the identical 401 a GET would. Companies House
+# never reaches its own router, or asks what method was used, before the
+# credential is judged: `auth.after_routing` stays at its default (false)
+# because there is nothing here for it to defer to. This is Airbyte's shape
+# from elsewhere in this collection, not Census's (which splits on method)
+# and not CourtListener's own per-viewset split.
+#
+# ## What this Recipe does not model, and why
+#
+# No 200 response appears anywhere below. Every request this Recipe made
+# was unauthenticated by necessity -- no account was created and no API key
+# was ever requested, per this task's own rule -- and Companies House's own
+# reference (the swagger fragment fingerprinted below) documents the 200 for
+# `GET /company/{company_number}` with a full property list and NOT ONE
+# worked example: no sample company_number, no sample company_name, no
+# sample date. The one full request/response pair the developer guide DOES
+# show (quoted above) stops at the request line. Inventing a plausible
+# company profile to fill that gap is exactly what this task's rules forbid,
+# so this Recipe leaves the route out entirely rather than guess, the same
+# choice CourtListener makes for clusters, opinions, parties and attorneys.
+#
+# ## The identifier and status questions this group of three exists to answer
+#
+# Companies House is a single register, so there is no "which register did
+# this come from" question to ask of it the way there is of OpenCorporates
+# -- it IS the register. What it does have is a clean separation between the
+# identifier and the jurisdiction, which the official schema states in two
+# separate properties (fingerprinted below, `definitions.companyProfile`):
+# `company_number` ("The number of the company") carries no jurisdiction
+# information itself, and `jurisdiction` is a wholly separate enum --
+# england-wales, wales, scotland, northern-ireland, european-union,
+# united-kingdom, england, noneu -- describing "the political body
+# responsible for the company". A Scottish company's number does not say
+# Scotland; the jurisdiction field does.
+#
+# The status vocabulary, in full, from `company_status`'s own enum in that
+# same schema: active, dissolved, liquidation, receivership, administration,
+# voluntary-arrangement, converted-closed, insolvency-proceedings,
+# registered, removed, closed, open. A second, narrower field,
+# `company_status_detail`, adds finer shades on top of some of those:
+# transferred-from-uk, active-proposal-to-strike-off,
+# petition-to-restore-dissolved, transformed-to-se, converted-to-plc,
+# converted-to-uk-societas, converted-to-ukeig (full descriptions cross-
+# referenced by both fields to companieshouse/api-enumerations's own
+# constants.yml, cited below). A dissolved, struck-off or closed company is
+# not a different resource or a different shape: the schema's own
+# description of `date_of_cessation` reads "The date which the company was
+# converted/closed, dissolved or removed. Please refer to company status to
+# determine which" -- one date field, disambiguated only by company_status,
+# on the SAME company object the same GET returns for a live company. This
+# Recipe could not call that GET live (see above), so it states this as
+# documented rather than observed, and says so plainly rather than
+# presenting a schema reading as a live finding.
+#
+# Whether the API says when it last synchronised with the official source:
+# no. The company profile schema carries no field resembling "last synced"
+# or "retrieved at" anywhere in `definitions.companyProfile` -- the only
+# freshness signal on a 200 at all is an `ETag` RESPONSE HEADER (declared in
+# the same fragment), which is for conditional re-fetching, not for telling
+# a caller how stale the underlying register data is. Contrast
+# OpenCorporates, this group's other Recipe, whose own worked examples carry
+# `retrieved_at` on the record itself -- and, on one of its own two
+# documented examples, `retrieved_at: null`, meaning even OpenCorporates
+# does not always know. Companies House does not expose the question at all.
+#
+# ## Known fidelity gaps, stated rather than hidden
+#
+#   - No 200 anywhere -- see above.
+#   - No error BODY shape is documented anywhere Companies House publishes.
+#     The swagger fragment's own 401 and 404 responses carry a `description`
+#     and no `schema` at all -- `{"error": "...", "type": "ch:service"}` is
+#     entirely this Recipe's own live observation, made today, and nothing
+#     upstream confirms it will still look like that tomorrow.
+#   - Rate limiting is documented (developer-specs...gov.uk/guides
+#     /rateLimiting, quoted: "You can make up to 600 requests within a
+#     five-minute period... you will receive a 429 Too Many Requests HTTP
+#     status code") but no response BODY is shown anywhere in that guide, so
+#     this Recipe does not model a rate_limited case at all rather than
+#     invent one the way the courtlistener and together Recipes in this
+#     collection could for their own, better-documented limits.
+#   - upstream.spec is recorded (the live swagger fragment this header
+#     quotes from) but spec_hash and spec_seen are not. Cauldron's own
+#     Fingerprint reduces a description to the parts a Recipe's ROUTES claim
+#     -- paths, methods, response codes, field names off a resource -- and
+#     this Recipe declares no resource and no 200 route, so there is nothing
+#     for a fingerprint to reduce to; recording one would assert a claim
+#     this Recipe does not make.
+
+recipe: companieshouse
+capability: docs
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://developer-specs.company-information.service.gov.uk/companies-house-public-data-api/reference/company-profile
+  spec: https://developer-specs.company-information.service.gov.uk/api.ch.gov.uk-specifications/swagger-2.0/spec/companyProfile.json
+
+auth:
+  # See the header: this provider's own credential taxonomy splits along a
+  # line Absent/Malformed/Rejected cannot draw (a bare scheme keyword and a
+  # wholly wrong scheme answer the REJECTED sentence, not the malformed one;
+  # a well-formed Basic value with a password answers a THIRD sentence
+  # despite parsing cleanly). Every route below says for itself which
+  # sentence applies, the same trade CourtListener makes in this collection.
+  scheme: none
+
+responses:
+  error:
+    style: flat
+    message_field: error
+    type_field: type
+    code_field: "-"
+
+routes:
+  # The flagship endpoint, and where the full taxonomy from the header was
+  # struck. No credential at all: the fallback below, no matches_header
+  # needed, is what every request that named none of the shapes beneath it
+  # falls through to.
+  - method: GET
+    path: /company/{id}
+    error: empty_authorization
+
+  # A header present with nothing after the colon. Byte-identical to nothing
+  # sent at all -- see the header.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: ""
+    error: empty_authorization
+
+  # Will not base64-decode at all.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: "Basic ###not-base64###"
+    error: invalid_authorization_header
+
+  # Parses as Basic, right shape, wrong key, EMPTY password -- the guide's
+  # own documented shape, simply wrong. Rejected sentence.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6"
+    error: invalid_authorization
+
+  # Parses as Basic, right shape, wrong key, NON-EMPTY password -- the guide
+  # says this is ignored. It is not: a different status, a different
+  # sentence, from the empty-password case immediately above.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6c29tZXBhc3N3b3Jk"
+    error: invalid_authorization_header
+
+  # The bare scheme keyword, nothing after it. Answers the REJECTED
+  # sentence, not a malformed one -- see the header.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: "Basic"
+    error: invalid_authorization
+
+  # A wholly different scheme. The identical sentence the bare-keyword case
+  # gets, and the identical sentence a genuinely wrong Basic key gets.
+  - method: GET
+    path: /company/{id}
+    matches_header:
+      Authorization: "Bearer junkjunkjunk12345"
+    error: invalid_authorization
+
+  # Credential wins over method, not just over the path -- struck live with
+  # no credential sent at all. See the header.
+  - method: POST
+    path: /company/{id}
+    error: empty_authorization
+
+  - method: DELETE
+    path: /company/{id}
+    error: empty_authorization
+
+  # A second real, documented endpoint, confirming this is not particular to
+  # the profile route.
+  - method: GET
+    path: /search/companies
+    error: empty_authorization
+
+  - method: GET
+    path: /search/companies
+    matches_header:
+      Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6"
+    error: invalid_authorization
+
+  # A path this host has no route for at all. Credential wins over routing,
+  # unconditionally -- struck live with no credential and with a wrong one,
+  # both byte-identical to the real path's own answers.
+  - method: GET
+    path: /this-is-not-a-real-endpoint
+    error: empty_authorization
+
+  - method: GET
+    path: /this-is-not-a-real-endpoint
+    matches_header:
+      Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6"
+    error: invalid_authorization
+
+errors:
+  # "Nothing was presented at all", and, on this host, "something was
+  # presented but the Authorization header carries an empty value" -- see
+  # the header for why those are the same sentence here.
+  empty_authorization:
+    status: 401
+    message: Empty Authorization header
+    type: "ch:service"
+    headers:
+      Ch-Authentication-Error: Empty Authorization header
+      Www-Authenticate: Invalid or no Authorisation header has been provided
+
+  # Covers a genuinely wrong Basic credential (right shape, empty password,
+  # unknown key), a bare scheme keyword, and an entirely different scheme --
+  # three syntactically distinct requests this provider answers identically.
+  # See the header.
+  invalid_authorization:
+    status: 401
+    message: Invalid Authorization
+    type: "ch:service"
+    headers:
+      Ch-Authentication-Error: Invalid Authorization
+      Www-Authenticate: Invalid or no Authorisation header has been provided
+
+  # Covers undecodable base64 AND a well-formed Basic value that carries a
+  # non-empty password -- the developer guide's own claim that the password
+  # is "ignored" does not hold on the wire. See the header.
+  invalid_authorization_header:
+    status: 400
+    message: Invalid Authorization header
+    type: "ch:service"
+    headers:
+      Ch-Authentication-Error: Invalid Authorization header
+      Www-Authenticate: Invalid or no Authorisation header has been provided
+
+fixtures:
+  empty: {}
+
+# Every case below was struck live today against
+# api.company-information.service.gov.uk, with no account and no API key
+# ever requested -- this Recipe has no case that is documented rather than
+# observed, because Companies House refused every request this Recipe could
+# make without one.
+conformance:
+  - name: no credential at all is refused before anything else is considered
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+        Ch-Authentication-Error: Empty Authorization header
+      body:
+        error: Empty Authorization header
+        type: "ch:service"
+
+  - name: a header present with nothing after the colon is the same failure as no header
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: ""
+    expect:
+      status: 401
+      body:
+        error: Empty Authorization header
+
+  - name: undecodable base64 answers a 400, not a 401
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: "Basic ###not-base64###"
+    expect:
+      status: 400
+      headers:
+        Ch-Authentication-Error: Invalid Authorization header
+      body:
+        error: Invalid Authorization header
+        type: "ch:service"
+
+  - name: the documented shape (empty password) with the wrong key is a 401
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6"
+    expect:
+      status: 401
+      body:
+        error: Invalid Authorization
+
+  - name: the developer guide says the password is ignored; the wire refuses it with a 400
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6c29tZXBhc3N3b3Jk"
+    expect:
+      status: 400
+      body:
+        error: Invalid Authorization header
+
+  - name: a bare scheme keyword with nothing after it gets the rejected sentence, not a malformed one
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: "Basic"
+    expect:
+      status: 401
+      body:
+        error: Invalid Authorization
+
+  - name: a wholly different scheme gets the identical sentence a wrong Basic key gets
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /company/00445790
+      headers:
+        Authorization: "Bearer junkjunkjunk12345"
+    expect:
+      status: 401
+      body:
+        error: Invalid Authorization
+
+  - name: credential wins over method -- a POST with no credential is refused the same way a GET is
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: POST
+      path: /company/00445790
+    expect:
+      status: 401
+      body:
+        error: Empty Authorization header
+
+  - name: and so is a DELETE
+    source: https://api.company-information.service.gov.uk/company/00445790
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /company/00445790
+    expect:
+      status: 401
+      body:
+        error: Empty Authorization header
+
+  - name: the search endpoint is gated exactly the same way as the profile endpoint
+    source: https://api.company-information.service.gov.uk/search/companies?q=tesco
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /search/companies
+    expect:
+      status: 401
+      body:
+        error: Empty Authorization header
+
+  - name: credential wins over routing -- an unrouted path with no credential is refused, not 404d
+    source: https://api.company-information.service.gov.uk/this-is-not-a-real-endpoint
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-is-not-a-real-endpoint
+    expect:
+      status: 401
+      body:
+        error: Empty Authorization header
+
+  - name: and a wrong credential on that same unrouted path gets the wrong-credential sentence, not a 404
+    source: https://api.company-information.service.gov.uk/this-is-not-a-real-endpoint
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /this-is-not-a-real-endpoint
+      headers:
+        Authorization: "Basic anVua2p1bmtqdW5rMTIzNDU6"
+    expect:
+      status: 401
+      body:
+        error: Invalid Authorization
