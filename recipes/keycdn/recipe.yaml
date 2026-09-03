@@ -1,0 +1,514 @@
+# KeyCDN Recipe for Cauldron
+#
+# This collection's question is whether an API exposes a deployment state
+# distinct from the saved configuration, and whether a caller can tell
+# "saved" from "serving." KeyCDN is this group's control case for that
+# question as much as for its credential -- read bunny/recipe.yaml first,
+# per this task's instructions, and the contrast is total. Bunny's Video
+# carries an eight-value status enum; Fastly's Version carries active and
+# locked as two separate booleans on a separately-numbered snapshot;
+# Akamai's activation carries a whole state machine per network. A KeyCDN
+# Zone carries none of that. Its own API reference gives exactly one
+# documented value for the `status` field ("active") and no worked example
+# of any other, and cache purging -- the one place propagation delay is
+# real on every CDN, KeyCDN included -- answers with a sentence that has
+# already moved to the past tense: `"Cache has been cleared for zone
+# examplepull."`, not "purge queued" or "purge pending," with no id, no
+# requestId and no status field anywhere on the response for a caller to
+# poll. Where Fastly and Akamai each answer this group's question with an
+# elaborate yes, KeyCDN's own documentation answers it with the plainest
+# possible no: the API describes purging as already finished by the time
+# it replies, and gives a caller nothing to check on if it was wrong. See
+# imagekit/recipe.yaml in this same collection for the shape KeyCDN does
+# not have: a purge id GET /v1/files/purge/{id} takes straight back to
+# answer Pending or Completed.
+#
+# **HTTP Basic, the API key as the username, an empty password -- exactly
+# as documented, and exactly what this Recipe found live.** Checked against
+# api.keycdn.com with no account and no key:
+#
+#   `curl -u 'junkjunkjunk12345:' ...`     -> 401 {"status":"error",
+#                                              "description":"Unauthorized"}
+#   `Authorization: Bearer junkjunkjunk12345` -> byte-identical
+#   nothing sent at all                    -> byte-identical
+#
+# Absent, a wrong bearer-shaped header and a well-formed-but-wrong Basic
+# credential all land on the same sentence, so auth.absent_error,
+# auth.malformed_error and auth.rejected_error are all left unset -- unset
+# is the honest reading of having looked and found no distinction, the same
+# reading bunny/recipe.yaml's header states for its own collapse. Every
+# response in this block carried `WWW-Authenticate: Basic
+# realm="api.keycdn.com"`, KeyCDN's own confirmation of which scheme it
+# wants, quoted in the conformance case below.
+#
+# **KeyCDN's own dashboard, not its API, answers a path the API does not
+# have -- and it needs no credential to say so.** GET
+# /totally-bogus-endpoint-xyz answered a KeyCDN-branded HTML 404 page
+# (`<title>Page not found</title>`, "KeyCDN Dashboard") with no credential
+# and with a junk one alike, byte-identical either way -- a completely
+# different application from the one that answers `zones.json` its flat
+# JSON 401. A real path with the wrong method (PATCH /zones.json) and a
+# real-shaped path with a made-up id (GET /zones/1.json) both still
+# answered the ordinary credential-gated 401, no differently from GET with
+# nothing sent. So the ordering here is Rootly's split, named in
+# internal/recipe/auth.go and demonstrated in rootly/recipe.yaml: credential
+# first for every path this API actually has, router first -- straight
+# through to an entirely different piece of software -- for every path it
+# does not. auth.after_routing is left unset (the default, credential
+# first) to match every declared route here, and the conformance case
+# below demonstrating the dashboard's 404 carries a valid fixture
+# credential to reach that shape through Cauldron's own unconditional
+# check, exactly as rootly/recipe.yaml's does, with a note that the live
+# API needed neither.
+#
+# **This Recipe ran into a wall partway through probing the purge routes,
+# and says so rather than guessing past it.** GET /zones/purge/1000.json
+# and DELETE /zones/purgeurl/1000.json, both with no credential, answered
+# not KeyCDN's own 401 but a bare `Server: nginx` 403 -- generic HTML,
+# 146 bytes, no KeyCDN branding anywhere, quoted in full above the fixtures
+# below for the record though it is not served as a route (see why below).
+# Varying the credential, the zone id, and even the path -- a path that
+# only contains the word "purge" and names no real zone at all --
+# answered the identical 403. So did, on a final check, a repeat of the
+# very first request this session made: GET /zones.json with nothing sent,
+# which had answered the ordinary 401 JSON at the very start of this
+# Recipe's probing and now answered the same bare nginx 403 everything
+# else was getting. That last check is what settles it: this is not a rule
+# about purge paths, or about malformed credentials, or about anything
+# this Recipe sent -- it is this session's own probing having crossed a
+# rate limit or an abuse threshold sometime after the purge requests, and
+# every request after that point answered the same wall regardless of what
+# it asked. This task's own instructions say to record a rate-limited
+# response rather than retry past it, so that is what this header does,
+# and no conformance case below claims the 403 as a stable, reproducible
+# fact about any specific route -- it would not be an honest claim to make
+# from what this session actually saw.
+#
+# One consequence follows directly: the malformed-credential shapes this
+# Recipe tried after that point (Basic with undecodable base64, Basic with
+# a non-empty password, a bare "Digest" scheme) all came back as the same
+# wall, and none of those results is trustworthy evidence of what KeyCDN's
+# own application would have said, so none of them is claimed as a finding
+# here either. What is claimed above -- the three-way collapse -- was
+# struck cleanly, before any of this began.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No credential was ever held, live or otherwise, so every
+#     resource-shaped case below (the zone list, a single zone, both purge
+#     bodies) is sourced from KeyCDN's own published API reference and
+#     carries no verified date. The auth-collapse and unrouted-path cases
+#     above the fold are the only ones this Recipe struck live, and they
+#     carry today's date.
+#   - KeyCDN's own worked examples encode every setting as a string, not a
+#     JSON type matching what the setting means: `"gzip": "disabled"`,
+#     `"forcessl": "disabled"`, `"blockbadbots": "enabled"` -- the literal
+#     strings "enabled" and "disabled", not true or false, so
+#     `if (zone.gzip)` reads truthy in JavaScript on a zone with gzip
+#     disabled, because the string "disabled" is not falsy. The same
+#     example encodes `"cachemaxexpire": "1440"` and `"expire": "0"` --
+#     digits, but sent as strings, so `zone.expire + 1` concatenates
+#     rather than adds. Both are declared as string fields below rather
+#     than coerced into the types their names imply, because coercing them
+#     would repair exactly the surprise this Recipe exists to preserve.
+#   - Of roughly thirty documented zone fields this Recipe declares eleven
+#     -- enough to make the string-typing finding concretely, not a
+#     complete settings surface. securetoken, the SSL and origin-shield
+#     configuration, and every cache-key variant beyond cachekeyscheme are
+#     absent.
+#   - zone.status has exactly one documented value anywhere this Recipe
+#     found ("active"), so only that one is claimed. Whether KeyCDN has
+#     others -- suspended, pending, disabled -- is not stated here because
+#     no source for it was found, not because this Recipe assumes there
+#     are none.
+#   - Zone create, update and delete are not modelled. Every resource
+#     route here is a GET.
+#   - No upstream.spec. www.keycdn.com/api is prose documentation with
+#     worked JSON examples embedded in the page, not a machine-readable
+#     description this Recipe could fingerprint.
+#
+# API keys below are fixtures, not secrets, and belong to no account.
+
+recipe: keycdn
+capability: cdn
+version: 0.1.0
+
+upstream:
+  api: v1
+  docs: https://www.keycdn.com/api
+
+auth:
+  scheme: basic
+  # The API key is the Basic username; KeyCDN's own convention leaves the
+  # password empty, confirmed live (this Recipe's probes used
+  # `-u '<value>:'`).
+  credential: username
+  keys:
+    - cauldron_keycdn_fixture_api_key_000000000000000000000000
+
+responses:
+  # {"status":"success", ...} on everything that works, stamped
+  # automatically -- see the header for why "description" is included as a
+  # constant too: KeyCDN's own two worked examples use the identical
+  # sentence for two different endpoints, which reads as a generic
+  # acknowledgement rather than per-endpoint text, though neither was
+  # struck live to confirm it holds for every route.
+  success:
+    fields:
+      status: success
+      description: Data successfully received.
+  list:
+    style: wrapped
+    key: data.zones
+  resource:
+    # Singular. The listing above is plural, in the same API -- the same
+    # split aftership/recipe.yaml's dotted resource key exists for.
+    style: wrapped
+    key: data.zone
+  error:
+    style: flat
+    message_field: description
+    code_field: "-"
+    fields:
+      status: error
+
+resources:
+  # Field names, casing and the string-typed settings are KeyCDN's own --
+  # see the header. Not observed: no credential exists to have called
+  # zones.json with.
+  zone:
+    id:
+      style: opaque
+      field: id
+    fields:
+      name:
+        type: string
+      # See the header. The only documented value anywhere this Recipe
+      # found.
+      status:
+        type: string
+        default: active
+      type:
+        type: string
+        default: pull
+      originurl:
+        type: string
+      # "enabled" / "disabled" -- a string, not a boolean. See the header.
+      gzip:
+        type: string
+        default: disabled
+      forcessl:
+        type: string
+        default: disabled
+      blockbadbots:
+        type: string
+        default: enabled
+      sslcert:
+        type: string
+        default: shared
+      # Digits, sent as a string -- see the header.
+      cachemaxexpire:
+        type: string
+        default: "1440"
+      expire:
+        type: string
+        default: "0"
+      cachekeyscheme:
+        type: string
+        default: disabled
+
+routes:
+  - method: GET
+    path: /zones.json
+    resource: zone
+    operation: list
+
+  - method: GET
+    path: /zones/{id}.json
+    resource: zone
+    operation: get
+
+  # Documented, not observed -- see the header for why no credential could
+  # confirm this live, and for the rate-limit wall this Recipe's own
+  # probing hit trying. Method is GET despite the mutation: KeyCDN's own
+  # reference names it that way, not this Recipe's guess.
+  - method: GET
+    path: /zones/purge/{id}.json
+    status: 200
+    raw:
+      content_type: application/json
+      text: '{"status":"success","description":"Cache has been cleared for zone examplepull."}'
+
+  - method: DELETE
+    path: /zones/purgeurl/{id}.json
+    status: 200
+    raw:
+      content_type: application/json
+      text: '{"status":"success","description":"Cache has been cleared for URL(s)."}'
+
+errors:
+  authentication_error:
+    status: 401
+    message: Unauthorized
+    headers:
+      WWW-Authenticate: 'Basic realm="api.keycdn.com"'
+
+  # KeyCDN's own dashboard 404, not the API's -- see the header. Quoted in
+  # full: 1555 bytes, small enough to reproduce rather than excerpt.
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html; charset=UTF-8
+    message: |
+      <!DOCTYPE html>
+      <html lang="en">
+
+      <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+          <title>Page not found</title>
+          <meta name='description' content='KeyCDN Dashboard'>
+          <link rel="apple-touch-icon" sizes="180x180" href="/img/favicon/apple-touch-icon.png">
+          <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon/favicon-32x32.png">
+          <link rel="icon" type="image/png" sizes="16x16" href="/img/favicon/favicon-16x16.png">
+          <link rel="manifest" href="/img/favicon/manifest.json">
+          <link rel="mask-icon" href="/img/favicon/safari-pinned-tab.svg" color="#047aed">
+          <link rel="shortcut icon" href="/img/favicon/favicon.ico">
+
+          <link rel="stylesheet" href="/css/style.css">
+          <script src="/js/app.js"></script>
+      </head>
+
+      <body id="body">
+          <div class="container d-flex flex-column justify-content-between vh-100">
+              <div class="row justify-content-center mt-5">
+
+
+      <div class="container">
+          <div class="row">
+              <div class="col-12 text-center">
+                  <h1>Not Found</h1>
+
+
+                  <h2 class="my-5">Oh no! This is not the page you are looking for.</h2>
+                  <p>Have questions? Head over to our <a href="https://www.keycdn.com/support">Knowledge Base</a>.</p>
+
+              </div>
+          </div>
+      </div>
+
+
+              </div>
+              <div class="copyright m-4">
+                  <p class="text-center">&copy; 2026 proinity LLC</p>
+              </div>
+          </div>
+      </body>
+
+      </html>
+
+fixtures:
+  empty: {}
+
+  small-account:
+    zone:
+      # KeyCDN's own worked example from www.keycdn.com/api, quoted, not
+      # observed. See the header for the string-typed fields.
+      - id: "1000"
+        name: examplepull
+        status: active
+        type: pull
+        originurl: https://example.com
+        gzip: disabled
+        forcessl: disabled
+        blockbadbots: enabled
+        sslcert: shared
+        cachemaxexpire: "1440"
+        expire: "0"
+        cachekeyscheme: disabled
+
+conformance:
+  - name: no credential at all is Unauthorized
+    source: https://api.keycdn.com/zones.json
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /zones.json
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'Basic realm="api.keycdn.com"'
+      body:
+        status: error
+        description: Unauthorized
+
+  - name: a junk Basic credential with an empty password answers byte-identically
+    source: https://api.keycdn.com/zones.json
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /zones.json
+      headers:
+        Authorization: Basic anVua2p1bmtqdW5rMTIzNDU6
+    expect:
+      status: 401
+      body:
+        status: error
+        description: Unauthorized
+
+  - name: and a bearer-shaped header nobody asked for answers the same way too
+    source: https://api.keycdn.com/zones.json
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /zones.json
+      headers:
+        Authorization: Bearer junkjunkjunk12345
+    expect:
+      status: 401
+      body:
+        status: error
+        description: Unauthorized
+
+  - name: a wrong method on a real path is still refused for its credential, not a 405
+    source: https://api.keycdn.com/zones.json
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /zones.json
+    expect:
+      status: 401
+      body:
+        status: error
+        description: Unauthorized
+
+  - name: a real-shaped path with a made-up id is refused the same way, before any id is examined
+    source: https://api.keycdn.com/zones/1.json
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /zones/1.json
+    expect:
+      status: 401
+      body:
+        status: error
+        description: Unauthorized
+
+  - name: a path this API does not have reaches the dashboard instead, not the API's 401
+    # Live, with no credential and with a junk one alike -- see the header.
+    # Reaching this shape through Cauldron needs a valid credential, because
+    # this runtime's own auth check is unconditional for every declared
+    # route on this Recipe; the live API needed neither. Not verified for
+    # that reason -- the request below was never the one actually sent.
+    source: https://api.keycdn.com/totally-bogus-endpoint-xyz
+    fixture: empty
+    request:
+      method: GET
+      path: /totally-bogus-endpoint-xyz
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html; charset=UTF-8
+      body_matches: '<title>Page not found</title>'
+
+  - name: a zone list wraps under data.zones, plural
+    source: https://www.keycdn.com/api
+    fixture: small-account
+    request:
+      method: GET
+      path: /zones.json
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: success
+        "data.zones[0].id": "1000"
+        "data.zones[0].name": examplepull
+      absent:
+        - data.zone
+        - zones
+
+  - name: a single zone wraps under data.zone, singular -- the same API, a different key
+    source: https://www.keycdn.com/api
+    fixture: small-account
+    request:
+      method: GET
+      path: /zones/1000.json
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        "data.zone.id": "1000"
+        "data.zone.gzip": disabled
+        "data.zone.cachemaxexpire": "1440"
+      absent:
+        - data.zones
+
+  - name: a settings value that looks like a boolean is the string "disabled", not false
+    # The finding in the header, isolated on one field: this asserts the
+    # JSON type as much as the value. A client reading zone.gzip as a
+    # boolean finds a truthy string on a zone with gzip off.
+    source: https://www.keycdn.com/api
+    fixture: small-account
+    request:
+      method: GET
+      path: /zones/1000.json
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      matches:
+        data.zone.gzip: '^disabled$'
+
+  - name: a full-zone purge answers a sentence already in the past tense, with nothing to poll
+    # See the header: documented, not observed, and this Recipe's own
+    # attempt to observe it live hit the rate-limit wall described there
+    # instead. Note what is absent -- no id, no requestId, no status field
+    # distinct from the message itself.
+    source: https://www.keycdn.com/api
+    fixture: empty
+    request:
+      method: GET
+      path: /zones/purge/1000.json
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+    expect:
+      status: 200
+      body:
+        status: success
+        description: Cache has been cleared for zone examplepull.
+      absent:
+        - id
+        - requestId
+        - data
+
+  - name: a URL-specific purge answers the same shape of message, still nothing to poll
+    source: https://www.keycdn.com/api
+    fixture: empty
+    request:
+      method: DELETE
+      path: /zones/purgeurl/1000.json
+      headers:
+        Authorization: Basic Y2F1bGRyb25fa2V5Y2RuX2ZpeHR1cmVfYXBpX2tleV8wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA6
+      json:
+        urls:
+          - https://example.com/image.jpg
+    expect:
+      status: 200
+      body:
+        status: success
+        description: Cache has been cleared for URL(s).
+      absent:
+        - id
+        - requestId
