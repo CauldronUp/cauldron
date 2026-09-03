@@ -6,6 +6,12 @@ Emulates the Slack API (2026-05), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its failures arrive with HTTP 200 and its identifier lives in a query
+parameter rather than a path. Writing this Recipe is what taught the router RPC
+shapes, which several later Recipes depend on.
+
 ## Sources
 
 - Documentation: https://api.slack.com/web
