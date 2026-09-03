@@ -454,7 +454,7 @@ the header says so.
 | Telegram Bot API | Assess — every method is both GET and POST, errors come back with HTTP 200 in some client libraries, and updates arrive by long polling or webhook but never both |
 | Buffer | Assess — profiles, updates, scheduling |
 | ~~Spotify~~ | Shipped. **The body cannot tell two failures apart and the header can** -- a missing and a bogus token give identical JSON naming three possible causes at once, while `WWW-Authenticate` carries `missing_token` against `invalid_token`, so the diagnosis exists one layer above where anyone reading JSON looks. An unknown path answers **410 Gone**, a status meaning the resource existed and was removed, for one that never existed. Its description marks two endpoints deprecated while the wire sends no `Deprecation` or `Sunset` header at all. The token-refresh path this row asked about needs an account and is not modelled |
-| Strava | Assess — activities, webhooks, the rate limit counted in two windows at once |
+| ~~Strava~~ | Shipped. Four credential failures and no 405 anywhere, so the whole API has two sentences for everything a caller can get wrong about reaching it. Neither rate-limit window's headers appeared on any refusal collected |
 
 ## Identity verification and risk
 
@@ -1076,7 +1076,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**304 more listings across 196 Recipes declare no paging at all**, and the
+**316 more listings across 203 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1579,7 +1579,7 @@ fails, and a schema declaring `"type": "integer"` rejects the response
 outright. That is the exact class of bug Cauldron exists to catch, committed
 by Cauldron.
 
-Eighty-two Recipes send at least one identifier as a number now, and each
+Eighty-nine Recipes send at least one identifier as a number now, and each
 carries a case asserting an unquoted one, so removing the declaration fails
 something. Three of them already had cases asserting the quoted form, which is
 to say three cases were pinning the bug in place.
