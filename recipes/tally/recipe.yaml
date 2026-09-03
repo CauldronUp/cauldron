@@ -1,0 +1,492 @@
+# Tally Recipe for Cauldron
+#
+# Last of this group's three, after typeform/recipe.yaml and
+# jotform/recipe.yaml -- read those first. Where Typeform answers a question
+# by field id and Jotform bakes the question's own label onto every answer
+# (see jotform/recipe.yaml's header), Tally sits at neither extreme: an
+# answer names only a questionId, the way Typeform's does, but the
+# QUESTION side of that join survives deletion in a way this Recipe can cite
+# rather than infer.
+#
+# **A response names a question, and never carries its text.** The
+# `Response` object inside a submission (openapi.json,
+# components.schemas.Question and the inlined schema at GET
+# /forms/{formId}/submissions) is `{id, formId, questionId, respondentId,
+# submissionId, sessionUuid, answer, formattedAnswer, createdAt, updatedAt}`
+# -- no title, no label, nothing a caller could print without a second
+# request. Reading it needs GET /forms/{formId}/questions and a join on
+# questionId, exactly Jotform's arrangement one paragraph up, and the
+# opposite of Jotform's finding that the label rides along for free.
+#
+# **The other side of that join is where Tally is unambiguous and Jotform is
+# not.** GET /forms/{formId}/questions answers `{questions: [...],
+# hasResponses}`, and each Question schema carries `isDeleted: boolean`
+# beside `numberOfResponses: integer` -- both bare booleans/integers with no
+# prose of their own, but their presence together is not incidental. A
+# question that has been deleted through the form builder is not removed
+# from this endpoint's array; it stays, `isDeleted: true`, still holding its
+# original `title`, still reporting how many responses answered it. That
+# means the join a caller makes to resolve a response's questionId back to
+# a label keeps working after deletion, and can say so explicitly --
+# `isDeleted` is exactly the fact Jotform's own documentation never states
+# either way (see jotform/recipe.yaml's header on that gap). FormStatus's
+# own schema description makes the same design explicit one level up: "Deleting
+# a form is done through DELETE /forms/{formId}, which moves it to the
+# trash so it can be restored" -- Tally does not hard-delete forms, and does
+# not hard-delete questions either, on the evidence of the field that would
+# have nothing to report if it did.
+#
+# **No form or submission is versioned at all.** Form carries only
+# `createdAt`/`updatedAt`; Submission carries none of its own beyond
+# `submittedAt`. Neither references a form revision, a schema version, or
+# any identifier a caller could use to ask "what did the form look like when
+# this was answered." The isDeleted flag is the only continuity mechanism
+# this API has, and it only covers deletion -- an EDITED question's title
+# changing is not distinguished from always having read that way; nothing
+# on Question or Response records a previous value.
+#
+# **Every response body this host sent, refused or not, was checked live
+# and none of them was JSON.** GET /forms with no Authorization header
+# answers `Content-Type: text/plain; charset=utf-8`, body exactly
+# `Unauthorized`, 12 bytes -- not `{"error": "..."}`.  A junk
+# `Authorization: Bearer junktoken12345` answers the byte-identical 401.
+# There is no absent/malformed/rejected split declared here at all: the
+# same 12 bytes were struck for no header, a garbage bearer token, an empty
+# `Bearer ` value and a header with no scheme, every time.
+#
+# **The credential is checked before the route is, without exception --
+# including for real, documented Tally endpoints this Recipe does not
+# model.** Struck live, no credential sent for any of them:
+#
+#   GET  /forms                          -> 401 Unauthorized
+#   GET  /no-such-route-xyz              -> 401 Unauthorized  (unrouted)
+#   PATCH /forms                         -> 401 Unauthorized  (wrong method)
+#   POST /forms                          -> 401 Unauthorized
+#   DELETE /forms/123                    -> 401 Unauthorized
+#   GET  /forms/123/submissions          -> 401 Unauthorized  (a real Tally
+#                                            route, documented at
+#                                            developers.tally.so, not
+#                                            modelled by this Recipe -- see
+#                                            the gaps below -- and refused
+#                                            identically anyway)
+#
+# Six requests, one byte-identical 12-byte body every time. This is the
+# Airbyte/FireHydrant arrangement in auth.go's own vocabulary -- credential
+# first, always, for every path -- and auth.after_routing is deliberately
+# left unset (false) to say so.
+#
+# **Except one path, which answers the same whatever is sent, and only on
+# GET.** `GET /` -- the bare host root, not documented anywhere in Tally's
+# API reference -- answers 200, `Content-Type: text/html; charset=utf-8`,
+# a fixed four-byte body: the character U+25BC (BLACK DOWN-POINTING
+# TRIANGLE) followed by `+`. Struck live with no credential and again with
+# `Authorization: Bearer junktoken12345` attached: byte-identical both
+# times, so the credential genuinely is not examined -- `public: true`
+# (Always), not `when-absent`. `PATCH /` was also struck, live, with no
+# credential: 401, the ordinary Unauthorized -- so the exemption is scoped
+# to this one method on this one path, not to the path regardless of verb.
+# What produces those four bytes is not documented and this Recipe does not
+# guess; it is recorded because it is real, reachable with nothing, and the
+# one place this otherwise-uniform host disagrees with itself.
+#
+# **A rate limit is documented in prose only.** "The Tally API limits
+# requests to 100 per minute" (developers.tally.so/api-reference/
+# introduction) -- no per-day figure anywhere, the opposite emphasis from
+# this group's surveymonkey/recipe.yaml, which documents both. No
+# `X-RateLimit-*` header appears anywhere in Tally's own OpenAPI document,
+# and none was reachable live without a key, so no rate_limit fault is
+# armed with header values this Recipe never observed.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - GET /forms/{formId}/submissions and GET /forms/{formId}/submissions/
+#     {submissionId} are not modelled as routes at all. Both bundle TWO
+#     independent collections in one envelope -- {questions: [...],
+#     submissions: [...], totalNumberOfSubmissionsPerFilter: {...}} for the
+#     list, {questions: [...], submission: {...}} for the single fetch --
+#     which is precisely how a real caller resolves a response's questionId
+#     to a title in one round trip. This format's list and resource
+#     envelopes each carry one collection key; modelling either route would
+#     mean silently dropping the sibling `questions` array a real client
+#     receives for free, which would misstate the very mechanism this
+#     Recipe exists to describe. The shape is stated here, cited to
+#     openapi.json, rather than served short.
+#   - Of Form's own documented fields, `payments` (an array of amount/
+#     currency objects, for Tally's payment-block forms) is not declared.
+#   - Question.fields (the per-block QuestionField array: uuid, type,
+#     blockGroupUuid, title) is not declared -- it describes a question's
+#     own sub-inputs, one layer deeper than this Recipe goes.
+#   - No worked JSON example exists anywhere in Tally's published
+#     documentation for Form, Question, Submission or Response -- checked
+#     directly against the OpenAPI document (one single unrelated "example"
+#     value in the whole file, on an unrelated schema). Every field below is
+#     typed from that document; the record VALUES in the fixture are this
+#     Recipe's own small-workspace scenario, not a value Tally ever
+#     published, and every case built on it carries no verified date for
+#     exactly that reason.
+#   - No form was ever created, so "is a question really preserved after
+#     deletion, and does the response beside it still resolve" is read from
+#     the isDeleted/numberOfResponses field pair and FormStatus's own schema
+#     description, not watched happening.
+#   - create, update and delete are not modelled: this group's rule against
+#     creating, modifying or deleting a real form leaves nothing to check
+#     them against, live or fixtured.
+#   - Workspaces, webhooks, organizations and users/me are entirely
+#     unmodelled; this Recipe covers only the forms/questions surface the
+#     central question is about.
+#
+# Every case below not carrying a verified date was read from
+# https://developers.tally.so/api-reference/openapi.json (fetched directly,
+# fingerprinted below) rather than observed against a real workspace -- no
+# API key was ever created. Keys below are fixtures, not secrets.
+
+recipe: tally
+capability: forms
+version: 0.1.0
+
+upstream:
+  api: "1.0.0"
+  docs: https://developers.tally.so/api-reference/introduction
+  spec: https://developers.tally.so/api-reference/openapi.json
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - tly-cauldron000000000000000000000
+  # No absent/malformed/rejected split -- see the header. No header, a junk
+  # bearer token, an empty "Bearer " value and a header with no scheme all
+  # answered the identical 12-byte body, live.
+  #
+  # after_routing is deliberately left unset: the credential is checked
+  # before the route, without exception, for every path struck -- see the
+  # header.
+
+responses:
+  list:
+    style: wrapped
+    count_field: total
+    page_field: page
+    limit_field: limit
+    has_more_field: hasMore
+  resource:
+    style: bare
+  # Not JSON. A client calling .json() on this throws. See the header.
+  error:
+    style: text
+
+resources:
+  form:
+    collection: items
+    id:
+      style: opaque
+    fields:
+      name:
+        type: string
+        required: true
+      workspaceId:
+        type: string
+      # BLANK, DRAFT or PUBLISHED. FormStatus's own schema description: see
+      # the header on what it says about deletion.
+      status:
+        type: string
+        default: DRAFT
+      numberOfSubmissions:
+        type: integer
+        default: 0
+      isClosed:
+        type: boolean
+        default: false
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+  question:
+    collection: questions
+    id:
+      style: opaque
+    fields:
+      formId:
+        type: string
+      title:
+        type: string
+        required: true
+      # One of forty BlockType values (openapi.json,
+      # components.schemas.BlockType) -- INPUT_EMAIL, INPUT_TEXT,
+      # MULTIPLE_CHOICE_OPTION and so on. Only the two this Recipe's fixture
+      # actually uses are exercised below.
+      type:
+        type: string
+        default: INPUT_TEXT
+      isTitleModifiedByUser:
+        type: boolean
+        default: false
+      # The central field -- see the header. True on a deleted question,
+      # which stays in this array rather than being removed from it.
+      isDeleted:
+        type: boolean
+        default: false
+      numberOfResponses:
+        type: integer
+        default: 0
+      createdAt:
+        type: datetime
+      updatedAt:
+        type: datetime
+
+routes:
+  # Genuinely public, on GET only -- see the header. Undocumented anywhere
+  # in Tally's own API reference; found by probing, not by reading.
+  - method: GET
+    path: /
+    public: true
+    raw:
+      content_type: text/html; charset=utf-8
+      text: "▼+"
+
+  - method: GET
+    path: /forms
+    resource: form
+    operation: list
+    pagination:
+      style: page
+      limit_param: limit
+      cursor_param: page
+      limit: 50
+      max_limit: 500
+
+  - method: GET
+    path: /forms/{id}
+    resource: form
+    operation: get
+
+  - method: GET
+    path: /forms/{form_id}/questions
+    resource: question
+    operation: list
+    list:
+      # {questions: [...], hasResponses}, not the {items, page, limit,
+      # total, hasMore} envelope /forms uses -- a second shape on the same
+      # host, in the same group of routes.
+      key: questions
+      fields:
+        hasResponses: true
+    pagination:
+      # Not paged. A form's questions come back whole, with no page or
+      # limit parameter documented anywhere on this route.
+      limit_param: "-"
+      cursor_param: "-"
+      limit: 25
+
+errors:
+  # The one credential-failure sentence this host sends, whatever the
+  # verdict -- see the header.
+  authentication_error:
+    status: 401
+    message: Unauthorized
+
+fixtures:
+  empty: {}
+
+  # This Recipe's own small-workspace scenario. Every field NAME and TYPE
+  # below is sourced to openapi.json (see the header); no worked example
+  # exists anywhere in Tally's documentation to source the VALUES from, so
+  # none of the cases built on this fixture carries a verified date.
+  small-workspace:
+    form:
+      - id: form_cauldron01
+        name: Customer feedback
+        workspaceId: ws_cauldron01
+        status: PUBLISHED
+        numberOfSubmissions: 2
+        isClosed: false
+        createdAt: "2026-01-05T12:00:00Z"
+        updatedAt: "2026-01-05T12:00:00Z"
+
+    question:
+      - id: q_email
+        formId: form_cauldron01
+        title: What's your email?
+        type: INPUT_EMAIL
+        isTitleModifiedByUser: false
+        isDeleted: false
+        numberOfResponses: 2
+        createdAt: "2026-01-05T12:00:00Z"
+        updatedAt: "2026-01-05T12:00:00Z"
+      # The central case: deleted, and still here, still holding its
+      # original title, still counting the responses that answered it
+      # before it was removed from the form.
+      - id: q_feedback_v1
+        formId: form_cauldron01
+        title: How did we do?
+        type: INPUT_TEXT
+        isTitleModifiedByUser: false
+        isDeleted: true
+        numberOfResponses: 1
+        createdAt: "2026-01-05T12:00:00Z"
+        updatedAt: "2026-01-10T09:00:00Z"
+
+conformance:
+  - name: the root path answers with no credential examined at all
+    source: https://api.tally.so/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+    expect:
+      status: 200
+      headers:
+        Content-Type: text/html; charset=utf-8
+      body_matches: '^\x{25bc}\+$'
+
+  - name: and a junk bearer token attached changes nothing
+    # Proves public: true rather than when-absent -- this route really does
+    # not look at the header, whatever it holds.
+    source: https://api.tally.so/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 200
+      body_matches: '^\x{25bc}\+$'
+
+  - name: but a different method on the same path is refused like everything else
+    # Live, no credential. The exemption is scoped to GET / specifically,
+    # not to the path regardless of verb.
+    source: https://api.tally.so/
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '^Unauthorized$'
+
+  - name: no credential at all is refused in twelve bytes of plain text
+    source: https://api.tally.so/forms
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /forms
+    expect:
+      status: 401
+      headers:
+        Content-Type: text/plain; charset=utf-8
+      body_matches: '^Unauthorized$'
+
+  - name: a junk bearer token is refused identically -- absent and wrong are one failure here
+    source: https://api.tally.so/forms
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /forms
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      body_matches: '^Unauthorized$'
+
+  - name: a path this host genuinely has, and this Recipe does not model, is refused the same way
+    # Live: GET /forms/{id}/submissions is real and documented at
+    # developers.tally.so (see the header on why it is not modelled as a
+    # route here) -- and with no credential it is refused before that
+    # absence would ever matter.
+    source: https://api.tally.so/forms/form_cauldron01/submissions
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /forms/form_cauldron01/submissions
+    expect:
+      status: 401
+      body_matches: '^Unauthorized$'
+
+  - name: a path nobody registered is refused before routing is ever consulted
+    source: https://api.tally.so/no-such-route-xyz
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /no-such-route-xyz
+    expect:
+      status: 401
+      body_matches: '^Unauthorized$'
+
+  - name: and so is a wrong method on a route this Recipe does declare
+    source: https://api.tally.so/forms
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /forms
+    expect:
+      status: 401
+      body_matches: '^Unauthorized$'
+
+  - name: an empty account's forms listing is items, page, limit, total, hasMore -- and nothing else
+    # No worked example exists for this envelope -- see the header. Proven
+    # against zero records rather than asserted from an invented one.
+    source: https://developers.tally.so/api-reference/openapi.json
+    fixture: empty
+    request:
+      method: GET
+      path: /forms
+      headers:
+        Authorization: Bearer tly-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        items: []
+        page: 1
+        limit: 50
+        total: 0
+        hasMore: false
+
+  - name: a deleted question stays in the listing, still titled, still counted
+    # The central case. Cited to openapi.json's Question schema; the
+    # specific values are this Recipe's own scenario, not Tally's -- see the
+    # header and the fixture comment.
+    source: https://developers.tally.so/api-reference/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /forms/form_cauldron01/questions
+      headers:
+        Authorization: Bearer tly-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        hasResponses: true
+        questions[1].title: How did we do?
+        questions[1].isDeleted: true
+        questions[1].numberOfResponses: 1
+        questions[0].isDeleted: false
+
+  - name: a form is bare, with no wrapper at all
+    source: https://developers.tally.so/api-reference/openapi.json
+    fixture: small-workspace
+    request:
+      method: GET
+      path: /forms/form_cauldron01
+      headers:
+        Authorization: Bearer tly-cauldron000000000000000000000
+    expect:
+      status: 200
+      body:
+        name: Customer feedback
+        status: PUBLISHED
+      absent:
+        - items
+        - data
