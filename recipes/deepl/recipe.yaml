@@ -1,0 +1,599 @@
+# DeepL Recipe for Cauldron
+#
+# The question this Recipe's group exists to answer -- does a translation say
+# anything about how confident it is -- has a one-word answer for DeepL, and
+# the wire says it twice. The published response schema for POST /v2/translate
+# (deepl-openapi's TranslateTextResponse) has exactly five fields per
+# translation: detected_source_language, text, billed_characters,
+# model_type_used, tag_handling_version. No score, no confidence, no
+# alternates, nothing an integration could branch on to ask "how sure are
+# you." A caller gets a string back with exactly the same shape whether DeepL
+# translated a sentence it has seen ten million times or a sentence in a
+# language pair it barely supports. billed_characters answers "how much did
+# this cost," which is not the same question as "how good is it," and it is
+# the closest thing on the record to a second signal.
+#
+# detected_source_language answers the other half honestly, and the published
+# schema says so in its own description: "The language detected in the source
+# text. **It reflects the value of the source_lang parameter, when
+# specified.**" So the field is not always a detection. Call the endpoint
+# with source_lang set and this field echoes the value back rather than
+# running language identification at all -- there is no way, from the
+# response alone, to tell "DeepL looked at your text and decided it was
+# English" from "you told DeepL it was English and it took your word for it."
+# Only omitting source_lang entirely makes the field mean what its name says.
+# That distinction could not be turned into two conformance cases below: both
+# would need a real key to call, and this Recipe was written with none (see
+# the fidelity gaps). It is recorded here because the published schema states
+# it in one sentence and no fixture is needed to repeat a sentence.
+#
+# Two hosts answer this API, split by tier rather than by region --
+# api-free.deepl.com for the free plan and api.deepl.com for Pro -- and every
+# probe below was struck against api-free.deepl.com and re-struck against
+# api.deepl.com to check whether the host itself gates anything. It does not,
+# on any request this Recipe could make without a real account: an absent
+# header, a wrong scheme and a syntactically-plausible-but-unregistered key
+# answer byte-identical bodies on both hosts. The sharper question -- what a
+# genuine free-tier key (the kind that carries DeepL's own documented ":fx"
+# suffix, per developers.deepl.com/docs/getting-started/auth: "DeepL API Free
+# authentication keys can be identified easily by the suffix ':fx'") answers
+# when sent to api.deepl.com, versus what a key with no such suffix answers on
+# the same host -- could not be struck at all, because both values this
+# Recipe could send are equally fake, and DeepL's own authentication docs do
+# not say what happens on a real tier mismatch either. What this Recipe can
+# say, checked live: a syntactically free-shaped key
+# ("00000000-0000-4000-8000-000000000000:fx") and a syntactically Pro-shaped
+# one (the same string with no suffix), both fake, both answer the identical
+# "Authentication failed, provided API key is invalid." on api.deepl.com --
+# so whatever DeepL's backend does with a real tier mismatch, it is not
+# something a wrong key's shape alone reveals through a different sentence.
+# That is the third form the wrong-region question has taken in this
+# collection (after Cognito and Klarna), and here it stays open rather than
+# answered, because answering it needs a credential this Recipe will never
+# hold.
+#
+# Every failure on this host is 403, never 401 -- checked on every probe
+# below -- which matters because a client written against the HTTP spec's own
+# convention (401 for "who are you", 403 for "I know who you are and you may
+# not") reads DeepL's authentication failures as authorization failures. That
+# convention violation is DeepL's own and is served here rather than
+# corrected, because a fake that quietly used 401 would be describing a
+# better-behaved API than the one that exists.
+#
+# **Credentials fail four distinguishable ways here, and Cauldron's own
+# three-verdict vocabulary (absent, malformed, rejected) has room for three.**
+# Checked live, all against GET /v2/usage:
+#
+#   no Authorization header at all
+#     -> "Missing Authorization header, expected 'Authorization:
+#        DeepL-Auth-Key <API key>'. ..."                        [absent]
+#   Authorization: Bearer junk-not-real-key
+#     -> "Authorization header is missing scheme. Add prefix
+#        'DeepL-Auth-Key'. ..."                                 [malformed]
+#   Authorization: DeepL-Auth-Key  (the prefix, and nothing after it)
+#     -> "Authorization header is missing API key. Add API key after
+#        scheme 'DeepL-Auth-Key'. ..."                          [also malformed]
+#   Authorization: DeepL-Auth-Key junk-not-real-key
+#     -> "Authentication failed, provided API key is invalid. ..." [rejected]
+#
+# The middle two are the same verdict by this runtime's own rule -- Verdict
+# classifies "the prefix matched and nothing was left" the same as "the
+# prefix never matched at all," both malformed, see internal/recipe/auth.go --
+# and DeepL disagrees: it has a sentence for each. auth.malformed_error below
+# carries the wrong-scheme sentence, because that is the shape a caller who
+# mistyped the header name is more likely to send; the empty-after-prefix
+# sentence is reachable anyway, on GET /v2/usage only, through a route
+# declaring matches_header for that exact literal value -- the same device
+# Census and Turso use elsewhere in this collection to serve more shapes than
+# one Recipe-wide scheme has slots for.
+#
+# **The rejected sentence itself is not the same on every endpoint, which
+# needed a fifth device.** GET /v2/usage answers a rejected key with
+# "Authentication failed, provided API key is invalid." -- checked live.
+# POST /v2/translate answers the *identical* rejected key with "Forbidden."
+# and nothing else -- also checked live, twice, with the request re-sent to
+# confirm it was not a rate-limited fluke. Same account state (there is no
+# account), same key, same rejection, two sentences, because Cauldron's
+# auth.rejected_error is one setting for the whole Recipe and this provider
+# is not one sentence about it. auth.rejected_error below carries usage's
+# sentence, since usage is this Recipe's primary demonstration route, and the
+# conformance case for translate's rejected key arms translate_forbidden for
+# itself -- the same pattern Mezmo's Recipe uses for account_not_found and
+# Rootly's for rate_limit: a real, live-checked response Cauldron's automatic
+# check cannot produce on its own because it does not vary per route.
+#
+# **Routing and method resolve before the credential, and the "not found"
+# shape is a genuine surprise.** Checked live, no Authorization header at
+# all: GET /v2/no-such-endpoint-xyz answers 403 with a completely empty
+# body -- zero bytes, no Content-Type header at all, not even the JSON
+# envelope every other failure on this host carries. GET /v2/ (the version
+# prefix alone) answers the same. A wrong method on a route that exists --
+# PATCH, OPTIONS or HEAD on /v2/usage -- answers a real 405 with
+# Allow: GET, POST and an equally empty body, also with no credential
+# examined at all. Both facts were true with a credential attached too: the
+# body and status do not move. That is auth.after_routing, and it is the
+# reason DeepL's 403-for-everything convention has an exception nobody would
+# guess from the failure sentences alone -- an unrouted path is refused for
+# its own sake, in a shape none of the credential failures share.
+#
+# One boundary this Recipe could not carry into a single fallback: that empty
+# 403 belongs to a path that starts with /v2/ and matches nothing under it.
+# A path with no version prefix at all (/totally-bogus) or the wrong version
+# (/v3/usage) answers something else again -- a real 404, text/html,
+# eleven-line nginx boilerplate -- from what looks like a different edge
+# layer entirely, one that has never heard of this API's own JSON error
+# envelope. Cauldron's own unknown_route is one shape per Recipe, and what it
+# serves below is the /v2/* shape, since every route this Recipe declares
+# lives there; the nginx 404 is recorded here rather than served, because
+# claiming it for every conceivable path this Recipe was never asked about
+# would be a guess wearing a verified date it did not earn.
+#
+# **What happens to text DeepL cannot translate, or an unsupported language
+# pair, is not something this Recipe could strike.** Every route needing a
+# real translation needs a real key, and none exists here. DeepL's own
+# published description gives every 400 on /v2/translate the identical
+# generic wording -- "Bad request. Please check error message and your
+# parameters." -- with no worked example anywhere for an unsupported
+# target_lang, an empty text array, or a language pair the account's plan
+# does not cover. That is not this Recipe declining to look; it is DeepL's
+# own reference declining to say, and the honest response is to serve the one
+# sentence the description gives rather than inventing the specific one it
+# withholds.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No account was ever created and no API key was ever requested, guessed
+#     or used. Every 403/405 case below was struck live, with a key this
+#     Recipe knows to be fake, and carries a verified date. Every 200 case
+#     was read from DeepL's own published OpenAPI description
+#     (github.com/DeepLcom/openapi) and carries none.
+#   - /v2/usage's 200 is the description's own "free" example verbatim --
+#     character_count: 180118, character_limit: 1250000 -- and nothing more.
+#     The richer "pro" example in the same description adds a products
+#     breakdown array (write, translate, speechToText, speechToSpeech, each
+#     with its own unit counts), speech-to-text and speech-to-speech minute
+#     quotas, and a billing window (start_time/end_time). None of it is
+#     modelled: this Recipe never held a Pro key and a shape read from one
+#     example and applied to every account would be a guess about which
+#     accounts see which fields.
+#   - /v2/translate's 200 is the description's own worked example verbatim
+#     too -- text: ["Hello, World!"] with no source_lang, target_lang: DE,
+#     answering detected_source_language: EN, text: "Hallo, Welt!" -- and it
+#     is served for every request this route receives, not derived from
+#     whatever text a caller actually sends. Cauldron does not run a
+#     translation engine; a Recipe that varied its output by input text
+#     would be claiming one anyway. show_billed_characters, model_type_used
+#     and tag_handling_version are declared in the description and not
+#     modelled, because none has a worked example independent of a
+#     parameter this Recipe never exercises.
+#   - GET is a real, working method on both /v2/usage (checked live -- see
+#     the routes) and /v2/translate (checked live for its 403 only: a junk
+#     key over GET answers the identical "Forbidden." POST gets). Only
+#     POST /v2/translate is routed to a resource here; GET /v2/translate is
+#     absent, because its 200 shape was never observed with a real key and
+#     duplicating the POST shape under GET would be a claim about a request
+#     this Recipe never sent. One consequence is stated plainly: the real
+#     Allow header on a wrong method against /v2/translate reads
+#     "GET, POST" and this Recipe's computed one reads "POST" alone.
+#   - Glossaries, style rules, translation memory, document translation
+#     (/v2/document and its poll/download routes), and every write scoped to
+#     an account (glossary CRUD, the write endpoints under /v2/write) are
+#     real, documented, and entirely absent. This Recipe is about the
+#     question its group exists to ask, not a full port of the platform.
+#   - 456 (QuotaExceeded) and 429 (TooManyRequests) are declared from the
+#     description's own wording and demonstrated by arming them for one
+#     request each; neither was ever triggered live, because doing so needs
+#     an account whose quota this Recipe could exhaust or a request rate
+#     this Recipe was told not to send.
+#
+# spec_hash below fingerprints the parts of DeepLcom/openapi this Recipe
+# actually claims, taken on the date in spec_seen.
+
+recipe: deepl
+capability: ai
+version: 0.1.0
+
+upstream:
+  api: v2
+  docs: https://developers.deepl.com/docs/getting-started/auth
+  spec: https://raw.githubusercontent.com/DeepLcom/openapi/main/openapi.yaml
+  spec_hash: 1aa207958120c8d04c34b71cad61ddf0029668dbbacef9b4ba1960b0d93695e3
+  spec_seen: "2026-09-02"
+
+auth:
+  scheme: header
+  header: Authorization
+  prefix: "DeepL-Auth-Key "
+  keys:
+    - 00000000-0000-4000-8000-000000000000:fx
+  # The wrong-scheme sentence. See the header: the empty-after-prefix
+  # sentence DeepL also sends is the same Verdict by this runtime's own rule
+  # and is reached instead through a matches_header route below.
+  malformed_error: missing_scheme
+  absent_error: missing_auth_header
+  # usage's own sentence. translate's different one is armed per-case -- see
+  # the header.
+  rejected_error: invalid_api_key
+  # Routing and method resolve before the credential; see the header. This is
+  # also what lets the empty-body unrouted and method-not-allowed shapes
+  # below be served with no credential sent at all, matching exactly what the
+  # live probes sent.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+
+resources:
+  # /v2/usage answers about whoever the credential belongs to -- no id in the
+  # path, nothing to scope -- the same shape as Turso's /v1/auth/validate and
+  # GitHub's /user elsewhere in this collection.
+  usage:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      character_count:
+        type: integer
+      character_limit:
+        type: integer
+
+  # The translate response. Every field here is a Recipe-wide constant rather
+  # than something read from the request body, because Cauldron holds no
+  # translation engine and a shape that varied by input text would be
+  # claiming one anyway -- see the header. text is deliberately not declared
+  # with `in` pointing at the request's own "text" key: a constant always
+  # overwrites whatever a create route would otherwise have echoed, which is
+  # the mechanism, not an accident.
+  translation:
+    id:
+      style: opaque
+      field: "-"
+    constants:
+      detected_source_language: EN
+      text: "Hallo, Welt!"
+
+routes:
+  # The empty-after-prefix sentence, reached only for this exact literal
+  # header value. See the header for why this needs its own route rather
+  # than auth.malformed_error: Cauldron's Verdict does not separate it from
+  # a wrong scheme, and DeepL does. public because no credential check
+  # applies here at all -- this exact value never reaches one, live.
+  - method: GET
+    path: /v2/usage
+    matches_header:
+      Authorization: "DeepL-Auth-Key "
+    public: true
+    error: missing_api_key_after_scheme
+
+  - method: GET
+    path: /v2/usage
+    resource: usage
+    operation: get
+    id_from: auth
+
+  # A real, working alternative method on the same resource -- checked live,
+  # not guessed -- kept so the computed Allow header on a genuine wrong
+  # method (PATCH, OPTIONS, HEAD) reads GET, POST the way the live one does.
+  - method: POST
+    path: /v2/usage
+    resource: usage
+    operation: get
+    id_from: auth
+
+  - method: POST
+    path: /v2/translate
+    resource: translation
+    operation: create
+    # Named explicitly: translation has no declared fields, only constants
+    # (see the resource above), and a create with nothing to say what it
+    # sends would otherwise echo the decoded request body back verbatim.
+    returns: [detected_source_language, text]
+    envelope:
+      style: wrapped
+      key: translations
+      array: true
+
+errors:
+  missing_auth_header:
+    status: 403
+    message: "Missing Authorization header, expected 'Authorization: DeepL-Auth-Key <API key>'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  missing_scheme:
+    status: 403
+    message: "Authorization header is missing scheme. Add prefix 'DeepL-Auth-Key'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # Reached only through the matches_header route above.
+  missing_api_key_after_scheme:
+    status: 403
+    message: "Authorization header is missing API key. Add API key after scheme 'DeepL-Auth-Key'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  invalid_api_key:
+    status: 403
+    message: "Authentication failed, provided API key is invalid. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # translate's own rejected sentence -- see the header. Armed rather than
+  # wired, because Cauldron's rejected_error is one setting for the whole
+  # Recipe and this one does not apply everywhere.
+  translate_forbidden:
+    status: 403
+    message: "Forbidden. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  # A path under /v2/ matching no declared route. Zero bytes, no
+  # Content-Type -- checked live, credential or none, see the header for the
+  # boundary this does not cover.
+  unknown_route:
+    status: 403
+    empty: true
+
+  # A method nothing is registered for, on a path that is otherwise real.
+  # Also zero bytes; the Allow header is computed from the routes this
+  # Recipe declares, matching the live one exactly where both methods are
+  # routed -- see the header's fidelity gap for the one place it is not.
+  method_not_allowed:
+    status: 405
+    empty: true
+
+  # Documented, not observed -- see the header. DeepL's own wording, on the
+  # same ErrorResponse schema and envelope every live 403 above answers with.
+  bad_request:
+    status: 400
+    message: "Bad request. Please check error message and your parameters."
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  quota_exceeded:
+    status: 456
+    message: "Quota exceeded. The character limit has been reached."
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+  too_many_requests:
+    status: 429
+    message: "Too many requests. Please wait and resend your request."
+    headers:
+      Content-Type: "application/json; charset=utf-8"
+
+fixtures:
+  empty: {}
+
+  account:
+    usage:
+      # DeepL's own "free" example, verbatim -- see the header.
+      - character_count: 180118
+        character_limit: 1250000
+
+# Every case below carries source. A verified date means this Recipe called
+# api-free.deepl.com (cross-checked against api.deepl.com where the header
+# says so) with exactly the request shown and recorded exactly what came
+# back; its absence means the case was read from DeepLcom/openapi and never
+# called.
+conformance:
+  - name: no credential at all is refused for exactly that
+    source: https://api-free.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+    expect:
+      status: 403
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+      body:
+        message: "Missing Authorization header, expected 'Authorization: DeepL-Auth-Key <API key>'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: the wrong scheme entirely is a different sentence
+    source: https://api-free.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+      headers:
+        Authorization: Bearer junk-not-real-key
+    expect:
+      status: 403
+      body:
+        message: "Authorization header is missing scheme. Add prefix 'DeepL-Auth-Key'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: the right scheme with nothing after it is a third sentence
+    # Reached through the matches_header route: Verdict alone cannot tell
+    # this from the case above. See the header.
+    source: https://api-free.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+      headers:
+        Authorization: "DeepL-Auth-Key "
+    expect:
+      status: 403
+      body:
+        message: "Authorization header is missing API key. Add API key after scheme 'DeepL-Auth-Key'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: a well-formed key nobody issued is a fourth
+    source: https://api-free.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+      headers:
+        Authorization: "DeepL-Auth-Key junk-not-real-key"
+    expect:
+      status: 403
+      body:
+        message: "Authentication failed, provided API key is invalid. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: the paid host answers a fake key identically, shaped as free or not
+    # Struck twice against api.deepl.com: a free-shaped fake key (":fx"
+    # suffix) and the same string with no suffix. Both fake -- neither is
+    # this fixture's accepted key -- both this one sentence. See the header
+    # for the tier-mismatch question this does not answer.
+    source: https://api.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+      headers:
+        Authorization: "DeepL-Auth-Key 11111111-1111-4111-8111-111111111111:fx"
+    expect:
+      status: 403
+      body:
+        message: "Authentication failed, provided API key is invalid. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: absent is the same sentence on translate as on usage
+    source: https://api-free.deepl.com/v2/translate
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: POST
+      path: /v2/translate
+    expect:
+      status: 403
+      body:
+        message: "Missing Authorization header, expected 'Authorization: DeepL-Auth-Key <API key>'. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: rejected is not -- the same key gets a different sentence on translate
+    # Armed: see the header. This exact request, re-sent twice live to rule
+    # out a rate-limited fluke, answered this exact body both times.
+    source: https://api-free.deepl.com/v2/translate
+    verified: "2026-09-02"
+    arm: translate_forbidden
+    fixture: account
+    request:
+      method: POST
+      path: /v2/translate
+      headers:
+        Authorization: "DeepL-Auth-Key junk-not-real-key"
+    expect:
+      status: 403
+      body:
+        message: "Forbidden. You can find more info in our docs: https://developers.deepl.com/docs/getting-started/auth"
+
+  - name: a path under the version prefix matching nothing is refused with an empty body
+    source: https://api-free.deepl.com/v2/no-such-endpoint-xyz
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: GET
+      path: /v2/no-such-endpoint-xyz
+    expect:
+      status: 403
+      no_body: true
+      absent_headers:
+        - Content-Type
+
+  - name: a wrong method on a real path is a genuine 405, also empty, also credential-blind
+    source: https://api-free.deepl.com/v2/usage
+    verified: "2026-09-02"
+    fixture: account
+    request:
+      method: PATCH
+      path: /v2/usage
+    expect:
+      status: 405
+      headers:
+        Allow: "GET, POST"
+      no_body: true
+
+  - name: usage answers exactly the two fields the free example documents
+    source: https://raw.githubusercontent.com/DeepLcom/openapi/main/openapi.yaml
+    fixture: account
+    request:
+      method: GET
+      path: /v2/usage
+      headers:
+        Authorization: "DeepL-Auth-Key 00000000-0000-4000-8000-000000000000:fx"
+    expect:
+      status: 200
+      body:
+        character_count: 180118
+        character_limit: 1250000
+      absent:
+        - products
+        - api_key_character_count
+        - speech_to_text_minutes_count
+        - start_time
+
+  - name: a translation carries no confidence or quality signal anywhere
+    # The finding this Recipe's group exists to record. detected_source_language
+    # is the only thing beside the text itself, and see the header for the
+    # sense in which even that is sometimes an echo rather than a decision.
+    source: https://raw.githubusercontent.com/DeepLcom/openapi/main/openapi.yaml
+    fixture: account
+    request:
+      method: POST
+      path: /v2/translate
+      headers:
+        Authorization: "DeepL-Auth-Key 00000000-0000-4000-8000-000000000000:fx"
+      json:
+        text:
+          - "Hello, World!"
+        target_lang: DE
+    expect:
+      status: 200
+      body:
+        "translations[0].detected_source_language": EN
+        "translations[0].text": "Hallo, Welt!"
+      absent:
+        - "translations[0].confidence"
+        - "translations[0].quality"
+        - "translations[0].score"
+        - confidence
+
+  - name: an unsupported request gets DeepL's one generic sentence, not a specific one
+    # Armed: DeepL's own description gives every 400 on this route the
+    # identical wording, with no worked example for the specific case of an
+    # unsupported language pair. See the header.
+    source: https://raw.githubusercontent.com/DeepLcom/openapi/main/openapi.yaml
+    arm: bad_request
+    fixture: account
+    request:
+      method: POST
+      path: /v2/translate
+      headers:
+        Authorization: "DeepL-Auth-Key 00000000-0000-4000-8000-000000000000:fx"
+      json:
+        text:
+          - "Hello, World!"
+        target_lang: XX
+    expect:
+      status: 400
+      body:
+        message: "Bad request. Please check error message and your parameters."
+
+  - name: quota exceeded is its own status, not a 429
+    source: https://raw.githubusercontent.com/DeepLcom/openapi/main/openapi.yaml
+    arm: quota_exceeded
+    fixture: account
+    request:
+      method: POST
+      path: /v2/translate
+      headers:
+        Authorization: "DeepL-Auth-Key 00000000-0000-4000-8000-000000000000:fx"
+      json:
+        text:
+          - "Hello, World!"
+        target_lang: DE
+    expect:
+      status: 456
+      body:
+        message: "Quota exceeded. The character limit has been reached."
