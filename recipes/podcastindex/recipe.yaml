@@ -1,0 +1,768 @@
+# Podcast Index Recipe for Cauldron
+#
+# This is the group's control case. Podcast Index's own OpenAPI description
+# (openapi: 3.0.1, "PodcastIndex.org API" 1.12.1, fingerprinted below) answers
+# this group's whole question in one field, in the vendor's own words:
+#
+#   dead: "At some point, we give up trying to process a feed and mark it as
+#     dead. This is usually after 1000 errors without a successful pull/parse
+#     cycle. Once the feed is marked dead, we only check it once per month."
+#   lastGoodHttpStatusTime: "Timestamp of the last time we got a 'good',
+#     meaning non-4xx/non-5xx, status code when pulling this feed from its
+#     url."
+#   lastHttpStatus: "The last http status code we got... You will see some
+#     made up status codes sometimes... these all start with 9xx."
+#
+# dead is a blunt integer (0 or 1, not a boolean), with no reason attached to
+# it anywhere on the record. lastGoodHttpStatusTime, lastCrawlTime and
+# lastParseTime are three separate timestamps -- the last time a *good* fetch
+# happened, the last time a fetch was *attempted* regardless of outcome, and
+# the last time the downloaded bytes were *parsed* -- so a feed can be dead
+# with a recent lastCrawlTime (the puller keeps trying, on its monthly
+# schedule) and an old lastGoodHttpStatusTime (nothing it has tried has
+# worked in a long time). crawlErrors and parseErrors are running counts of
+# each kind of failure, separately, because a feed that 500s and a feed that
+# serves well-formed-nothing-like-RSS fail two different ways. Once a feed is
+# marked dead, GET /podcasts/dead answers a record with none of that on it --
+# {id, title, url, duplicateOf} and nothing else, per the feed_dead schema --
+# so the rich diagnostic fields this Recipe's header leads with are exactly
+# what a dead feed's own listing does not carry.
+#
+# The identifier scheme is the directory's own, not derived from the feed. id
+# (an integer, e.g. 75075) is "Podcast Index's own internal id, unrelated to
+# any other id" per the field's own words elsewhere in the description;
+# podcastguid is a *separate* field carrying the feed's own podcast:guid tag
+# per the namespace spec, present on the record beside id rather than instead
+# of it. Same split on an episode: id is Podcast Index's own integer, guid is
+# "the unique identifier for the episode" pulled verbatim from the RSS
+# <guid> element (the schema's own example, "incomparable/batman/19", is not
+# a hash or a UUID -- it is whatever string the feed happened to put there).
+# A caller who only has the feed's own guid, not Podcast Index's id, can
+# still resolve a record: GET /episodes/byguid exists precisely for that.
+#
+# Every field and value above is read from the published description, not
+# observed -- no account was ever created and no API key was ever requested,
+# guessed or used. The live probing below is everything that Cauldron's own
+# credential mechanism could reach without one, and it turned out to answer
+# a second, unplanned question about this exact scheme.
+#
+# **Two providers this collection already met with the identical SHA-1(key +
+# secret + timestamp) shape -- Hotelbeds and Sumsub -- turned out to be
+# unreachable past the front gate: a CDN or an API gateway refused every
+# combination of credential identically, before either provider's own
+# application ever saw the request. Podcast Index is not that. It is
+# unusually open, and it answers.** Checked live against api.podcastindex.org
+# with a proper User-Agent set and no real key ever held:
+#
+#   nothing sent at all               -> 401 Authorization header value
+#                                         either not set or blank.
+#   Authorization + X-Auth-Date sent,
+#     X-Auth-Key withheld             -> 401 X-Auth-Key header value either
+#                                         not set, blank or corrupt.
+#   Authorization + X-Auth-Key sent,
+#     X-Auth-Date withheld            -> 401 X-Auth-Date header value either
+#                                         not set, blank or corrupt.
+#   all three sent, X-Auth-Date is a
+#     timestamp outside +/- 3 minutes -> 401 X-Auth-Date header value is not
+#                                         within the +/- 3 minute time window.
+#   all three sent, timestamp fresh,
+#     X-Auth-Key not a registered key -> 401 The X-Auth-Key header contains
+#                                         an invalid API key.
+#
+# Five distinct sentences, and the order those checks run in is exactly the
+# order above: presence of Authorization, then presence of X-Auth-Key, then
+# presence of X-Auth-Date, then whether X-Auth-Date's value is within the
+# window, then whether X-Auth-Key's value is one Podcast Index issued. Each
+# was struck by holding everything before it fixed and correct-shaped while
+# breaking only the one thing under test, confirmed both directions (e.g. an
+# absent X-Auth-Key answers its own sentence whether X-Auth-Date is present
+# or not, and vice versa). The stale-timestamp response goes further than a
+# sentence: it appends a Debug block that echoes the server's own current
+# time and every auth header the request sent, verbatim --
+#
+#   Debug
+#     Server time: 1788393570
+#   Headers Received
+#     X-Auth-Date: 1234567890
+#     X-Auth-Key: junkkey0000
+#     Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+#     User-Agent: cauldron-recipe-probe/1.0 (...)
+#
+# which is a debugging aid live on production, not something either
+# Hotelbeds or Sumsub's gateway ever let this collection see for the
+# identical scheme.
+#
+# What is still unreachable, and for a different reason than either sibling:
+# the signature itself. SHA-1(X-Auth-Key + secret + X-Auth-Date) is the
+# actual credential, and nothing above reaches a message about it, because
+# X-Auth-Key's own validity is checked *before* the signature would be, and
+# holding no registered key means that check fails first on every attempt.
+# Hotelbeds and Sumsub were unreachable because a CDN stood in front of the
+# provider; here the provider's own checks are reachable and ordered, and
+# the innermost one -- does this signature match this key's secret -- simply
+# has a gate in front of it that a probe with no real key can never clear.
+# The honest reading is not "this API hides its signature check" but "this
+# API validates the key before it bothers computing a signature against it,"
+# which is a real and different fact from either sibling's finding.
+#
+# **A fourth gate sits in front of all of this and is not part of the
+# auth scheme at all.** Every request without a descriptive User-Agent header
+# -- no header, or a generic/library-default one -- is refused before
+# anything above ever runs, credential or path notwithstanding:
+#
+#   HTTP/1.1 403 Forbidden
+#   Content-Type: text/plain
+#   You must set a proper User-Agent string that identifies your
+#   application.  Sample code UA strings, default http library UA strings
+#   and generic or vague UA strings are not allowed.
+#
+# checked against both a routed and an unrouted path, both with and without
+# auth headers, identical every time. This is not modelled as an enforced
+# check: Cauldron's required_headers can require a header's *presence*, and
+# this gate refuses on the *shape* of the value (a real client library's
+# default string is refused exactly like an absent header is), which is a
+# check this format has no way to express short of a hardcoded blocklist of
+# known-bad strings. Every conformance case below sends a real, descriptive
+# User-Agent, which is what let the rest of this Recipe be struck live at
+# all, and this header records the gate as the true first line of defence a
+# caller meets rather than pretending auth.after_routing is the first thing
+# checked.
+#
+# Routing beats auth on this host, checked live: GET on a path this API has
+# no route for, proper User-Agent, no credential of any kind, answers 404
+# with nginx's own stock page (Content-Type text/html, not this API's JSON
+# envelope at all) rather than the Authorization-absent sentence above. The
+# identical request against a *real* path -- any of GET, PUT or DELETE, all
+# checked -- answers the auth chain instead, meaning method is not examined
+# either: there is no 405 anywhere this Recipe could find. A wrong method on
+# a real path is refused for its credentials exactly like the right method
+# is, never routed away as unsupported.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - The signature check itself (auth.rejected_error, in this format's
+#     sense) is not modelled, for the reason above: no request this Recipe
+#     could send ever produced a sentence about the signature rather than
+#     about X-Auth-Key's own registration, so there is nothing observed to
+#     serve. key_invalid below is the closest live sentence to it and is
+#     reached by arming a case, not by the credential check, because
+#     Cauldron's own scheme is bearer/pattern-style membership against
+#     Authorization and cannot also validate a *second* header's value
+#     against a computation this Recipe never performs.
+#   - auth.malformed_error is unset. Every probe that reached a shape check
+#     at all sent a 40-character lowercase-hex Authorization value -- a
+#     real SHA-1 digest is exactly that shape -- so a non-hex or wrong-length
+#     value was never tried live, and this Recipe does not claim a sentence
+#     for it.
+#   - The User-Agent gate above is recorded, not enforced. See above.
+#   - The Debug block on the stale-timestamp response (server time and
+#     echoed headers) is not reproduced verbatim; the case below asserts the
+#     sentence that precedes it, which is the part every call answered
+#     identically, and the header quotes the block above rather than pinning
+#     a server time this Recipe would have to fabricate on every run.
+#   - Every 200-path case below is read from the schema's own field-level
+#     "example" annotations -- id 75075, podcastguid
+#     9b024349-ccf0-5f69-a609-6b82873eab3c, "Batman University" -- the same
+#     worked identifiers the description uses throughout its own examples,
+#     not invented for this Recipe. No successful call was ever made; no
+#     account exists to make one.
+#   - value and funding (the Value4Value/podcast:funding blocks) are typed
+#     as maps and never populated: the description shows their shape as
+#     nested objects with no scalar worked example short of a full
+#     podcast:value tree, and this Recipe declares the field rather than
+#     inventing one.
+#   - Pagination on /podcasts/dead is not modelled. The description gives it
+#     a max and a since parameter but no worked example of either changing
+#     the shape of the response, so this Recipe serves the whole list every
+#     time, which is what the single case below actually needs.
+
+recipe: podcastindex
+capability: media
+version: 0.1.0
+
+upstream:
+  api: "1.0"
+  docs: https://podcastindex-org.github.io/docs-api/
+  spec: https://podcastindex-org.github.io/docs-api/pi_api.json
+  spec_hash: ff0ea8da9bf8e6052a324ae5fa686df6d2f4df7a8990492992cf8e96e61d79ea
+  spec_seen: "2026-09-02"
+
+auth:
+  # The credential is a computed SHA-1, not a fixed key this Recipe could
+  # hold and compare against -- see auth.Pattern's own doc for the identical
+  # shape AWS SigV4 needs elsewhere in this collection. Accepting anything
+  # 40 lowercase-hex characters long is the honest version of "cannot verify
+  # the signature", stated here rather than silently.
+  scheme: header
+  header: Authorization
+  pattern: "^[0-9a-f]{40}$"
+  absent_error: authz_absent
+  # Routing answers before the credential does -- checked live, see header.
+  after_routing: true
+
+# X-Auth-Key and X-Auth-Date are required alongside Authorization and are not
+# expressible as a second scheme on the same auth block, so each is its own
+# presence check with its own sentence -- exactly what the live host answers
+# when only that one is withheld.
+required_headers:
+  X-Auth-Key:
+    error: key_absent
+  X-Auth-Date:
+    error: date_absent
+
+responses:
+  list:
+    style: wrapped
+    count_field: count
+  resource:
+    # Key left unset: each route wraps under its own resource's name, which
+    # is exactly what this API does -- "feed" for a single podcast, "episode"
+    # for a single episode. See resources[*].collection for the array key
+    # each list route answers under, which differs from the singular name
+    # ("feeds" and "episode" respectively) and cannot be one Recipe-wide
+    # constant either.
+    style: wrapped
+  error:
+    style: text
+  success:
+    fields:
+      status: "true"
+
+resources:
+  feed:
+    collection: feed
+    id:
+      style: numeric
+      type: number
+    fields:
+      podcastGuid:
+        type: string
+        null_when_unset: true
+      title:
+        type: string
+      url:
+        type: string
+      originalUrl:
+        type: string
+        null_when_unset: true
+      link:
+        type: string
+        null_when_unset: true
+      description:
+        type: string
+        null_when_unset: true
+      author:
+        type: string
+        null_when_unset: true
+      ownerName:
+        type: string
+        null_when_unset: true
+      image:
+        type: string
+        null_when_unset: true
+      artwork:
+        type: string
+        null_when_unset: true
+      # The whole answer to this group's question -- see the header. Four
+      # separate timestamps, none of them the same fact: the last time a
+      # fetch was *attempted*, the last time it was *parsed*, and the last
+      # time it *succeeded*, which can all disagree.
+      lastUpdateTime:
+        type: timestamp
+      lastCrawlTime:
+        type: timestamp
+      lastParseTime:
+        type: timestamp
+      lastGoodHttpStatusTime:
+        type: timestamp
+      lastHttpStatus:
+        type: integer
+      contentType:
+        type: string
+        null_when_unset: true
+      itunesId:
+        type: integer
+        null_when_unset: true
+      itunesType:
+        type: string
+        null_when_unset: true
+      generator:
+        type: string
+        null_when_unset: true
+      language:
+        type: string
+        null_when_unset: true
+      explicit:
+        type: boolean
+        default: false
+      medium:
+        type: string
+        null_when_unset: true
+      # 0 or 1, an integer rather than a boolean -- the schema's own type.
+      # No reason field sits beside it anywhere on this record.
+      dead:
+        type: integer
+        default: 0
+      chash:
+        type: string
+        null_when_unset: true
+      episodeCount:
+        type: integer
+      crawlErrors:
+        type: integer
+        default: 0
+      parseErrors:
+        type: integer
+        default: 0
+      locked:
+        type: integer
+        default: 0
+      imageUrlHash:
+        type: integer
+        null_when_unset: true
+
+  # What GET /podcasts/dead answers with -- a deliberately thinner record than
+  # feed above. See the header: this is the entire shape a dead feed's own
+  # listing carries, none of the diagnostic fields included.
+  dead_feed:
+    collection: feeds
+    id:
+      style: numeric
+      type: number
+    fields:
+      title:
+        type: string
+      url:
+        type: string
+      duplicateOf:
+        type: integer
+        null_when_unset: true
+
+  episode:
+    collection: episode
+    id:
+      style: numeric
+      type: number
+    fields:
+      title:
+        type: string
+      link:
+        type: string
+        null_when_unset: true
+      description:
+        type: string
+        null_when_unset: true
+      # Pulled verbatim from the feed's own <guid> element -- see the
+      # header. Not a hash, not necessarily a UUID; whatever string the
+      # producer's feed put there.
+      guid:
+        type: string
+      datePublished:
+        type: timestamp
+      datePublishedPretty:
+        type: string
+        null_when_unset: true
+      dateCrawled:
+        type: timestamp
+      enclosureUrl:
+        type: string
+      enclosureType:
+        type: string
+        null_when_unset: true
+      enclosureLength:
+        type: integer
+        null_when_unset: true
+      duration:
+        type: integer
+        null_when_unset: true
+      explicit:
+        type: integer
+        default: 0
+      episode:
+        type: integer
+        null_when_unset: true
+      episodeType:
+        type: string
+        null_when_unset: true
+      season:
+        type: integer
+        null_when_unset: true
+      image:
+        type: string
+        null_when_unset: true
+      feedId:
+        type: integer
+      feedTitle:
+        type: string
+        null_when_unset: true
+      feedLanguage:
+        type: string
+        null_when_unset: true
+
+routes:
+  - method: GET
+    path: /api/1.0/podcasts/byfeedid
+    resource: feed
+    operation: get
+    id_from: query:id
+
+  - method: PUT
+    path: /api/1.0/podcasts/byfeedid
+    error: authz_absent
+
+  - method: GET
+    path: /api/1.0/podcasts/dead
+    resource: dead_feed
+    operation: list
+
+  - method: GET
+    path: /api/1.0/episodes/byid
+    resource: episode
+    operation: get
+    id_from: query:id
+
+errors:
+  # The generic fallback every verdict without its own name resolves to.
+  # Never actually reached by a live request this Recipe could construct --
+  # see the header -- but required as the default, so it carries the
+  # nearest real sentence rather than an invented one.
+  authentication_error:
+    status: 401
+    message: "The X-Auth-Key header contains an invalid API key.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      # The lie this whole API tells on every failure: every 401 this Recipe
+      # struck carried Content-Type: application/json over a body that is
+      # not JSON at all -- no braces, no quotes, a bare sentence.
+      Content-Type: application/json
+
+  authz_absent:
+    status: 401
+    message: "Authorization header value either not set or blank.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      Content-Type: application/json
+
+  key_absent:
+    status: 401
+    message: "X-Auth-Key header value either not set, blank or corrupt.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      Content-Type: application/json
+
+  date_absent:
+    status: 401
+    message: "X-Auth-Date header value either not set, blank or corrupt.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      Content-Type: application/json
+
+  # Reached only by arming -- see the header. The live body appends a Debug
+  # block this Recipe does not reproduce; the sentence below is the part
+  # every call answered identically.
+  date_stale:
+    status: 401
+    message: "X-Auth-Date header value is not within the +/- 3 minute time window.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      Content-Type: application/json
+
+  # Reached only by arming -- see the header. This is the closest live
+  # sentence to a rejected signature this Recipe could reach without a real
+  # key; it is X-Auth-Key's own registration being refused, not the
+  # signature computed from it.
+  key_invalid:
+    status: 401
+    message: "The X-Auth-Key header contains an invalid API key.  Please see: https://podcastindex-org.github.io/docs-api/#overview--authentication-details"
+    headers:
+      Content-Type: application/json
+
+  unknown_route:
+    status: 404
+    style: text
+    headers:
+      Content-Type: text/html
+    message: |
+      <html>
+      <head><title>404 Not Found</title></head>
+      <body>
+      <center><h1>404 Not Found</h1></center>
+      <hr><center>nginx</center>
+      </body>
+      </html>
+
+fixtures:
+  empty: {}
+
+  # Every value below is the schema's own "example" annotation, cited in the
+  # header, for id 75075 -- Podcast Index's own worked example throughout its
+  # published description. No credential exists to have observed it live.
+  batman-university:
+    feed:
+      - id: 75075
+        podcastGuid: 9b024349-ccf0-5f69-a609-6b82873eab3c
+        title: Batman University
+        url: https://feeds.theincomparable.com/batmanuniversity
+        originalUrl: https://feeds.theincomparable.com/batmanuniversity
+        link: https://www.theincomparable.com/batmanuniversity/
+        description: Batman University is a seasonal podcast about you know who.
+        author: Tony Sindelar
+        ownerName: The Incomparable
+        image: https://www.theincomparable.com/imgs/logos/logo-batmanuniversity-3x.jpg?cache-buster=2019-06-11
+        artwork: https://www.theincomparable.com/imgs/logos/logo-batmanuniversity-3x.jpg?cache-buster=2019-06-11
+        lastUpdateTime: 1613394044
+        lastCrawlTime: 1613394034
+        lastParseTime: 1613394045
+        lastGoodHttpStatusTime: 1613394034
+        lastHttpStatus: 200
+        contentType: application/rss+xml
+        itunesId: 1441923632
+        itunesType: episodic
+        generator: my podcast host
+        language: en-us
+        explicit: false
+        medium: music
+        dead: 0
+        chash: ad651c60eaaf3344595c0dd0bd787993
+        episodeCount: 19
+        crawlErrors: 0
+        parseErrors: 0
+        locked: 0
+        imageUrlHash: 3969216649
+
+    episode:
+      - id: 16795088
+        title: Batman University
+        link: https://www.theincomparable.com/batmanuniversity/
+        description: >-
+          Batman University is back in session! James Thomson and Nathan
+          Alderman join Tony for a discussion of Fox's "Gotham."
+        guid: incomparable/batman/19
+        datePublished: 1546399813
+        datePublishedPretty: "January 01, 2019 9:30pm"
+        dateCrawled: 1598369047
+        enclosureUrl: https://www.theincomparable.com/podcast/batmanuniversity302.mp3
+        enclosureType: audio/mp3
+        enclosureLength: 26385472
+        duration: 54
+        explicit: 0
+        episode: 19
+        episodeType: full
+        season: 3
+        image: https://www.theincomparable.com/imgs/logos/logo-batmanuniversity-3x.jpg?cache-buster=2019-06-11
+        feedId: 75075
+        feedTitle: Batman University
+        feedLanguage: en-us
+
+  # A minimal dead-feed listing. id and title/url reuse the schema's own
+  # id_feed and title_feed/url_feed examples -- the same 75075/"Batman
+  # University" identifiers the description uses everywhere else -- rather
+  # than inventing a second show. duplicateOf is left unset: nothing in the
+  # description ties this particular id to a duplicate, and the field is
+  # documented as nullable "except in podcasts/dead", not as always set
+  # there.
+  one-dead-feed:
+    dead_feed:
+      - id: 75075
+        title: Batman University
+        url: https://feeds.theincomparable.com/batmanuniversity
+
+conformance:
+  # Every case in this block sends a descriptive User-Agent, because the
+  # live host refuses anything else before any of this is even reached --
+  # see the header. None of these probes ever held a real X-Auth-Key.
+
+  - name: no credential of any kind
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+      body_matches: "Authorization header value either not set or blank\\."
+
+  - name: Authorization and X-Auth-Date present, X-Auth-Key withheld
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 401
+      body_matches: "X-Auth-Key header value either not set, blank or corrupt\\."
+
+  - name: Authorization and X-Auth-Key present, X-Auth-Date withheld
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: junkkey0000
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 401
+      body_matches: "X-Auth-Date header value either not set, blank or corrupt\\."
+
+  - name: all three present, X-Auth-Date is outside the 3 minute window
+    # Real Authorization/X-Auth-Key values, correctly shaped and wrong,
+    # answer identically to the junk ones below -- the timestamp check runs
+    # before either credential's own content is examined further. Arming
+    # skips the shape check Cauldron cannot compute a real signature past;
+    # the request shown is exactly what was sent live.
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    arm: date_stale
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: junkkey0000
+        X-Auth-Date: "1234567890"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 401
+      body_matches: "X-Auth-Date header value is not within the \\+/- 3 minute time window\\."
+
+  - name: all three present and fresh, X-Auth-Key is not a registered key
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    arm: key_invalid
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: junkkey0000
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 401
+      body_matches: "The X-Auth-Key header contains an invalid API key\\."
+
+  - name: routing answers an unrouted path before any credential is examined
+    # No auth headers of any kind, and the answer is nginx's own 404, not
+    # this API's envelope -- see the header. Confirms auth.after_routing.
+    source: https://api.podcastindex.org/api/1.0/no-such-route-xyz
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: GET
+      path: /api/1.0/no-such-route-xyz
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+    expect:
+      status: 404
+      headers:
+        Content-Type: text/html
+      body_matches: "404 Not Found"
+
+  - name: a wrong method on a real path is still refused for its credentials, not routed away
+    # PUT with no credential answers the identical Authorization-absent
+    # sentence a GET does -- there is no 405 anywhere on this host. See the
+    # header.
+    source: https://api.podcastindex.org/api/1.0/podcasts/trending
+    verified: "2026-09-02"
+    fixture: empty
+    request:
+      method: PUT
+      path: /api/1.0/podcasts/byfeedid
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+    expect:
+      status: 401
+      body_matches: "Authorization header value either not set or blank\\."
+
+  - name: the id is Podcast Index's own, and the feed's own guid sits beside it
+    source: https://podcastindex-org.github.io/docs-api/pi_api.json
+    fixture: batman-university
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: cauldron-fixture-key
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 200
+      body:
+        feed.id: 75075
+        feed.podcastGuid: 9b024349-ccf0-5f69-a609-6b82873eab3c
+        feed.title: Batman University
+
+  - name: dead is a bare integer, and crawl and parse errors are counted separately
+    source: https://podcastindex-org.github.io/docs-api/pi_api.json
+    fixture: batman-university
+    request:
+      method: GET
+      path: /api/1.0/podcasts/byfeedid?id=75075
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: cauldron-fixture-key
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 200
+      body:
+        feed.dead: 0
+        feed.crawlErrors: 0
+        feed.parseErrors: 0
+        feed.lastGoodHttpStatusTime: 1613394034
+        feed.lastHttpStatus: 200
+
+  - name: a dead feed's own listing carries none of the diagnostic fields
+    # The whole point of this group's question, made concrete: the record a
+    # caller gets back once a feed IS marked dead has nowhere to read why,
+    # or when it last worked, or what its last status even was.
+    source: https://podcastindex-org.github.io/docs-api/pi_api.json
+    fixture: one-dead-feed
+    request:
+      method: GET
+      path: /api/1.0/podcasts/dead
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: cauldron-fixture-key
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 200
+      body:
+        count: 1
+        feeds[0].id: 75075
+        feeds[0].title: Batman University
+      absent:
+        - feeds[0].dead
+        - feeds[0].lastGoodHttpStatusTime
+        - feeds[0].lastHttpStatus
+        - feeds[0].crawlErrors
+        - feeds[0].lastCrawlTime
+
+  - name: an episode's guid is the feed's own, not Podcast Index's id
+    source: https://podcastindex-org.github.io/docs-api/pi_api.json
+    fixture: batman-university
+    request:
+      method: GET
+      path: /api/1.0/episodes/byid?id=16795088
+      headers:
+        User-Agent: cauldron-recipe-probe/1.0
+        X-Auth-Key: cauldron-fixture-key
+        X-Auth-Date: "1788393420"
+        Authorization: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+    expect:
+      status: 200
+      body:
+        episode.id: 16795088
+        episode.guid: incomparable/batman/19
+        episode.feedId: 75075
