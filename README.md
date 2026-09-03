@@ -55,7 +55,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 
 | Area | State |
 |---|---|
-| Detection engine (Composer, npm, Go modules) | Working. DETECT_REACHABLE of 609 Recipes are reachable from a dependency |
+| Detection engine (Composer, npm, Go modules) | Working. 484 of 627 Recipes are reachable from a dependency |
 | Recipe format and validator | Working |
 | Recipe runtime (routing, state, auth, pagination) | Working. A credential check reports whether nothing was sent, something unusable was, or a well-formed credential was refused, and a Recipe may answer each differently -- most providers do not, and for those one message still covers all three |
 | Webhooks (lifecycle events, signing, delivery) | Working. Payload envelopes are declarable per Recipe. Of the 103 Recipes that emit events, 45 declare one and 58 fall back to a default modelled on Stripe's and not equal to it -- Stripe's own Recipe now declares the fuller real thing -- so the fallback is a convention rather than a claim about any provider |
@@ -66,7 +66,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
 | Conformance suites (`cauldron verify`) | Working. 6064 cases, 2845 of them checked against a live API |
-| Spec drift (`cauldron drift`) | Working. 113 Recipes are checked against their provider's own OpenAPI document; 463 name none yet |
+| Spec drift (`cauldron drift`) | Working. 123 Recipes are checked against their provider's own OpenAPI document; 501 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
 | Scoped multi-segment paths (`/repos/{owner}/{repo}/…`) | Working |
@@ -3665,7 +3665,7 @@ Six states, and only one of them fails a build:
 | `unreachable` | The host did not answer, or answered with something that is not a description. Not drift: a docs host returning 503 has said nothing about whether the provider changed anything |
 | `unsupported` | The provider publishes a description in a format this cannot read -- RAML, AsyncAPI, WSDL. Separate from `unreachable` because it is permanent: a host answering 503 is a Tuesday, a format with no reader stays true tomorrow. Swagger 2.0 was here until it was rewritten on the way in |
 | `unrecorded` | A description is named and has never been fingerprinted, so nothing was compared |
-| `undeclared` | No description is recorded for this Recipe. 463 of the 576, and falling -- see `cauldron discover` |
+| `undeclared` | No description is recorded for this Recipe. 501 of the 627, and falling -- see `cauldron discover` |
 
 It runs on a schedule rather than on every pull request, in
 `.github/workflows/drift.yml`, because a pull request must not go red because
@@ -3742,7 +3742,7 @@ Three rules keep the addition honest rather than merely large:
 
 It is off by default, and has to be: reaching for a description is a network
 call in a tool whose whole value is that it works without one. A Recipe whose
-provider publishes nothing -- 463 of the 576 here -- is served exactly as it
+provider publishes nothing -- 501 of the 627 here -- is served exactly as it
 always was, and told so plainly.
 
 ### Which version, and which one it replaced
@@ -3791,7 +3791,7 @@ These are the decisions the project intends to be held to.
 
 A project can also say so itself. `cauldron add mercury` writes a `cauldron.yaml` listing the providers it talks to, which is how a project reaches a Recipe no dependency maps to, or one it talks to over raw HTTP with no library at all. The first `add` copies whatever detection already found into the file, so starting one loses nothing, and from then on the file is the answer rather than the guess.
 
-The table reaches 439 of the 576 Recipes. The other 137 ship and can be named
+The table reaches 484 of the 627 Recipes. The other 143 ship and can be named
 directly. Every one of them was looked for: some publish no client at all,
 and some publish a package whose name matches the provider and whose contents
 do not -- `basecamp` on npm is a set of Astro components for somebody's scout

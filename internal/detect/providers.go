@@ -7011,6 +7011,409 @@ func providers() []provider {
 			composer: []string{"serch3/bunny-stream"},
 			gomod:    []string{"github.com/ArabindaSigdel/bunnystream-go"},
 		},
+		{
+			// dev.bitly.com is docs; the wire host is api-ssl.bitly.com, and
+			// every client here agrees on both that and the version this
+			// Recipe's own spec fetch confirms (v4). node-bitly's lib.ts sets
+			// DEFAULT_OPTIONS = {apiUrl: 'api-ssl.bitly.com', apiVersion:
+			// 'v4', ...} with the caller's bearer token sent as the
+			// Authorization header verbatim. phplicengine/bitly's
+			// Bitlink.php sets $this->url = 'https://api-ssl.bitly.com/v4'
+			// with 'Authorization: Bearer ' built from the API key var.
+			// retgits/bitly in Go matches both: BitlyBaseURL =
+			// "https://api-ssl.bitly.com/v4/".
+			//
+			// Two Go packages published under Bitly the COMPANY's own org --
+			// bitly/go-simplejson and bitly/go-hostpool -- are the
+			// company's open-sourced infrastructure tooling and never call
+			// this API at all, the shape this file's Squarespace entry
+			// already names for a vendor that publishes a great deal none
+			// of which is a client of its own product. zpnk/go-bitly is the
+			// version trap in this batch: its bitly.go sets
+			// apiURL, _ := url.Parse("https://api-ssl.bitly.com/v3") --
+			// the retired v3, not the v4 this Recipe models -- so it is
+			// left out. CareyWang/bitly is not a library at all: its
+			// main.go declares `package main`, a standalone gin server
+			// with nothing exported to import.
+			recipe:   "bitly",
+			composer: []string{"phplicengine/bitly"},
+			npm:      []string{"bitly"},
+			gomod:    []string{"github.com/retgits/bitly"},
+		},
+		{
+			// Dub's own organisation publishes and maintains the client in
+			// every ecosystem, all three agreeing on api.dub.co.
+			// dubinc/dub-ts's config.ts sets ServerList =
+			// ["https://api.dub.co"]; dub/dub-php (dubinc/dub-php) and
+			// dubinc/dub-go are the same generated Speakeasy SDK in the
+			// other two languages, confirmed by searching each repository
+			// directly for the host rather than trusting the README. A
+			// personal fork, dimpledellips/dub-go, calls itself an
+			// "Official Dub Go SDK" in its own description too, but the
+			// module path a project actually depends on is
+			// github.com/dubinc/dub-go, which is what this maps.
+			//
+			// Packagist and pkg.go.dev otherwise answer "dub" with Apache
+			// Dubbo, the RPC framework -- dubbo-php-client, dubbo-client
+			// and a run of *-dbconnection packages sharing nothing with
+			// this provider but three letters.
+			recipe:   "dub",
+			composer: []string{"dub/dub-php"},
+			npm:      []string{"dub"},
+			gomod:    []string{"github.com/dubinc/dub-go"},
+		},
+		{
+			// Two npm packages reach the exact route this Recipe's own
+			// header quotes as one of its four auth-failure shapes.
+			// @short.io/client-node (Short-io/client-node, the vendor's own
+			// org) is a hey-api-generated client whose client.gen.ts sets
+			// baseUrl: 'https://api.short.io'. The unscoped "short.io"
+			// (IchiiDev) is unofficial but names the same route in its own
+			// docblock -- "Endpoint: GET https://api.short.io/api/links" --
+			// and sends the key as a bare authorization header, matching
+			// this host's own scheme: none finding.
+			//
+			// Composer has no official client. caherrera/shortio-laravel is
+			// one of three near-identical forks of the same tutorial
+			// package (the other two, by mikefl1986 and kirankumar, have
+			// single-digit total downloads); its config.php defaults to
+			// api.short.cm, the second hostname this Recipe's header
+			// already treats as the same backend, checked live there too.
+			recipe:   "shortio",
+			composer: []string{"caherrera/shortio-laravel"},
+			npm:      []string{"@short.io/client-node", "short.io"},
+		},
+		{
+			// Both clients here call api.surveymonkey.net rather than the
+			// .com host this Recipe's own docs link names -- checked live:
+			// the two hostnames answer the identical byte-for-byte error
+			// envelope ({"error":{"id":1010,...}}), so this is the same
+			// backend under a second name rather than a version trap.
+			// Datahero/surveymonkey's default export is a v2/v3 selector
+			// whose own comment says "v2 is hard depricated" and which
+			// returns SurveyMonkeyAPI_v3 unless told otherwise; that v3
+			// file sets httpUri = 'https://api.surveymonkey.net' and sends
+			// 'Authorization': 'bearer ' + accessToken.
+			// ghassani/surveymonkey-v3-api-php's Client.php matches it
+			// exactly: BASE_ENDPOINT = 'https://api.surveymonkey.net/v3/'
+			// with 'Authorization' => 'Bearer ' . $this->getAccessToken().
+			recipe:   "surveymonkey",
+			composer: []string{"ghassani/surveymonkey-v3-api-php"},
+			npm:      []string{"surveymonkey"},
+		},
+		{
+			// Jotform's own organisation publishes and maintains a client
+			// in every ecosystem, all against api.jotform.com.
+			// jotform-api-php's JotForm.php is the clean case:
+			// curl_setopt($ch, CURLOPT_HTTPHEADER, ['APIKEY: ' .
+			// $this->apiKey]) -- the header transport this Recipe's auth
+			// block declares. jotform-api-go matches it in both the root
+			// module and its v2 subdirectory (github.com/jotform/
+			// jotform-api-go and its /v2, both add an "apiKey" header --
+			// HTTP header names are case-insensitive on the wire, so this
+			// is the identical credential as APIKEY).
+			//
+			// The Node client is the one with a gap worth naming:
+			// jotform-api-nodejs's client.ts sends the key as an axios
+			// params.apiKey on every request -- a query parameter, not
+			// this header -- which is exactly the second transport this
+			// Recipe's own upstream block already documents Jotform
+			// accepting and declares out of scope ("this format can
+			// declare one transport per Recipe, not two for the same
+			// credential"). A real jotform npm caller's credential will
+			// read as absent to this Recipe's emulator, the same shape
+			// this file's Kickbox entry already records for its own
+			// query-vs-header gap -- mapped anyway, because it is a
+			// genuine Jotform caller and the gap is already a named,
+			// deliberate one rather than a doubt about the mapping.
+			recipe:   "jotform",
+			composer: []string{"jotform/jotform-api-php"},
+			npm:      []string{"jotform"},
+			gomod:    []string{"github.com/jotform/jotform-api-go"},
+		},
+		{
+			// No official SDK. tally-js (ambrosius-ai) is the one
+			// dependency that reaches this exact host on this exact
+			// version: its README's own worked example calls
+			// new TallyClient({apiKey: 'your-api-key'},
+			// 'https://api.tally.so'), and client.ts sends Authorization:
+			// `Bearer ${apiKey}` after validating the key starts with
+			// "tly-", the fixture prefix this Recipe's own auth.keys entry
+			// uses. Nothing on Packagist or pkg.go.dev calls this API at
+			// all -- Packagist's nearest hit, bdhert/tally, is a Chinese-
+			// language "simple api timed signature" library unrelated by
+			// every measure but the four letters.
+			recipe: "tally",
+			npm:    []string{"tally-js"},
+		},
+		{
+			// Connect, read the same way this Recipe's own header reads
+			// it: from 1Password's hand-written client rather than a live
+			// host, because Connect is self-hosted and has none.
+			// @1password/connect (1Password/connect-sdk-js) is that same
+			// client in TypeScript -- op-connect.ts takes {serverURL,
+			// token} and resources.ts builds "v1/vaults" and
+			// "v1/vaults/{id}/items/{id}", the identical paths this
+			// Recipe's own header already cites from the Go SDK. That Go
+			// module, github.com/1Password/connect-sdk-go, is mapped
+			// directly.
+			//
+			// @1password/sdk is the wrong surface on purpose: its own
+			// description is "programmatic read access to your secrets...
+			// currently supports Node.JS" against my.1password.com, which
+			// is Service Accounts -- the surface this Recipe's header
+			// explicitly says it does not model. @1password/op-js is a CLI
+			// wrapper, the same exclusion.
+			//
+			// No Composer package reaches Connect at all.
+			// dragonbe/connect-sdk-php described itself as exactly this
+			// ("The 1Password Connect PHP SDK provides your PHP
+			// applications access to the 1Password Connect API hosted on
+			// your infrastructure"), but its source repository is gone and
+			// Packagist's own p2 metadata lists zero installable versions
+			// -- composer require has nothing left to fetch, so it maps to
+			// nothing.
+			recipe: "onepassword",
+			npm:    []string{"@1password/connect"},
+			gomod:  []string{"github.com/1Password/connect-sdk-go"},
+		},
+		{
+			// Doppler's own organisation publishes the client in every
+			// ecosystem, all three against api.doppler.com/v3 with a
+			// bearer token. DopplerHQ/node-sdk's Environment.ts sets
+			// DEFAULT = 'https://api.doppler.com' and Configs.ts calls
+			// '/v3/configs'. nikoksr/doppler-go (not its own fork,
+			// kperreau/doppler-go, which GitHub records as a fork of it)
+			// sets APIURL = "https://api.doppler.com" the same way.
+			//
+			// alexhackney/laravel-doppler is the Composer entry, and its
+			// own ApiSource.php header explains why it is the default
+			// driver over shelling out to Doppler's CLI (no binary to
+			// provision, owns its own escaping rather than trusting
+			// format=env, Http::fake() as a test surface): baseUrl
+			// defaults to 'https://api.doppler.com/v3' and sends
+			// ->withToken($credential->reveal()), Laravel's own Bearer
+			// helper.
+			recipe:   "doppler",
+			composer: []string{"alexhackney/laravel-doppler"},
+			npm:      []string{"@dopplerhq/node-sdk"},
+			gomod:    []string{"github.com/nikoksr/doppler-go"},
+		},
+		{
+			// Named "betterstack" and modelling Uptime specifically, per
+			// this Recipe's own header -- so a whole-vendor client is
+			// unambiguous here in a way it would not be for a vendor with
+			// two Recipes (compare this file's Jira/Confluence entries).
+			// Every npm result for the vendor's name is the OTHER Better
+			// Stack product, Logs/Telemetry (@logtail/*, @loglayer/
+			// transport-betterstack); nothing reaches
+			// uptime.betterstack.com under any spelling tried.
+			//
+			// kylewlawrence/laravel-betterstack-api's HttpClient.php
+			// defaults to hostname 'uptime.betterstack.com', base
+			// 'api/v2', and sends ->withAddedHeader('Authorization',
+			// " Bearer $token") -- the exact host and version this
+			// Recipe's own conformance cases fetch against.
+			// dlanderson/betterstack-go covers both Better Stack products
+			// behind one module (sdk/uptime and sdk/logs, separately), and
+			// its uptime half matches too: betterstack.go sets baseURL:
+			// "uptime.betterstack.com" and every route in monitors.go is
+			// "/api/v2/monitors...".
+			recipe:   "betterstack",
+			composer: []string{"kylewlawrence/laravel-betterstack-api"},
+			gomod:    []string{"github.com/dlanderson/betterstack-go"},
+		},
+		{
+			// No official SDK. instatus.ts (Vicente015) is the npm match:
+			// its Constants.ts sets api: 'https://api.instatus.com' with
+			// http.version: 1, and BaseClient.ts sends Authorization:
+			// `Bearer ${key}` against `${api}/v${version}/` -- exactly
+			// this Recipe's own api.instatus.com/v1 and bearer scheme.
+			//
+			// gxben/instatus-go is the cleaner of several small Go
+			// clients: every request.go call is
+			// "https://api.instatus.com/v1"+endpoint with Bearer auth,
+			// consistently. A close neighbour, nint8835/instatus-go, is
+			// left out over one inconsistency worth naming: its
+			// components.go calls BaseUrl+"/v1/"+pageId+"/components"
+			// correctly but its pages.go calls BaseUrl+"/v2/pages" -- a v2
+			// this Recipe's own header never observed and Instatus's docs
+			// do not name, so it is treated as an unverified bug rather
+			// than a real second version.
+			recipe: "instatus",
+			npm:    []string{"instatus.ts"},
+			gomod:  []string{"github.com/gxben/instatus-go"},
+		},
+		{
+			// A version trap runs through this entire npm and Composer
+			// ecosystem, not one package in it: every client found in
+			// both, official-sounding name or not, targets
+			// api.pingdom.com/api/2.0 or 2.1 with Basic auth and an
+			// App-Key header -- the retired scheme, not the 3.1 bearer-
+			// token API this Recipe's own spec fetch confirms.
+			// sgrodzicki/pingdom (65,318 downloads, Composer's dominant
+			// result, and marked abandoned) sets URL_REST ... /2.0 in
+			// Client.php; its highest-traffic fork, acquia/pingdom-api
+			// (published under Acquia's own org, 6,920 downloads),
+			// matches it field for field, MissingCredentialsException and
+			// all. ryanbreen's npm "pingdom" and bebraw's "pingdom-api"
+			// are the same shape at 2.0 and 2.1 respectively. None is
+			// mapped.
+			//
+			// Go is the one ecosystem that got the version right.
+			// nordcloud/go-pingdom's pingdom.go sets defaultBaseURL =
+			// "https://api.pingdom.com/api/3.1" and sends Authorization:
+			// "Bearer "+APIToken -- this Recipe's own host and scheme
+			// exactly. It is a fork of russellcardullo/go-pingdom, now
+			// archived by its own author as "No longer maintained" but
+			// still resolvable via the module proxy and carrying the
+			// identical 3.1 endpoint, so both are mapped.
+			recipe: "pingdom",
+			gomod: []string{
+				"github.com/nordcloud/go-pingdom",
+				"github.com/russellcardullo/go-pingdom",
+			},
+		},
+		{
+			// transitland-rest-client (TheAntiCarCollective) is the one
+			// npm package that reaches this exact surface: client.ts sets
+			// DefaultBaseUrl = "https://transit.land/api/v2/rest" and
+			// sends headers = {apikey: this.apiKey} -- this Recipe's own
+			// host and header name, confirmed by reading the source
+			// rather than the package's own description.
+			//
+			// interline-io publishes transitland-lib in Go -- the
+			// vendor's own org, since Interline operates Transitland --
+			// but it is the ETL and feed-registry tooling that BUILDS the
+			// service (tldb, dmfr, the GTFS-RT protobuf types), not a
+			// REST client of it, the same vendor-publishes-tooling-not-a-
+			// client shape this batch's own Bitly entry records above.
+			// Nothing else in Go reaches this host as an importable
+			// client. Packagist has no result for the name at all.
+			recipe: "transitland",
+			npm:    []string{"transitland-rest-client"},
+		},
+		{
+			// Confirmed against this Recipe's own header finding -- the
+			// key is the HTTP Basic username with an empty password -- in
+			// every ecosystem but one. stephanebachelier/navitia's
+			// request.js sends auth: {user: req.apikey, pass: ''} against
+			// endpoint 'api.navitia.io', version v1. govitia/navitia in
+			// Go matches it exactly: defaultAPIURL =
+			// "https://api.navitia.io/v1" and req.SetBasicAuth(s.APIKey,
+			// "").
+			//
+			// canaltp/navitia (CanalTP, Navitia's own original vendor
+			// org, later renamed Hove) is Composer's dominant result at
+			// 121,329 downloads and does reach api.navitia.io by default,
+			// per its own README -- but CurlService.php sends the token
+			// as a raw 'Authorization: '.$this->token header, no Basic
+			// scheme at all. Checked live: api.navitia.io answers that
+			// exact shape with "Token absent in the database," the SAME
+			// sentence a well-formed-but-wrong Basic credential gets, not
+			// the "invalid token" sentence this Recipe's own
+			// malformed_error reserves for an unparseable Authorization
+			// header. So a real canaltp/navitia caller with a good key
+			// most likely authenticates against the live host; against
+			// this Recipe's emulator, which classifies by Go's stricter
+			// BasicAuth() parse, the identical request reads as malformed
+			// rather than rejected. Mapped anyway, on the same reasoning
+			// this file's Kickbox and Porkbun entries already give for
+			// their own transport gaps: a real dependency identifying the
+			// provider outweighs an imperfect verdict.
+			// canaltp/navitiaio-api-component, the org's other package,
+			// is left out -- its NavitiaIoApiService.php calls
+			// '/api/users/' against a configurable "navio" customer host,
+			// CanalTP's own account-management backend, not this API.
+			recipe:   "navitia",
+			composer: []string{"canaltp/navitia"},
+			npm:      []string{"navitia"},
+			gomod:    []string{"github.com/govitia/navitia"},
+		},
+		{
+			// The two dominant npm packages both predate the apikey
+			// requirement this Recipe's own header says is no longer
+			// optional, and neither sends one at all. misterhat/omdb (436
+			// downloads/month, npm's top result under the bare name)
+			// queries HOST = 'http://www.omdbapi.com/' with no apikey
+			// parameter anywhere in index.js, and its own comment
+			// describes the old always-200 failure shape this Recipe's
+			// header found retired. bbraithwaite/omdb-client (138/month)
+			// is the same generation -- incTomatoes is still a parameter,
+			// a field OMDb dropped years ago -- and is equally keyless.
+			// Both would read as a missing credential on every single
+			// request, forever, against the live host or this emulator
+			// alike.
+			//
+			// omdb-api-pt (ChrisAlderson) is the one npm client written
+			// for the current, gated API: index.js defaults baseUrl to
+			// 'https://omdbapi.com/' (checked live: identical to
+			// www.omdbapi.com, byte for byte) and sets query.apikey =
+			// this.apiKey. aharen/omdbapi is Composer's dominant result
+			// (29,841 downloads) and gets it right too: OMDbAPI.php sets
+			// host = 'https://www.omdbapi.com' and appends '&apikey=' .
+			// $this->api_key on every call. icco/omdb in Go matches both:
+			// DefaultBaseURL = "https://www.omdbapi.com/" with
+			// q.Set("apikey", c.apiKey).
+			recipe:   "omdb",
+			composer: []string{"aharen/omdbapi"},
+			npm:      []string{"omdb-api-pt"},
+			gomod:    []string{"github.com/icco/omdb"},
+		},
+		{
+			// Composer's dominant result is the version trap here.
+			// alanly/traktor (25,109 downloads) builds every request as
+			// TRAKT_API_ENDPOINT . '/' . $method . '.json' . '/' .
+			// $this->apiKey . '/' . $params -- the retired v1 URL scheme,
+			// credential in the path, no trakt-api-version or
+			// trakt-api-key header anywhere in Client.php. This Recipe
+			// models v2, header-authenticated, and traktor predates it.
+			// wubs/trakt (megawubs/trakt-api-wrapper, a fraction of the
+			// downloads at 1,311) is the one that got the version right:
+			// TraktHttpClient.php sets API_VERSION = 2 against
+			// https://api.trakt.tv, and AbstractRequest.php sends
+			// trakt-api-key.
+			//
+			// vankasteelj/trakt.tv (npm's "trakt.tv", the base package a
+			// whole family of plugins builds on) matches this Recipe
+			// exactly: trakt.js sets defaultUrl = 'https://api.trakt.tv'
+			// and sends 'trakt-api-version': '2', 'trakt-api-key':
+			// this._settings.client_id alongside Content-Type, the
+			// identical three headers this Recipe's own header names.
+			// jacklaaa89/trakt in Go matches it: apiURL =
+			// "https://api.trakt.tv" with both headers added the same
+			// way.
+			recipe:   "trakt",
+			composer: []string{"wubs/trakt"},
+			npm:      []string{"trakt.tv"},
+			gomod:    []string{"github.com/jacklaaa89/trakt"},
+		},
+		{
+			// The vendor's own client uses a channel this Recipe
+			// deliberately does not model. @watchmode/api-client
+			// (watchmode/api-client) is real and current -- every
+			// generated operation in its bundled index.js carries
+			// security: [{name: "X-API-Key", type: "apiKey"}] against
+			// https://api.watchmode.com/v1 -- but X-API-Key is one of the
+			// two header-based channels this Recipe's own upstream block
+			// names as verified live and left out, in favour of the
+			// legacy query parameter this small collection's brief asks
+			// about. A real caller of the official SDK authenticates
+			// against the live host and reads as keyless against this
+			// Recipe's emulator.
+			//
+			// @movie-effect/watchmode is a small, single-version (0.1.0)
+			// client out of a personal moviedb-effect monorepo, and it is
+			// the one that matches this Recipe's own channel: index.mjs
+			// defaults baseUrl to
+			// 'https://api.watchmode.com/v1/' and calls
+			// searchParams.set("apiKey", config.apiKey) -- the query
+			// parameter. Both are mapped, since both are genuine callers
+			// of the same host and only one collides with a fidelity gap
+			// this Recipe already states rather than hides.
+			recipe: "watchmode",
+			npm:    []string{"@watchmode/api-client", "@movie-effect/watchmode"},
+		},
 	}
 }
 
