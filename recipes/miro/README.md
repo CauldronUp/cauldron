@@ -6,6 +6,12 @@ Emulates the Miro API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+It nests coordinates under `position`, so code reading `item.x` gets nothing and
+the item silently lands at the origin -- a failure that looks like a layout bug
+rather than a parsing one.
+
 ## Sources
 
 - Documentation: https://developers.miro.com/reference
