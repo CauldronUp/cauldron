@@ -6,6 +6,12 @@ Emulates the Shopify API (2026-01), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+An early round found that routes like `/orders/{id}.json` matched nothing at
+all, so every single-object route here answered 404. The suite found it; no
+amount of reading the code had.
+
 ## Sources
 
 - Documentation: https://shopify.dev/docs/api/admin-rest
