@@ -371,7 +371,7 @@ func buildRequest(r recipe.Request, prefix string) (*http.Request, error) {
 		if err == nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
-	case len(r.JSON) > 0:
+	case r.SendsJSON():
 		encoded, marshalErr := json.Marshal(r.JSON)
 		if marshalErr != nil {
 			return nil, marshalErr

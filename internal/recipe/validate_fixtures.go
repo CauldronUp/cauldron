@@ -152,7 +152,7 @@ func (r *Recipe) validateCases(add func(string, ...any)) {
 			add("%s: request.path must start with /", where)
 		}
 
-		if len(c.Request.Form) > 0 && len(c.Request.JSON) > 0 {
+		if len(c.Request.Form) > 0 && c.Request.SendsJSON() {
 			add("%s: a request sends form or json, not both", where)
 		}
 

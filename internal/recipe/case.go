@@ -137,7 +137,7 @@ func routeSegments(routes []Route) map[string]bool {
 // missing case; it reports a missing case shape.
 func sendsBodyMarker(cases []Case, marker string) bool {
 	for _, c := range cases {
-		if len(c.Request.JSON) > 0 {
+		if c.Request.SendsJSON() {
 			rendered, err := json.Marshal(c.Request.JSON)
 			if err == nil && strings.Contains(string(rendered), marker) {
 				return true
@@ -259,7 +259,7 @@ func echoesOnly(c Case) bool {
 
 	sent := map[string]any{}
 
-	for name, value := range c.Request.JSON {
+	for name, value := range c.Request.JSONFields() {
 		sent[name] = value
 	}
 
@@ -350,8 +350,44 @@ type Request struct {
 	Headers map[string]string `yaml:"headers"`
 	// Form sends application/x-www-form-urlencoded, which is what Stripe's own
 	// SDKs send. JSON sends a JSON body. A case may set at most one.
+	//
+	// JSON is any rather than a mapping because a JSON body is not always an
+	// object. Mixpanel's track and import endpoints declare an array with at
+	// least one member, and every batch ingest API in this collection is the
+	// same shape -- so while this was a map, the one behaviour those Recipes
+	// exist to describe was the one thing no case could send. A Recipe could
+	// assert that a bare object is refused and could not assert that the array
+	// its own clients post is accepted.
 	Form map[string]string `yaml:"form"`
-	JSON map[string]any    `yaml:"json"`
+	JSON any               `yaml:"json"`
+}
+
+// SendsJSON reports whether this request carries a JSON body.
+//
+// A nil interface is no body. An empty object or an empty array is a body, and
+// a deliberate one: a provider that answers differently to {} than to nothing
+// is describable only if the difference survives to here.
+func (r Request) SendsJSON() bool {
+	switch body := r.JSON.(type) {
+	case nil:
+		return false
+	case map[string]any:
+		return body != nil
+	case []any:
+		return body != nil
+	}
+
+	return true
+}
+
+// JSONFields returns the top-level fields of a JSON object body, and nothing
+// for any other shape. An array has no field names to echo.
+func (r Request) JSONFields() map[string]any {
+	if object, ok := r.JSON.(map[string]any); ok {
+		return object
+	}
+
+	return nil
 }
 
 // Expectation is what the provider is claimed to answer.
