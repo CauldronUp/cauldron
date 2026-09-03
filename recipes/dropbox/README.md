@@ -6,6 +6,16 @@ Emulates the Dropbox API (2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+This Recipe found a limitation in the conformance checker rather than in the
+emulator. Dropbox names a field `.tag`, where the leading dot is part of the
+name, and the checker split every path on dots -- so there was no way to assert
+on that field at all.
+
+The emulator had been sending it correctly the whole time, while every case that
+mentioned it failed.
+
 ## Sources
 
 - Documentation: https://www.dropbox.com/developers/documentation/http/documentation
