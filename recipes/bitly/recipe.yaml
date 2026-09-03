@@ -1,0 +1,484 @@
+# Bitly Recipe for Cauldron
+#
+# This Recipe exists to answer one question about a short link: can the
+# destination be repointed after the link is already public, and does
+# anything on the wire remember what it used to point at. Bitly answers both
+# halves plainly, in its own words, in the published OpenAPI description at
+# dev.bitly.com/v4/v4.json (openapi: "3.0.0", info.title: "Bitly API",
+# info.version: "4.0.0") -- found by following the spec-url Bitly's own Redoc
+# page embeds, not by guessing a path.
+#
+# PATCH /v4/bitlinks/{bitlink} accepts long_url in its body, and the
+# operation's own summary is not coy about what that does: "Updates fields in
+# the specified link. To redirect the link (i.e. to update the Long URL), use
+# the long_url parameter. This will always charge an encode limit." Bitly
+# calls retargeting a bitlink "redirecting" it, in those words, and bills for
+# it every time. The request body the spec ships as a worked example is
+# itself the retarget case: {"long_url": "https://www.newdestination.com"}.
+# That exact body, sent live to a real (fake) bitlink with no credential,
+# reaches Bitly's ordinary auth gate and nothing else -- see the conformance
+# case below. Nothing on the BitlinkUpdate schema records what long_url used
+# to hold. There is no previous_long_url, no long_url_history, no
+# updated_fields -- the field is simply overwritten, silently, and the
+# operation that does it is one PATCH call an attacker with a stolen or
+# reused write token can make as many times as they like.
+#
+# What Bitly *does* keep a history of is not the destination. custom_bitlinks
+# is documented as "list of previously edited backhalfs for the bitlink --
+# these are in reverse chronological order, with the most recently edited
+# backhalf first." That is an audit trail for the *slug* -- which vanity
+# keyword has pointed at this bitlink over time -- and it is easy to misread
+# as a history of where the link has gone, because "edited" is the same verb
+# a long_url change would use. It is not that. A bitlink can change what it
+# points to an unbounded number of times with zero record of any of it, while
+# the backhalf it answers to is fully audited.
+#
+# There is one place Bitly does keep destination history, and it is scoped
+# narrowly: custom_bitlinks (the paid, branded-domain feature -- distinct
+# from the free custom_bitlinks *array field* on an ordinary Bitlink, an
+# unfortunate name collision in Bitly's own schema) has a dedicated metrics
+# endpoint whose own description says so outright:
+# GET /custom_bitlinks/{custom_bitlink}/clicks_by_destination --
+# "Returns click metrics for the specified link by its historical
+# destinations." The response is ClickMetrics, whose facet enum includes
+# "destinations" beside countries, cities, devices and referrers, and each
+# entry is {clicks, value} where value is documented as a domain-shaped
+# string. So a branded custom bitlink's clicks-by-destination view is,
+# functionally, the audit trail an ordinary bitlink's long_url does not get:
+# proof the link pointed somewhere else before, expressed as a click bucket
+# rather than a changelog, and gated behind the feature that already answers
+# 402 UPGRADE_REQUIRED to a free-tier caller elsewhere in this same spec.
+#
+# Deletion is not ambiguous either. GET /bitlinks/{bitlink} lists 410 among
+# its documented responses, using the same Error schema every other Bitly
+# failure uses -- a real Gone, not a 404 wearing a different number. Bitly
+# does not describe a deleted bitlink as "not found"; it describes one that
+# used to exist. Separately, BitlinkUpdate carries is_deleted as its own
+# boolean, apart from archived -- two lifecycle flags on one record, and nothing
+# in the published description says whether an archived (but not deleted)
+# bitlink still redirects a visitor. That gap is stated rather than guessed
+# at: no credential could create a bitlink to archive and then visit, and
+# guessing would be exactly the kind of invented fact Step 3 rules out. Compare
+# short.io/recipe.yaml, whose own docs settle the identical question in one
+# sentence for its own provider, and dub/recipe.yaml's archived field, which
+# is equally undocumented on the destination-behaviour question.
+#
+# Click counts are not on the Bitlink record at all. BitlinkUpdate's full
+# field list -- link, id, long_url, title, archived, created_at, created_by,
+# client_id, custom_bitlinks, tags, launchpad_ids, qr_code_ids, deeplinks,
+# is_deleted, campaign_ids, expiration_at, dynamic_routing -- has no clicks,
+# no total_clicks, nothing countable. A click total is a separate call,
+# GET /bitlinks/{bitlink}/clicks/summary, on a separate resource entirely
+# (BitlinkScansSummary). Compare dub/recipe.yaml, where clicks sits directly
+# on the link object, and short.io/recipe.yaml, whose own worked examples
+# confirm the identical absence for the identical reason.
+#
+# Bitly's Error schema is exactly what the task asked to establish, and the
+# published description names it plainly: message, description, resource and
+# an errors array of FieldError {field, error_code, message}. Bitly's v4 API
+# really does say which resource and which field a validation failure is
+# about -- when it has one. Every 4xx response schema in the document
+# (BadRequest, Forbidden, UnprocessableEntity) is `allOf: [Error]`, so the
+# shape is uniform end to end. What the description does not carry anywhere
+# is a single worked instance of resource or field ever populated -- no
+# "example" value on any of Error's four properties, on any of the three
+# schemas built from it, in the whole file. The two 4xx bodies this Recipe
+# could actually reach live (UNAUTHORIZED, FORBIDDEN, both below) used only
+# the bare message field and never populated the rest, which is consistent
+# with the shape but does not prove it: neither a credential this Recipe
+# holds nor a validation-shaped request reaching past authentication was ever
+# possible without an account. So the honest position is a full step short of
+# "observed": the shape is spec-real, cited above by schema name and field
+# name only, and this Recipe declares no route or fixture that puts invented
+# text in Error.resource or Error.field, because nothing was ever read there.
+#
+# Absent and wrong are NOT the same sentence on this host, which is worth
+# having pinned given how many providers in this collection collapse them.
+# No Authorization header at all: 401, {"message":"UNAUTHORIZED"}, and a
+# WWW-Authenticate challenge naming Bitly's own OAuth-protected-resource
+# metadata document. Anything sent and not accepted -- a bearer token with no
+# "Bearer " prefix, "Bearer " with nothing after it, or a well-formed token
+# nobody issued -- collapses to one different sentence: 403,
+# {"message":"FORBIDDEN"}, no WWW-Authenticate at all. All three of those
+# "present but wrong" shapes were checked live, separately, and answered
+# byte-identical bodies -- so malformed and rejected really are the same
+# claim here, not a gap in what this Recipe tried.
+#
+# Routing beats the credential outright, in a way that lines up exactly with
+# this format's after_routing flag rather than needing a paragraph of
+# apology. A path this host has no route for -- checked with no credential
+# and again with a wrong one, byte-identical both times -- answers Go's own
+# net/http default, "404 page not found" in plain text, nothing about a
+# credential anywhere. A method a real path does not support -- DELETE on
+# /v4/user, which only answers GET and PATCH -- answers a real 405,
+# "Method Not Allowed" in plain text, with a real Allow header, and again the
+# credential played no part: no-credential and wrong-credential DELETE
+# requests answered the identical 405. Only once a request's path and method
+# both match a route declared here does the credential get examined at all --
+# which is Fireworks' own arrangement in this collection, not Rootly's or
+# Census's. The one wrinkle: the two live DELETE probes returned the Allow
+# header's three methods in a different order each time ("PATCH, GET, OPTIONS"
+# once, "GET, PATCH, OPTIONS" the next), which reads as an unordered map on
+# Bitly's own side rather than anything this Recipe's requests changed. The
+# case below does not pin an exact order for that reason. It also cannot pin
+# OPTIONS at all: Cauldron computes Allow from the methods a Recipe declares
+# for a path, this Recipe declares GET and PATCH for /v4/user and no OPTIONS
+# route, so the computed header reads "GET, PATCH" where the live one reads
+# "GET, PATCH, OPTIONS" -- stated here rather than asserted past.
+#
+# The {bitlink} path parameter is itself worth a note. Bitly's own parameter
+# description calls it "A Bitlink made of the domain and hash" with the
+# worked example "bit.ly/12a4b6c" -- a value with a slash inside it, sitting
+# inside what every other Recipe in this collection would treat as one path
+# segment. Cauldron's router has a mechanism for exactly this, a trailing
+# {name...} segment that swallows the rest of the path rather than one piece
+# of it, and /v4/bitlinks/{id...} is what this Recipe declares. No other
+# Recipe in this collection needed it before now.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No worked 200 response exists anywhere in Bitly's published description
+#     for GET /v4/user, GET /v4/bitlinks/{bitlink} or PATCH's own response --
+#     only field names and types, never a full instance. No credential could
+#     supply one either. Both resources below are declared with typed fields
+#     and an empty fixture, which proves the route exists for the auth
+#     machinery to gate without asserting a single field value nobody has
+#     ever observed. See rootly/recipe.yaml and turso/recipe.yaml for the
+#     same choice, made for the same reason.
+#   - The validation-error shape (Error.resource, Error.field, Error.errors[])
+#     is cited by schema alone, per the header above, and is not served as a
+#     route or a case: inventing example text for message, description,
+#     resource or field would be exactly the fabricated value Step 3 forbids.
+#   - Archiving is real (BitlinkUpdate.archived) and its effect on whether a
+#     visitor still gets redirected is not documented anywhere this Recipe
+#     could find, unlike short.io's identical question, which its own docs
+#     answer directly. Not modelled, not guessed at.
+#   - is_deleted, launchpad_ids, qr_code_ids, dynamic_routing, deeplinks and
+#     references are real fields on Bitlink and are not declared: none of
+#     them bears on the questions this Recipe was written to answer, and
+#     dynamic_routing and deeplinks are themselves nested objects with no
+#     worked example to model honestly.
+#   - Custom Bitlinks, QR codes, Groups and every analytics rollup besides
+#     the destinations-facet finding above are real, documented, paid-tier
+#     surfaces and none of them are routed here.
+#   - Rate limiting is documented (429, per-token and per-IP limits stated in
+#     prose on Bitly's rate-limiting guide) and never triggered live; no
+#     specific header value is served for it.
+#
+# Every case below not carrying a verified date was read from
+# dev.bitly.com/v4/v4.json and never called -- this Recipe was written with
+# no credential and created no account. The key below is a fixture and
+# belongs to no account.
+
+recipe: bitly
+capability: marketing
+version: 0.1.0
+
+upstream:
+  api: v4
+  docs: https://dev.bitly.com/api-reference/
+  spec: https://dev.bitly.com/v4/v4.json
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron_bitly_fixture_00000000000000000000
+  # Absent falls through to authentication_error, the generic name, which
+  # happens to be exactly what this host's own missing-credential answer is.
+  # Malformed and rejected are the same claim on this host -- see the header
+  # -- so both are named to the same entry rather than one left unset to
+  # apologise for a distinction that does not exist here.
+  malformed_error: forbidden
+  rejected_error: forbidden
+  # Route and method both resolve before the credential does. See the header.
+  after_routing: true
+
+responses:
+  resource:
+    style: bare
+  error:
+    style: flat
+    message_field: message
+    code_field: "-"
+    type_field: "-"
+
+resources:
+  # "Who am I" -- GET /v4/user takes no path parameter and answers about
+  # whoever the credential belongs to, the same shape Turso's api_token and
+  # GitHub's /user are elsewhere in this collection. No worked 200 exists to
+  # populate a fixture with -- see the header -- so this exists only to give
+  # the credential check a real route to gate.
+  user:
+    id:
+      style: opaque
+      field: "-"
+    fields:
+      login:
+        type: string
+      name:
+        type: string
+      is_active:
+        type: boolean
+      is_2fa_enabled:
+        type: boolean
+      is_sso_user:
+        type: boolean
+      default_group_guid:
+        type: string
+      created:
+        type: datetime
+      modified:
+        type: datetime
+
+  # id is the same "domain/hash" composite the {bitlink...} path parameter
+  # carries -- see the header. No worked 200 exists for either GET or PATCH,
+  # so, as with user above, this is declared and never populated: it exists
+  # so the retarget case below reaches Bitly's real auth gate rather than an
+  # invented one.
+  bitlink:
+    id:
+      style: opaque
+    fields:
+      long_url:
+        type: string
+      title:
+        type: string
+        null_when_unset: true
+      archived:
+        type: boolean
+        default: false
+      created_at:
+        type: datetime
+      created_by:
+        type: string
+      client_id:
+        type: string
+      tags:
+        type: list
+      campaign_ids:
+        type: list
+      expiration_at:
+        type: string
+        null_when_unset: true
+      # Reverse-chronological history of the *slug*, not the destination.
+      # See the header for why this is not the audit trail the group's
+      # question is about.
+      custom_bitlinks:
+        type: list
+
+routes:
+  - method: GET
+    path: /v4/user
+    resource: user
+    operation: get
+    id_from: auth
+
+  - method: PATCH
+    path: /v4/user
+    resource: user
+    operation: update
+    id_from: auth
+
+  - method: GET
+    path: /v4/bitlinks/{id...}
+    resource: bitlink
+    operation: get
+
+  # "To redirect the link (i.e. to update the Long URL), use the long_url
+  # parameter." Bitly's own words for what this route does. See the header.
+  - method: PATCH
+    path: /v4/bitlinks/{id...}
+    resource: bitlink
+    operation: update
+
+errors:
+  # No credential at all. Live, and the WWW-Authenticate challenge is real:
+  # it names Bitly's own OAuth-protected-resource metadata document.
+  authentication_error:
+    status: 401
+    message: UNAUTHORIZED
+    headers:
+      Content-Type: application/json
+      Www-Authenticate: 'Bearer as_uri="https://api-ssl.bitly.com/.well-known/oauth-protected-resource", error="invalid_token"'
+
+  # Present and unacceptable, however it is unacceptable -- no "Bearer "
+  # prefix, "Bearer " with nothing after it, or a well-formed token nobody
+  # issued. All three struck live and all three answered this, byte for
+  # byte. See the header.
+  forbidden:
+    status: 403
+    message: FORBIDDEN
+    headers:
+      Content-Type: application/json
+
+  # Go's own net/http default 404, reached only when path and method both
+  # fail to match anything declared -- credential-blind either way. See the
+  # header.
+  unknown_route:
+    status: 404
+    style: text
+    message: "404 page not found"
+    headers:
+      Content-Type: "text/plain; charset=utf-8"
+      X-Content-Type-Options: nosniff
+
+  # A real 405 for a real path whose method is not declared, also
+  # credential-blind. Allow is computed by the routes this Recipe declares --
+  # see the header for why it is narrower than the live three-method list and
+  # why this Recipe does not pin an exact order.
+  method_not_allowed:
+    status: 405
+    style: text
+    message: "Method Not Allowed"
+    headers:
+      Content-Type: "text/plain; charset=utf-8"
+      X-Content-Type-Options: nosniff
+
+fixtures:
+  empty: {}
+
+# Every case below carries source. A verified date means this Recipe called
+# api-ssl.bitly.com with exactly the request shown and recorded exactly what
+# came back; its absence means the case was read from
+# dev.bitly.com/v4/v4.json and never called.
+conformance:
+  - name: no credential at all is 401, with an OAuth challenge
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/user
+    expect:
+      status: 401
+      headers:
+        Content-Type: application/json
+        Www-Authenticate: 'Bearer as_uri="https://api-ssl.bitly.com/.well-known/oauth-protected-resource", error="invalid_token"'
+      body:
+        message: UNAUTHORIZED
+      absent:
+        - description
+        - resource
+        - errors
+
+  - name: a well-formed but wrong bearer token is 403, a different sentence entirely
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/user
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 403
+      body:
+        message: FORBIDDEN
+      absent_headers:
+        - Www-Authenticate
+
+  - name: a header with no Bearer prefix at all is called wrong, the same as a real one
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/user
+      headers:
+        Authorization: junktoken12345
+    expect:
+      status: 403
+      body:
+        message: FORBIDDEN
+
+  - name: a bare Bearer with nothing after it is wrong too, not absent
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/user
+      headers:
+        Authorization: "Bearer "
+    expect:
+      status: 403
+      body:
+        message: FORBIDDEN
+
+  - name: an unrouted path answers Go's own 404, credential or none
+    source: https://api-ssl.bitly.com/v4/this-is-not-a-real-endpoint
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/this-is-not-a-real-endpoint
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 404
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      body_matches: "404 page not found"
+
+  - name: and leaving the header off entirely answers the identical 404
+    source: https://api-ssl.bitly.com/v4/this-is-not-a-real-endpoint
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: GET
+      path: /v4/this-is-not-a-real-endpoint
+    expect:
+      status: 404
+      body_matches: "404 page not found"
+
+  - name: a method the path does not support is a real 405, not folded into the 404
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /v4/user
+    expect:
+      status: 405
+      headers:
+        Content-Type: "text/plain; charset=utf-8"
+      header_matches:
+        Allow: "GET"
+      body_matches: "Method Not Allowed"
+
+  - name: and the same 405 is credential-blind too
+    source: https://api-ssl.bitly.com/v4/user
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: DELETE
+      path: /v4/user
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 405
+      body_matches: "Method Not Allowed"
+
+  - name: retargeting a bitlink's destination reaches the ordinary auth gate, not a body check
+    # The request body here is the worked example the OpenAPI description
+    # ships for this exact operation: {"long_url": "https://www.newdestination.com"}.
+    # Sent live, with no credential, to a bitlink id that does not exist --
+    # and it still answers the plain missing-credential sentence, which means
+    # the shape of the retarget request is never examined before the
+    # credential is. Nothing about this proves what a successful retarget
+    # returns; it proves what an attempted one without a key gets refused
+    # for.
+    source: https://api-ssl.bitly.com/v4/bitlinks/bit.ly/3fAKEcd
+    verified: "2026-09-03"
+    fixture: empty
+    request:
+      method: PATCH
+      path: /v4/bitlinks/bit.ly/3fAKEcd
+      json:
+        long_url: https://www.newdestination.com
+    expect:
+      status: 401
+      body:
+        message: UNAUTHORIZED
