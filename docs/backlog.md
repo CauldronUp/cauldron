@@ -123,8 +123,8 @@ DynamoDB, Secrets Manager, SES v2 — are unaffected and can go first.
 |---|---|
 | ~~LaunchDarkly~~ | Shipped. Per-environment state, variations as indices |
 | ~~PostHog~~ | Shipped. A property is nested under properties and a flag is a string, a boolean or false, all in the same field |
-| Mixpanel | Events, profiles, exports. **Assessed and written up rather than written** -- see "Mixpanel, and an API that only speaks in batches" below. The findings are recorded there; the blocker is that every ingestion endpoint takes an array and this format models one record per request |
-| Amplitude | Events, cohorts, user properties. Batch-shaped for the same reason Mixpanel is, so read that assessment first |
+| ~~Mixpanel~~ | Shipped. The blocker recorded below -- array request bodies -- was lifted as a category rather than for this provider, and serving it sharpened the finding: an array is accepted only when three fields are present, and never for their validity |
+| ~~Amplitude~~ | Shipped, and the one ingest of the three that checks the key: an unrecognised one is refused by name rather than silently accepted |
 
 ## Models and inference
 
@@ -287,7 +287,7 @@ the header says so.
 | Grafana Cloud | Assess — the stack-management API, which is a second surface on top of the one that now ships. **The Grafana HTTP API is shipped** as `grafana`, written against `api-merged.json` in `grafana/grafana`: two unique identifiers for one dashboard, and the one called `id` is the one you cannot use. A save's required fields are `["status", "title", "version", "id", "uid", "url"]` and the two identifiers carry the same sentence -- "The unique identifier (id)" and "The unique identifier (uid)" -- for an int64 and a string, while the only path that fetches a dashboard is `/api/dashboards/uid/{uid}`. So the integer is required in every save response and can address nothing; it is the instance's row number, and a deploy that stored it stored the identifier that will not survive the move. The document says the same about folders outright: `folderId` is "Deprecated: use FolderUID instead", beside `folderUid`. Also pinned: a field called `title` whose description is **"Slug The slug of the dashboard."** with the example "my-dashboard" -- a struct comment one field out of place, on the field a UI shows back to the user; the `version` that guards the next save living in `meta` rather than on the dashboard, which is free-form JSON, with a **412** declared on the save; five permission booleans (`canAdmin`, `canDelete`, `canEdit`, `canSave`, `canStar`) and a sixth field, `provisioned`, that none of them accounts for; and a search that answers with a bare array, no envelope and no count, whose hits can be dashboards already in the bin. Detection is the thinnest in the collection and the reason is the finding: eighteen npm results for "grafana" and not one calls this API -- the whole `@grafana/` scope is plugin tooling, and the biggest Packagist numbers are Loki, a different product from the same vendor |
 | ~~Honeycomb~~ | Shipped. **One endpoint answers `problem+json` and six do not** -- `/1/auth` sends RFC 7807 while boards, datasets, columns, triggers, markers and the events ingest answer the same credential failure as a plain `{"error": ...}`. Written partly to find out whether RFC 7807 needed a new error style: it did not, a flat style with the message under `title` reproduces it exactly |
 | Better Stack | Assess — logs, uptime monitors, incidents |
-| Heap | Assess — events and user properties |
+| ~~Heap~~ | Shipped. The application identifier authenticates nothing -- one that was never registered gets the identical success a real one would |
 | LogRocket | Assess — sessions and issues |
 | ~~New Relic~~ | Shipped, with five cases checked against the live API and five drafted from its published description. **Its own description would generate a broken client**: the spec declares the applications list with the same schema as the single fetch, promising `{"application": {...}}` where the wire sends `{"applications": [...]}`, so generated code reads `response.application.id` and gets undefined on every list call. Also pinned: a wrong key echoed back inside the failure body, and `health_status` as the string "gray" beside `reporting` as a boolean -- two fields stating one fact in two types. NerdGraph was probed for the 200-with-errors behaviour this collection collects and does **not** do it unauthenticated: it 401s before GraphQL executes |
 
@@ -3762,6 +3762,19 @@ all of which are queued above and all of which are batch-shaped for the same
 reason: an analytics SDK buffers on the client and flushes. That is a decision
 about what this format models, which is larger than one provider and should be
 made on its own evidence rather than as a side effect of wanting this one.
+
+**Resolved, 2026-09-03, on that evidence.** A conformance case's `json` is now
+any, so it accepts an array. Mixpanel, Amplitude and Heap all ship. Serving the
+array rather than describing it corrected the finding above: an array is not
+accepted for being an array. Drop the token, the event name or the properties
+and a well-formed array still answers zero, so the gate is the presence of three
+fields and never their validity -- a token belonging to nobody passes, and a
+missing one does not. That distinction was not visible while the behaviour lived
+in prose.
+
+The second gap named above stands. A body that is the single character `1` is
+still not something a route can answer with, and Mixpanel's is served through
+`raw:` for that reason.
 
 ## Five providers want a credential failure per route, and one wants it per scheme
 
