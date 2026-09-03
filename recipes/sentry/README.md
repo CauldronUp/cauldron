@@ -6,6 +6,11 @@ Emulates the Sentry API (0), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its entire error body is one string, with no object around it to read a field
+from.
+
 ## Sources
 
 - Documentation: https://docs.sentry.io/api
