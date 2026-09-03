@@ -1,0 +1,494 @@
+# OpenSky Network Recipe for Cauldron
+#
+# OpenSky is the odd one out in this group of three, and genuinely open: no
+# key, no account, no signature -- GET /api/states/all answers with live
+# aircraft the instant you ask, from a network of volunteer ADS-B receivers.
+# FlightAware and Duffel, the other two Recipes in this collection's
+# scheduling capability, both refuse an unauthenticated request outright.
+# This one does not, and what it hands back when it doesn't is the whole
+# reason this Recipe exists.
+#
+# A state vector is not an object. It is a bare JSON array of seventeen
+# values -- eighteen with ?extended=1 -- and nothing on the wire names any of
+# them; the meaning is defined only by position, in the order documented at
+# openskynetwork.github.io/opensky-api/rest.html (API 1.4.0, fetched
+# 2026-09-03):
+#
+#   0 icao24       5 longitude      10 true_track      15 spi
+#   1 callsign     6 latitude       11 vertical_rate    16 position_source
+#   2 origin_country 7 baro_altitude 12 sensors         17 category (extended only)
+#   3 time_position 8 on_ground     13 geo_altitude
+#   4 last_contact  9 velocity      14 squawk
+#
+# That is a shape this collection has almost none of, and a real hazard
+# precisely because it looks like nothing is unusual: a caller indexes [6]
+# for latitude and gets back a float, no error, no warning, and a client
+# reading the wrong index because a field got inserted or dropped fails
+# silently rather than loudly. This Recipe does not use Cauldron's
+# resource/fields system for it at all -- that system names properties, and
+# naming them would misrepresent a wire shape whose entire point is that it
+# has none. Every route below answers with `raw:`, verbatim JSON captured
+# from a live call, the same mechanism arXiv's Atom feed and Healthchecks'
+# plain-text ping use elsewhere in this collection for the same reason: the
+# format is not an object, so pretending it is would be the fake, not the
+# fidelity.
+#
+# **The question this group of three exists to ask -- is a position a
+# sighting or a surveyed fact -- has a precise, structural answer here.**
+# Index 12, sensors, is documented as "IDs of the receivers which
+# contributed to this state vector. Is null if no filtering for sensor was
+# used in the request" -- so the schema has a place for receiver
+# attribution, and every anonymous or default-authenticated call gets null
+# in it regardless of how many stations actually heard the aircraft, because
+# nothing about an ordinary /states/all request "filters for sensor." The
+# closest thing to provenance an ordinary caller ever sees is index 16,
+# position_source (0 ADS-B, 1 ASTERIX, 2 MLAT, 3 FLARM) -- which says by what
+# *mechanism* a position was derived, not which receiver derived it. Not
+# fabricated: confirmed live below (case "sensors is documented and never
+# filled").
+#
+# Staleness is answerable and nobody has to be told the field exists to find
+# it. time_position (index 3, "Can be null if no position report was
+# received by OpenSky within the past 15s") and last_contact (index 4, "This
+# field is updated for any new, valid message received from the
+# transponder") are each independent Unix timestamps, and both are
+# independent again from the *response's own* top-level "time" -- the
+# instant the snapshot was assembled. A record can sit inside a "current"
+# snapshot with a time_position several minutes behind that snapshot's own
+# time, because the aircraft simply has not been re-heard since; the case
+# below ("a listed aircraft can be older than the snapshot it's listed in")
+# is a live-observed 177-second gap between the two, on an aircraft OpenSky
+# still included as though it were part of "now." Nothing about the shape
+# flags that gap -- a caller who reads only latitude/longitude and not the
+# three clocks beside them cannot tell a four-minute-old sighting from a
+# fresh one.
+#
+# Lost contact does not look like a null entry inside the array. It looks
+# like the aircraft never appearing in it at all: GET
+# /api/states/all?icao24=ffffff (a reserved, never-assigned address) answers
+# `{"time": 1788439757, "states": null}` -- the whole *states* key is JSON
+# null, not an empty array, confirmed live below. A caller checking
+# `states.length` before checking `states === null` throws on the exact
+# request this Recipe is built to demonstrate.
+#
+# **Authentication moved since this format was designed, and the change
+# itself is a finding.** OpenSky's own docs, fetched 2026-09-03: "OpenSky
+# exclusively supports the OAuth2 client credentials flow. Basic
+# authentication with username and password is no longer accepted." A token
+# is a JWT from a separate host (auth.opensky-network.org), 30 minutes to
+# live, passed as `Authorization: Bearer <token>`. What that produces on the
+# wire, all checked live against opensky-network.org/api on 2026-09-03:
+#
+#   no header at all                          -> 200, anonymous tier
+#   Authorization: Basic <anything>            -> 200, anonymous tier
+#   Authorization: junk-with-no-scheme-word    -> 200, anonymous tier
+#   Authorization: Bearer junktoken12345       -> 401, empty body,
+#     WWW-Authenticate: Bearer error="invalid_token", error_description=
+#     "...decode the Jwt: Malformed token"
+#   Authorization: Bearer <JWT-shaped, garbage signature>
+#                                               -> 401, empty body,
+#     WWW-Authenticate: ...error_description="...Signed JWT rejected:
+#     Another algorithm expected, or no matching key(s) found"
+#
+# Put plainly: the live host's own exemption is not "no credential", it is
+# "nothing recognisable as a Bearer attempt" -- a Basic header, a bare
+# scheme-less string, and a genuinely absent header all fall through
+# Spring's BearerTokenAuthenticationFilter identically, because none of them
+# begins with the literal token "Bearer ", and every one of them lands on
+# the same public rule underneath. Only a value that *does* start "Bearer "
+# is examined at all, and once examined it is refused two different ways
+# depending on whether it merely fails to parse as a JWT ("Malformed token")
+# or parses fine and fails signature verification ("Signed JWT rejected").
+#
+# Cauldron's `public: when-absent` (see the mechanism note below) can only
+# exempt the Absent verdict -- a header that is not there. It cannot express
+# "and also anything that isn't shaped like an attempt at this scheme",
+# because Malformed is a distinct verdict from Absent in this engine and
+# `public` only ever reads one of the two. That is a real, stated gap: this
+# Recipe's `/states/all` correctly serves 200 to no header at all, and
+# incorrectly (relative to the live host) refuses a Basic-scheme or
+# scheme-less Authorization header, which the real API waves through
+# identically to no header. Getting that last mile exactly right would need
+# a `public: when-not-bearer-shaped` this format does not have, and stating
+# the gap here is more honest than quietly narrowing which requests get
+# tested to hide it.
+#
+# The engine also cannot tell "Malformed token" from "Signed JWT rejected"
+# apart, for a plainer reason: Cauldron's credential check has exactly one
+# Rejected verdict for "the right general shape, not a credential this
+# Recipe holds," and OpenSky splits that one verdict into two live sentences
+# depending on the *value's own internal shape* (three-dot JWT structure or
+# not) rather than on anything Cauldron's prefix/pattern machinery inspects.
+# auth.rejected_error below models the "Signed JWT rejected" sentence,
+# because that is the one a real integration is likelier to hit in practice
+# -- OpenSky's own docs say a token "expires after 30 minutes" and name a
+# 401 as what that looks like, and an expired-but-once-valid token is
+# JWT-shaped. "Malformed token" is real, live-verified (see the case below
+# that notes it), and not separately modelled, for the same reason Duffel's
+# Recipe in this collection models one of three live authentication_error
+# shapes and states the other two in prose rather than pretending the
+# engine can hold all three.
+#
+# `/states/own` is the second route, and it is genuinely gated -- "Note that
+# authentication is required for this operation, otherwise you will get a
+# 403 - Forbidden," per the docs, confirmed live. Its 403 carries no
+# WWW-Authenticate header at all (unlike /states/all's 401s) and is empty,
+# and -- checked directly -- a request with no header and a request with a
+# non-Bearer-scheme header get the byte-identical 403, which this Recipe
+# *can* model precisely, because /states/own is not public and Cauldron's
+# Absent and Malformed verdicts can each be named separately: both point at
+# the same `forbidden` entry here, which is a real claim (this route does
+# not tell "you sent nothing" from "you sent something that wasn't even an
+# attempt") rather than a limitation of the engine.
+#
+# Rate limiting is real and was watched moving, not just documented:
+# X-Rate-Limit-Remaining shipped on every successful /states/all response in
+# this file's history and counted down request by request (396, 380, 376,
+# ...). OpenSky's own docs put the anonymous daily allowance at 400 credits
+# and the standard authenticated one at 4,000 -- cited, not verified,
+# because verifying the second number needs an account this Recipe never
+# created. No case here spends the budget down to a 429; per this project's
+# own instruction, a rate limit is a finding to record, not a wall to run
+# into on purpose, and this Recipe already found the more interesting thing
+# on the way there.
+#
+# A wrong method (PUT, POST) on /states/all answers 403 Forbidden with a
+# Spring Security CSRF cookie (Set-Cookie: XSRF-TOKEN=...) and a JSON body
+# `{"timestamp","status":403,"error":"Forbidden","path":"/states/all"}` --
+# not a 405, and not modelled as a route: like Flexport's Recipe elsewhere
+# in this collection, a wrong-verb CSRF page is a third shape that fits
+# neither this engine's method_not_allowed nor its credential-verdict
+# mechanism, and is recorded here, live-checked, rather than approximated.
+# With auth.after_routing declared (see below), a wrong method on a path
+# this Recipe does declare would fall to Cauldron's own computed 405 rather
+# than reach that CSRF page at all -- an untested, engine-native answer this
+# file does not claim matches the wire, because no case here asks for one.
+#
+# Known fidelity gaps, stated rather than hidden:
+#
+#   - No successful authenticated case anywhere in this file. OpenSky's docs
+#     give a full field table for /states/all and /states/own and never once
+#     show a worked JSON response, and this Recipe holds no real OAuth2
+#     client to call either endpoint with one. Every 200 below is anonymous,
+#     which happens to be the tier this Recipe was written to describe.
+#   - The Basic-scheme and scheme-less exemptions on /states/all are not
+#     modelled as passing cases -- see the auth section above. They are
+#     recorded as live findings in prose and in one deliberately-not-passing
+#     case's comment, not asserted as green.
+#   - A wrong method on a declared path is not covered by any case -- see
+#     the CSRF paragraph above for why what Cauldron would answer there is
+#     not a claim about the wire.
+#   - /flights/*, /tracks/* and the bounding-box and icao24 query filters on
+#     /states/all beyond the one null-result case are out of scope: this
+#     group of three exists to answer the position/provenance question, and
+#     OpenSky's flight-history endpoints are a different (and separately
+#     credit-metered) surface this Recipe does not touch.
+#   - No upstream.spec. OpenSky's REST API is documented as a hand-written
+#     Sphinx site with a field-by-field HTML table, not a machine-readable
+#     OpenAPI or Swagger description anywhere the project could find, so
+#     there is nothing here for `cauldron drift` to fingerprint against.
+
+recipe: opensky
+capability: scheduling
+version: 0.1.0
+
+upstream:
+  api: "1.4.0"
+  docs: https://openskynetwork.github.io/opensky-api/rest.html
+
+auth:
+  scheme: bearer
+  header: Authorization
+  prefix: "Bearer "
+  keys:
+    - cauldron-opensky-fixture-token-000000000000
+  # /states/own is not public, so Absent reaches this. Confirmed live: a
+  # request with no header at all gets exactly this 403, and so does one
+  # carrying a non-Bearer-scheme header -- see malformed_error.
+  absent_error: forbidden
+  # Confirmed live, byte-identical to absent_error's case: a Basic-scheme
+  # header on /states/own never reaches Spring's Bearer filter at all, so it
+  # falls through to "no authenticated principal", the same place an absent
+  # header lands. Naming the same entry for both verdicts is the honest
+  # claim here, not a shortcut -- see the file header.
+  malformed_error: forbidden
+  # The "Signed JWT rejected" sentence -- see the file header for why this
+  # one of OpenSky's two live 401 sentences is the one modelled.
+  rejected_error: invalid_token
+  # Confirmed live: an entirely unrouted path (no /states/* or /flights/*
+  # anywhere in it) answers Spring Boot's own 404 with no credential
+  # examined at all, while a path this Recipe *does* route still gates on
+  # the credential first. Spring Security's filter chain here only ever
+  # intercepts a request that matches a registered security pattern; one
+  # that matches nothing falls straight through to Spring MVC's own
+  # catch-all "no handler" answer before the credential is ever looked at.
+  after_routing: true
+
+responses:
+  error:
+    style: flat
+    message_field: path
+    code_field: "-"
+    type_field: "-"
+
+routes:
+  # The interesting case: a filter that matches nothing gets `states: null`,
+  # not an empty array. Checked before the two catch-alls below so it wins
+  # on an exact match and falls through to them otherwise.
+  - method: GET
+    path: /states/all
+    public: when-absent
+    matches_query:
+      icao24: ffffff
+    raw:
+      content_type: application/json
+      text: '{"time":1788439757,"states":null}'
+
+  # The extended shape: eighteen fields, category appended at index 17.
+  - method: GET
+    path: /states/all
+    public: when-absent
+    matches_query:
+      extended: "1"
+    raw:
+      content_type: application/json
+      text: >-
+        {"time":1788439494,"states":[["4bc895","","Turkey",1788439372,1788439372,6.1154,46.2402,null,true,12.35,45,null,null,null,null,false,0,0],["31fef6","IEASR   ","Italy",1788439493,1788439493,9.0343,46.9429,2758.44,false,50.95,268.26,1.3,null,2987.04,"7000",false,0,8],["407b8e","BAW573  ","United Kingdom",1788439494,1788439494,9.0391,46.1824,7734.3,false,198.42,351.05,14.63,null,8229.6,"7516",false,0,0]]}
+
+  # The default: seventeen fields, no category. One aircraft still fresh at
+  # the instant of the snapshot, one 177 seconds stale inside it, one
+  # on-ground with most numeric fields null.
+  - method: GET
+    path: /states/all
+    public: when-absent
+    raw:
+      content_type: application/json
+      text: >-
+        {"time":1788439355,"states":[["39de4f","TVF591U ","France",1788439355,1788439355,-7.6893,32.8549,11887.2,false,212.89,210.66,-0.33,null,12649.2,"7666",false,0],["39de59","TVF13NV ","France",1788439178,1788439179,-14.8366,27.7865,3909.06,false,141.97,213.17,-6.83,null,4244.34,null,false,0],["80162d","AXB51Q  ","India",1788439351,1788439351,77.0909,28.5689,null,true,2.06,270,null,null,null,null,false,0]]}
+
+  # Genuinely gated -- see the file header. No worked 200 exists to serve,
+  # for /states/own or for an authenticated /states/all, so this route
+  # answers only the refusal every case below actually reached.
+  - method: GET
+    path: /states/own
+    error: forbidden
+
+errors:
+  # Empty body, no Content-Type, exactly as observed -- see runtime's
+  # `empty: true` (this project's mechanism for "the provider answered zero
+  # bytes"). Used for both Absent and Malformed on /states/own.
+  forbidden:
+    status: 403
+    empty: true
+
+  # Empty body, no Content-Type, WWW-Authenticate carrying the live wording.
+  # See the file header for why this is one of two real sentences OpenSky
+  # gives a Bearer-prefixed value it does not hold.
+  invalid_token:
+    status: 401
+    empty: true
+    headers:
+      WWW-Authenticate: >-
+        Bearer error="invalid_token", error_description="An error occurred
+        while attempting to decode the Jwt: Signed JWT rejected: Another
+        algorithm expected, or no matching key(s) found",
+        error_uri="https://tools.ietf.org/html/rfc6750#section-3.1"
+
+  # Spring Boot's own default error page, reached for a path this Recipe
+  # does not route. {detail} carries the request's own path, echoed back
+  # exactly as the live host does -- confirmed live, byte for byte,
+  # including that the /api mount prefix is stripped before the echo.
+  unknown_route:
+    status: 404
+    message: "{detail}"
+    fields:
+      status: 404
+      error: Not Found
+
+fixtures:
+  empty: {}
+
+conformance:
+  # Observed directly: the genuinely open case. No header, no query beyond
+  # the default, and a real network snapshot comes back with a live
+  # X-Rate-Limit-Remaining counting down.
+  - name: no credential at all is served the live network, not refused
+    source: https://opensky-network.org/api/states/all
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+    expect:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body:
+        time: 1788439355
+        "states[0][0]": "39de4f"
+        "states[0][1]": "TVF591U "
+        "states[0][8]": false
+
+  - name: a listed aircraft can be older than the snapshot it is listed in
+    # time_position and last_contact both read 1788439178-79 on this record,
+    # 177 seconds behind the response's own top-level time of 1788439355 --
+    # the aircraft has not been re-heard, and nothing about the shape says
+    # so beyond the three clocks disagreeing.
+    source: https://opensky-network.org/api/states/all
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+    expect:
+      status: 200
+      body:
+        time: 1788439355
+        "states[1][0]": "39de59"
+        "states[1][3]": 1788439178
+        "states[1][4]": 1788439179
+
+  - name: on the ground and mostly null, but the callsign survives
+    source: https://opensky-network.org/api/states/all
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+    expect:
+      status: 200
+      body:
+        "states[2][0]": "80162d"
+        "states[2][1]": "AXB51Q  "
+        "states[2][7]": null
+        "states[2][8]": true
+        "states[2][12]": null
+
+  - name: a bounding-box query with extended=1 appends category at index 17
+    # A rotorcraft (category 8) sitting beside an airliner (category 0,
+    # meaning no ADS-B emitter category was ever received) -- both real,
+    # both from the same live call, category the one field ?extended=1 adds
+    # and nothing else changes.
+    source: "https://opensky-network.org/api/states/all?lamin=45.8389&lomin=5.9962&lamax=47.8229&lomax=10.5226&extended=1"
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+      query:
+        extended: "1"
+    expect:
+      status: 200
+      body:
+        "states[1][0]": "31fef6"
+        "states[1][17]": 8
+        "states[2][0]": "407b8e"
+        "states[2][17]": 0
+
+  - name: sensors is documented and never filled for an ordinary call
+    # Index 12 on every record in every case in this file is null -- see the
+    # file header for why: "filtering for sensor" is not something an
+    # ordinary /states/all request ever does, anonymous or not, so the one
+    # field that could name a receiver never carries one.
+    source: https://opensky-network.org/api/states/all
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+    expect:
+      status: 200
+      body:
+        "states[0][12]": null
+        "states[1][12]": null
+        "states[2][12]": null
+
+  - name: a filter matching no aircraft answers states colon null
+    # Not an empty array. ffffff is reserved and never assigned to a real
+    # transponder, so this is the only shape a genuine no-match ever takes.
+    source: "https://opensky-network.org/api/states/all?icao24=ffffff"
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+      query:
+        icao24: ffffff
+    expect:
+      status: 200
+      body:
+        time: 1788439757
+        states: null
+
+  - name: a Bearer value that cannot even parse as a JWT is refused
+    # Live: "junktoken12345" has no dots at all, so Spring's decoder fails
+    # before it gets anywhere near a signature -- "Malformed token", the
+    # sentence this Recipe does not model separately (see the file header).
+    # This case intentionally asserts the *modelled* sentence and therefore
+    # does not pass against the live wording; it documents the gap rather
+    # than hiding it, and carries no verified date for that reason.
+    source: https://opensky-network.org/api/states/all
+    request:
+      method: GET
+      path: /states/all
+      headers:
+        Authorization: Bearer junktoken12345
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: 'error_description="An error occurred while attempting to decode the Jwt: Signed JWT rejected'
+
+  - name: a JWT-shaped value with a bad signature is refused a second way
+    source: https://opensky-network.org/api/states/all
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/all
+      headers:
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.abcdefghijklmnop
+    expect:
+      status: 401
+      headers:
+        WWW-Authenticate: >-
+          Bearer error="invalid_token", error_description="An error occurred
+          while attempting to decode the Jwt: Signed JWT rejected: Another
+          algorithm expected, or no matching key(s) found",
+          error_uri="https://tools.ietf.org/html/rfc6750#section-3.1"
+      absent_headers:
+        - Content-Type
+      no_body: true
+
+  - name: states/own refuses no credential at all with an empty 403
+    source: https://opensky-network.org/api/states/own
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/own
+    expect:
+      status: 403
+      no_body: true
+
+  - name: and refuses a header that was never a Bearer attempt identically
+    # Basic-scheme, verified live to answer the byte-identical 403 an absent
+    # header gets on this route -- the opposite of /states/all, where the
+    # same header is waved through (see the file header's stated gap).
+    source: https://opensky-network.org/api/states/own
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /states/own
+      headers:
+        Authorization: Basic anVua3VzZXI6anVua3Bhc3M=
+    expect:
+      status: 403
+      no_body: true
+
+  - name: an unrecognised path answers Spring Boot's own default error page
+    # Byte for byte, live: the /api mount prefix this emulator is served
+    # under is stripped before the path is echoed back, exactly as the real
+    # host strips its own.
+    source: https://opensky-network.org/api/nosuchroute
+    verified: "2026-09-03"
+    request:
+      method: GET
+      path: /nosuchroute
+    expect:
+      status: 404
+      body:
+        status: 404
+        error: Not Found
+        path: /nosuchroute
