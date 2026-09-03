@@ -6,6 +6,11 @@ Emulates the Plaid API (2020-09-14), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+Its error category is a separate field from its code, so branching on the code
+alone tells a caller less than the response does.
+
 ## Sources
 
 - Documentation: https://plaid.com/docs/api
