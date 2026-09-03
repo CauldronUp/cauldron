@@ -6,6 +6,14 @@ Emulates the Webflow API (2.0.0), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What writing this Recipe changed
+
+This Recipe found a bug that had already shipped. Every timestamp field was
+being filled in automatically, so a site that had never been published still
+carried a `lastPublished`. The emulator was claiming events that never happened,
+and no test written against it could have caught that -- the value was always
+there, so nothing ever looked wrong.
+
 ## Sources
 
 - Documentation: https://developers.webflow.com/data/reference
