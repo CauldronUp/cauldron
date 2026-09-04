@@ -6,6 +6,10 @@ Emulates the ShipEngine API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+A rate request can half-fail with a 200. `rate_response.rates` holds the carriers that answered and `rate_response.errors` holds the ones that refused, side by side in the same body, and `rate_response.status` says "completed" regardless -- it describes whether ShipEngine finished asking, not whether the answers are complete. A client that checks the status code and reads `rates` sees a shorter list than it asked for, with no sign anything went wrong: a customer shown two options instead of three, missing the cheapest one, and nobody notices until someone checks a carrier's own site.
+
 ## Sources
 
 - Documentation: https://www.shipengine.com/docs/rates/
