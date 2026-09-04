@@ -6,6 +6,12 @@ Emulates the Buildkite API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+"blocked" is a real Buildkite build state meaning the build is waiting at a manual gate for a human to unblock it -- neither a pass nor a failure, and neither is "scheduled" or "not_run" -- so a deployment gate that treats anything but "passed" as failed rejects a build that's simply waiting on someone. A build that hasn't started has no started_at, and one that hasn't finished has no finished_at, so computing a duration without checking for either produces a date in 1970.
+
+One fidelity gap: Buildkite pages with a Link header, which Cauldron doesn't model.
+
 ## Sources
 
 - Documentation: https://buildkite.com/docs/apis/rest-api
