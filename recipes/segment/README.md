@@ -6,6 +6,10 @@ Emulates the Segment API (v1beta), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+The source collection sits two levels down, under `data.sources`, rather than at the top level or under a single obvious key -- code written for either of the usual shapes finds nothing. A disabled source also still exists, still has its write key, and still appears in every listing; it simply drops the events sent to it, silently, which is the failure mode that takes longest to notice.
+
 ## Sources
 
 - Documentation: https://docs.segmentapis.com/
