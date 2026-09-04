@@ -6,6 +6,14 @@ Emulates the Hookdeck API (2024-03-01), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+"Did my webhook work" has three different answers here, and they're allowed to disagree. Hookdeck models one arriving webhook as three separate objects: a Request (what arrived), an Event (what gets delivered, with six possible states), and an Attempt (one try, with only two states). A request can be received, verified, and answered with a 200, and still produce nothing downstream at all -- if nothing was configured to receive it, `events_count` on the request is simply zero, and the original sender never sees anything wrong.
+
+The states also don't mean what their names suggest across layers: an event whose last two delivery attempts both failed is still `SCHEDULED`, because the next retry hasn't run yet -- `FAILED` on an event specifically means retries are exhausted, a different sentence entirely from `FAILED` on an attempt. Code that alerts on event status stays silent through every retry until the very end; code that alerts on individual attempts fires on failures that go on to succeed.
+
+Thirty-two of thirty-three documented attempt error codes mean the request never reached your server at all (DNS failures, connection resets, TLS errors) -- only one, `BAD_RESPONSE`, means your server actually answered and said no. An attempt that never reached you carries `response_status: null` rather than a 5xx, so code that counts failures by checking `response_status >= 500` misses every transport failure entirely.
+
 ## Sources
 
 - Documentation: https://hookdeck.com/docs/api
