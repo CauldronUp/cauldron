@@ -47,13 +47,13 @@ func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok b
 // sent by somebody, so it is malformed rather than absent, which is the line
 // the providers themselves draw -- Make answers a bare missing header with
 // "User is not logged in." and a broken one with "Invalid token header."
-func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
+func (s *Sandbox) credential(r *http.Request) (recipe.Verdict, string) {
 	auth := s.recipe.Auth
 
 	// A Recipe that declares no keys accepts anything, so an author can model
 	// routes first and tighten auth later.
 	if auth.Scheme == "" || auth.Scheme == "none" || (len(auth.Keys) == 0 && auth.Pattern == "") {
-		return recipe.Accepted
+		return recipe.Accepted, ""
 	}
 
 	var presented string
@@ -78,7 +78,7 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 		presented = r.Header.Get(header)
 
 		if presented == "" {
-			return recipe.Absent
+			return recipe.Absent, presented
 		}
 	case "query":
 		// The credential travels in the URL. Reproducing that exactly is the
@@ -87,7 +87,7 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 		presented = r.URL.Query().Get(auth.Param)
 
 		if presented == "" {
-			return recipe.Absent
+			return recipe.Absent, presented
 		}
 	case "basic":
 		user, password, ok := r.BasicAuth()
@@ -96,10 +96,10 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 			// will not parse -- some other scheme, or base64 that is not --
 			// was sent by somebody who tried, and is malformed.
 			if r.Header.Get("Authorization") == "" {
-				return recipe.Absent
+				return recipe.Absent, presented
 			}
 
-			return recipe.Malformed
+			return recipe.Malformed, presented
 		}
 
 		// Providers disagree about which half carries the secret. Twilio puts
@@ -123,12 +123,12 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 		// a one-line change, with no test that would fail. Failing closed is
 		// the only safe direction for a branch whose whole job is to be
 		// unreachable.
-		return recipe.Rejected
+		return recipe.Rejected, presented
 	}
 
 	if auth.Prefix != "" {
 		if !strings.HasPrefix(presented, auth.Prefix) {
-			return recipe.Malformed
+			return recipe.Malformed, presented
 		}
 
 		presented = strings.TrimPrefix(presented, auth.Prefix)
@@ -151,7 +151,7 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 	// here, because a Recipe that does not name a malformed error falls
 	// through to the same message it always did.
 	if presented == "" {
-		return recipe.Malformed
+		return recipe.Malformed, presented
 	}
 
 	// A pattern, for a credential computed per request. AWS signs every call,
@@ -162,14 +162,14 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 	if auth.Pattern != "" {
 		matched, err := regexp.MatchString(auth.Pattern, presented)
 		if err == nil && matched {
-			return recipe.Accepted
+			return recipe.Accepted, presented
 		}
 
 		// A pattern describes the shape, so failing it is a shape failure.
 		// Recipes using a pattern because the credential is computed per
 		// request -- AWS signs every call -- have no fixed value to be wrong
 		// about, so malformed is the only honest verdict available to them.
-		return recipe.Malformed
+		return recipe.Malformed, presented
 	}
 
 	// Checked before the accepted keys, so a Recipe that names one key in both
@@ -179,7 +179,7 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 	// own file says is not entitled is the worse of the two failures.
 	for _, key := range auth.Unentitled {
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(key)) == 1 {
-			return recipe.Unentitled
+			return recipe.Unentitled, presented
 		}
 	}
 
@@ -190,9 +190,9 @@ func (s *Sandbox) credential(r *http.Request) recipe.Verdict {
 		// leaks its answer byte by byte is not the pattern to hand somebody
 		// who is about to go and write the real thing.
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(key)) == 1 {
-			return recipe.Accepted
+			return recipe.Accepted, presented
 		}
 	}
 
-	return recipe.Rejected
+	return recipe.Rejected, presented
 }

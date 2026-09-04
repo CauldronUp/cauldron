@@ -78,7 +78,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// arrangement, and a provider that answers 404 to an unrouted path with no
 	// credential at all needs the other one.
 	refuse := func() bool {
-		verdict := s.credential(r)
+		verdict, presented := s.credential(r)
 		if verdict == recipe.Accepted {
 			return false
 		}
@@ -99,7 +99,16 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusForbidden, "not_entitled"
 		}
 
-		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), status, code, "Invalid API key provided.")
+		// The credential that was judged, for a provider that quotes it back.
+		// NeverBounce answers "Invalid API key 'whatever-you-sent'" and New
+		// Relic echoes a wrong key into its body, and until this was passed
+		// there was no way to say so -- the error table holds one static
+		// sentence per name, so both had to serve a fixed placeholder and
+		// explain in prose that the real one varies.
+		//
+		// A message with no {detail} in it is unaffected, which is every
+		// Recipe that has not asked for this.
+		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), status, code, "Invalid API key provided.", presented)
 
 		return true
 	}
@@ -116,7 +125,8 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the exemption reaches depends on the credential, not only on the route.
 	public := false
 	if ok && matched.spec.Public.Declared() {
-		public = matched.spec.Public.Exempts(s.credential(r))
+		verdict, _ := s.credential(r)
+		public = matched.spec.Public.Exempts(verdict)
 	}
 
 	if !s.recipe.Auth.AfterRouting && !public && refuse() {

@@ -162,6 +162,36 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 
 		extra = defined.Fields
 
+		// A field may carry {detail} too, and several providers need it there
+		// rather than in the sentence. New Relic's refusal for a wrong key
+		// puts the key back under error.api_key and leaves the sentence
+		// alone, so substituting only the message would have left this
+		// Recipe arming a fault to show a literal.
+		//
+		// Copied rather than edited in place: Fields belongs to the Recipe,
+		// which is shared across every request this Sandbox serves.
+		if detail != "" {
+			copied := false
+
+			for key, value := range extra {
+				text, ok := value.(string)
+				if !ok || !strings.Contains(text, "{detail}") {
+					continue
+				}
+
+				if !copied {
+					replaced := make(map[string]any, len(extra))
+					for k, v := range extra {
+						replaced[k] = v
+					}
+
+					extra, copied = replaced, true
+				}
+
+				extra[key] = strings.ReplaceAll(text, "{detail}", detail)
+			}
+		}
+
 		if defined.Style != "" {
 			spec.Style = defined.Style
 		}

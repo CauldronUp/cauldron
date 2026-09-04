@@ -42,7 +42,7 @@ func TestAnUnentitledKeyAuthenticatesAndIsStillRefused(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/zones", nil)
 		req.Header.Set("Authorization", "Bearer "+c.key)
 
-		if got := s.credential(req); got != c.want {
+		if got, _ := s.credential(req); got != c.want {
 			t.Errorf("%s: verdict %d, want %d", c.name, got, c.want)
 		}
 
