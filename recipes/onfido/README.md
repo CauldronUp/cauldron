@@ -6,6 +6,14 @@ Emulates the Onfido API (v3.6), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+An Onfido check being `complete` says nothing about whether the person passed -- `status` and `result` are separate fields answering separate questions, and only once status reaches `complete` does result mean anything at all. There are three results, not two: `clear`, `consider`, and `unidentified`, and `consider`, the most common non-clear outcome, means a human has to look, which is neither a pass nor a failure. Treating it as either one is the kind of wrong somebody eventually complains about.
+
+A check's own result is not simply the worst result among its reports -- a check can land on `consider` because exactly one report did, while every other report came back clear, and the reason for that lives on the individual report, not on the check as a whole. `sub_result`, which only appears on document reports, is where the real story is: `rejected` and `suspected` both look like failure but mean very different things, a bad photograph versus a suspected forgery.
+
+Nothing is decided yet when a check is created -- the fields that will eventually carry a result are absent entirely rather than null, so code reading them right after creation gets `undefined`, and code that specifically checks for null finds nothing wrong at all.
+
 ## Sources
 
 - Documentation: https://documentation.onfido.com/
