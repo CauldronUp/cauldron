@@ -6,6 +6,10 @@ Emulates the Asana API (1.0), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Asana has no sandbox -- a personal access token reaches a real workspace, so a test that creates tasks creates them where people can see them and get notified. The identifier is gid, not id, and it's a numeric string large enough to lose precision if parsed as a number; code that reads task.id finds nothing. Every object also declares its own resource_type, and everything -- single object or collection -- is wrapped under "data", so reading the response body directly finds nothing either way.
+
 ## Sources
 
 - Documentation: https://developers.asana.com/reference/rest-api-reference
