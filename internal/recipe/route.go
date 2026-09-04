@@ -378,6 +378,36 @@ type Route struct {
 	// the absent case is served, a valid key still works, and anything else is
 	// judged as it would be anywhere else on the host.
 	Public PublicMode `yaml:"public"`
+	// Auth overrides the Recipe-wide credential for this route.
+	//
+	// Auth is one setting for a whole Recipe, and that is wrong for any
+	// provider serving two surfaces from one Recipe. Twenty-four Recipes have
+	// written the same paragraph: Coinbase's two hosts want different
+	// credentials and no field records which route came from which; Mezmo's
+	// two hosts resolve routing and the credential in opposite orders;
+	// Healthchecks wanted to say "this route needs a key and this one, on a
+	// different host, never does" and could only say it in prose.
+	//
+	// Public already covers the last of those, and only that one. This covers
+	// the rest: a route may name its own scheme, header, keys and ordering,
+	// and anything it does not name it inherits.
+	//
+	// Nil means inherit, which is every route in every Recipe shipping today,
+	// so no existing behaviour and no existing fingerprint moves. That is the
+	// same bargain List and Envelope already make one level down.
+	//
+	// One half of those twenty-four this does not fix, and the limit is worth
+	// knowing before reaching for it. A route's AfterRouting governs requests
+	// that reach that route, and ordering is mostly a claim about what happens
+	// when routing FAILS -- an unrouted path, a wrong method. Neither of those
+	// matches a route, so neither has a route to take an ordering from, and
+	// the Recipe's own decides. Mezmo's two hosts disagreeing about that stays
+	// in prose.
+	//
+	// Fixing that would mean deciding which route a request that matched none
+	// of them should have been judged by, which is a guess. Recording it is
+	// better than guessing.
+	Auth *Auth `yaml:"auth"`
 }
 
 // PublicMode is how far a route's credential exemption reaches.

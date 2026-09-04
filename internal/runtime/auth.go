@@ -47,8 +47,7 @@ func (s *Sandbox) missingHeader(r *http.Request) (header, errorName string, ok b
 // sent by somebody, so it is malformed rather than absent, which is the line
 // the providers themselves draw -- Make answers a bare missing header with
 // "User is not logged in." and a broken one with "Invalid token header."
-func (s *Sandbox) credential(r *http.Request) (recipe.Verdict, string) {
-	auth := s.recipe.Auth
+func (s *Sandbox) credential(r *http.Request, auth recipe.Auth) (recipe.Verdict, string) {
 
 	// A Recipe that declares no keys accepts anything, so an author can model
 	// routes first and tighten auth later.

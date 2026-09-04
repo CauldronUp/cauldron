@@ -64,7 +64,7 @@ func TestACredentialFailsInThreeDistinguishableWays(t *testing.T) {
 			req.Header.Set(c.header, c.value)
 		}
 
-		if got, _ := s.credential(req); got != c.want {
+		if got, _ := s.credential(req, r.Auth); got != c.want {
 			t.Errorf("%s: verdict %d, want %d", c.name, got, c.want)
 		}
 	}

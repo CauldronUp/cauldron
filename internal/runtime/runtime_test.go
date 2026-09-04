@@ -782,7 +782,7 @@ func authorisedWith(s *Sandbox, auth recipe.Auth, credential string) bool {
 		req.Header.Set("Authorization", credential)
 	}
 
-	verdict, _ := s.credential(req)
+	verdict, _ := s.credential(req, s.recipe.Auth)
 
 	return verdict == recipe.Accepted
 }

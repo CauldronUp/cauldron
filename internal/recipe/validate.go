@@ -104,6 +104,52 @@ func (r *Recipe) Validate() error {
 		add("auth.scheme %q must be one of %s", r.Auth.Scheme, strings.Join(validSchemes, ", "))
 	}
 
+	// A route's own credential is held to the same rules as the Recipe's. It
+	// is a whole Auth rather than a few fields, so every way of getting one
+	// wrong is available on a route too, and an unchecked one would boot.
+	for i, route := range r.Routes {
+		if route.Auth == nil {
+			continue
+		}
+
+		where := fmt.Sprintf("route %d (%s %s) auth", i, route.Method, route.Path)
+
+		if route.Auth.Scheme != "" && !contains(validSchemes, route.Auth.Scheme) {
+			add("%s.scheme %q must be one of %s", where, route.Auth.Scheme, strings.Join(validSchemes, ", "))
+		}
+
+		if route.Auth.Credential != "" && route.Auth.Credential != "username" && route.Auth.Credential != "password" {
+			add("%s.credential %q must be username or password", where, route.Auth.Credential)
+		}
+
+		if route.Auth.Credential != "" && route.Auth.Scheme != "basic" {
+			add("%s.credential only applies to the basic scheme", where)
+		}
+
+		if route.Auth.Pattern != "" {
+			if _, err := regexp.Compile(route.Auth.Pattern); err != nil {
+				add("%s.pattern is not a valid regular expression: %v", where, err)
+			}
+
+			if len(route.Auth.Keys) > 0 {
+				add("%s declares both keys and a pattern, and only one can decide whether a credential is accepted", where)
+			}
+		}
+
+		for _, key := range route.Auth.Unentitled {
+			if contains(route.Auth.Keys, key) {
+				add("%s lists %q in both keys and unentitled, so nothing can say whether it works", where, key)
+			}
+		}
+
+		// A route that names its own credential and is also exempt from one is
+		// saying two things, and the exemption wins -- so the credential is
+		// dead weight a reader would take for a claim.
+		if route.Public.Declared() && route.Auth.Scheme != "" {
+			add("%s names a scheme on a route that is also public, so nothing would ever check it", where)
+		}
+	}
+
 	if r.Auth.Credential != "" && r.Auth.Credential != "username" && r.Auth.Credential != "password" {
 		add("auth.credential %q must be username or password", r.Auth.Credential)
 	}

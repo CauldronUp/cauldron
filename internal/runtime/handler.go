@@ -77,8 +77,8 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Auth.AfterRouting: checking first is the default and the commoner
 	// arrangement, and a provider that answers 404 to an unrouted path with no
 	// credential at all needs the other one.
-	refuse := func() bool {
-		verdict, presented := s.credential(r)
+	refuse := func(auth recipe.Auth) bool {
+		verdict, presented := s.credential(r, auth)
 		if verdict == recipe.Accepted {
 			return false
 		}
@@ -108,7 +108,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		//
 		// A message with no {detail} in it is unaffected, which is every
 		// Recipe that has not asked for this.
-		exchange.Status = s.writeRecipeError(w, s.recipe.Auth.ErrorFor(verdict), status, code, "Invalid API key provided.", presented)
+		exchange.Status = s.writeRecipeError(w, auth.ErrorFor(verdict), status, code, "Invalid API key provided.", presented)
 
 		return true
 	}
@@ -123,13 +123,22 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolved once, because a route can be open to a request that presented
 	// nothing and closed to one that presented something wrong -- so how far
 	// the exemption reaches depends on the credential, not only on the route.
+	// A route may carry its own credential, and anything it does not name it
+	// inherits. An unrouted request has no route to take one from, so it is
+	// judged by the Recipe's -- which is the only answer available and the
+	// right one: a path that does not exist belongs to no surface.
+	auth := s.recipe.Auth
+	if ok && matched.spec.Auth != nil {
+		auth = *matched.spec.Auth
+	}
+
 	public := false
 	if ok && matched.spec.Public.Declared() {
-		verdict, _ := s.credential(r)
+		verdict, _ := s.credential(r, auth)
 		public = matched.spec.Public.Exempts(verdict)
 	}
 
-	if !s.recipe.Auth.AfterRouting && !public && refuse() {
+	if !auth.AfterRouting && !public && refuse(auth) {
 		return
 	}
 
@@ -139,7 +148,7 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//
 	// Checked with the credential rather than after the router, because it is
 	// the same kind of claim: something the caller had to send and did not.
-	if !s.recipe.Auth.AfterRouting {
+	if !auth.AfterRouting {
 		if header, name, ok := s.missingHeader(r); !ok {
 			exchange.Status = s.writeRecipeError(w, name, 400, "missing_header",
 				"The "+header+" header is required.", header)
@@ -183,8 +192,8 @@ func (s *Sandbox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The deferred half of the pipeline, for a Recipe that routes first. By
 	// here the request has matched a real route, so a refusal is about the
 	// credential rather than about the path.
-	if s.recipe.Auth.AfterRouting {
-		if !public && refuse() {
+	if auth.AfterRouting {
+		if !public && refuse(auth) {
 			return
 		}
 
