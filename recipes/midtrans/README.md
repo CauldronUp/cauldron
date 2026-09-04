@@ -6,6 +6,14 @@ Emulates the midtrans API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+A Midtrans payment is only safe when two separate fields agree: `transaction_status` says what happened to the money and `fraud_status` says what Midtrans thinks of it, and a transaction can be `capture` and `challenge` at the same time -- charged, but held pending a human fraud review. Code that reads only `transaction_status` and sees a success word ships the goods before the review resolves, and this never shows up in a happy-path test because a test card is never challenged.
+
+There are also two status codes that are not the same thing: the HTTP status and a `status_code` string inside the body carrying Midtrans's own meaning, so a 200 with `status_code: "404"` is a real, valid response that a client branching on HTTP status alone reads as a successful empty lookup. `gross_amount` is a decimal string in a currency that has no cents (`"10000.00"` is ten thousand rupiah), so a client that divides by a hundred out of habit reports every amount as a hundredth of itself. `settlement` does not follow the same path every time either -- a card payment goes capture then settlement, but a bank transfer goes straight from pending to settlement, skipping capture entirely, so code that waits for capture waits forever on half its payments.
+
+The notification signature, the entire security boundary for webhooks, is not computed or verified here on purpose: faking verification that always passes would teach the opposite lesson to the one worth learning.
+
 ## Sources
 
 - Documentation: https://docs.midtrans.com/reference/backend-integration
