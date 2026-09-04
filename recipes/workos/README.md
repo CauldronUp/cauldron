@@ -6,6 +6,10 @@ Emulates the WorkOS API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+An inactive directory user is still returned by the ordinary listing. Deprovisioning someone in the IdP sets their `state` to `inactive`; it does not remove them, so an integration that syncs everything it's handed re-creates accounts for people who have already left -- the exact failure mode a fixture full of only-active users would never surface. `emails` is also an array with a `primary` flag rather than a string, and the primary one isn't necessarily first, so `emails[0].value` is right most of the time, which is the worst way for a field to be wrong.
+
 ## Sources
 
 - Documentation: https://workos.com/docs/reference
