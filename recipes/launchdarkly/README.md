@@ -6,6 +6,12 @@ Emulates the LaunchDarkly API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+The Authorization header carries the API key with no scheme at all -- not `Bearer`, not `Token`, just the key. Every other provider in this collection wants a prefix, so the habit of adding one is exactly wrong here, and produces a 401 that reads like a bad key rather than a malformed header.
+
+A flag also has no single on/off state: it has one per environment, nested under an `environments` map keyed by environment key, so "is this flag on" isn't answerable without saying where, and code reading `flag.on` directly finds `undefined`. A variation is referenced by index rather than by value -- `fallthrough.variation` is `0` or `1`, meaning true or false in whatever order the variations were originally defined -- so reading the index as the value can give `0` for true. And an archived flag still exists and still serves: it just disappears from the default listing, which makes it look deleted while the SDK keeps evaluating it everywhere it's still referenced.
+
 ## Sources
 
 - Documentation: https://apidocs.launchdarkly.com/
