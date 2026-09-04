@@ -6,6 +6,12 @@ Emulates the hydra API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+An inactive token is a 200 with exactly one field in it. Introspecting a token that's expired, been revoked, or never existed answers `{"active": false}` -- not an error, not a 401, and not the token object with a flag on it: everything else (`sub`, `scope`, `client_id`, `exp`) is simply gone. `active` is the only required field in Hydra's own schema, which is the specification's way of saying exactly this. Code that checks the status code, then reads `result.sub` without checking `active` first, gets `undefined` and passes it straight through to whatever comes next.
+
+`scope` is a space-separated string, not an array, so `scope.includes("admin")` returns true for a token holding only `"administrator"` -- any substring test on it is a privilege check that can pass for scopes nobody actually granted. `aud`, sitting right beside it, actually is an array, so a client that learned the shape of one field gets the other wrong. And `exp`, `iat` and `nbf` are all RFC 7519 seconds, not the millisecond timestamps most JavaScript expects, so a date built from one without multiplying by 1000 lands in January 1970.
+
 ## Sources
 
 - Documentation: https://www.ory.sh/docs/hydra/reference/api
