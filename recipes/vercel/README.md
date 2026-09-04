@@ -6,6 +6,10 @@ Emulates the Vercel API (v13), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+The error envelope is thin: failures are nested under `error` with only a `code` and a `message`, no `type` and nothing else in the body, so code written for a richer error shape (Stripe's, say) reads `error.type` and finds nothing. Deployment state is a string enum where `READY` is not the only terminal value -- polling until state stops being `BUILDING` and assuming success ships a broken build, because there are failure states on the other side of that check too.
+
 ## Sources
 
 - Documentation: https://vercel.com/docs/rest-api
