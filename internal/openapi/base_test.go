@@ -38,6 +38,11 @@ func TestTheFirstUsableServerWins(t *testing.T) {
 	// The first declares no prefix, which is not the same as declaring none
 	// usefully: a description whose first server is the bare host and whose
 	// second carries the version is describing the same API twice.
+	//
+	// Both are the same host, which is what makes borrowing the version safe.
+	// A second server on a different host is a different API and is not
+	// borrowed from -- see base_first_server_test.go, and Printify, which is
+	// why that distinction exists.
 	if got := BasePath(doc); got != "/v3" {
 		t.Errorf("BasePath = %q, want /v3", got)
 	}

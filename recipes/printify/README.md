@@ -6,6 +6,12 @@ Emulates the Printify API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Printify splits wholesale and retail differently from Printful's side-by-side fields: the retail total (`total_price`) lives on the order, but what you actually owe lives only on each line item, as `cost` and `shipping_cost` -- there is no `total_cost` anywhere on the order itself. So the margin is not a subtraction between two fields on one record, it is a subtraction between one field and the sum of a nested array, and an order split across two print providers has two costs to add up before the question can even be asked.
+
+Page size is silently capped at ten regardless of what is requested -- asking for a hundred just gets ten back with nothing said about it, so a loop that stops when it receives fewer results than requested stops on the very first page. Timestamps use a space instead of the ISO 8601 `T` (`"2017-04-18 13:24:28+00:00"`), so a strict RFC 3339 parser rejects a string that otherwise looks exactly like a date. Money here is integer cents, while Printful, the other print-on-demand provider in this collection, sends the same kind of quantity as decimal strings, so a shared money helper between the two needs to be told which is which.
+
 ## Sources
 
 - Documentation: https://developers.printify.com/

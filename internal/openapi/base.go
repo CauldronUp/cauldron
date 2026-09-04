@@ -22,14 +22,54 @@ import (
 // authority rather than the path, so trimming everything before the first
 // slash that follows them recovers /api/v2. A template inside the path itself
 // yields nothing, because a prefix that varies per request is not a prefix.
+// A later server may supply the prefix, but only if it is the same host.
+//
+// The first server is the default, so its path is the answer when it has one.
+// When it has none, a second server on the same host carrying a version is
+// describing the same API twice -- api.example.com and api.example.com/v3 --
+// and taking the version is what a caller means.
+//
+// A second server on a *different* host is not that. Printify found the
+// difference: its description gained https://enterprise.printful.com/api/pfy/public,
+// a different company's domain, listed after its own api.printify.com which has
+// no path. Falling through to it prefixed every declared path, so both of that
+// Recipe's routes read as absent and its fingerprint moved -- for a change to a
+// server list that has nothing to do with the orders API the Recipe describes.
+//
+// That is the failure this package exists to prevent: drift reported against
+// something the provider did not change to anything the Recipe claims. A scan
+// that cries wolf gets switched off, and then the change that mattered arrives
+// unannounced.
 func BasePath(doc *Document) string {
-	for _, server := range doc.Servers {
-		if base := basePathOf(server.URL); base != "" {
-			return base
+	if len(doc.Servers) == 0 {
+		return ""
+	}
+
+	first := doc.Servers[0].URL
+
+	if base := basePathOf(first); base != "" {
+		return base
+	}
+
+	for _, server := range doc.Servers[1:] {
+		if sameHost(first, server.URL) {
+			if base := basePathOf(server.URL); base != "" {
+				return base
+			}
 		}
 	}
 
 	return ""
+}
+
+// sameHost reports whether two server URLs name the same authority, so a
+// prefix can be borrowed from one for the other. hostOf lives in discover.go
+// and reads only http and https, which is the conservative answer here: a
+// templated scheme yields no host, so nothing is borrowed for it.
+func sameHost(a, b string) bool {
+	ha, hb := hostOf(a), hostOf(b)
+
+	return ha != "" && ha == hb
 }
 
 func basePathOf(raw string) string {
