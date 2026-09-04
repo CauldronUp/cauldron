@@ -6,6 +6,12 @@ Emulates the Calendly API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Calendly addresses everything by URI rather than a bare identifier -- the field is literally called "uri" and holds a full URL, including in relationships, so code expecting to build a path from an id has nothing to build from. Paging is nested under "pagination" with a cursor token rather than an id, so a client that pages by remembering the last id it saw gets stuck on the first page forever.
+
+Calendly has no sandbox, so testing the states that actually matter -- a cancelled event, a no-show, a rescheduled invitee -- means creating real scheduled events that email real confirmation and calendar invites to whoever is named as the invitee, which is why those states are rarely exercised at all.
+
 ## Sources
 
 - Documentation: https://developer.calendly.com/api-docs
