@@ -6,6 +6,10 @@ Emulates the Sanity API (v2021-06-07), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+A draft is the same document with a `drafts.` prefix on its id -- the published version and the draft are two separate documents, and a query that doesn't filter finds both, so a site can render an unpublished draft alongside its live self. System fields are underscore-prefixed (`_id`, `_type`, `_rev`), so `document.id` finds nothing and the field an optimistic write actually needs is `_rev`.
+
 ## Sources
 
 - Documentation: https://www.sanity.io/docs/http-api
