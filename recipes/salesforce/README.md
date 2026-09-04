@@ -6,6 +6,12 @@ Emulates the Salesforce API (v60.0), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Every record carries an `attributes` object holding its type and URL, so code that iterates a record's own keys hits that first, and diffing two records finds them different because their URLs differ. Field names are capitalised (`Id`, `Name`), and a query answering `done: false` has to be followed through `nextRecordsUrl` -- Salesforce does not warn when a match exceeds the batch size, it just stops and hands back a prefix.
+
+Creating a record answers with a lower-case `id`; reading the same record back answers `Id`. Same identifier, two spellings, one API.
+
 ## Sources
 
 - Documentation: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/
