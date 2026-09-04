@@ -6,6 +6,12 @@ Emulates the Royal Mail API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Deleting an order here can cost real money. Royal Mail's own documentation for `DELETE /orders/{orderIdentifiers}` warns that a label generated on a deleted order is no longer valid, and if it still reaches a Royal Mail van the account is charged plus a handling fee -- the call is reversible in a database and not reversible on a parcel already moving.
+
+The same path parameter takes a semicolon-separated list of up to a hundred identifiers, with string references quoted and percent-encoded because a reference can itself contain a semicolon. This Recipe matches one path segment as one identifier rather than parsing that list, so the encoding trap it documents is prose here, not behaviour -- and the array-shaped response Royal Mail always returns from that endpoint, one or a hundred, comes back here as a single object instead.
+
 ## Sources
 
 - Documentation: https://api.parcel.royalmail.com/
