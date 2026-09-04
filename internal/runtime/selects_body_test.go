@@ -47,7 +47,11 @@ func TestARouteCanBeChosenByAWordAnywhereInTheBody(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/v1beta/models/gemini-2.5-flash:generateContent", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-goog-api-key", "AIzaCauldronGeminiFixtureKey00000000000")
+		// From the Recipe rather than repeated here. This test hardcoded the
+		// key and broke when the fixture value changed to stop matching
+		// Google's real key format -- a rename in a Recipe should not fail a
+		// test about routing on the body.
+		req.Header.Set("x-goog-api-key", r.Auth.Keys[0])
 		s.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
