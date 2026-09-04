@@ -6,6 +6,12 @@ Emulates the Stytch API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+A user's identity has no single verified flag -- it's an array of factors (emails, phone numbers, providers), each independently verified, so a user can have a verified email and an unverified phone at the same time while `status` reads `active` regardless. A session is similarly a list of `authentication_factors` recording how it was obtained, so code requiring a particular login method has to read the array rather than trust the session object.
+
+Deleting a user also doesn't end their sessions -- they remain valid until they expire on their own, so a revoked account keeps working for as long as its token has left.
+
 ## Sources
 
 - Documentation: https://stytch.com/docs/api
