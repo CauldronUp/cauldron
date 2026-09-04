@@ -6,6 +6,12 @@ Emulates the apify API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+A run that SUCCEEDED tells you nothing about whether it produced anything. Status describes the process (it started, didn't crash, exited zero); what it scraped lives in a separate dataset under a different id, so a scraper that found nothing, got blocked, or hit a page whose markup changed still reports SUCCEEDED. And the dataset endpoint is the one response in the whole API that isn't wrapped in {"data": ...} -- it's a bare array -- so the code reading a run and the code reading its results unwrap differently against the same provider.
+
+Of the eight statuses, three are the -ING half of a pair (TIMING-OUT vs TIMED-OUT, ABORTING vs ABORTED), so matching on a prefix or `includes("ABORT")` treats a still-running job as a finished one. TIMED-OUT is also not an empty result -- everything written before the cutoff is still in the dataset, so it's the status most likely to hold real, paid-for partial data and also the one most likely to get discarded. And duration appears twice in two different units (durationMillis, runTimeSecs) on the same object, which is a subtraction waiting to happen.
+
 ## Sources
 
 - Documentation: https://docs.apify.com/api/v2
