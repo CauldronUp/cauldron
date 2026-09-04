@@ -207,16 +207,23 @@ type Auth struct {
 	// unauthenticated -- the behaviour every Recipe was written against, and
 	// the commoner arrangement.
 	//
-	// Providers genuinely disagree about this and ninety-one Recipes here
-	// have had to say so in prose. Airbyte checks the credential first, always, and
+	// Providers genuinely disagree about this and 159 Recipes here have had to
+	// say so in prose. Airbyte checks the credential first, always, and
 	// answered a byte-identical 401 to every path real or invented. Fireworks
 	// resolves the route and the method first, so an unrouted path 404s and a
 	// wrong method 405s with nothing sent at all. Temporal routes first;
 	// Mezmo's two hosts do opposite things to each other.
 	//
-	// This is a boolean and the providers here have produced five distinct
-	// arrangements, so three of them are recorded in their own Recipes rather
-	// than approximated:
+	// This is a boolean, and the arrangements below are the ones it cannot
+	// express. The list has been added to three times and the sentence above
+	// it was never corrected: it said five arrangements and three recorded,
+	// over a list of twelve, for long enough that individual Recipes wrote
+	// down whichever count was current when they were written -- Akeyless
+	// calls itself a seventh shape, Clio a sixth, Sendcloud a sixth. Those
+	// numbers are all of different lists.
+	//
+	// So no count here. A list that grows is a list, and the number in front
+	// of it is one more thing to forget:
 	//
 	//   Census   splits on the HTTP method. A GET reaches the gate and
 	//            answers 401 in plain text; a DELETE on the same path finds
@@ -276,7 +283,14 @@ type Auth struct {
 	//            this boolean does not have, and an id pattern here is
 	//            checked strictly after the credential.
 	//
-	// The last twelve would each need the credential's state to survive a
+	// Several of these have since been found again on other providers, which
+	// is the useful signal: Sendcloud's shape turned up on Treasury Prime and
+	// Clio, Northflank's on Melio and Google Maps, Genius's on Trakt, Papaya
+	// Global and Cloudflare Stream, and Canada Post's on Cloudflare Stream and
+	// Electricity Maps. A shape found twice is a mechanism worth building; a
+	// shape found once is a note. Only the second kind is safe to leave here.
+	//
+	// The ones below would each need the credential's state to survive a
 	// route match without gating it -- and Northflank's would need it to
 	// survive body validation as well, per route. That is a larger change
 	// than a boolean and is not obviously worth making for twelve providers.
