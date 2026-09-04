@@ -6,6 +6,12 @@ Emulates the novu API (v1), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+Novu creates a subscriber implicitly the first time you trigger a workflow against an id it has not seen, which means a typo can never fail outright. Send to `usr_1O4` when you meant `usr_104` and Novu answers 201, acknowledges the trigger, creates a subscriber with no email and no phone, and delivers nothing -- everything reports success, and the only visible symptom is a subscriber list that quietly grows by one every time somebody fat-fingers an id.
+
+`acknowledged: true` on a trigger response means received, not sent -- the workflow has not run yet, no message exists, and treating the 201 as delivery reports success for notifications nobody got. The `transactionId` that comes back is a correlation key for a later search, not a resource you can fetch by id, so code that stores it expecting a handle stores something with no endpoint behind it. A subscriber's channel credentials (push tokens and the like) live in a separate array from their email and phone, keyed by provider id, so having an email does not mean having a push token -- a workflow step targeting a channel the subscriber has no credential for is skipped rather than failed.
+
 ## Sources
 
 - Documentation: https://docs.novu.co/api-reference/overview
