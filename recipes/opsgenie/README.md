@@ -6,6 +6,12 @@ Emulates the opsgenie API (v2), for local development and tests.
 
 Every case here cites documentation rather than an observation. The Recipe's own header says why, and that reason is the finding as often as not.
 
+## What this Recipe found
+
+An alert and an incident look like the same thing and are not: an alert is a page, somebody's phone rings, an incident is a coordination record, a channel, a timeline, stakeholder updates. They have separate ids, separate lifecycles, and separate close endpoints. Closing one does not close the other, so a monitor recovers, the alert closes automatically, and the incident sits open for days with nobody looking at it.
+
+Almost every write here is asynchronous, answering 202 with a request id that is not the alert's own id -- finding out whether the thing you asked for actually happened means fetching the request status separately, which for a moment still says processing. An alert can also be addressed three different ways, its id, a short human-readable `tinyId`, or your own `alias`, and which one a path means is decided by a query parameter, so the same URL addresses a different alert depending on `identifierType`. Creating an alert against an alias that is already open does not create a new one -- it increments the existing alert's count and answers with the same 202 as a real creation, so a flapping monitor produces one alert with a count of forty rather than forty separate alerts, and a client counting responses counts wrong.
+
 ## Sources
 
 - Documentation: https://docs.opsgenie.com/docs/api-overview
