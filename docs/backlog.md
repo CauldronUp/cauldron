@@ -1311,7 +1311,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**269 more listings across 171 Recipes declare no paging at all**, and the
+**266 more listings across 169 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the
@@ -1343,6 +1343,16 @@ asserting. ClinicalTrials.gov names its own in a refusal: `?pageSize=notanumber`
 answers "Value provided in parameter `pageSize` cannot be converted to 32-bit
 integer", struck live and pinned in a case. A provider that names a parameter
 while refusing it has named it.
+
+And where a provider is public, the position can just be asked. FBI Wanted and
+Open Brewery DB both take a page number beside their size, and rather than
+inferring the partner of `pageSize` and `per_page` from convention, both were
+struck live on 2026-09-05: `?pageSize=2&page=1` and `page=2` answer two
+different pairs out of 1,240 wanted persons, and the same for breweries. Open
+Brewery DB's size was already pinned here by its sharpest finding -- `?per_page=201`
+does not clamp and does not refuse, it answers **302 to the landing page**, so a
+client following redirects gets a 200 and the wrong body. A parameter a provider
+redirects you for is one it reads.
 
 ClinicalTrials.gov is also why the unnamed count went **up** by one while the
 unstated count fell by four. Its size is established and its position is not --
