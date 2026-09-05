@@ -65,7 +65,7 @@ That last section is deliberate. Falling back to the real network *silently* is 
 | `doctor`, `logs`, `open` | Working |
 | `cauldron up` / `down` (container orchestration) | Working for backing services |
 | `snapshot` save/restore | Working |
-| Conformance suites (`cauldron verify`) | Working. 6079 cases, 2856 of them checked against a live API |
+| Conformance suites (`cauldron verify`) | Working. 6084 cases, 2856 of them checked against a live API |
 | Spec drift (`cauldron drift`) | Working. 123 Recipes are checked against their provider's own OpenAPI document; 501 name none yet |
 | Finding descriptions (`cauldron discover`) | Working. Proposes a description only where the document declares a path the Recipe already models. Found 35 across the collection, of which 29 declare every route |
 | Description-backed routes (`serve --with-spec`) | Working. Adds routes from a Recipe's declared OpenAPI description for paths it does not model. Asana goes from 9 routes to 230; Adyen from 4 to 28. The Recipe always wins |
@@ -322,8 +322,8 @@ stripe 0.1.0
   10 from documentation only, none checked against the real API
 ```
 
-That second line is the honest one. Of every Recipe: 6079 cases, 2856 run against
-a live account and 3223 not. Documentation-derived cases are worth having,
+That second line is the honest one. Of every Recipe: 6084 cases, 2856 run against
+a live account and 3228 not. Documentation-derived cases are worth having,
 and they are not the same as watching the provider do it. Adding a `verified:`
 date to a case is a claim that someone did.
 
