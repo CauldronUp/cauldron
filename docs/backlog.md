@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**70 routes across 34 Recipes** still page by a parameter nobody named.
+**63 routes across 31 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,17 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Airtable, HubSpot and Okta came from their own reference pages rather than a
+machine-readable document. Airtable takes `pageSize` and `offset` -- and its
+`offset` is a continuation token rather than a number, despite the name, which
+is why it is cursor paging. HubSpot takes `limit` and `after`, the `after` being
+the `paging.next.after` its Recipe already served. Okta takes `limit` and
+`after` too, and advertises the next page **in the Link header**: its own guide
+says "Pagination links are included in the Link header of responses", and this
+Recipe served no pointer of any kind, so a client following Okta's documented
+mechanism found nothing to follow. Airtable's case was the fifth today sending a
+page size its provider does not have.
 
 DynamoDB was carrying Query's parameter name on ListTables. AWS's own service
 model gives ListTables exactly two inputs -- `ExclusiveStartTableName` and
