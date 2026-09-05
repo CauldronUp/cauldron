@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**22 routes across 11 Recipes** still page by a parameter nobody named.
+**20 routes across 10 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1345,6 +1345,28 @@ serves, and `?limit=2&offset=2` moves the window. Datamuse has a size and no
 position at all: `?max=5` answers five, `?max=1000` answers all 467 there are,
 and `?offset=5` answers the same hundred beginning with the same word, which is
 how an unrecognised parameter behaves.
+
+SavvyCal is the clearest case yet of a Recipe holding its own answer. Its header
+already recorded, from reading three of SavvyCal's schema pages side by side,
+that two of its list endpoints page "cursor-based, nested under a sibling
+`metadata` object -- `{"entries": [...], "metadata": {"after", "before",
+"limit"}}` -- confirmed by both schemas' own worked examples". Those three names
+*are* the parameters. The declaration underneath that paragraph was empty, so the
+runtime read `limit` (right by luck) and `cursor` (which SavvyCal does not have),
+while the paragraph two hundred lines up said `after`.
+
+Four more will not settle, and now say what was tried instead of saying nothing.
+Deel's reference has moved twice: `developer.deel.com/reference/<operation>` now
+answers "You have been redirected to the new developer documentation ... Use the
+search bar above this page", the replacement renders one endpoint at a time from
+JavaScript, and its own `llms.txt` -- published for exactly this purpose --
+indexes marketing pages and a create-contract example without reaching a list
+endpoint. Mailgun's and Bill.com's references answer 404 with a quarter-megabyte
+of application shell to anything that is not a browser. AppSignal has no API
+reference at the address its own documentation index points at. Each keeps its
+guessed page size, labelled as a guess, next to a dated record of the attempt --
+which is worth more than a blank, because the next person to look starts from
+what already failed.
 
 Eight of the routes that declared paging with a parameter left unnamed are
 settled, and FlightAware is the one worth reading twice. AeroAPI's only two
