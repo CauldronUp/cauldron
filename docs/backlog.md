@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**93 routes across 44 Recipes** still page by a parameter nobody named.
+**85 routes across 41 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,15 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Three more providers publish a description in their own GitHub organisation
+and nobody had recorded it: Square, Slack and Discord, all three now recorded
+and fingerprinted. Square and Slack take `limit` and `cursor`, which are the two
+words the runtime supplies -- so those six listings were right and had never
+been checked, which is a different thing. Discord takes `limit` and `after`, a
+snowflake rather than a token, and its guild-channels listing declares no query
+parameters at all: however many channels a guild has, they come back in one
+response.
 
 Six more from the same source. Dub's is the one to remember: it declares
 `startingAfter` and `endingBefore` as its cursors and `pageSize` as the size,
@@ -1139,7 +1148,7 @@ provider page a real collection.
 
 ### And the count was the smaller half of itself
 
-**280 more listings across 180 Recipes declare no paging at all**, and the
+**279 more listings across 179 Recipes declare no paging at all**, and the
 runtime pages them anyway: a route with no page size is given ten and reads
 `limit`, exactly as a route declaring a size with no name is. The report could
 not see them, because the count starts from a declared page size. So the

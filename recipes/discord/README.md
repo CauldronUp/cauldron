@@ -16,7 +16,8 @@ The live probe found Discord's router resolves a request's path and method befor
 ## Sources
 
 - Documentation: https://discord.com/developers/docs/reference
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json, last checked 2026-09-05
+  `cauldron drift discord` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 

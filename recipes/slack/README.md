@@ -34,7 +34,8 @@ against `/api/conversations.list`, unauthenticated, gets the same
 ## Sources
 
 - Documentation: https://api.slack.com/web
-- No machine-readable description is recorded. The Recipe's header says whether one exists and could not be read, or does not exist.
+- Machine-readable description: https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json, last checked 2026-09-05
+  `cauldron drift slack` compares it against what this Recipe claims.
 
 Every case cites where it came from. The Recipe itself, [`recipe.yaml`](recipe.yaml), carries the full notes: what was probed, what was deliberately not modelled, and why.
 
