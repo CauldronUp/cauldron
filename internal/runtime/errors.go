@@ -207,6 +207,10 @@ func (s *Sandbox) writeRecipeError(w http.ResponseWriter, name string, fallback 
 		if defined.CodeField != "" {
 			spec.CodeField = defined.CodeField
 		}
+
+		if defined.TypeField != "" {
+			spec.TypeField = defined.TypeField
+		}
 	}
 
 	// Zero bytes, when a Recipe says its provider sends zero bytes. Written

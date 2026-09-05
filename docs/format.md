@@ -349,6 +349,7 @@ A map of a name this Recipe chooses to:
 | `key` | string | Overrides the envelope key for this failure alone. |
 | `message_field` | string | Overrides the field carrying the sentence, for this failure alone. |
 | `code_field` | string | Overrides the field carrying the code; `-` removes it. |
+| `type_field` | string | Overrides the field carrying the category, for this failure alone; `-` removes it. |
 
 `{detail}` in a message or in a field is replaced per request with what the failure is
 about — the credential that was refused, the path that was not found. NeverBounce answers

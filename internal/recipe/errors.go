@@ -67,6 +67,20 @@ type Error struct {
 	// anywhere in it. A client switching on a code has nothing to switch on,
 	// and that is the thing worth serving.
 	CodeField string            `yaml:"code_field"`
+	// TypeField overrides the Recipe-wide field carrying the category, for
+	// this failure alone, and "-" removes it.
+	//
+	// The last third of the same asymmetry MessageField and CodeField have
+	// already closed. The error envelope names three fields and two of them
+	// could move per failure, which Clio found by having a provider that
+	// needs the third: it answers one shape to a request carrying no
+	// credential and another to one carrying a wrong credential, and only
+	// the second has a property named "type". That Recipe reached it by
+	// turning type_field off across the whole file and pointing code_field
+	// at "type" on the one error -- the right bytes, from a knob named for
+	// something else, with a comment left behind to explain the
+	// substitution.
+	TypeField string            `yaml:"type_field"`
 	Headers   map[string]string `yaml:"headers"`
 	// Fields are extra body properties this failure carries, merged over the
 	// Recipe-wide ones. Dropbox describes each failure with its own nested
