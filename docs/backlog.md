@@ -1045,7 +1045,7 @@ something the Recipe does not do is worth less than no comment.
 
 ### Restoring them, one description at a time
 
-**63 routes across 31 Recipes** still page by a parameter nobody named.
+**57 routes across 29 Recipes** still page by a parameter nobody named.
 
 That number went up by a hundred and seven when the counter learned to see. It
 had treated a declared style as though it named the parameters, on the reasoning
@@ -1073,6 +1073,14 @@ Notion takes `page_size` and `start_cursor`; Lithic `page_size` and
 `starting_after`; Cloudflare Stream `limit` and `after`, which is a timestamp.
 Render had named its cursor and not its limit, and was right by luck -- which is
 not the same as having been checked.
+
+Calendly calls its page size `count` -- "the number of rows to return", twenty
+by default and a hundred at most -- and its position `page_token`. Neither is a
+word the runtime would supply, and its description was reachable once the index
+at `developer.calendly.com/openapi.json` was followed to the document it names.
+Recorded and fingerprinted. WorkOS takes `limit` and `after`, the `after` being
+the `list_metadata.after` its Recipe already served with no way for a caller to
+send it back.
 
 Airtable, HubSpot and Okta came from their own reference pages rather than a
 machine-readable document. Airtable takes `pageSize` and `offset` -- and its
